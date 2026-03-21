@@ -1,7 +1,57 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "causal-embeddings-for-recommendations"
 version = "0.1.0"
-description = "Add your description here"
+description = "GPU-Efficient Causal Disentanglement: A Unified Embedding Pipeline with ANN-Accelerated Graph Construction and Memory-Aware Optimization"
 readme = "README.md"
-requires-python = ">=3.14"
-dependencies = []
+# PyG only supports Python 3.10–3.13, so constrain the interpreter accordingly.
+requires-python = ">=3.13,<3.14"
+
+dependencies = [
+    "torch>=2.1.0",
+    "torch-geometric>=2.7.0",
+    "numpy>=2.4.0",
+    "scipy>=1.17.0",
+    "scikit-learn>=1.3.0",
+    "networkx>=3.1",
+    "requests>=2.32.0",
+    "aiohttp>=3.13.0",
+    "jinja2>=3.1.6",
+    "tqdm>=4.67.0",
+    "psutil>=7.2.0",
+    "pyparsing>=3.0.0",
+    "yarl>=1.7.0",
+    "tomli>=2.4.0",
+    "ipywidgets>=8.1.8",
+    "ruff>=0.15.4",
+    "matplotlib>=3.10.8",
+    "seaborn>=0.13.2",
+    "h5py>=3.15.1",
+    "sentence-transformers>=5.2.3",
+    "ray>=2.54.0",
+    "cuvs-cu13>=26.2.0",
+    "cudf-polars-cu13>=26.2.1",
+    "ipykernel>=7.2.0",
+    "mlflow>=3.10.1",
+]
+
+
+[[tool.uv.index]]
+url = "https://download.pytorch.org/whl/cu131"
+
+[project.scripts]
+experiment = "experiments.run_experiment:main"
+benchmark = "experiments.run_benchmark:main"
+ablation = "experiments.run_ablation:main"
+preflight = "scripts.preflight_experiments:main"
+download-datasets = "scripts.download_pyg_datasets:main"
+verify-setup = "scripts.verify_setup:main"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+include = ["experiments*", "scripts*", "src*"]

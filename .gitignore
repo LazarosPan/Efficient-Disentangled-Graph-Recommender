@@ -8,3 +8,31 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Documentation
+/docs/*
+!/docs/usage/
+
+#Thesis
+/latex/*
+
+#Settings
+.vscode/
+
+# External projects
+/external/*
+
+# Data
+/data/*
+!/data/datasets_information.md
+
+# Results
+/results/*
+!/results/figures/
+
+# MLFlow
+/mlruns/*
+
+# Github
+.github/prompts/
+.github/agents/
