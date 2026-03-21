@@ -1,0 +1,256 @@
+{
+  "recipes": {
+    "full_full_graph_dense": {
+      "description": "Full U-CaGNN with full-graph training on dense edges.",
+      "preset": "full",
+      "overrides": {
+        "training_mode": "full_graph",
+        "graph_method": "dense"
+      }
+    },
+    "full_full_graph_knn": {
+      "description": "Full U-CaGNN with full-graph training on kNN edges.",
+      "preset": "full",
+      "overrides": {
+        "training_mode": "full_graph",
+        "graph_method": "knn"
+      }
+    },
+    "full_full_graph_cagra": {
+      "description": "Full U-CaGNN with full-graph training on CAGRA edges.",
+      "preset": "full",
+      "overrides": {
+        "training_mode": "full_graph",
+        "graph_method": "cagra"
+      }
+    },
+    "full_cached_propagation_dense": {
+      "description": "Full U-CaGNN with cached propagation on dense edges.",
+      "preset": "full",
+      "overrides": {
+        "training_mode": "cached_propagation",
+        "graph_method": "dense"
+      }
+    },
+    "full_cached_propagation_knn": {
+      "description": "Full U-CaGNN with cached propagation on kNN edges.",
+      "preset": "full",
+      "overrides": {
+        "training_mode": "cached_propagation",
+        "graph_method": "knn"
+      }
+    },
+    "full_cached_propagation_cagra": {
+      "description": "Full U-CaGNN with cached propagation on CAGRA edges.",
+      "preset": "full",
+      "overrides": {
+        "training_mode": "cached_propagation",
+        "graph_method": "cagra"
+      }
+    },
+    "full_mini_batch_dense": {
+      "description": "Full U-CaGNN with mini-batch training on dense edges.",
+      "preset": "full",
+      "overrides": {
+        "training_mode": "mini_batch",
+        "graph_method": "dense"
+      }
+    },
+    "full_mini_batch_knn": {
+      "description": "Full U-CaGNN with mini-batch training on kNN edges.",
+      "preset": "full",
+      "overrides": {
+        "training_mode": "mini_batch",
+        "graph_method": "knn"
+      }
+    },
+    "full_mini_batch_cagra": {
+      "description": "Full U-CaGNN with mini-batch training on CAGRA edges.",
+      "preset": "full",
+      "overrides": {
+        "training_mode": "mini_batch",
+        "graph_method": "cagra"
+      }
+    },
+    "lightgcn_full_graph_dense": {
+      "description": "LightGCN baseline with full-graph training on dense edges.",
+      "preset": "lightgcn",
+      "overrides": {
+        "training_mode": "full_graph",
+        "graph_method": "dense"
+      }
+    },
+    "lightgcn_full_graph_knn": {
+      "description": "LightGCN baseline with full-graph training on kNN edges.",
+      "preset": "lightgcn",
+      "overrides": {
+        "training_mode": "full_graph",
+        "graph_method": "knn"
+      }
+    },
+    "lightgcn_full_graph_cagra": {
+      "description": "LightGCN baseline with full-graph training on CAGRA edges.",
+      "preset": "lightgcn",
+      "overrides": {
+        "training_mode": "full_graph",
+        "graph_method": "cagra"
+      }
+    },
+    "lightgcn_cached_propagation_dense": {
+      "description": "LightGCN baseline with cached propagation on dense edges.",
+      "preset": "lightgcn",
+      "overrides": {
+        "training_mode": "cached_propagation",
+        "graph_method": "dense"
+      }
+    },
+    "lightgcn_cached_propagation_knn": {
+      "description": "LightGCN baseline with cached propagation on kNN edges.",
+      "preset": "lightgcn",
+      "overrides": {
+        "training_mode": "cached_propagation",
+        "graph_method": "knn"
+      }
+    },
+    "lightgcn_cached_propagation_cagra": {
+      "description": "LightGCN baseline with cached propagation on CAGRA edges.",
+      "preset": "lightgcn",
+      "overrides": {
+        "training_mode": "cached_propagation",
+        "graph_method": "cagra"
+      }
+    },
+    "lightgcn_mini_batch_dense": {
+      "description": "LightGCN baseline with mini-batch training on dense edges.",
+      "preset": "lightgcn",
+      "overrides": {
+        "training_mode": "mini_batch",
+        "graph_method": "dense"
+      }
+    },
+    "lightgcn_mini_batch_knn": {
+      "description": "LightGCN baseline with mini-batch training on kNN edges.",
+      "preset": "lightgcn",
+      "overrides": {
+        "training_mode": "mini_batch",
+        "graph_method": "knn"
+      }
+    },
+    "lightgcn_mini_batch_cagra": {
+      "description": "LightGCN baseline with mini-batch training on CAGRA edges.",
+      "preset": "lightgcn",
+      "overrides": {
+        "training_mode": "mini_batch",
+        "graph_method": "cagra"
+      }
+    },
+    "dice_like_full_graph_dense": {
+      "description": "DICE-like preset with full-graph training on dense edges.",
+      "preset": "dice_like",
+      "overrides": {
+        "training_mode": "full_graph",
+        "graph_method": "dense"
+      }
+    },
+    "dice_like_full_graph_knn": {
+      "description": "DICE-like preset with full-graph training on kNN edges.",
+      "preset": "dice_like",
+      "overrides": {
+        "training_mode": "full_graph",
+        "graph_method": "knn"
+      }
+    },
+    "dice_like_full_graph_cagra": {
+      "description": "DICE-like preset with full-graph training on CAGRA edges.",
+      "preset": "dice_like",
+      "overrides": {
+        "training_mode": "full_graph",
+        "graph_method": "cagra"
+      }
+    },
+    "dice_like_cached_propagation_dense": {
+      "description": "DICE-like preset with cached propagation on dense edges.",
+      "preset": "dice_like",
+      "overrides": {
+        "training_mode": "cached_propagation",
+        "graph_method": "dense"
+      }
+    },
+    "dice_like_cached_propagation_knn": {
+      "description": "DICE-like preset with cached propagation on kNN edges.",
+      "preset": "dice_like",
+      "overrides": {
+        "training_mode": "cached_propagation",
+        "graph_method": "knn"
+      }
+    },
+    "dice_like_cached_propagation_cagra": {
+      "description": "DICE-like preset with cached propagation on CAGRA edges.",
+      "preset": "dice_like",
+      "overrides": {
+        "training_mode": "cached_propagation",
+        "graph_method": "cagra"
+      }
+    },
+    "dice_like_mini_batch_dense": {
+      "description": "DICE-like preset with mini-batch training on dense edges.",
+      "preset": "dice_like",
+      "overrides": {
+        "training_mode": "mini_batch",
+        "graph_method": "dense"
+      }
+    },
+    "dice_like_mini_batch_knn": {
+      "description": "DICE-like preset with mini-batch training on kNN edges.",
+      "preset": "dice_like",
+      "overrides": {
+        "training_mode": "mini_batch",
+        "graph_method": "knn"
+      }
+    },
+    "dice_like_mini_batch_cagra": {
+      "description": "DICE-like preset with mini-batch training on CAGRA edges.",
+      "preset": "dice_like",
+      "overrides": {
+        "training_mode": "mini_batch",
+        "graph_method": "cagra"
+      }
+    },
+    "full": {
+      "alias_for": "full_full_graph_knn",
+      "description": "Short alias for the standard full U-CaGNN recipe."
+    },
+    "full_dense": {
+      "alias_for": "full_full_graph_dense",
+      "description": "Short alias for the dense full U-CaGNN recipe."
+    },
+    "full_cagra": {
+      "alias_for": "full_full_graph_cagra",
+      "description": "Short alias for the CAGRA full U-CaGNN recipe."
+    },
+    "cached": {
+      "alias_for": "full_cached_propagation_knn",
+      "description": "Short alias for cached propagation on kNN edges."
+    },
+    "cached_cagra": {
+      "alias_for": "full_cached_propagation_cagra",
+      "description": "Short alias for cached propagation on CAGRA edges."
+    },
+    "mini_batch": {
+      "alias_for": "full_mini_batch_knn",
+      "description": "Short alias for mini-batch training on kNN edges."
+    },
+    "mini_batch_cagra": {
+      "alias_for": "full_mini_batch_cagra",
+      "description": "Short alias for mini-batch training on CAGRA edges."
+    },
+    "lightgcn": {
+      "alias_for": "lightgcn_full_graph_dense",
+      "description": "Short alias for the dense LightGCN baseline."
+    },
+    "dice": {
+      "alias_for": "dice_like_full_graph_knn",
+      "description": "Short alias for the standard DICE-like recipe."
+    }
+  }
+}
