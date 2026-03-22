@@ -7,9 +7,16 @@ from pathlib import Path
 import numpy as np
 
 from ..canonical import CanonicalInteractions
+from ...feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 
 
-def _load_csv_features(path: Path, id_col: str, id_map: dict[int, int], n_entities: int) -> np.ndarray | None:
+def _load_csv_features(
+    path: Path,
+    id_col: str,
+    id_map: dict[int, int],
+    n_entities: int,
+    include_columns: tuple[str, ...] | None = None,
+) -> np.ndarray | None:
     """Load a feature CSV, re-index rows by id_map, return (n_entities, F) float32 array."""
     if not path.exists():
         return None
@@ -17,7 +24,12 @@ def _load_csv_features(path: Path, id_col: str, id_map: dict[int, int], n_entiti
     with open(path, encoding="utf-8") as f:
         header = f.readline().strip().split(",")
         id_idx = header.index(id_col)
-        feat_indices = [i for i in range(len(header)) if i != id_idx]
+        if include_columns is None:
+            feat_indices = [i for i in range(len(header)) if i != id_idx]
+        else:
+            feat_indices = [header.index(column) for column in include_columns if column in header and column != id_col]
+        if not feat_indices:
+            return None
 
         rows: dict[int, list[float]] = {}
         for line in f:
@@ -93,7 +105,12 @@ def _load_item_categories(path: Path, id_map: dict[int, int], n_items: int) -> n
     return features
 
 
-def _load_caption_categories(path: Path, id_map: dict[int, int], n_items: int) -> np.ndarray | None:
+def _load_caption_categories(
+    path: Path,
+    id_map: dict[int, int],
+    n_items: int,
+    include_columns: tuple[str, ...] | None = None,
+) -> np.ndarray | None:
     """Load hierarchical category IDs from kuairec_caption_category.csv.
 
     Uses only first/second/third_level_category_id columns (skips text fields).
@@ -102,7 +119,7 @@ def _load_caption_categories(path: Path, id_map: dict[int, int], n_items: int) -
     if not path.exists():
         return None
 
-    target_cols = ["first_level_category_id", "second_level_category_id", "third_level_category_id"]
+    target_cols = list(include_columns or ("first_level_category_id", "second_level_category_id", "third_level_category_id"))
     with open(path, encoding="utf-8") as f:
         header = f.readline().strip().split(",")
         vid_idx = header.index("video_id") if "video_id" in header else -1
@@ -147,7 +164,12 @@ def _safe_timestamp(value: str) -> int:
         return 0
 
 
-def load_kuairec_v2(data_dir: str = "data") -> CanonicalInteractions:
+def load_kuairec_v2(
+    data_dir: str = "data",
+    max_rows: int | None = None,
+    include_optional_features: bool = True,
+    feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY,
+) -> CanonicalInteractions:
     """Load KuaiRec v2 from ``data_dir/KuaiRec_v2/data/big_matrix.csv``.
 
     Expected columns: user_id, video_id, watch_ratio, timestamp
@@ -163,6 +185,7 @@ def load_kuairec_v2(data_dir: str = "data") -> CanonicalInteractions:
         )
 
     raw_users, raw_items, watch_ratios, timestamps = [], [], [], []
+    row_count = 0
     with open(path, encoding="utf-8") as f:
         header = f.readline().strip().split(",")
         uid_col = header.index("user_id")
@@ -178,6 +201,9 @@ def load_kuairec_v2(data_dir: str = "data") -> CanonicalInteractions:
             raw_items.append(int(parts[vid_col]))
             watch_ratios.append(float(parts[wr_col]))
             timestamps.append(_safe_timestamp(parts[ts_col]) if ts_col >= 0 else 0)
+            row_count += 1
+            if max_rows is not None and row_count >= max_rows:
+                break
 
     raw_users_arr = np.array(raw_users, dtype=np.int64)
     raw_items_arr = np.array(raw_items, dtype=np.int64)
@@ -203,37 +229,58 @@ def load_kuairec_v2(data_dir: str = "data") -> CanonicalInteractions:
     pop_counts = np.bincount(item_id, minlength=n_items).astype(np.float32)
     popularity = pop_counts / pop_counts.max() if pop_counts.max() > 0 else pop_counts
 
-    # Side features (optional)
-    user_features = _load_csv_features(
-        base / "user_features.csv", "user_id", user_map, n_users
-    )
-    # Enrich with raw user features (gender, age_range, device, city) if available
-    user_features_raw = _load_csv_features(
-        base / "user_features_raw.csv", "user_id", user_map, n_users
-    )
-    if user_features is not None and user_features_raw is not None:
-        user_features = np.hstack([user_features, user_features_raw])
-    elif user_features_raw is not None:
-        user_features = user_features_raw
+    user_features = None
+    item_features = None
+    if include_optional_features:
+        if feature_policy == "all_optional":
+            user_features = _load_csv_features(
+                base / "user_features.csv", "user_id", user_map, n_users
+            )
+            user_features_raw = _load_csv_features(
+                base / "user_features_raw.csv", "user_id", user_map, n_users
+            )
+            if user_features is not None and user_features_raw is not None:
+                user_features = np.hstack([user_features, user_features_raw])
+            elif user_features_raw is not None:
+                user_features = user_features_raw
 
-    # Item features: start with daily aggregates
-    item_features_daily = _load_csv_features(
-        base / "item_daily_features.csv", "video_id", item_map, n_items
-    )
+            item_features_daily = _load_csv_features(
+                base / "item_daily_features.csv", "video_id", item_map, n_items
+            )
+            item_caption_cats = _load_caption_categories(
+                base / "kuairec_caption_category.csv", item_map, n_items
+            )
+        else:
+            item_features_daily = _load_csv_features(
+                base / "item_daily_features.csv",
+                "video_id",
+                item_map,
+                n_items,
+                include_columns=(
+                    "author_id",
+                    "video_type",
+                    "upload_dt",
+                    "upload_type",
+                    "visible_status",
+                    "music_id",
+                ),
+            )
+            item_caption_cats = _load_caption_categories(
+                base / "kuairec_caption_category.csv",
+                item_map,
+                n_items,
+                include_columns=(
+                    "first_level_category_id",
+                    "second_level_category_id",
+                    "third_level_category_id",
+                ),
+            )
 
-    # Enrich with multi-hot category vector from item_categories.csv
-    item_cat_feats = _load_item_categories(
-        base / "item_categories.csv", item_map, n_items
-    )
-
-    # Enrich with hierarchical category IDs from kuairec_caption_category.csv
-    item_caption_cats = _load_caption_categories(
-        base / "kuairec_caption_category.csv", item_map, n_items
-    )
-
-    # Concatenate all available item feature sources
-    item_parts = [f for f in [item_features_daily, item_cat_feats, item_caption_cats] if f is not None]
-    item_features = np.hstack(item_parts) if item_parts else None
+        item_cat_feats = _load_item_categories(
+            base / "item_categories.csv", item_map, n_items
+        )
+        item_parts = [f for f in [item_features_daily, item_cat_feats, item_caption_cats] if f is not None]
+        item_features = np.hstack(item_parts) if item_parts else None
 
     return CanonicalInteractions(
         user_id=user_id,

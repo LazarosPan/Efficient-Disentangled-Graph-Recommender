@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from ..canonical import CanonicalInteractions
+from ...feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,12 @@ def _load_genome_scores(
     return features
 
 
-def load_movielens20m(data_dir: str = "data") -> CanonicalInteractions:
+def load_movielens20m(
+    data_dir: str = "data",
+    max_rows: int | None = None,
+    include_optional_features: bool = True,
+    feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY,
+) -> CanonicalInteractions:
     """Load ML-20M from ``data_dir/MovieLens20M/raw/ratings.csv``.
 
     Format: userId,movieId,rating,timestamp (header row)
@@ -125,7 +131,7 @@ def load_movielens20m(data_dir: str = "data") -> CanonicalInteractions:
     # Use numpy for speed on 20M rows
     data = np.loadtxt(
         path, delimiter=",", skiprows=1,
-        dtype=np.float64, usecols=(0, 1, 2, 3),
+        dtype=np.float64, usecols=(0, 1, 2, 3), max_rows=max_rows,
     )
 
     raw_users = data[:, 0].astype(np.int64)
@@ -149,13 +155,14 @@ def load_movielens20m(data_dir: str = "data") -> CanonicalInteractions:
     pop_counts = np.bincount(item_id, minlength=n_items).astype(np.float32)
     popularity = pop_counts / pop_counts.max() if pop_counts.max() > 0 else pop_counts
 
-    # Item features: genres + optional genome tag relevance scores
-    raw_dir = Path(data_dir) / "MovieLens20M" / "raw"
-    genre_feats = _load_movie_genres(raw_dir / "movies.csv", item_map, n_items)
-    genome_feats = _load_genome_scores(raw_dir / "genome-scores.csv", item_map, n_items)
-
-    item_parts = [f for f in [genre_feats, genome_feats] if f is not None]
-    item_features = np.hstack(item_parts) if item_parts else None
+    del feature_policy
+    item_features = None
+    if include_optional_features:
+        raw_dir = Path(data_dir) / "MovieLens20M" / "raw"
+        genre_feats = _load_movie_genres(raw_dir / "movies.csv", item_map, n_items)
+        genome_feats = _load_genome_scores(raw_dir / "genome-scores.csv", item_map, n_items)
+        item_parts = [f for f in [genre_feats, genome_feats] if f is not None]
+        item_features = np.hstack(item_parts) if item_parts else None
 
     return CanonicalInteractions(
         user_id=user_id,

@@ -7,15 +7,20 @@ from pathlib import Path
 import numpy as np
 
 from ..canonical import CanonicalInteractions
+from ...feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 
 
-def _parse_interaction_file(path: Path) -> list[tuple[int, int]]:
+def _parse_interaction_file(
+    path: Path,
+    max_rows: int | None = None,
+) -> list[tuple[int, int]]:
     """Parse LightGCN-format interaction file.
 
     Each line: ``user_id item1 item2 ...`` (space-separated).
     Returns list of (user_id, item_id) pairs.
     """
     pairs: list[tuple[int, int]] = []
+    row_count = 0
     with open(path, encoding="utf-8") as f:
         for line in f:
             tokens = line.strip().split()
@@ -24,6 +29,9 @@ def _parse_interaction_file(path: Path) -> list[tuple[int, int]]:
             uid = int(tokens[0])
             for iid_str in tokens[1:]:
                 pairs.append((uid, int(iid_str)))
+                row_count += 1
+                if max_rows is not None and row_count >= max_rows:
+                    return pairs
     return pairs
 
 
@@ -61,15 +69,27 @@ def _build_arrays(
     return raw_users, raw_items, train_mask, test_mask, timestamps
 
 
-def load_amazonbook(data_dir: str = "data") -> CanonicalInteractions:
+def load_amazonbook(
+    data_dir: str = "data",
+    max_rows: int | None = None,
+    include_optional_features: bool = True,
+    feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY,
+) -> CanonicalInteractions:
     """Load Amazon-Book from local LightGCN-format split files.
 
     This avoids PyG download side effects and uses the repository-local data
     folder directly. All interactions are implicit positives.
     """
+    del include_optional_features, feature_policy
     raw_dir = _resolve_raw_dir(data_dir)
-    train_pairs = _parse_interaction_file(raw_dir / "train.txt")
-    test_pairs = _parse_interaction_file(raw_dir / "test.txt")
+    train_target = max_rows
+    test_target = None
+    if max_rows is not None:
+        train_target = max(1, int(max_rows * 0.8))
+        test_target = max_rows - train_target
+
+    train_pairs = _parse_interaction_file(raw_dir / "train.txt", max_rows=train_target)
+    test_pairs = _parse_interaction_file(raw_dir / "test.txt", max_rows=test_target)
     raw_users, raw_items, train_mask, test_mask, timestamps = _build_arrays(
         train_pairs,
         test_pairs,

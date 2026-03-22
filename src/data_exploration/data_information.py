@@ -13,6 +13,8 @@ Report includes:
 - Text/tabular counts (line count + parsed count where possible)
 - Optional array metadata (NumPy / NPZ)
 - Optional processed graph metadata from ``processed/data*.pt``
+- Per-column causal feature audit with pipeline-stage labels
+- Optional machine-readable JSON export for feature-policy automation
 """
 
 from __future__ import annotations
@@ -33,6 +35,8 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
+
+from src.feature_policy import normalize_dataset_name, thesis_default_column_enabled
 
 
 def load_exploration_api() -> tuple[Any, Any, Any]:
@@ -62,6 +66,171 @@ TEXT_EXTENSIONS = {
     ".pl",
     ".sh",
     "",
+}
+
+USER_COLUMN_MARKERS = {"user", "user_id", "userid", "uid"}
+ITEM_COLUMN_MARKERS = {"item", "item_id", "itemid", "iid", "movieid", "movie_id", "video_id", "videoid"}
+INTERACTION_SIGNAL_MARKERS = {
+    "rating",
+    "watch_ratio",
+    "is_click",
+    "click",
+    "behavior_type",
+    "label",
+    "play_duration",
+    "duration_ms",
+}
+COMMON_INTERACTION_COLUMNS = {
+    "timestamp",
+    "time",
+    "time_ms",
+    "date",
+    "ts",
+    "hourmin",
+    "rating",
+    "watch_ratio",
+    "is_click",
+    "click",
+    "label",
+    "behavior_type",
+    "play_duration",
+    "playing_time",
+    "duration_ms",
+}
+USER_FEATURE_HINTS = {
+    "gender",
+    "age",
+    "occupation",
+    "zip_code",
+    "user_active_degree",
+    "is_lowactive_period",
+    "is_live_streamer",
+    "is_video_author",
+    "follow_user_num",
+    "fans_user_num",
+    "friend_user_num",
+    "register_days",
+    "onehot_feat",
+    "search_active_level",
+    "rec_active_level",
+}
+ITEM_FEATURE_HINTS = {
+    "genre",
+    "genres",
+    "category",
+    "category_id",
+    "category_name",
+    "caption",
+    "topic_tag",
+    "author_id",
+    "music_id",
+    "music_type",
+    "video_type",
+    "video_duration",
+    "tag",
+    "relevance",
+    "show_cnt",
+    "play_cnt",
+    "play_user_num",
+    "like_cnt",
+    "comment_cnt",
+    "follow_cnt",
+    "share_cnt",
+    "download_cnt",
+    "collect_cnt",
+    "reduce_similar_cnt",
+}
+POST_TREATMENT_MARKERS = {
+    "show_cnt",
+    "show_user_num",
+    "play_cnt",
+    "play_user_num",
+    "play_duration",
+    "complete_play_cnt",
+    "valid_play_cnt",
+    "long_time_play_cnt",
+    "short_time_play_cnt",
+    "play_progress",
+    "like_cnt",
+    "comment_cnt",
+    "follow_cnt",
+    "share_cnt",
+    "download_cnt",
+    "collect_cnt",
+    "search",
+    "click_cnt",
+}
+RANDOMIZATION_MARKERS = {"is_rand"}
+SOCIAL_MARKERS = {"friend_list", "user_follow_id", "social_network"}
+SEARCH_MARKERS = {"search", "search_session_id", "search_session_source", "keyword", "search_photo_related"}
+TEXT_MARKERS = {"title", "caption", "manual_cover_text", "tag", "topic_tag", "keyword"}
+NON_CAUSAL_MARKERS = {
+    "imdbid",
+    "tmdbid",
+    "role",
+    "class_map",
+    "format",
+    "shape",
+    "indices",
+    "indptr",
+    "data",
+}
+PRETREATMENT_CONTEXT_MARKERS = {
+    "timestamp",
+    "time",
+    "time_ms",
+    "date",
+    "hourmin",
+    "tab",
+    "upload_dt",
+    "upload_time",
+    "upload_type",
+    "visible_status",
+}
+
+LOADER_COVERAGE: dict[str, dict[str, Any]] = {
+    "movielens1m": {
+        "loader_name": "movielens1m",
+        "interactions": "native loader",
+        "user_features": "loaded into canonical user_features",
+        "item_features": "loaded into canonical item_features",
+        "metadata": [],
+    },
+    "movielens20m": {
+        "loader_name": "movielens20m",
+        "interactions": "native loader",
+        "user_features": None,
+        "item_features": "thesis-default canonical item_features from genres and genome relevance scores",
+        "metadata": [],
+    },
+    "taobao": {
+        "loader_name": "taobao",
+        "interactions": "native loader",
+        "user_features": None,
+        "item_features": "thesis-default canonical item_features derived from category_id",
+        "metadata": [],
+    },
+    "kuairecv2": {
+        "loader_name": "kuairec_v2",
+        "interactions": "native loader",
+        "user_features": None,
+        "item_features": "thesis-default canonical item_features from safe item_daily_features columns, item_categories, and caption category IDs",
+        "metadata": [],
+    },
+    "kuairand1k": {
+        "loader_name": "kuairand1k",
+        "interactions": "native loader",
+        "user_features": None,
+        "item_features": "thesis-default canonical item_features from safe video_features_basic_1k descriptor columns only",
+        "metadata": ["is_rand"],
+    },
+    "amazonbook": {
+        "loader_name": "amazonbook",
+        "interactions": "native loader",
+        "user_features": None,
+        "item_features": None,
+        "metadata": [],
+    },
 }
 # Limits used to avoid expensive scanning or exports.  Set to `None`
 # to disable the check entirely (we keep full datasets by default).
@@ -423,6 +592,562 @@ def attach_exploration_summary(record: DatasetRecord) -> DatasetRecord:
     return record
 
 
+def normalize_dataset_key(name: str) -> str:
+    """Normalize dataset names so report folders map to loader registry entries."""
+    return normalize_dataset_name(name)
+
+
+def get_loader_coverage(record: DatasetRecord) -> dict[str, Any]:
+    """Return current loader-coverage facts for a dataset."""
+    coverage = LOADER_COVERAGE.get(normalize_dataset_key(record.name))
+    if coverage is not None:
+        return coverage
+    return {
+        "loader_name": None,
+        "interactions": None,
+        "user_features": None,
+        "item_features": None,
+        "metadata": [],
+    }
+
+
+def schema_columns(file_record: FileRecord) -> list[str]:
+    """Return normalized schema columns for a scanned file."""
+    schema = file_record.schema or {}
+    columns = schema.get("columns") or []
+    return [str(column).strip().lower() for column in columns]
+
+
+def has_exact_marker(values: list[str] | set[str], markers: set[str]) -> bool:
+    """Check whether any normalized value matches one of the markers exactly."""
+    return any(value in markers for value in values)
+
+
+def has_substring_marker(values: list[str] | set[str], markers: set[str]) -> bool:
+    """Check whether any marker appears as a substring in the provided values."""
+    return any(any(marker in value for marker in markers) for value in values)
+
+
+def relevant_feature_columns(columns: list[str]) -> list[str]:
+    """Filter out core interaction identifiers to expose side-feature candidates."""
+    feature_columns: list[str] = []
+    for column in columns:
+        if column in COMMON_INTERACTION_COLUMNS:
+            continue
+        if column in USER_COLUMN_MARKERS or column in ITEM_COLUMN_MARKERS:
+            continue
+        if column.endswith("id") and column not in {"music_id", "author_id", "category_id", "tagid", "tag_id"}:
+            continue
+        feature_columns.append(column)
+    return feature_columns
+
+
+def candidate_feature_columns(columns: list[str]) -> list[str]:
+    """Return auditable candidate columns, excluding only pure entity identifiers."""
+    candidates: list[str] = []
+    for column in columns:
+        if column in USER_COLUMN_MARKERS or column in ITEM_COLUMN_MARKERS:
+            continue
+        candidates.append(column)
+    return candidates
+
+
+def is_interaction_source(file_record: FileRecord) -> bool:
+    """Identify files that can serve as interaction sources."""
+    relative_path = file_record.relative_path.lower()
+    file_name = Path(relative_path).name
+    columns = schema_columns(file_record)
+
+    if file_name in {"train.txt", "valid.txt", "test.txt", "ratings.dat", "ratings.csv", "userbehavior.csv", "big_matrix.csv", "small_matrix.csv", "record.csv", "train_record.csv", "val_record.csv", "test_record.csv"}:
+        return True
+
+    if "user_features" in relative_path or "social_network" in relative_path:
+        return False
+
+    has_user = has_exact_marker(columns, USER_COLUMN_MARKERS)
+    has_item = has_exact_marker(columns, ITEM_COLUMN_MARKERS)
+    has_signal = has_exact_marker(columns, INTERACTION_SIGNAL_MARKERS)
+    return has_user and has_item and (has_signal or file_record.parsed_count is not None)
+
+
+def is_user_feature_source(file_record: FileRecord) -> bool:
+    """Identify user-side covariate files."""
+    relative_path = file_record.relative_path.lower()
+    if any(token in relative_path for token in ["user_features", "users.dat", "user.txt"]):
+        return True
+
+    columns = schema_columns(file_record)
+    feature_columns = relevant_feature_columns(columns)
+    return has_exact_marker(columns, USER_COLUMN_MARKERS) and has_substring_marker(feature_columns, USER_FEATURE_HINTS)
+
+
+def is_item_feature_source(file_record: FileRecord) -> bool:
+    """Identify item-side covariate files, including item descriptors embedded in interaction tables."""
+    relative_path = file_record.relative_path.lower()
+    columns = schema_columns(file_record)
+    feature_columns = relevant_feature_columns(columns)
+
+    path_hint = any(
+        token in relative_path
+        for token in ["movies.dat", "movies.csv", "video_features", "genome", "caption", "category", "categories", "item_daily_features", "item_categories"]
+    )
+    column_hint = has_substring_marker(columns + feature_columns, ITEM_FEATURE_HINTS)
+    item_id_hint = has_exact_marker(columns, ITEM_COLUMN_MARKERS)
+    return (item_id_hint and bool(feature_columns) and column_hint) or path_hint or column_hint
+
+
+def is_metadata_source(file_record: FileRecord) -> bool:
+    """Identify causal metadata or context files that are not direct model features today."""
+    relative_path = file_record.relative_path.lower()
+    columns = schema_columns(file_record)
+
+    if has_exact_marker(columns, RANDOMIZATION_MARKERS | SOCIAL_MARKERS) or has_substring_marker(columns, SEARCH_MARKERS):
+        return True
+    if any(token in relative_path for token in ["social_network", "links.csv", "tags.csv", "popularity", "role.json", "class_map.json"]):
+        return True
+    return False
+
+
+def collect_aspect_sources(record: DatasetRecord) -> dict[str, list[FileRecord]]:
+    """Collect files relevant to each causal-audit aspect."""
+    aspects = {
+        "interactions": [],
+        "user_features": [],
+        "item_features": [],
+        "metadata": [],
+    }
+    for file_record in record.file_records:
+        if is_interaction_source(file_record):
+            aspects["interactions"].append(file_record)
+        if is_user_feature_source(file_record):
+            aspects["user_features"].append(file_record)
+        if is_item_feature_source(file_record):
+            aspects["item_features"].append(file_record)
+        if is_metadata_source(file_record):
+            aspects["metadata"].append(file_record)
+    return aspects
+
+
+def summarize_source_paths(files: list[FileRecord], limit: int = 3) -> str:
+    """Render a short source-file summary for markdown tables."""
+    if not files:
+        return "-"
+    paths = sorted({file_record.relative_path for file_record in files})
+    if len(paths) <= limit:
+        return ", ".join(paths)
+    return ", ".join(paths[:limit]) + f" (+{len(paths) - limit} more)"
+
+
+def summarize_columns(files: list[FileRecord]) -> set[str]:
+    """Union column names across a set of scanned files."""
+    columns: set[str] = set()
+    for file_record in files:
+        columns.update(schema_columns(file_record))
+    return columns
+
+
+def loader_support_text(record: DatasetRecord, aspect: str, files: list[FileRecord]) -> str:
+    """Describe whether the current loader path uses a given aspect."""
+    coverage = get_loader_coverage(record)
+    if aspect == "metadata":
+        metadata_keys = coverage.get("metadata", [])
+        if metadata_keys:
+            return "preserved in canonical metadata: " + ", ".join(metadata_keys)
+        return "available in files only" if files else "not present"
+
+    support = coverage.get(aspect)
+    if support:
+        return str(support)
+    if files:
+        return "available in files only"
+    return "not present"
+
+
+def model_use_text(record: DatasetRecord, aspect: str) -> str:
+    """Describe current end-model consumption for a given aspect."""
+    coverage = get_loader_coverage(record)
+    if coverage.get("loader_name") is None:
+        return "not reachable by current experiment path"
+    if aspect == "interactions":
+        return "consumed by training and evaluation"
+    if aspect == "item_features":
+        return "used in Module A when canonical item_features exist"
+    if aspect == "user_features":
+        return "retained in canonical/graph objects, not used by model"
+    return "retained only for analysis; not used by model"
+
+
+def strongest_causal_asset(record: DatasetRecord, opportunities: list[str]) -> str:
+    """Select the strongest single causal asset for summary tables."""
+    if not opportunities:
+        return "interaction-only baseline"
+    priority_order = [
+        "randomized exposure metadata",
+        "graded sign or explicit negative signal",
+        "item-side covariates available",
+        "user-side covariates available",
+        "temporal ordering available",
+        "interaction-only baseline",
+    ]
+    for candidate in priority_order:
+        if candidate in opportunities:
+            return candidate
+    return opportunities[0]
+
+
+def choose_primary_risk(risks: list[str]) -> str:
+    """Return the main caution to surface in summaries."""
+    if not risks:
+        return "no major risk flagged"
+    return risks[0]
+
+
+def build_causal_audit(record: DatasetRecord) -> dict[str, Any]:
+    """Build a causal-audit summary that separates file availability from actual usage."""
+    aspects = collect_aspect_sources(record)
+    requirements = (record.exploration_summary or {}).get("ucagnn_requirements", {})
+    coverage = get_loader_coverage(record)
+
+    interaction_columns = summarize_columns(aspects["interactions"])
+    user_feature_columns = summarize_columns(aspects["user_features"])
+    item_feature_columns = summarize_columns(aspects["item_features"])
+    metadata_columns = summarize_columns(aspects["metadata"])
+    feature_columns = user_feature_columns | item_feature_columns
+
+    opportunities: list[str] = []
+    if requirements.get("supports_timestamp_split"):
+        opportunities.append("temporal ordering available")
+    if requirements.get("supports_sign_split"):
+        opportunities.append("graded sign or explicit negative signal")
+    if RANDOMIZATION_MARKERS & metadata_columns:
+        opportunities.append("randomized exposure metadata")
+    if aspects["user_features"]:
+        opportunities.append("user-side covariates available")
+    if aspects["item_features"]:
+        opportunities.append("item-side covariates available")
+    if not opportunities:
+        opportunities.append("interaction-only baseline")
+
+    risks: list[str] = []
+    if POST_TREATMENT_MARKERS & feature_columns:
+        risks.append("behavioral aggregate features may leak post-exposure outcomes")
+    if has_substring_marker(interaction_columns | metadata_columns | feature_columns, SEARCH_MARKERS):
+        risks.append("search and recommendation signals are mixed and need causal separation")
+    if SOCIAL_MARKERS & metadata_columns:
+        risks.append("social links may act as confounders and need explicit treatment")
+    if has_substring_marker(feature_columns, TEXT_MARKERS):
+        risks.append("textual descriptors need encoding and leakage checks before promotion")
+    if coverage.get("user_features") and coverage.get("loader_name"):
+        risks.append("user features are loaded today but remain unused by the model")
+    if requirements.get("preprocessing_cost") == "high":
+        risks.append("preprocessing cost is high before the dataset can join the formal matrix")
+
+    if RANDOMIZATION_MARKERS & metadata_columns:
+        priority = "highest"
+        next_step = "audit randomized vs non-random exposure slices before adding new causal objectives"
+    elif aspects["user_features"] or aspects["item_features"]:
+        priority = "high"
+        next_step = "separate pre-treatment descriptors from post-treatment aggregates and promote only safe features"
+    elif coverage.get("loader_name"):
+        priority = "medium"
+        next_step = "use as an interaction-only baseline unless new covariates are engineered"
+    else:
+        priority = "low"
+        next_step = "implement a canonical loader before considering formal experiments"
+
+    return {
+        "aspects": aspects,
+        "opportunities": opportunities,
+        "risks": risks,
+        "priority": priority,
+        "next_step": next_step,
+        "loader_name": coverage.get("loader_name") or "not in current loader registry",
+        "strongest_asset": strongest_causal_asset(record, opportunities),
+        "primary_risk": choose_primary_risk(risks),
+    }
+
+
+def format_causal_audit_summary(record: DatasetRecord) -> list[str]:
+    """Render dataset-level causal audit bullets."""
+    audit = build_causal_audit(record)
+    opportunities = ", ".join(audit["opportunities"]) if audit["opportunities"] else "-"
+    risks = ", ".join(audit["risks"][:3]) if audit["risks"] else "no major risk flagged"
+    return [
+        f"- Current experiment path: {audit['loader_name']}",
+        f"- Strongest causal asset: {audit['strongest_asset']}",
+        f"- Highest-priority audit level: {audit['priority']}",
+        f"- Main opportunities: {opportunities}",
+        f"- Main risks: {risks}",
+        f"- Recommended next step: {audit['next_step']}",
+    ]
+
+
+def aspect_note(aspect: str, files: list[FileRecord]) -> str:
+    """Provide a concise causal interpretation for an audit aspect."""
+    columns = summarize_columns(files)
+    if aspect == "interactions":
+        notes: list[str] = []
+        if RANDOMIZATION_MARKERS & columns:
+            notes.append("contains randomized exposure indicator")
+        if has_exact_marker(list(columns), {"rating", "watch_ratio", "behavior_type", "is_hate"}):
+            notes.append("supports label/sign construction")
+        if has_exact_marker(list(columns), {"timestamp", "time_ms", "ts", "date"}):
+            notes.append("supports temporal splitting")
+        return "; ".join(notes) if notes else "primary interaction source"
+    if aspect == "user_features":
+        if POST_TREATMENT_MARKERS & columns:
+            return "candidate user covariates mixed with post-treatment engagement counters"
+        return "candidate pre-treatment user covariates"
+    if aspect == "item_features":
+        if POST_TREATMENT_MARKERS & columns:
+            return "mix of item descriptors and post-treatment exposure aggregates"
+        if has_substring_marker(columns, TEXT_MARKERS):
+            return "descriptor-rich item covariates that need encoding"
+        return "candidate item-side descriptors for feature fusion"
+    if RANDOMIZATION_MARKERS & columns:
+        return "supports exposure-aware causal evaluation"
+    if has_substring_marker(columns, SEARCH_MARKERS):
+        return "context mixes search and recommendation behavior"
+    if SOCIAL_MARKERS & columns:
+        return "social context may act as confounding metadata"
+    return "context or auxiliary metadata"
+
+
+def render_causal_audit_table(record: DatasetRecord) -> list[str]:
+    """Render a markdown table for causal-audit aspects."""
+    audit = build_causal_audit(record)
+    aspects = audit["aspects"]
+    rows: list[list[str]] = []
+    for aspect, label in [
+        ("interactions", "Interactions"),
+        ("user_features", "User Features"),
+        ("item_features", "Item Features"),
+        ("metadata", "Metadata / Context"),
+    ]:
+        files = aspects[aspect]
+        loader_text = loader_support_text(record, aspect, files)
+        if not files and loader_text == "not present":
+            continue
+        rows.append(
+            [
+                label,
+                summarize_source_paths(files),
+                loader_text,
+                model_use_text(record, aspect),
+                aspect_note(aspect, files),
+            ]
+        )
+
+    if not rows:
+        return ["- No causal feature sources detected."]
+
+    lines = [
+        render_table_row(["Aspect", "Source Files", "Current Loader Coverage", "Current Model Use", "Causal Notes"]),
+        render_table_row(["---", "---", "---", "---", "---"]),
+    ]
+    lines.extend(render_table_row(row) for row in rows)
+    return lines
+
+
+def infer_entity_level(file_record: FileRecord, column: str) -> str:
+    """Infer whether a candidate column belongs to interaction, user, item, or context level."""
+    if is_user_feature_source(file_record):
+        return "user"
+    if is_item_feature_source(file_record):
+        return "item"
+    if is_metadata_source(file_record):
+        return "context"
+    if is_interaction_source(file_record):
+        if column in PRETREATMENT_CONTEXT_MARKERS or column in RANDOMIZATION_MARKERS:
+            return "context"
+        return "interaction"
+    return "context"
+
+
+def infer_column_aspect(file_record: FileRecord) -> str:
+    """Map a file to the audit aspect used by current loader/model summaries."""
+    if file_record.relative_path.lower().endswith("item_categories.csv"):
+        return "item_features"
+    if is_user_feature_source(file_record):
+        return "user_features"
+    if is_item_feature_source(file_record):
+        return "item_features"
+    if is_metadata_source(file_record):
+        return "metadata"
+    return "interactions"
+
+
+def infer_pipeline_stage(record: DatasetRecord, file_record: FileRecord, column: str) -> str:
+    """Describe how far fields from a file currently travel in the pipeline."""
+    aspect = infer_column_aspect(file_record)
+    coverage = get_loader_coverage(record)
+
+    if coverage.get("loader_name") is None:
+        return "raw_only"
+    if aspect == "interactions":
+        return "model_consumed"
+    if aspect == "item_features":
+        if thesis_default_column_enabled(record.name, aspect, file_record.relative_path, column):
+            return "model_consumed"
+        return "raw_only"
+    if aspect == "user_features":
+        if thesis_default_column_enabled(record.name, aspect, file_record.relative_path, column):
+            return "graph_retained"
+        return "raw_only"
+    metadata_keys = coverage.get("metadata", [])
+    if column.lower() in {str(key).lower() for key in metadata_keys}:
+        return "analysis_retained"
+    return "raw_only"
+
+
+def infer_causal_role(file_record: FileRecord, column: str) -> str:
+    """Heuristically classify a candidate column by causal role."""
+    relative_path = file_record.relative_path.lower()
+    normalized = column.lower()
+
+    if normalized in NON_CAUSAL_MARKERS:
+        return "non_causal"
+    if normalized in POST_TREATMENT_MARKERS:
+        return "post_treatment"
+    if normalized in RANDOMIZATION_MARKERS:
+        return "pre_treatment"
+    if normalized in SOCIAL_MARKERS or normalized in SEARCH_MARKERS:
+        return "proxy"
+    if normalized in PRETREATMENT_CONTEXT_MARKERS:
+        return "pre_treatment"
+    if normalized == "feat" and relative_path.endswith("item_categories.csv"):
+        return "pre_treatment"
+    if normalized in {"rating", "watch_ratio", "behavior_type", "is_click", "click", "label", "play_duration", "duration_ms", "is_like", "is_follow", "is_comment", "is_forward", "is_hate", "long_view"}:
+        return "post_treatment"
+    if normalized.endswith("_cnt") or normalized.endswith("_user_num") or normalized.endswith("_duration") or normalized.endswith("_progress"):
+        return "post_treatment"
+    if normalized.startswith("onehot_feat") or normalized.endswith("_range"):
+        return "pre_treatment"
+    if normalized in {"gender", "age", "occupation", "zip_code", "genres", "genre", "category_id", "category_name", "author_id", "music_id", "music_type", "video_type", "video_duration", "server_width", "server_height", "tag", "topic_tag", "caption", "manual_cover_text", "first_level_category_id", "second_level_category_id", "third_level_category_id"}:
+        if "tags.csv" in relative_path:
+            return "proxy"
+        return "pre_treatment"
+    if normalized.endswith("id") and normalized not in {"author_id", "music_id", "category_id", "tagid", "tag_id", "first_level_category_id", "second_level_category_id", "third_level_category_id"}:
+        return "non_causal"
+    if normalized in TEXT_MARKERS:
+        if "tags.csv" in relative_path:
+            return "proxy"
+        return "pre_treatment"
+    return "unknown"
+
+
+def quick_safe_use_check(file_record: FileRecord, column: str, causal_role: str, pipeline_stage: str) -> tuple[str, str]:
+    """Return a minimal policy verdict for whether a field is safe to use now."""
+    normalized = column.lower()
+    relative_path = file_record.relative_path.lower()
+
+    if causal_role == "non_causal":
+        return "exclude", "identifier or bookkeeping field"
+    if causal_role == "post_treatment":
+        return "defer", "likely downstream of exposure or outcome; keep out of default causal features"
+    if causal_role == "proxy":
+        return "ablation_only", "potentially useful but entangled with exposure, search, or social context"
+    if causal_role == "unknown":
+        return "review", "needs manual causal review before promotion"
+    if normalized in TEXT_MARKERS or "caption" in relative_path or normalized == "title":
+        return "encode_then_test", "pre-treatment descriptor but needs encoding and leakage review"
+    if pipeline_stage == "raw_only":
+        return "load_then_test", "looks safe enough to prototype after adding loader support"
+    if pipeline_stage == "graph_retained":
+        return "model_extension_needed", "already loaded but not consumed by the current model"
+    return "safe_candidate", "eligible for quick utility probes in the current feature-aware path"
+
+
+def collect_candidate_feature_rows(record: DatasetRecord) -> list[dict[str, str]]:
+    """Enumerate auditable candidate columns for one dataset."""
+    rows: list[dict[str, str]] = []
+    for file_record in sorted(record.file_records, key=lambda item: item.relative_path):
+        columns = candidate_feature_columns(schema_columns(file_record))
+        if not columns:
+            continue
+        aspect = infer_column_aspect(file_record)
+        for column in columns:
+            pipeline_stage = infer_pipeline_stage(record, file_record, column)
+            causal_role = infer_causal_role(file_record, column)
+            safe_use, rationale = quick_safe_use_check(file_record, column, causal_role, pipeline_stage)
+            rows.append(
+                {
+                    "file": file_record.relative_path,
+                    "aspect": aspect,
+                    "entity_level": infer_entity_level(file_record, column),
+                    "column": column,
+                    "causal_role": causal_role,
+                    "pipeline_stage": pipeline_stage,
+                    "quick_check": safe_use,
+                    "rationale": rationale,
+                }
+            )
+    return rows
+
+
+def render_candidate_feature_table(record: DatasetRecord) -> list[str]:
+    """Render a per-column causal-feature audit table."""
+    rows = collect_candidate_feature_rows(record)
+    if not rows:
+        return ["- No candidate columns detected."]
+
+    lines = [
+        render_table_row([
+            "File",
+            "Aspect",
+            "Entity",
+            "Column",
+            "Causal Role",
+            "Pipeline Stage",
+            "Quick Check",
+            "Rationale",
+        ]),
+        render_table_row(["---", "---", "---", "---", "---", "---", "---", "---"]),
+    ]
+    for row in rows:
+        lines.append(
+            render_table_row(
+                [
+                    row["file"],
+                    row["aspect"],
+                    row["entity_level"],
+                    row["column"],
+                    row["causal_role"],
+                    row["pipeline_stage"],
+                    row["quick_check"],
+                    row["rationale"],
+                ]
+            )
+        )
+    return lines
+
+
+def build_feature_audit_payload(records: list[DatasetRecord], data_root: Path) -> dict[str, Any]:
+    """Build a machine-readable feature-audit export."""
+    generated_at = dt.datetime.now().isoformat(timespec="seconds")
+    datasets: list[dict[str, Any]] = []
+    for record in sorted(records, key=lambda item: item.name.lower()):
+        audit = build_causal_audit(record)
+        datasets.append(
+            {
+                "dataset": record.name,
+                "root": str(record.root_path),
+                "loader_name": audit["loader_name"],
+                "strongest_asset": audit["strongest_asset"],
+                "primary_risk": audit["primary_risk"],
+                "priority": audit["priority"],
+                "next_step": audit["next_step"],
+                "candidate_columns": collect_candidate_feature_rows(record),
+            }
+        )
+
+    return {
+        "generated_at": generated_at,
+        "scan_root": str(data_root),
+        "datasets": datasets,
+    }
+
+
 def detect_status(has_raw_content: bool, has_processed_data: bool, file_count: int) -> str:
     """Compute dataset availability status.
 
@@ -755,6 +1480,33 @@ def build_markdown_report(records: list[DatasetRecord], data_root: Path) -> str:
         )
     lines.append("")
 
+    lines.append("## Causal Audit Summary")
+    lines.append("")
+    lines.append(render_table_row([
+        "Dataset",
+        "Experiment Path",
+        "Strongest Asset",
+        "Primary Risk",
+        "Priority",
+        "Next Step",
+    ]))
+    lines.append(render_table_row(["---", "---", "---", "---", "---", "---"]))
+    for record in ordered_records:
+        audit = build_causal_audit(record)
+        lines.append(
+            render_table_row(
+                [
+                    record.name,
+                    audit["loader_name"],
+                    audit["strongest_asset"],
+                    audit["primary_risk"],
+                    audit["priority"],
+                    audit["next_step"],
+                ]
+            )
+        )
+    lines.append("")
+
     for record in ordered_records:
         lines.append(f"## {record.name}")
         lines.append("")
@@ -783,6 +1535,19 @@ def build_markdown_report(records: list[DatasetRecord], data_root: Path) -> str:
         lines.append("### U-CaGNN Suitability")
         lines.append("")
         lines.extend(format_ucagnn_summary(record.exploration_summary))
+
+        lines.append("")
+        lines.append("### Causal Feature Audit")
+        lines.append("")
+        lines.extend(format_causal_audit_summary(record))
+
+        lines.append("")
+        lines.extend(render_causal_audit_table(record))
+
+        lines.append("")
+        lines.append("### Candidate Column Audit")
+        lines.append("")
+        lines.extend(render_candidate_feature_table(record))
 
         lines.append("")
         lines.append("### Files")
@@ -871,6 +1636,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Output path for report (default: data/datasets_information.md)",
     )
+    parser.add_argument(
+        "--audit-json",
+        type=str,
+        default=None,
+        help="Optional path for machine-readable feature audit export",
+    )
     return parser.parse_args()
 
 
@@ -890,12 +1661,22 @@ def main() -> None:
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(report, encoding="utf-8")
 
+    if args.audit_json:
+        audit_path = Path(args.audit_json)
+        if not audit_path.is_absolute():
+            audit_path = REPO_ROOT / audit_path
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+        audit_payload = build_feature_audit_payload(records, data_root)
+        audit_path.write_text(json.dumps(audit_payload, indent=2), encoding="utf-8")
+
     print("=" * 72)
     print("DATASET INFORMATION REPORT GENERATED")
     print("=" * 72)
     print(f"Scan root: {data_root}")
     print(f"Datasets scanned: {len(records)}")
     print(f"Output report: {report_path}")
+    if args.audit_json:
+        print(f"Feature audit JSON: {audit_path}")
     print("=" * 72)
 
 

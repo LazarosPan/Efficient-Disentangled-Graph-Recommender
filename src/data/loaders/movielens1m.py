@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from ..canonical import CanonicalInteractions
+from ...feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 
 
 # ML-1M age buckets mapped to ordinal values
@@ -86,7 +87,10 @@ def _resolve_raw_dir(data_dir: str) -> Path:
     )
 
 
-def _parse_ratings_dat(raw_dir: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def _parse_ratings_dat(
+    raw_dir: Path,
+    max_rows: int | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Parse ratings.dat into raw user IDs, item IDs, ratings, and timestamps."""
     path = raw_dir / "ratings.dat"
     user_ids: list[int] = []
@@ -94,6 +98,7 @@ def _parse_ratings_dat(raw_dir: Path) -> tuple[np.ndarray, np.ndarray, np.ndarra
     ratings: list[float] = []
     timestamps: list[int] = []
 
+    row_count = 0
     with open(path, encoding="latin-1") as f:
         for line in f:
             parts = line.strip().split("::")
@@ -103,6 +108,9 @@ def _parse_ratings_dat(raw_dir: Path) -> tuple[np.ndarray, np.ndarray, np.ndarra
             item_ids.append(int(parts[1]))
             ratings.append(float(parts[2]))
             timestamps.append(int(parts[3]))
+            row_count += 1
+            if max_rows is not None and row_count >= max_rows:
+                break
 
     return (
         np.asarray(user_ids, dtype=np.int64),
@@ -112,7 +120,12 @@ def _parse_ratings_dat(raw_dir: Path) -> tuple[np.ndarray, np.ndarray, np.ndarra
     )
 
 
-def load_movielens1m(data_dir: str = "data") -> CanonicalInteractions:
+def load_movielens1m(
+    data_dir: str = "data",
+    max_rows: int | None = None,
+    include_optional_features: bool = True,
+    feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY,
+) -> CanonicalInteractions:
     """Load ML-1M from local raw files.
 
     Raw parsing is more robust than depending on a processed HeteroData layout,
@@ -122,8 +135,9 @@ def load_movielens1m(data_dir: str = "data") -> CanonicalInteractions:
     Label: rating >= 4 -> positive (1.0), else negative (0.0)
     Sign:  rating mapped to [-1, 1] via ``(rating - 3) / 2``
     """
+    del feature_policy
     raw_dir = _resolve_raw_dir(data_dir)
-    raw_users, raw_items, ratings, timestamps = _parse_ratings_dat(raw_dir)
+    raw_users, raw_items, ratings, timestamps = _parse_ratings_dat(raw_dir, max_rows=max_rows)
 
     # Re-index to contiguous 0-based IDs
     unique_users = np.unique(raw_users)
@@ -144,8 +158,11 @@ def load_movielens1m(data_dir: str = "data") -> CanonicalInteractions:
     pop_counts = np.bincount(item_id, minlength=n_items).astype(np.float32)
     popularity = pop_counts / pop_counts.max() if pop_counts.max() > 0 else pop_counts
 
-    user_features = _parse_users_dat(raw_dir, user_map, n_users)
-    item_features = _parse_movies_dat(raw_dir, item_map, n_items)
+    user_features = None
+    item_features = None
+    if include_optional_features:
+        user_features = _parse_users_dat(raw_dir, user_map, n_users)
+        item_features = _parse_movies_dat(raw_dir, item_map, n_items)
 
     return CanonicalInteractions(
         user_id=user_id,

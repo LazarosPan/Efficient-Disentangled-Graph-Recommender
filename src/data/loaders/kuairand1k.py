@@ -7,9 +7,16 @@ from pathlib import Path
 import numpy as np
 
 from ..canonical import CanonicalInteractions
+from ...feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 
 
-def _load_csv_features(path: Path, id_col: str, id_map: dict[int, int], n_entities: int) -> np.ndarray | None:
+def _load_csv_features(
+    path: Path,
+    id_col: str,
+    id_map: dict[int, int],
+    n_entities: int,
+    include_columns: tuple[str, ...] | None = None,
+) -> np.ndarray | None:
     """Load a feature CSV, re-index rows by id_map, return (n_entities, F) float32 array."""
     if not path.exists():
         return None
@@ -17,7 +24,12 @@ def _load_csv_features(path: Path, id_col: str, id_map: dict[int, int], n_entiti
     with open(path, encoding="utf-8") as f:
         header = f.readline().strip().split(",")
         id_idx = header.index(id_col)
-        feat_indices = [i for i in range(len(header)) if i != id_idx]
+        if include_columns is None:
+            feat_indices = [i for i in range(len(header)) if i != id_idx]
+        else:
+            feat_indices = [header.index(column) for column in include_columns if column in header and column != id_col]
+        if not feat_indices:
+            return None
 
         rows: dict[int, list[float]] = {}
         for line in f:
@@ -70,7 +82,12 @@ def _safe_float(value: str, default: float = 0.0) -> float:
         return default
 
 
-def load_kuairand1k(data_dir: str = "data") -> CanonicalInteractions:
+def load_kuairand1k(
+    data_dir: str = "data",
+    max_rows: int | None = None,
+    include_optional_features: bool = True,
+    feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY,
+) -> CanonicalInteractions:
     """Load KuaiRand-1K from ``data_dir/KuaiRand-1K/data/``.
 
     Scans for ``log_standard*.csv`` and ``log_random*.csv`` files.
@@ -101,6 +118,7 @@ def load_kuairand1k(data_dir: str = "data") -> CanonicalInteractions:
     play_times, durations = [], []
     is_rands = []
 
+    row_count = 0
     for csv_path in csv_files:
         with open(csv_path, encoding="utf-8") as f:
             header = f.readline().strip().split(",")
@@ -137,6 +155,11 @@ def load_kuairand1k(data_dir: str = "data") -> CanonicalInteractions:
                 durations.append(_safe_float(_safe_col(parts, duration_c, "0.0")))
                 is_rands.append(_safe_int(_safe_col(parts, is_rand_c)))
                 timestamps.append(_safe_int(_safe_col(parts, ts_c)))
+                row_count += 1
+                if max_rows is not None and row_count >= max_rows:
+                    break
+        if max_rows is not None and row_count >= max_rows:
+            break
 
     raw_users_arr = np.array(raw_users, dtype=np.int64)
     raw_items_arr = np.array(raw_items, dtype=np.int64)
@@ -173,26 +196,44 @@ def load_kuairand1k(data_dir: str = "data") -> CanonicalInteractions:
     pop_counts = np.bincount(item_id, minlength=n_items).astype(np.float32)
     popularity = pop_counts / pop_counts.max() if pop_counts.max() > 0 else pop_counts
 
-    # Side features (optional)
-    feat_base = Path(data_dir) / "KuaiRand-1K" / "data"
-    user_features = _load_csv_features(
-        feat_base / "user_features_1k.csv", "user_id", user_map, n_users
-    )
-    item_features_basic = _load_csv_features(
-        feat_base / "video_features_basic_1k.csv", "video_id", item_map, n_items
-    )
-    item_features_stat = _load_csv_features(
-        feat_base / "video_features_statistic_1k.csv", "video_id", item_map, n_items
-    )
-    # Concatenate basic + statistic features if both present
-    if item_features_basic is not None and item_features_stat is not None:
-        item_features = np.hstack([item_features_basic, item_features_stat])
-    elif item_features_basic is not None:
-        item_features = item_features_basic
-    elif item_features_stat is not None:
-        item_features = item_features_stat
-    else:
-        item_features = None
+    user_features = None
+    item_features = None
+    if include_optional_features:
+        feat_base = Path(data_dir) / "KuaiRand-1K" / "data"
+        if feature_policy == "all_optional":
+            user_features = _load_csv_features(
+                feat_base / "user_features_1k.csv", "user_id", user_map, n_users
+            )
+            item_features_basic = _load_csv_features(
+                feat_base / "video_features_basic_1k.csv", "video_id", item_map, n_items
+            )
+            item_features_stat = _load_csv_features(
+                feat_base / "video_features_statistic_1k.csv", "video_id", item_map, n_items
+            )
+            if item_features_basic is not None and item_features_stat is not None:
+                item_features = np.hstack([item_features_basic, item_features_stat])
+            elif item_features_basic is not None:
+                item_features = item_features_basic
+            elif item_features_stat is not None:
+                item_features = item_features_stat
+        else:
+            item_features = _load_csv_features(
+                feat_base / "video_features_basic_1k.csv",
+                "video_id",
+                item_map,
+                n_items,
+                include_columns=(
+                    "author_id",
+                    "video_type",
+                    "upload_dt",
+                    "upload_type",
+                    "visible_status",
+                    "server_width",
+                    "server_height",
+                    "music_id",
+                    "music_type",
+                ),
+            )
 
     # Store is_rand as metadata for causal analysis
     metadata = {"is_rand": is_rand_arr}

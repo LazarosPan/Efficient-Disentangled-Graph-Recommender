@@ -7,17 +7,24 @@ from pathlib import Path
 import numpy as np
 
 from ..canonical import CanonicalInteractions
+from ...feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 
 # Behavior -> sign mapping:  buy > cart > fav > pv
 _BEHAVIOR_SIGN = {"buy": 1.0, "cart": 0.5, "fav": 0.25, "pv": -0.25}
 _BEHAVIOR_LABEL = {"buy": 1.0, "cart": 1.0, "fav": 1.0, "pv": 0.0}
 
 
-def load_taobao(data_dir: str = "data") -> CanonicalInteractions:
+def load_taobao(
+    data_dir: str = "data",
+    max_rows: int | None = None,
+    include_optional_features: bool = True,
+    feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY,
+) -> CanonicalInteractions:
     """Load Taobao UserBehavior from ``data_dir/Taobao/raw/UserBehavior.csv``.
 
     Format: UserID,ItemID,CategoryID,BehaviorType,Timestamp (no header)
     """
+    del feature_policy
     path = Path(data_dir) / "Taobao" / "raw" / "UserBehavior.csv"
     if not path.exists():
         raise FileNotFoundError(
@@ -26,6 +33,7 @@ def load_taobao(data_dir: str = "data") -> CanonicalInteractions:
         )
 
     raw_users, raw_items, categories, behaviors, timestamps = [], [], [], [], []
+    row_count = 0
     with open(path, encoding="utf-8") as f:
         for line in f:
             parts = line.strip().split(",")
@@ -36,6 +44,9 @@ def load_taobao(data_dir: str = "data") -> CanonicalInteractions:
             categories.append(int(parts[2]))
             behaviors.append(parts[3])
             timestamps.append(int(parts[4]))
+            row_count += 1
+            if max_rows is not None and row_count >= max_rows:
+                break
 
     raw_users_arr = np.array(raw_users, dtype=np.int64)
     raw_items_arr = np.array(raw_items, dtype=np.int64)
@@ -57,18 +68,18 @@ def load_taobao(data_dir: str = "data") -> CanonicalInteractions:
     pop_counts = np.bincount(item_id, minlength=n_items).astype(np.float32)
     popularity = pop_counts / pop_counts.max() if pop_counts.max() > 0 else pop_counts
 
-    # Item features: category_id as a single-column feature per item
-    # Take the most frequent category per item (items may appear with different categories)
-    item_categories = np.zeros(n_items, dtype=np.int64)
-    for idx, iid in zip(item_id, categories_arr):
-        item_categories[idx] = iid  # last-write wins; items typically have one category
+    item_cat_reindexed = None
+    if include_optional_features:
+        # Item features: category_id as a single-column feature per item.
+        item_categories = np.zeros(n_items, dtype=np.int64)
+        for idx, iid in zip(item_id, categories_arr):
+            item_categories[idx] = iid
 
-    # Re-index categories to contiguous IDs for embedding
-    unique_cats = np.unique(item_categories)
-    cat_map = {int(c): idx for idx, c in enumerate(unique_cats)}
-    item_cat_reindexed = np.array(
-        [cat_map[int(c)] for c in item_categories], dtype=np.float32
-    ).reshape(-1, 1)
+        unique_cats = np.unique(item_categories)
+        cat_map = {int(c): idx for idx, c in enumerate(unique_cats)}
+        item_cat_reindexed = np.array(
+            [cat_map[int(c)] for c in item_categories], dtype=np.float32
+        ).reshape(-1, 1)
 
     return CanonicalInteractions(
         user_id=user_id,

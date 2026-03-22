@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import TYPE_CHECKING
+
+from ...feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -25,8 +28,43 @@ LOADERS: dict[str, Callable[..., CanonicalInteractions]] = {
 }
 
 
-def load_dataset(name: str, data_dir: str = "data") -> CanonicalInteractions:
+@lru_cache(maxsize=32)
+def _load_dataset_cached(
+    name: str,
+    data_dir: str,
+    max_rows: int,
+    include_optional_features: bool,
+    feature_policy: FeaturePolicyName,
+) -> CanonicalInteractions:
+    return LOADERS[name](
+        data_dir,
+        max_rows=max_rows,
+        include_optional_features=include_optional_features,
+        feature_policy=feature_policy,
+    )
+
+
+def load_dataset(
+    name: str,
+    data_dir: str = "data",
+    max_rows: int | None = None,
+    include_optional_features: bool = True,
+    feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY,
+) -> CanonicalInteractions:
     """Load a dataset by name."""
     if name not in LOADERS:
         raise ValueError(f"Unknown dataset '{name}'. Available: {list(LOADERS.keys())}")
-    return LOADERS[name](data_dir)
+    if max_rows is None:
+        return LOADERS[name](
+            data_dir,
+            max_rows=max_rows,
+            include_optional_features=include_optional_features,
+            feature_policy=feature_policy,
+        )
+    return _load_dataset_cached(
+        name,
+        data_dir,
+        max_rows,
+        include_optional_features,
+        feature_policy,
+    )
