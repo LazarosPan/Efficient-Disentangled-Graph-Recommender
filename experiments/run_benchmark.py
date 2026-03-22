@@ -61,6 +61,9 @@ def main():
     )
     parser.add_argument("--device", default="cuda", help="Device")
     parser.add_argument("--data-dir", default="data", help="Data directory")
+    parser.add_argument("--no-mlflow", action="store_true", help="Disable MLflow tracking for all benchmark runs")
+    parser.add_argument("--mlflow-tracking-uri", default=None, help="Override MLflow tracking URI for all benchmark runs")
+    parser.add_argument("--mlflow-experiment-name", default="ucagnn-benchmark", help="MLflow experiment name for benchmark runs")
     parser.add_argument("--dry-run", action="store_true", help="Print plan without running")
     args = parser.parse_args()
 
@@ -130,7 +133,13 @@ def main():
 
             config = build_config(exp_args)
             t0 = time.time()
-            result = run_experiment(config, preset=preset)
+            result = run_experiment(
+                config,
+                preset=preset,
+                enable_mlflow=not args.no_mlflow,
+                mlflow_tracking_uri=args.mlflow_tracking_uri,
+                mlflow_experiment_name=args.mlflow_experiment_name,
+            )
             elapsed = time.time() - t0
 
             results.append({

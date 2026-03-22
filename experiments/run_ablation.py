@@ -34,6 +34,9 @@ def main():
     parser.add_argument("--epochs", type=int, default=None, help="Override epochs")
     parser.add_argument("--device", default="cuda", help="Device")
     parser.add_argument("--data-dir", default="data", help="Data directory")
+    parser.add_argument("--no-mlflow", action="store_true", help="Disable MLflow tracking for all ablation runs")
+    parser.add_argument("--mlflow-tracking-uri", default=None, help="Override MLflow tracking URI for all ablation runs")
+    parser.add_argument("--mlflow-experiment-name", default="ucagnn-ablation", help="MLflow experiment name for ablation runs")
     parser.add_argument("--dry-run", action="store_true", help="Print plan without running")
     args = parser.parse_args()
 
@@ -93,6 +96,9 @@ def main():
                 preset="full",
                 intervention=variant,
                 save_checkpoint=True,
+                enable_mlflow=not args.no_mlflow,
+                mlflow_tracking_uri=args.mlflow_tracking_uri,
+                mlflow_experiment_name=args.mlflow_experiment_name,
             )
             elapsed = time.time() - t0
 

@@ -70,11 +70,22 @@ def _build_canonical_name(
         f"dim{config.embed_dim}",
         f"layers{config.n_gnn_layers}",
     ]
+    if config.use_dual_branch and (
+        config.resolved_interest_gnn_layers != config.n_gnn_layers
+        or config.resolved_conformity_gnn_layers != config.n_gnn_layers
+    ):
+        parts.append(
+            f"branchL{config.resolved_interest_gnn_layers}-{config.resolved_conformity_gnn_layers}"
+        )
     if config.training_mode == "mini_batch":
         neighbor_str = "-".join(str(value) for value in config.num_neighbors)
         parts.append(f"nbr{neighbor_str}")
     if config.sample_interactions is not None:
         parts.append(f"sample{config.sample_interactions}")
+    if config.use_features:
+        parts.append("feat")
+    if config.eval_scoring_mode != "default":
+        parts.append(f"score{config.eval_scoring_mode}")
     if intervention:
         parts.append(intervention)
     parts.append(f"seed{config.seed}")
@@ -355,8 +366,12 @@ def _build_mlflow_params(
         "batch_size": config.batch_size,
         "embed_dim": config.embed_dim,
         "n_gnn_layers": config.n_gnn_layers,
+        "interest_gnn_layers": config.resolved_interest_gnn_layers,
+        "conformity_gnn_layers": config.resolved_conformity_gnn_layers,
+        "eval_scoring_mode": config.eval_scoring_mode,
         "sample_interactions": config.sample_interactions or 0,
         "lr": config.lr,
+        "use_features": config.use_features,
         "use_dual_branch": config.use_dual_branch,
         "use_sign_aware": config.use_sign_aware,
         "use_counterfactual": config.use_counterfactual,
@@ -408,6 +423,10 @@ def _start_mlflow_run(
     try:
         MLFLOW_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         mlflow.set_tracking_uri(resolved_tracking_uri)
+        try:
+            mlflow.enable_system_metrics_logging()
+        except Exception as exc:
+            logger.info("MLflow system metrics logging unavailable: %s", exc)
         mlflow.set_experiment(experiment_name)
         mlflow.start_run(run_name=run_name or _build_mlflow_run_name(config, preset, intervention))
         mlflow.set_tags(_build_mlflow_tags(config, preset, intervention, experiment_id, recipe_name))
@@ -451,8 +470,18 @@ def build_config(args: argparse.Namespace) -> UCaGNNConfig:
         kwargs["batch_size"] = args.batch_size
     if getattr(args, "embed_dim", None) is not None:
         kwargs["embed_dim"] = args.embed_dim
+    if getattr(args, "n_gnn_layers", None) is not None:
+        kwargs["n_gnn_layers"] = args.n_gnn_layers
+    if getattr(args, "interest_gnn_layers", None) is not None:
+        kwargs["interest_gnn_layers"] = args.interest_gnn_layers
+    if getattr(args, "conformity_gnn_layers", None) is not None:
+        kwargs["conformity_gnn_layers"] = args.conformity_gnn_layers
     if getattr(args, "lr", None) is not None:
         kwargs["lr"] = args.lr
+    if getattr(args, "eval_scoring_mode", None) is not None:
+        kwargs["eval_scoring_mode"] = args.eval_scoring_mode
+    if getattr(args, "use_features", None) is not None:
+        kwargs["use_features"] = args.use_features
     if getattr(args, "graph_method", None) is not None:
         kwargs["graph_method"] = args.graph_method
     if getattr(args, "training_mode", None) is not None:
@@ -545,7 +574,13 @@ def run_experiment(
     logger.info(f"  Train: {data.train_mask.sum():,}, Val: {data.val_mask.sum():,}, Test: {data.test_mask.sum():,}")
 
     # Model
-    model = UCaGNN(canonical.n_users, canonical.n_items, config)
+    model = UCaGNN(
+        canonical.n_users,
+        canonical.n_items,
+        config,
+        item_features=getattr(data, "item_features", None),
+        item_popularity=data.popularity,
+    )
     n_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Model parameters: {n_params:,}")
 
@@ -663,7 +698,7 @@ def run_experiment(
                     for metric, value in test_metrics.items()
                 })
                 if checkpoint_path is not None:
-                    mlflow_module.log_artifact(str(checkpoint_path))
+                    mlflow_module.log_artifact(str(checkpoint_path), artifact_path="checkpoints")
                 mlflow_module.set_tag("status", "completed")
             except Exception as exc:
                 logger.warning("Failed to log MLflow metrics or artifacts: %s", exc)
@@ -702,7 +737,44 @@ def main():
     parser.add_argument("--epochs", type=int, default=None, help="Override epochs")
     parser.add_argument("--batch-size", type=int, default=None, help="Override batch size")
     parser.add_argument("--embed-dim", type=int, default=None, help="Override embed dim")
+    parser.add_argument("--n-gnn-layers", type=int, default=None, help="Override shared GNN depth")
+    parser.add_argument(
+        "--interest-gnn-layers",
+        type=int,
+        default=None,
+        help="Optional interest-branch GNN depth override",
+    )
+    parser.add_argument(
+        "--conformity-gnn-layers",
+        type=int,
+        default=None,
+        help="Optional conformity-branch GNN depth override",
+    )
     parser.add_argument("--lr", type=float, default=None, help="Override learning rate")
+    parser.add_argument(
+        "--eval-scoring-mode",
+        choices=[
+            "default",
+            "interest_only",
+            "conformity_only",
+            "counterfactual_only",
+            "conformity_suppressed",
+        ],
+        default=None,
+        help="Evaluation-time scoring mode for Recall/NDCG",
+    )
+    parser.add_argument(
+        "--use-features",
+        dest="use_features",
+        action="store_true",
+        help="Enable dataset side features when available",
+    )
+    parser.add_argument(
+        "--no-features",
+        dest="use_features",
+        action="store_false",
+        help="Disable dataset side features even when available",
+    )
     parser.add_argument("--graph-method", choices=["dense", "knn", "cagra"], default=None)
     parser.add_argument(
         "--training-mode",
@@ -741,6 +813,7 @@ def main():
     parser.add_argument("--list-recipes", action="store_true", help="Print available named recipes and exit")
     parser.set_defaults(enable_mlflow=True)
     parser.set_defaults(auto_resume=True)
+    parser.set_defaults(use_features=None)
     args = parser.parse_args()
 
     if args.list_recipes:
