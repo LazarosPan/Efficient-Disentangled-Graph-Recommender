@@ -32,6 +32,19 @@ def main():
                         help="Ablation variants to run")
     parser.add_argument("--seed", type=int, default=13, help="Random seed")
     parser.add_argument("--epochs", type=int, default=None, help="Override epochs")
+    parser.add_argument("--batch-size", type=int, default=None, help="Override batch size")
+    parser.add_argument(
+        "--sample-interactions",
+        type=int,
+        default=None,
+        help="Optional interaction budget for sampled ablation smoke runs.",
+    )
+    parser.add_argument(
+        "--loader-max-rows",
+        type=int,
+        default=None,
+        help="Optional early row cap for dataset loading during fast ablation smoke runs.",
+    )
     parser.add_argument("--device", default="cuda", help="Device")
     parser.add_argument("--data-dir", default="data", help="Data directory")
     parser.add_argument("--no-mlflow", action="store_true", help="Disable MLflow tracking for all ablation runs")
@@ -87,6 +100,12 @@ def main():
             }
             if args.epochs is not None:
                 base_kwargs["epochs"] = args.epochs
+            if args.batch_size is not None:
+                base_kwargs["batch_size"] = args.batch_size
+            if args.sample_interactions is not None:
+                base_kwargs["sample_interactions"] = args.sample_interactions
+            if args.loader_max_rows is not None:
+                base_kwargs["loader_max_rows"] = args.loader_max_rows
 
             config = make_ablation_config(variant, **base_kwargs)
 

@@ -1,12 +1,8 @@
 #!/usr/bin/env python
-"""Delete repository-local experiment tracking files and artifacts.
-
-Dry-run is the default. Use ``--yes`` to execute.
-"""
+"""Delete the repository-local MLflow state and checkpoint artifacts."""
 
 from __future__ import annotations
 
-import argparse
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,7 +10,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.parent
 RESULTS_DIR = REPO_ROOT / "results"
-SQLITE_DB_PATH = RESULTS_DIR / "thesis_experiments.db"
 MLFLOW_DB_PATH = RESULTS_DIR / "mlflow.db"
 MLFLOW_ARTIFACTS_DIR = REPO_ROOT / "mlruns"
 CHECKPOINT_DIR = RESULTS_DIR / "checkpoints"
@@ -28,94 +23,37 @@ class CleanupTarget:
     description: str
 
 
-TARGETS = {
-    "sqlite": CleanupTarget(
-        label="sqlite",
-        path=SQLITE_DB_PATH,
-        kind="file",
-        description="Delete the thesis SQLite database file under results/.",
-    ),
-    "mlflow-db": CleanupTarget(
+TARGETS = (
+    CleanupTarget(
         label="mlflow-db",
         path=MLFLOW_DB_PATH,
         kind="file",
         description="Delete the MLflow backend SQLite database file under results/.",
     ),
-    "mlflow-artifacts": CleanupTarget(
+    CleanupTarget(
         label="mlflow-artifacts",
         path=MLFLOW_ARTIFACTS_DIR,
         kind="directory",
         description="Delete the repository-local MLflow artifact directory mlruns/.",
     ),
-    "checkpoints": CleanupTarget(
+    CleanupTarget(
         label="checkpoints",
         path=CHECKPOINT_DIR,
         kind="directory",
         description="Delete all locally saved checkpoints under results/checkpoints/.",
     ),
-}
+)
 
 SQLITE_SIDE_SUFFIXES = ("-wal", "-shm")
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Delete repository-local experiment tracking files and artifacts",
-    )
-    parser.add_argument(
-        "--sqlite",
-        action="store_true",
-        help="Delete results/thesis_experiments.db and its SQLite sidecar files.",
-    )
-    parser.add_argument(
-        "--mlflow-db",
-        action="store_true",
-        help="Delete results/mlflow.db and its SQLite sidecar files.",
-    )
-    parser.add_argument(
-        "--mlflow-artifacts",
-        action="store_true",
-        help="Delete the repository-local mlruns/ artifact directory.",
-    )
-    parser.add_argument(
-        "--checkpoints",
-        action="store_true",
-        help="Delete the results/checkpoints/ directory.",
-    )
-    parser.add_argument(
-        "--all",
-        action="store_true",
-        help="Select all cleanup targets.",
-    )
-    parser.add_argument(
-        "--yes",
-        action="store_true",
-        help="Execute deletions. Without this flag the script performs a dry run.",
-    )
-    return parser.parse_args()
-
-
-def selected_target_keys(args: argparse.Namespace) -> list[str]:
-    selected: list[str] = []
-    if args.all or args.sqlite:
-        selected.append("sqlite")
-    if args.all or args.mlflow_db:
-        selected.append("mlflow-db")
-    if args.all or args.mlflow_artifacts:
-        selected.append("mlflow-artifacts")
-    if args.all or args.checkpoints:
-        selected.append("checkpoints")
-    return selected
 
 
 def iter_sidecar_paths(path: Path) -> list[Path]:
     return [Path(f"{path}{suffix}") for suffix in SQLITE_SIDE_SUFFIXES]
 
 
-def print_plan(selected: list[CleanupTarget], dry_run: bool) -> None:
-    mode = "DRY RUN" if dry_run else "EXECUTE"
+def print_plan(selected: tuple[CleanupTarget, ...]) -> None:
     print("=" * 72)
-    print(f"EXPERIMENT ARTIFACT CLEANUP ({mode})")
+    print("RESET MLFLOW AND ARTIFACTS")
     print("=" * 72)
     for target in selected:
         exists = target.path.exists()
@@ -143,20 +81,8 @@ def delete_directory_target(path: Path) -> None:
 
 
 def main() -> int:
-    args = parse_args()
-    keys = selected_target_keys(args)
-    dry_run = not args.yes
-
-    if not keys:
-        print("No cleanup targets selected. Choose one or more flags such as --sqlite, --mlflow-db, --mlflow-artifacts, --checkpoints, or --all.")
-        return 1
-
-    selected = [TARGETS[key] for key in keys]
-    print_plan(selected, dry_run)
-
-    if dry_run:
-        print("No changes applied. Re-run with --yes to execute.")
-        return 0
+    selected = TARGETS
+    print_plan(selected)
 
     for target in selected:
         if target.kind == "file":
@@ -164,7 +90,7 @@ def main() -> int:
         else:
             delete_directory_target(target.path)
 
-    print("Cleanup complete.")
+    print("MLflow reset complete.")
     return 0
 
 

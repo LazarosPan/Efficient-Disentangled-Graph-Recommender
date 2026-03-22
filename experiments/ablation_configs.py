@@ -8,6 +8,7 @@ from src.utils.config import UCaGNNConfig
 
 ABLATION_VARIANTS: dict[str, dict] = {
     "full": {},
+    "learned_score_weights": {"scoring_weight_mode": "learned"},
     "no_dual_branch": {"use_dual_branch": False},
     "no_sign_aware": {"use_sign_aware": False},
     "no_counterfactual": {

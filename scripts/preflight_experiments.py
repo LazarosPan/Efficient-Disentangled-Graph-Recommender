@@ -26,6 +26,10 @@ DEFAULT_RUNS = [
     ("full", "mini_batch", "knn"),
 ]
 
+FAST_SMOKE_RUNS = [
+    ("full", "full_graph", "dense"),
+]
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run representative preflight experiments")
@@ -44,6 +48,18 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="Optional batch-size override for all preflight runs",
+    )
+    parser.add_argument(
+        "--loader-max-rows",
+        type=int,
+        default=None,
+        help="Optional early row cap for dataset loading during fast smoke/preflight runs.",
+    )
+    parser.add_argument(
+        "--profile",
+        choices=["representative", "fast"],
+        default="representative",
+        help="Representative runs for deeper coverage, or fast for a single ultra-light smoke run.",
     )
     parser.add_argument(
         "--mlflow-experiment-name",
@@ -98,16 +114,19 @@ def _losses_finite(history: dict) -> bool:
 
 
 def _print_plan(args: argparse.Namespace) -> None:
+    run_plan = DEFAULT_RUNS if args.profile == "representative" else FAST_SMOKE_RUNS
     print("=" * 78)
     print("PREFLIGHT PLAN")
     print("=" * 78)
     print(f"Dataset: {args.dataset}")
+    print(f"Profile: {args.profile}")
     print(f"Epochs per run: {args.epochs}")
     print(f"Sample interactions: {args.sample_interactions}")
     print(f"Batch size override: {args.batch_size if args.batch_size is not None else 'config default'}")
+    print(f"Loader max rows: {args.loader_max_rows if args.loader_max_rows is not None else 'full dataset'}")
     print(f"MLflow experiment: {args.mlflow_experiment_name}")
     print("Representative runs:")
-    for index, (preset, training_mode, graph_method) in enumerate(DEFAULT_RUNS, start=1):
+    for index, (preset, training_mode, graph_method) in enumerate(run_plan, start=1):
         print(f"  {index}. preset={preset}, training_mode={training_mode}, graph_method={graph_method}")
 
 
@@ -119,8 +138,9 @@ def main() -> int:
 
     process = psutil.Process()
     results: list[dict[str, object]] = []
+    run_plan = DEFAULT_RUNS if args.profile == "representative" else FAST_SMOKE_RUNS
 
-    for preset, training_mode, graph_method in DEFAULT_RUNS:
+    for preset, training_mode, graph_method in run_plan:
         namespace = argparse.Namespace(
             dataset=args.dataset,
             recipe=None,
@@ -134,9 +154,13 @@ def main() -> int:
             training_mode=training_mode,
             num_neighbors=None,
             sample_interactions=args.sample_interactions,
+            loader_max_rows=args.loader_max_rows,
             device=args.device,
             data_dir=args.data_dir,
             intervention="preflight",
+            eval_scoring_mode=None,
+            scoring_weight_mode=None,
+            use_features=None,
         )
         config = build_config(namespace)
         config.enable_profiling = True

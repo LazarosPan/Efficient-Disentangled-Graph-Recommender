@@ -82,8 +82,14 @@ def _build_canonical_name(
         parts.append(f"nbr{neighbor_str}")
     if config.sample_interactions is not None:
         parts.append(f"sample{config.sample_interactions}")
+    if config.loader_max_rows is not None:
+        parts.append(f"loadrows{config.loader_max_rows}")
     if config.use_features:
         parts.append("feat")
+    if config.feature_policy != "thesis_default":
+        parts.append(f"fpolicy{config.feature_policy}")
+    if config.scoring_weight_mode != "fixed":
+        parts.append(f"scoremix{config.scoring_weight_mode}")
     if config.eval_scoring_mode != "default":
         parts.append(f"score{config.eval_scoring_mode}")
     if intervention:
@@ -369,9 +375,12 @@ def _build_mlflow_params(
         "interest_gnn_layers": config.resolved_interest_gnn_layers,
         "conformity_gnn_layers": config.resolved_conformity_gnn_layers,
         "eval_scoring_mode": config.eval_scoring_mode,
+        "scoring_weight_mode": config.scoring_weight_mode,
         "sample_interactions": config.sample_interactions or 0,
+        "loader_max_rows": config.loader_max_rows or 0,
         "lr": config.lr,
         "use_features": config.use_features,
+        "feature_policy": config.feature_policy,
         "use_dual_branch": config.use_dual_branch,
         "use_sign_aware": config.use_sign_aware,
         "use_counterfactual": config.use_counterfactual,
@@ -480,8 +489,12 @@ def build_config(args: argparse.Namespace) -> UCaGNNConfig:
         kwargs["lr"] = args.lr
     if getattr(args, "eval_scoring_mode", None) is not None:
         kwargs["eval_scoring_mode"] = args.eval_scoring_mode
+    if getattr(args, "scoring_weight_mode", None) is not None:
+        kwargs["scoring_weight_mode"] = args.scoring_weight_mode
     if getattr(args, "use_features", None) is not None:
         kwargs["use_features"] = args.use_features
+    if getattr(args, "feature_policy", None) is not None:
+        kwargs["feature_policy"] = args.feature_policy
     if getattr(args, "graph_method", None) is not None:
         kwargs["graph_method"] = args.graph_method
     if getattr(args, "training_mode", None) is not None:
@@ -490,6 +503,8 @@ def build_config(args: argparse.Namespace) -> UCaGNNConfig:
         kwargs["num_neighbors"] = args.num_neighbors
     if getattr(args, "sample_interactions", None) is not None:
         kwargs["sample_interactions"] = args.sample_interactions
+    if getattr(args, "loader_max_rows", None) is not None:
+        kwargs["loader_max_rows"] = args.loader_max_rows
 
     config = UCaGNNConfig(**kwargs)
 
@@ -557,7 +572,13 @@ def run_experiment(
 
     # Load data
     logger.info("Loading dataset...")
-    canonical = load_dataset(config.dataset, config.data_dir)
+    canonical = load_dataset(
+        config.dataset,
+        config.data_dir,
+        max_rows=config.loader_max_rows,
+        include_optional_features=config.use_features,
+        feature_policy=config.feature_policy,
+    )
     canonical = _sample_canonical_interactions(
         canonical,
         config.sample_interactions,
@@ -764,6 +785,12 @@ def main():
         help="Evaluation-time scoring mode for Recall/NDCG",
     )
     parser.add_argument(
+        "--scoring-weight-mode",
+        choices=["fixed", "learned"],
+        default=None,
+        help="Scoring mixture mode for the default score: fixed config weights or learned simplex weights.",
+    )
+    parser.add_argument(
         "--use-features",
         dest="use_features",
         action="store_true",
@@ -774,6 +801,12 @@ def main():
         dest="use_features",
         action="store_false",
         help="Disable dataset side features even when available",
+    )
+    parser.add_argument(
+        "--feature-policy",
+        choices=["thesis_default", "all_optional"],
+        default=None,
+        help="Feature-loading policy: thesis_default enforces the safe thesis allowlist; all_optional restores the full optional side-feature scans.",
     )
     parser.add_argument("--graph-method", choices=["dense", "knn", "cagra"], default=None)
     parser.add_argument(
@@ -791,6 +824,12 @@ def main():
         type=int,
         default=None,
         help="Optional interaction budget for sampled runs such as preflight.",
+    )
+    parser.add_argument(
+        "--loader-max-rows",
+        type=int,
+        default=None,
+        help="Optional early row cap for dataset loading during fast smoke/preflight runs.",
     )
     parser.add_argument("--device", default="cuda", help="Device (cuda/cpu)")
     parser.add_argument("--data-dir", default="data", help="Data directory")

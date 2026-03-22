@@ -130,9 +130,9 @@ def main():
 
         print("\n")
         print("=" * 60)
-        print("RUNNING PIPELINE SANITY CHECK...")
+        print("RUNNING QUICK VALIDATION...")
         print("=" * 60)
-        result = subprocess.run([sys.executable, scripts_dir / "verify_pipeline.py"])
+        result = subprocess.run([sys.executable, scripts_dir / "quick_validate.py", "--categories", "evaluation"])
         if result.returncode != 0:
             sys.exit(1)
 
