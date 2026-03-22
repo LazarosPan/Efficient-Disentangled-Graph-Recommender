@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from ..canonical import CanonicalInteractions
-from ...feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
+from ..feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 
 
 def _load_csv_features(

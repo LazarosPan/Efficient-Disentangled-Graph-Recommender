@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from ..canonical import CanonicalInteractions
-from ...feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
+from ..feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 
 logger = logging.getLogger(__name__)
 

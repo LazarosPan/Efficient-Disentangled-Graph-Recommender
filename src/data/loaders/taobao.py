@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from ..canonical import CanonicalInteractions
-from ...feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
+from ..feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 
 # Behavior -> sign mapping:  buy > cart > fav > pv
 _BEHAVIOR_SIGN = {"buy": 1.0, "cart": 0.5, "fav": 0.25, "pv": -0.25}

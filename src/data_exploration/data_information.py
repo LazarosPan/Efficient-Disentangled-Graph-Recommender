@@ -36,7 +36,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
-from src.feature_policy import normalize_dataset_name, thesis_default_column_enabled
+from src.data.feature_policy import normalize_dataset_name, thesis_default_column_enabled
 
 
 def load_exploration_api() -> tuple[Any, Any, Any]:

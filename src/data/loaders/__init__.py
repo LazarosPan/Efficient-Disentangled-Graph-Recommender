@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
-from ...feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
+from ..feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 
 if TYPE_CHECKING:
     from collections.abc import Callable
