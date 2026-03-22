@@ -23,7 +23,7 @@ Use this skill when working on model architecture, embeddings, GCN layers, or mo
 
 ## Current Architecture Notes
 - `DualBranchGCN` now supports branch-specific propagation depth via `interest_gnn_layers` and `conformity_gnn_layers`; when omitted, both fall back to `n_gnn_layers`.
-- `ScoringModule` now supports evaluation-time intervention modes through `eval_scoring_mode` while preserving the existing training-time default score mixture.
+- `ScoringModule` now supports both fixed score mixing and learnable simplex-constrained score mixing via `scoring_weight_mode`, while still supporting evaluation-time intervention modes through `eval_scoring_mode`.
 - `EmbeddingModule` now supports optional item-feature fusion when `use_features=True` and canonical item features are available, producing branch-specific item inputs for interest and conformity propagation.
 
 ## Quick Reference

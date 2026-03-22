@@ -19,10 +19,16 @@ uv run list-commands
 
 Short glossary:
 
-- `dry-run`: preview only, changes nothing
-- `--yes`: execute a destructive command
-- `preflight`: short safety check before long runs
 - `--keep-db`: keep the temporary verification DB
+
+## Quick Validation
+
+```bash
+uv run scripts/quick_validate.py
+uv run scripts/quick_validate.py --mlflow
+```
+
+The default command is the single post-change validator and leaves MLflow untouched. Add `--mlflow` only when you want the MLflow observability probe.
 
 ## Preflight
 
@@ -46,40 +52,36 @@ uv run query-results --alpha 12
 uv run query-results --bottleneck 12
 ```
 
-## Reset SQLite Rows
+## Reset SQLite
 
 ```bash
 uv run reset-experiment-db
-uv run reset-experiment-db --yes
-uv run reset-experiment-db --tables profiling metrics experiments --yes
-uv run reset-experiment-db --drop-and-recreate --yes
 ```
 
-Keeps the DB file. Does not touch `results/mlflow.db`, `mlruns/`, or checkpoints.
+Deletes `results/thesis_experiments.db` and SQLite sidecars. Does not touch `results/mlflow.db`, `mlruns/`, or checkpoints.
 
-## Delete Files
-
-Dry-run by default. Add `--yes` to execute.
+## Reset MLflow And Checkpoints
 
 ```bash
-uv run cleanup-experiment-artifacts --sqlite
-uv run cleanup-experiment-artifacts --sqlite --yes
-uv run cleanup-experiment-artifacts --mlflow-db --mlflow-artifacts --yes
-uv run cleanup-experiment-artifacts --checkpoints --yes
-uv run cleanup-experiment-artifacts --all --yes
+uv run cleanup-experiment-artifacts
 ```
 
-`--all` deletes the thesis DB, MLflow DB, `mlruns/`, and `results/checkpoints/`.
+Deletes `results/mlflow.db`, `mlruns/`, and `results/checkpoints/`.
 
 ## Verification
 
 ```bash
+uv run scripts/quick_validate.py
 uv run verify-setup
-uv run verify-pipeline
-uv run verify-pipeline --keep-db
 uv run verify-sqlite --keep-db
 uv run verify-sqlite
 ```
+
+Use `uv run scripts/quick_validate.py` as the actual code-change validation command.
+
+`verify-setup` is narrower: it checks environment and dependency readiness, and `verify-setup --all` adds a short `quick_validate.py --categories evaluation` probe instead of a separate pipeline-sanity script.
+
+`verify-pipeline` remains only as a legacy alias to `quick_validate.py` for compatibility and should not be the main documented workflow.
 
 Verification DBs are temporary unless `--keep-db` is used.
 

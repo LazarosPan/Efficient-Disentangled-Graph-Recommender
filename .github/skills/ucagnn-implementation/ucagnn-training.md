@@ -5,7 +5,7 @@ Use this skill when working on training loop, evaluation, checkpoints, profiling
 ## Key Files
 - `docs/ucagnn_implementation/training.md` - Training pipeline with paper cross-references
 - `src/training/trainer.py` - Trainer class
-- `src/training/evaluator.py` - Evaluator (Recall@K, NDCG@K)
+- `src/training/evaluator.py` - Evaluator (PyG link-prediction metrics at K)
 - `src/profiling/gpu_profiler.py` - GPUProfiler and profile_stage
 - `src/utils/experiment_logger.py` - SQLite ExperimentLogger
 
@@ -45,15 +45,36 @@ trainer.save_checkpoint("results/checkpoints/ucagnn_best.pt")
 | Validation metrics | metrics | val |
 | Profiling stages | profiling | -- |
 | Alpha values (sign-aware) | metrics | train |
+| PyG link-prediction metrics | metrics | val/test |
 
 ## Evaluation Notes
-- Validation and test metrics now honor `config.eval_scoring_mode`, so Recall/NDCG can be computed under intervention-style scoring without changing the checkpointed model weights.
+- Validation and test metrics now honor `config.eval_scoring_mode`, so the full PyG metric suite can be computed under intervention-style scoring without changing the checkpointed model weights.
+- Validation and test evaluation now log only PyG-backed link-prediction metrics at each configured `K`: Precision, Recall, F1, MAP, NDCG, MRR, HitRatio, Coverage, and AveragePopularity.
+- PyG 2.7 also exposes Diversity and Personalization. They are allowed by the repo's metric audit, but the current evaluator does not log them because they require extra category inputs or additional pairwise recommendation computation.
 
 ## MLflow Routing
 - `experiments/run_experiment.py` uses `--mlflow-tracking-uri` first, then `MLFLOW_TRACKING_URI`, then the project default `results/mlflow.db`.
 - `results/mlflow.db` is the MLflow backend store and `mlruns/` holds artifacts.
 - Benchmark runs default to MLflow experiment `ucagnn-benchmark`; ablations default to `ucagnn-ablation`.
 - Checkpoints are logged to MLflow under the `checkpoints/` artifact subpath.
-- Use `uv run reset-experiment-db --yes` to clear SQLite rows only.
-- Use `uv run cleanup-experiment-artifacts ... --yes` to delete repository-local files such as `results/mlflow.db`, `mlruns/`, and `results/checkpoints/`.
+- Use `uv run reset-experiment-db` to delete the repository-local thesis SQLite database and its sidecars.
+- Use `uv run cleanup-experiment-artifacts` to delete `results/mlflow.db`, `mlruns/`, and `results/checkpoints/` in one step.
 - Matrix fields should not be duplicated across MLflow params and tags; ordering/provenance should use explicit params such as `run_started_at_utc`, `project_version`, and `git_commit`.
+
+## Fast Validation Workflow
+- Use `scripts/quick_validate.py` as the default ultra-fast post-change validation path across all six datasets.
+- `quick_validate.py` is now the unified tiny-scale pipeline validator. By default it exercises the canonical recipe matrix, all ablation variants, representative observability probes (profiling, checkpoint/resume, feature path), and evaluation scoring modes with aggressive row caps and sampled interactions.
+- Feature usage now follows the formal config default (`use_features=True`, `feature_policy="thesis_default"`), so tiny validation covers the same feature-aware model path as formal runs. The capped dataset loader path stays practical by reusing cached capped loads across repeated recipe cases.
+- Treat tiny validation as row-scaled, not schema-changed: the intended invariant is that formal and tiny runs share the same canonical fields and feature-engineering path, while `loader_max_rows`, `sample_interactions`, `epochs`, `batch_size`, and semantic-eval caps control runtime.
+- Use category filters such as `--categories recipes` or `--categories observability` only when debugging a specific surface; the default command is intended to be the single broad post-change validation entry point.
+- Quick validation keeps MLflow disabled by default, so `uv run scripts/quick_validate.py` does not create MLflow tables or artifact files unless `--mlflow` is passed explicitly.
+- Use `scripts/preflight_experiments.py --profile fast` when you want a single smoke/preflight-style pass without the paired ablation check.
+
+## Feature Probe Workflow
+- Use `scripts/feature_policy_probes.py` when you want tiny thesis-oriented feature screening rather than full-matrix validation.
+- The script separates two questions:
+- utility probes run `id_only` vs `thesis_default` across all feature-bearing thesis datasets;
+- policy probes run `thesis_default` vs `all_optional` only on datasets where those policies actually differ today (`kuairec_v2`, `kuairand1k`).
+- This keeps the thesis narrative clean: every feature-bearing dataset gets a utility check, while leakage-sensitive policy comparisons are restricted to datasets where broader optional scans would materially change the canonical inputs.
+- The probe summary is written to `results/feature_policy_probes.json` and compares only PyG-backed metric names.
+- Use `uv run audit-metrics` to print the allowed PyG metric families and scan the implementation source, SQLite metrics table, and MLflow test metrics for non-PyG names without adding runtime guard code.

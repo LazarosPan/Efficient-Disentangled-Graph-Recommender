@@ -37,9 +37,12 @@ config = UCaGNNConfig().preset_full()
 | propensity_clip_max | 0.99 | Surveys S1-S4 |
 
 ## Evaluation Controls
+- `scoring_weight_mode` defaults to `fixed` and can be switched to `learned` to let the model learn simplex-constrained weights over interest, conformity, and counterfactual scores.
 - `eval_scoring_mode` defaults to `default` and can switch evaluation to `interest_only`, `conformity_only`, `counterfactual_only`, or `conformity_suppressed` without changing training losses.
+- The old semantic-evaluation config placeholders have been removed; the current logged evaluator uses only PyG link-prediction metrics.
 - In `mini_batch` mode, `num_neighbors` must now match the effective maximum branch depth, not only `n_gnn_layers`.
-- `use_features` enables canonical side-feature usage when available; the current implementation consumes item features in Module A and falls back to ID-only embeddings on featureless datasets.
+- `use_features` now defaults to `True`, so formal runs use canonical side-feature usage whenever a dataset provides item features; the current implementation consumes item features in Module A and falls back to ID-only embeddings on featureless datasets.
+- `feature_policy` now defaults to `thesis_default`, which enforces the thesis-safe item-feature allowlist on datasets with risky optional scans; switch to `all_optional` only for explicit leakage-sensitive ablations.
 
 ## IPW Weight Range
 With default clip bounds [0.01, 0.99], IPW weights range from 1.01 to 100.0.
