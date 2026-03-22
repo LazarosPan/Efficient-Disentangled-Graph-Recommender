@@ -26,6 +26,8 @@ class UCaGNNConfig:
     embed_dim: int = 64
     pop_embed_dim: int = 16
     n_gnn_layers: int = 2
+    interest_gnn_layers: int | None = None
+    conformity_gnn_layers: int | None = None
     dropout: float = 0.0
 
     # ── Scoring weights ──────────────────────────────────────────────────
@@ -56,6 +58,13 @@ class UCaGNNConfig:
     patience: int = 10
     grad_clip_norm: float = 1.0
     eval_ks: list[int] = field(default_factory=lambda: [10, 20, 50])
+    eval_scoring_mode: Literal[
+        "default",
+        "interest_only",
+        "conformity_only",
+        "counterfactual_only",
+        "conformity_suppressed",
+    ] = "default"
 
     # ── Training mode ─────────────────────────────────────────────────
     training_mode: Literal["full_graph", "cached_propagation", "mini_batch"] = "full_graph"
@@ -89,11 +98,17 @@ class UCaGNNConfig:
     profiling_cadence: int = 10
 
     def __post_init__(self) -> None:
+        if self.n_gnn_layers < 1:
+            raise ValueError("n_gnn_layers must be >= 1")
+        if self.interest_gnn_layers is not None and self.interest_gnn_layers < 1:
+            raise ValueError("interest_gnn_layers must be >= 1 when provided")
+        if self.conformity_gnn_layers is not None and self.conformity_gnn_layers < 1:
+            raise ValueError("conformity_gnn_layers must be >= 1 when provided")
         if self.training_mode == "mini_batch":
-            if len(self.num_neighbors) != self.n_gnn_layers:
+            if len(self.num_neighbors) != self.max_gnn_layers:
                 raise ValueError(
                     f"num_neighbors length ({len(self.num_neighbors)}) must equal "
-                    f"n_gnn_layers ({self.n_gnn_layers})"
+                    f"max_gnn_layers ({self.max_gnn_layers})"
                 )
         if self.sample_interactions is not None and self.sample_interactions <= 0:
             raise ValueError("sample_interactions must be > 0 when provided")
@@ -103,6 +118,20 @@ class UCaGNNConfig:
     @property
     def use_cagra(self) -> bool:
         return self.graph_method == "cagra"
+
+    @property
+    def resolved_interest_gnn_layers(self) -> int:
+        return self.interest_gnn_layers or self.n_gnn_layers
+
+    @property
+    def resolved_conformity_gnn_layers(self) -> int:
+        return self.conformity_gnn_layers or self.n_gnn_layers
+
+    @property
+    def max_gnn_layers(self) -> int:
+        if not self.use_dual_branch:
+            return self.n_gnn_layers
+        return max(self.resolved_interest_gnn_layers, self.resolved_conformity_gnn_layers)
 
     def preset_lightgcn(self) -> UCaGNNConfig:
         """Non-causal LightGCN baseline."""
@@ -118,6 +147,8 @@ class UCaGNNConfig:
         self.beta_conformity = 0.0
         self.gamma_counterfactual = 0.0
         self.graph_method = "dense"
+        self.interest_gnn_layers = None
+        self.conformity_gnn_layers = None
         return self
 
     def preset_dice_like(self) -> UCaGNNConfig:

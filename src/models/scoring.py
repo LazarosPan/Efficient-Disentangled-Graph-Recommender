@@ -20,11 +20,39 @@ class ScoringModule(nn.Module):
         super().__init__()
         self.config = config
 
+    def combine_scores(
+        self,
+        interest_score: torch.Tensor,
+        conformity_score: torch.Tensor,
+        cf_score: torch.Tensor,
+        scoring_mode: str = "default",
+    ) -> torch.Tensor:
+        """Combine branch scores for ranking or intervention-style evaluation."""
+        if scoring_mode == "default":
+            return (
+                self.config.alpha_interest * interest_score
+                + self.config.beta_conformity * conformity_score
+                + self.config.gamma_counterfactual * cf_score
+            )
+        if scoring_mode == "interest_only":
+            return interest_score
+        if scoring_mode == "conformity_only":
+            return conformity_score
+        if scoring_mode == "counterfactual_only":
+            return cf_score
+        if scoring_mode == "conformity_suppressed":
+            return (
+                self.config.alpha_interest * interest_score
+                + self.config.gamma_counterfactual * cf_score
+            )
+        raise ValueError(f"Unknown scoring_mode: {scoring_mode}")
+
     def forward(
         self,
         propagated: dict[str, torch.Tensor],
         user_ids: torch.Tensor,
         item_ids: torch.Tensor,
+        scoring_mode: str = "default",
     ) -> dict[str, torch.Tensor]:
         """Score user-item pairs.
 
@@ -55,10 +83,11 @@ class ScoringModule(nn.Module):
             else:
                 scores["cf_score"] = torch.zeros_like(interest_score)
 
-            final = (
-                self.config.alpha_interest * interest_score
-                + self.config.beta_conformity * conformity_score
-                + self.config.gamma_counterfactual * scores["cf_score"]
+            final = self.combine_scores(
+                interest_score,
+                conformity_score,
+                scores["cf_score"],
+                scoring_mode=scoring_mode,
             )
         else:
             u = propagated["user"][user_ids]

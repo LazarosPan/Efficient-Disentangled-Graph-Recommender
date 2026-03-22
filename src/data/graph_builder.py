@@ -92,6 +92,12 @@ def build_graph(
     data.item_nodes = item_nodes
     data.n_users = n_users
     data.n_items = n_items
+    if canonical.user_features is not None:
+        data.user_features = torch.from_numpy(canonical.user_features).float()
+    if canonical.item_features is not None:
+        data.item_features = torch.from_numpy(canonical.item_features).float()
+    if canonical.metadata is not None:
+        data.metadata = canonical.metadata
 
     return data
 

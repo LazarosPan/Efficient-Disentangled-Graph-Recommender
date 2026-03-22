@@ -26,14 +26,27 @@ class UCaGNN(nn.Module):
     - Full U-CaGNN: all toggles enabled
     """
 
-    def __init__(self, n_users: int, n_items: int, config: UCaGNNConfig) -> None:
+    def __init__(
+        self,
+        n_users: int,
+        n_items: int,
+        config: UCaGNNConfig,
+        item_features: torch.Tensor | None = None,
+        item_popularity: torch.Tensor | None = None,
+    ) -> None:
         super().__init__()
         self.config = config
         self.n_users = n_users
         self.n_items = n_items
 
         # Module A: Embeddings
-        self.embedding = EmbeddingModule(n_users, n_items, config)
+        self.embedding = EmbeddingModule(
+            n_users,
+            n_items,
+            config,
+            item_features=item_features,
+            item_popularity=item_popularity,
+        )
 
         # Module B: GCN propagation
         self.gcn = DualBranchGCN(config)
@@ -115,21 +128,10 @@ class UCaGNN(nn.Module):
             Dict matching the output format of ``forward()``.
         """
         # Index into embedding tables for subgraph nodes only
-        if self.config.use_dual_branch:
-            sub_embs: dict[str, torch.Tensor] = {
-                "user_interest": self.embedding.user_interest.weight[batch.user_global_ids],
-                "user_conformity": self.embedding.user_conformity.weight[batch.user_global_ids],
-                "item": self.embedding.item_embed.weight[batch.item_global_ids],
-            }
-            if self.config.use_popularity_emb:
-                sub_embs["item_pop"] = self.embedding.item_pop.weight[batch.item_global_ids]
-        else:
-            sub_embs = {
-                "user": self.embedding.user_embed.weight[batch.user_global_ids],
-                "item": self.embedding.item_embed.weight[batch.item_global_ids],
-            }
-            if self.config.use_popularity_emb:
-                sub_embs["item_pop"] = self.embedding.item_pop.weight[batch.item_global_ids]
+        sub_embs = self.embedding.get_subgraph_embeddings(
+            batch.user_global_ids,
+            batch.item_global_ids,
+        )
 
         # GCN on subgraph
         propagated = self.gcn(
@@ -168,6 +170,7 @@ class UCaGNN(nn.Module):
         edge_index: torch.Tensor,
         user_ids: torch.Tensor,
         edge_sign: torch.Tensor | None = None,
+        scoring_mode: str | None = None,
     ) -> torch.Tensor:
         """Score all items for given users (for evaluation).
 
@@ -184,6 +187,7 @@ class UCaGNN(nn.Module):
             init_embs, edge_index, edge_sign,
             n_users=self.n_users, n_items=self.n_items,
         )
+        scoring_mode = scoring_mode or self.config.eval_scoring_mode
 
         if self.config.use_dual_branch:
             u_int = propagated["user_interest"][user_ids]  # (B, D)
@@ -199,10 +203,11 @@ class UCaGNN(nn.Module):
             else:
                 cf_scores = torch.zeros_like(interest_scores)
 
-            final = (
-                self.config.alpha_interest * interest_scores
-                + self.config.beta_conformity * conformity_scores
-                + self.config.gamma_counterfactual * cf_scores
+            final = self.scoring.combine_scores(
+                interest_scores,
+                conformity_scores,
+                cf_scores,
+                scoring_mode=scoring_mode,
             )
         else:
             u = propagated["user"][user_ids]

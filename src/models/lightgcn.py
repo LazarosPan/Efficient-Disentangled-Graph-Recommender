@@ -49,13 +49,12 @@ class DualBranchGCN(nn.Module):
     def __init__(self, config: UCaGNNConfig) -> None:
         super().__init__()
         self.config = config
-        k = config.n_gnn_layers
 
         if config.use_dual_branch:
-            self.interest_branch = LightGCNBranch(k)
-            self.conformity_branch = LightGCNBranch(k)
+            self.interest_branch = LightGCNBranch(config.resolved_interest_gnn_layers)
+            self.conformity_branch = LightGCNBranch(config.resolved_conformity_gnn_layers)
         else:
-            self.single_branch = LightGCNBranch(k)
+            self.single_branch = LightGCNBranch(config.n_gnn_layers)
 
         if config.use_sign_aware:
             self.alpha_pos = nn.Parameter(torch.tensor(0.7))
@@ -88,12 +87,14 @@ class DualBranchGCN(nn.Module):
         out: dict[str, torch.Tensor] = {}
 
         if self.config.use_dual_branch:
-            x_int = torch.cat([embeddings["user_interest"], embeddings["item"]], dim=0)
+            item_interest = embeddings.get("item_interest", embeddings["item"])
+            item_conformity = embeddings.get("item_conformity", embeddings["item"])
+            x_int = torch.cat([embeddings["user_interest"], item_interest], dim=0)
             h_int = self.interest_branch(x_int, edge_index, edge_weight)
             out["user_interest"] = h_int[:n_users]
             out["item_interest"] = h_int[n_users:]
 
-            x_conf = torch.cat([embeddings["user_conformity"], embeddings["item"]], dim=0)
+            x_conf = torch.cat([embeddings["user_conformity"], item_conformity], dim=0)
             h_conf = self.conformity_branch(x_conf, edge_index, edge_weight)
             out["user_conformity"] = h_conf[:n_users]
             out["item_conformity"] = h_conf[n_users:]
