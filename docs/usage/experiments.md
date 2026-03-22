@@ -1,90 +1,111 @@
 # Running Experiments
 
-Use `uv run experiment` to run single experiments or `uv run benchmark` for matrix sweeps.
+Use `uv run experiment` for one run, `uv run benchmark` for the formal matrix, and `uv run ablation` for component-removal studies.
+
+## Paths
+
+```text
+results/thesis_experiments.db   Thesis SQLite record
+results/mlflow.db               MLflow backend DB
+mlruns/                         MLflow artifacts
+results/checkpoints/            Local checkpoints
+```
+
+## Terms
+
+- `ablation`: run variants with parts removed to measure impact
+- `recipe`: named experiment setup
+- `preset`: model configuration family
+- `sample-interactions`: smaller sampled run for testing
+- `--no-mlflow`: disable MLflow for that run
+- `--no-auto-resume`: ignore an existing checkpoint and start fresh
 
 ## Single Experiments
 
-List available recipes:
 ```bash
 uv run experiment --list-recipes
-```
-
-Run a specific recipe:
-```bash
 uv run experiment --dataset movielens1m --recipe full_full_graph_cagra
-```
-
-Override parameters:
-```bash
 uv run experiment --dataset taobao --recipe cached_cagra --epochs 30 --batch-size 512
-```
-
-Sampled runs (for testing):
-```bash
 uv run experiment --dataset amazonbook --recipe full --sample-interactions 10000 --epochs 1
-```
-
-Disable MLflow or resume:
-```bash
 uv run experiment --dataset kuairec_v2 --recipe mini_batch_knn --no-mlflow
 uv run experiment --dataset movielens1m --recipe full --no-auto-resume
+uv run experiment --dataset movielens1m --recipe full --mlflow-experiment-name ucagnn-debug
+uv run experiment --dataset movielens1m --recipe full --mlflow-tracking-uri "sqlite:///$PWD/results/mlflow.db"
 ```
 
 ## Benchmark Matrix
 
-Run formal matrix across datasets, presets, training modes, graph methods, and seeds:
 ```bash
 uv run benchmark --tier small --dry-run  # Preview plan
 uv run benchmark --tier small            # Execute
-```
-
-Customize matrix:
-```bash
 uv run benchmark --tier small --presets full --training-modes full_graph cached_propagation --seeds 42
 ```
 
+`benchmark` uses the same tracking defaults as `experiment`.
+Default MLflow experiment name: `ucagnn-benchmark`.
+
 ## Ablations
 
-Run ablation studies:
 ```bash
 uv run ablation --dataset movielens1m
 ```
 
+`ablation` uses the same tracking defaults as `experiment`.
+Default MLflow experiment name: `ucagnn-ablation`.
+
 ## MLflow Tracking
 
-Experiments log to SQLite (`results/thesis_experiments.db`) and optionally to MLflow (`results/mlflow.db`).
+Default MLflow resolution:
 
-`uv run experiment` writes to `results/mlflow.db` by default. Plain `mlflow ui` or `mlflow server` without `--backend-store-uri` will use the separate default file `mlflow.db` in the repository root, which is not the project tracking database.
+1. `--mlflow-tracking-uri`
+2. `MLFLOW_TRACKING_URI`
+3. `results/mlflow.db`
 
-In the MLflow table, the empty capitalized `Dataset` column is MLflow's own evaluation-dataset field. The lowercase `dataset` column is this project's actual run parameter.
+Use this shell setting if you want all MLflow commands to point at the repo DB:
 
-The preferred endpoint for this repository is the tracking server on port 9090. Use the direct UI only if you want a quick local browser over the SQLite file.
-
-If you want one shell setting for all MLflow commands in this repository, set:
 ```bash
 set -x MLFLOW_TRACKING_URI "sqlite:///$PWD/results/mlflow.db"
 ```
 
-### Preferred: Tracking Server
+Preferred UI:
 
-Use this as the main UI and API endpoint:
 ```bash
 uv run mlflow server --backend-store-uri "sqlite:///$PWD/results/mlflow.db" --host 127.0.0.1 --port 9090
 ```
 
-Python clients can then talk to the same endpoint:
-```bash
-set -x MLFLOW_TRACKING_URI "http://127.0.0.1:9090"
-```
+Optional direct UI:
 
-### Optional: Direct Local UI
-
-To view results locally:
 ```bash
 uv run mlflow ui --backend-store-uri "sqlite:///$PWD/results/mlflow.db" --port 5002
 ```
 
-This reads the same database as 9090, but without the tracking-server API layer.
+`mlflow.db` is the backend store. `mlruns/` holds artifacts. Local checkpoints remain under `results/checkpoints/` and are logged to MLflow under the `checkpoints/` artifact subpath.
+
+## Cleanup
+
+Clear SQLite rows only:
+
+```bash
+uv run reset-experiment-db --yes
+```
+
+Delete MLflow state from test runs:
+
+```bash
+uv run cleanup-experiment-artifacts --mlflow-db --mlflow-artifacts --yes
+```
+
+Delete local checkpoints only:
+
+```bash
+uv run cleanup-experiment-artifacts --checkpoints --yes
+```
+
+Delete everything:
+
+```bash
+uv run cleanup-experiment-artifacts --all --yes
+```
 
 ### Run Identification
 

@@ -48,7 +48,14 @@ benchmark = "experiments.run_benchmark:main"
 ablation = "experiments.run_ablation:main"
 preflight = "scripts.preflight_experiments:main"
 download-datasets = "scripts.download_pyg_datasets:main"
+cleanup-experiment-artifacts = "scripts.cleanup_experiment_artifacts:main"
+list-commands = "scripts.list_commands:main"
+query-results = "scripts.query_results:main"
+reset-experiment-db = "scripts.reset_experiment_db:main"
 verify-setup = "scripts.verify_setup:main"
+verify-pipeline = "scripts.verify_pipeline:main"
+verify-sqlite = "scripts.verify_sqlite:main"
+visualize-results = "scripts.visualize_results:main"
 
 [tool.setuptools]
 include-package-data = false
