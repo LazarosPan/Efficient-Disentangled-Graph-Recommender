@@ -1,31 +1,44 @@
-"""GPU-vectorized Recall@K and NDCG@K evaluation using PyG metrics."""
+"""GPU-vectorized link-prediction evaluation using PyG metrics."""
 
 from __future__ import annotations
 
 import torch
-import numpy as np
-from torch_geometric.metrics import LinkPredRecall, LinkPredNDCG
+from torch_geometric.metrics import (
+    LinkPredAveragePopularity,
+    LinkPredCoverage,
+    LinkPredF1,
+    LinkPredHitRatio,
+    LinkPredMAP,
+    LinkPredMRR,
+    LinkPredNDCG,
+    LinkPredPrecision,
+    LinkPredRecall,
+)
 
 from ..utils.config import UCaGNNConfig
 
 
 class Evaluator:
-    """Batched GPU evaluation for Recall@K and NDCG@K.
-
-    Uses PyG's ``LinkPredRecall`` and ``LinkPredNDCG`` for metric computation.
-    """
+    """Batched GPU evaluation for the PyG link-prediction metric suite."""
 
     def __init__(self, config: UCaGNNConfig) -> None:
+        self.config = config
         self.ks = config.eval_ks
         self.eval_scoring_mode = config.eval_scoring_mode
-        self._metrics: dict[str, LinkPredRecall | LinkPredNDCG] = {}
-        for k in self.ks:
-            self._metrics[f"Recall@{k}"] = LinkPredRecall(k=k)
-            self._metrics[f"NDCG@{k}"] = LinkPredNDCG(k=k)
 
-    def _reset(self) -> None:
-        for m in self._metrics.values():
-            m.reset()
+    def _build_metrics(self, n_items: int, popularity: torch.Tensor) -> dict[str, object]:
+        metrics: dict[str, object] = {}
+        for k in self.ks:
+            metrics[f"Precision@{k}"] = LinkPredPrecision(k=k)
+            metrics[f"Recall@{k}"] = LinkPredRecall(k=k)
+            metrics[f"F1@{k}"] = LinkPredF1(k=k)
+            metrics[f"MAP@{k}"] = LinkPredMAP(k=k)
+            metrics[f"NDCG@{k}"] = LinkPredNDCG(k=k)
+            metrics[f"MRR@{k}"] = LinkPredMRR(k=k)
+            metrics[f"HitRatio@{k}"] = LinkPredHitRatio(k=k)
+            metrics[f"Coverage@{k}"] = LinkPredCoverage(k=k, num_dst_nodes=n_items)
+            metrics[f"AveragePopularity@{k}"] = LinkPredAveragePopularity(k=k, popularity=popularity)
+        return metrics
 
     @torch.no_grad()
     def evaluate(
@@ -35,44 +48,28 @@ class Evaluator:
         mask: torch.Tensor,
         batch_size: int = 512,
     ) -> dict[str, float]:
-        """Evaluate model on users present in mask.
-
-        Args:
-            model: UCaGNN model.
-            data: PyG Data object.
-            mask: Boolean mask selecting interactions for evaluation.
-            batch_size: Users per eval batch.
-
-        Returns:
-            Dict like {"Recall@10": 0.15, "NDCG@20": 0.12, ...}
-        """
+        """Evaluate model on users present in mask."""
         model.eval()
         device = next(model.parameters()).device
 
-        # Move metrics to the correct device
-        for m in self._metrics.values():
-            m.to(device)
-        self._reset()
-
         user_nodes = data.user_nodes[mask].to(device)
         item_nodes = (data.item_nodes[mask] - data.n_users).to(device)
-
         unique_users = user_nodes.unique()
         n_items = data.n_items
+        if unique_users.numel() == 0:
+            return {}
 
-        # Ground-truth matrix for masked interactions
-        gt_matrix = torch.zeros(
-            unique_users.max().item() + 1, n_items, device=device
-        )
+        gt_matrix = torch.zeros(unique_users.max().item() + 1, n_items, device=device)
         gt_matrix[user_nodes, item_nodes] = 1.0
 
         edge_index = data.edge_index.to(device)
-        edge_sign = (
-            data.edge_sign.to(device) if hasattr(data, "edge_sign") else None
-        )
+        edge_sign = data.edge_sign.to(device) if hasattr(data, "edge_sign") else None
+        popularity = data.popularity.to(device).float()
+        metrics = self._build_metrics(n_items=n_items, popularity=popularity)
+        for metric in metrics.values():
+            metric.to(device)
 
         max_k = max(self.ks)
-
         for start in range(0, unique_users.size(0), batch_size):
             batch_users = unique_users[start : start + batch_size]
             scores = model.get_all_scores(
@@ -83,24 +80,19 @@ class Evaluator:
             )
             gt_batch = gt_matrix[batch_users]
 
-            # Skip users with no ground-truth
             has_gt = gt_batch.sum(dim=-1) > 0
             if not has_gt.any():
                 continue
+
             scores = scores[has_gt]
             gt_batch = gt_batch[has_gt]
+            if scores.size(0) == 0:
+                continue
 
-            # Top-k predicted item indices
             _, pred_index_mat = torch.topk(scores, max_k, dim=-1)
-
-            # Ground-truth edge_label_index: (user_idx_in_batch, item_id) pairs
             batch_gt_users, batch_gt_items = gt_batch.nonzero(as_tuple=True)
+            edge_label_index = (batch_gt_users, batch_gt_items)
+            for metric in metrics.values():
+                metric.update(pred_index_mat, edge_label_index)
 
-            for name, metric in self._metrics.items():
-                metric.update(pred_index_mat, (batch_gt_users, batch_gt_items))
-
-        results = {}
-        for name, metric in self._metrics.items():
-            results[name] = metric.compute().item()
-
-        return results
+        return {name: metric.compute().item() for name, metric in metrics.items()}

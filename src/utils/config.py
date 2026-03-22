@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from ..data.feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
+
 
 @dataclass
 class UCaGNNConfig:
@@ -31,6 +33,7 @@ class UCaGNNConfig:
     dropout: float = 0.0
 
     # ── Scoring weights ──────────────────────────────────────────────────
+    scoring_weight_mode: Literal["fixed", "learned"] = "fixed"
     alpha_interest: float = 0.5
     beta_conformity: float = 0.3
     gamma_counterfactual: float = 0.2
@@ -65,12 +68,12 @@ class UCaGNNConfig:
         "counterfactual_only",
         "conformity_suppressed",
     ] = "default"
-
     # ── Training mode ─────────────────────────────────────────────────
     training_mode: Literal["full_graph", "cached_propagation", "mini_batch"] = "full_graph"
     num_neighbors: list[int] = field(default_factory=lambda: [10, 10])
     mini_batch_num_workers: int = 0
     sample_interactions: int | None = None
+    loader_max_rows: int | None = None
 
     # ── Negative sampling ────────────────────────────────────────────────
     n_negatives: int = 1
@@ -81,7 +84,8 @@ class UCaGNNConfig:
     curriculum_phase2_end: int = 0
 
     # ── Side features ─────────────────────────────────────────────────────
-    use_features: bool = False  # load and use user/item side features when available
+    use_features: bool = True  # load and use user/item side features when available
+    feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY
 
     # ── Data ─────────────────────────────────────────────────────────────
     dataset: str = "movielens1m"
@@ -112,9 +116,10 @@ class UCaGNNConfig:
                 )
         if self.sample_interactions is not None and self.sample_interactions <= 0:
             raise ValueError("sample_interactions must be > 0 when provided")
+        if self.loader_max_rows is not None and self.loader_max_rows <= 0:
+            raise ValueError("loader_max_rows must be > 0 when provided")
         if self.profiling_cadence < 1:
             raise ValueError("profiling_cadence must be >= 1")
-
     @property
     def use_cagra(self) -> bool:
         return self.graph_method == "cagra"
@@ -144,11 +149,13 @@ class UCaGNNConfig:
         self.lambda_contr = 0.0
         self.lambda_cf = 0.0
         self.lambda_pop = 0.0
+        self.scoring_weight_mode = "fixed"
         self.beta_conformity = 0.0
         self.gamma_counterfactual = 0.0
         self.graph_method = "dense"
         self.interest_gnn_layers = None
         self.conformity_gnn_layers = None
+        self.feature_policy = DEFAULT_FEATURE_POLICY
         return self
 
     def preset_dice_like(self) -> UCaGNNConfig:
@@ -158,8 +165,10 @@ class UCaGNNConfig:
         self.use_ipw = False
         self.lambda_contr = 0.0
         self.lambda_cf = 0.0
+        self.scoring_weight_mode = "fixed"
         self.gamma_counterfactual = 0.0
         self.graph_method = "knn"
+        self.feature_policy = DEFAULT_FEATURE_POLICY
         return self
 
     def preset_full(self) -> UCaGNNConfig:

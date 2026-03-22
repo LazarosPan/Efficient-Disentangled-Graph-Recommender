@@ -182,36 +182,67 @@ class UCaGNN(nn.Module):
         Returns:
             (B, n_items) score matrix.
         """
+        return self.get_all_score_components(
+            edge_index=edge_index,
+            user_ids=user_ids,
+            edge_sign=edge_sign,
+            scoring_mode=scoring_mode,
+        )["final_score"]
+
+    def get_all_score_components(
+        self,
+        edge_index: torch.Tensor,
+        user_ids: torch.Tensor,
+        edge_sign: torch.Tensor | None = None,
+        scoring_mode: str | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Return full-catalog score components for evaluation and diagnostics."""
         init_embs = self.embedding.get_all_embeddings()
         propagated = self.gcn(
             init_embs, edge_index, edge_sign,
             n_users=self.n_users, n_items=self.n_items,
         )
-        scoring_mode = scoring_mode or self.config.eval_scoring_mode
+        resolved_scoring_mode = scoring_mode or self.config.eval_scoring_mode
 
         if self.config.use_dual_branch:
-            u_int = propagated["user_interest"][user_ids]  # (B, D)
-            i_int = propagated["item_interest"]            # (I, D)
-            interest_scores = u_int @ i_int.t()            # (B, I)
+            user_interest = propagated["user_interest"][user_ids]
+            item_interest = propagated["item_interest"]
+            interest_scores = user_interest @ item_interest.t()
 
-            u_conf = propagated["user_conformity"][user_ids]
-            i_conf = propagated["item_conformity"]
-            conformity_scores = u_conf @ i_conf.t()
+            user_conformity = propagated["user_conformity"][user_ids]
+            item_conformity = propagated["item_conformity"]
+            conformity_scores = user_conformity @ item_conformity.t()
 
             if self.config.use_counterfactual:
                 cf_scores = interest_scores - conformity_scores
             else:
                 cf_scores = torch.zeros_like(interest_scores)
 
-            final = self.scoring.combine_scores(
+            final_scores = self.scoring.combine_scores(
                 interest_scores,
                 conformity_scores,
                 cf_scores,
-                scoring_mode=scoring_mode,
+                scoring_mode=resolved_scoring_mode,
             )
-        else:
-            u = propagated["user"][user_ids]
-            i = propagated["item"]
-            final = u @ i.t()
+            return {
+                "interest_score": interest_scores,
+                "conformity_score": conformity_scores,
+                "cf_score": cf_scores,
+                "final_score": final_scores,
+                "user_interest_emb": user_interest,
+                "user_conformity_emb": user_conformity,
+            }
 
-        return final
+        user_embedding = propagated["user"][user_ids]
+        item_embedding = propagated["item"]
+        interest_scores = user_embedding @ item_embedding.t()
+        zeros = torch.zeros_like(interest_scores)
+        return {
+            "interest_score": interest_scores,
+            "conformity_score": zeros,
+            "cf_score": zeros,
+            "final_score": interest_scores,
+        }
+
+    def get_score_weight_summary(self, scoring_mode: str = "default") -> dict[str, float]:
+        return self.scoring.get_score_weight_summary(scoring_mode=scoring_mode)
