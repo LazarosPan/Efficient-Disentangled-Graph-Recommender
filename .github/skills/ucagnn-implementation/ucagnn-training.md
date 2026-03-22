@@ -46,7 +46,14 @@ trainer.save_checkpoint("results/checkpoints/ucagnn_best.pt")
 | Profiling stages | profiling | -- |
 | Alpha values (sign-aware) | metrics | train |
 
+## Evaluation Notes
+- Validation and test metrics now honor `config.eval_scoring_mode`, so Recall/NDCG can be computed under intervention-style scoring without changing the checkpointed model weights.
+
 ## MLflow Routing
 - `experiments/run_experiment.py` uses `--mlflow-tracking-uri` first, then `MLFLOW_TRACKING_URI`, then the project default `results/mlflow.db`.
-- Plain `mlflow ui` or `mlflow server` without `--backend-store-uri` use MLflow's default root-level `mlflow.db`, not the thesis database under `results/`.
+- `results/mlflow.db` is the MLflow backend store and `mlruns/` holds artifacts.
+- Benchmark runs default to MLflow experiment `ucagnn-benchmark`; ablations default to `ucagnn-ablation`.
+- Checkpoints are logged to MLflow under the `checkpoints/` artifact subpath.
+- Use `uv run reset-experiment-db --yes` to clear SQLite rows only.
+- Use `uv run cleanup-experiment-artifacts ... --yes` to delete repository-local files such as `results/mlflow.db`, `mlruns/`, and `results/checkpoints/`.
 - Matrix fields should not be duplicated across MLflow params and tags; ordering/provenance should use explicit params such as `run_started_at_utc`, `project_version`, and `git_commit`.

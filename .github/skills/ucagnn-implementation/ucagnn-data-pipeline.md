@@ -32,3 +32,7 @@ canonical = load_dataset(config.dataset, config.data_dir)
 data = build_graph(canonical, config, embeddings=None)  # dense
 data = build_graph(canonical, config, embeddings=model.get_stacked_embeddings())  # knn/cagra
 ```
+
+## Current Data Notes
+- `build_graph()` now carries canonical `user_features`, `item_features`, and `metadata` onto the PyG `Data` object when they exist.
+- The current feature-aware model path is item-feature-first: `data.item_features` and `data.popularity` are passed into `UCaGNN`, while user features remain available for later extensions.
