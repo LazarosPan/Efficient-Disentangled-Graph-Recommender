@@ -36,6 +36,7 @@ dependencies = [
     "cudf-polars-cu13>=26.2.1",
     "ipykernel>=7.2.0",
     "mlflow>=3.10.1",
+    "torchmetrics>=1.9.0",
 ]
 
 
@@ -55,6 +56,7 @@ reset-experiment-db = "scripts.reset_experiment_db:main"
 verify-setup = "scripts.verify_setup:main"
 verify-pipeline = "scripts.verify_pipeline:main"
 verify-sqlite = "scripts.verify_sqlite:main"
+audit-metrics = "scripts.audit_metrics:main"
 visualize-results = "scripts.visualize_results:main"
 
 [tool.setuptools]

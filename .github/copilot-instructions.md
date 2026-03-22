@@ -57,3 +57,17 @@ After the documentation is understood, use topic folders for code exploration:
 - One experiment should map to one training run and one saved checkpoint, with later evaluation possible without retraining.
 - Updates to `.github/skills/ucagnn-implementation/` and `docs/ucagnn_implementation/` should be concise and minimal; avoid excessive verbosity.
 - Prefer concise, auditable changes. Keep this file focused on routing to the right folders and files, not on embedding large code instructions here.
+- Choose the correct data structures and algorithms to make code efficient.
+- Apply KISS, YAGNI, DRY, and SOLID where appropriate:
+  - KISS: prefer clear, minimal designs over complexity.
+  - YAGNI: you ain’t gonna need it — build only what is proven needed.
+  - DRY: keep behavior and logic in one place, avoid duplicate code.
+  - SOLID: build single-responsibility, extensible, interface-driven components.
+- WET: write everything twice before abstracting; avoid premature abstraction, refactor only once duplication reaches 3x.
+- TDD: test-driven design—write a failing test first, then implement minimal code to pass it.
+- Maintain consistent levels of abstraction in each function/class/file: avoid mixing low-level and high-level details in the same block.
+- Write code that is easy to maintain, readable, and self-explanatory.
+- Reuse existing code; avoid creating new duplicates in other files unless absolutely necessary.
+- The codebase should be as simple as possible while still meeting the requirements; avoid over-engineering.
+- Favor test-driven development (TDD) and full-cycle product thinking: code + tests + eval + iteration.
+- After every change and update in the code, run `uv run scripts/quick_validate.py` to check if everything works fine.
