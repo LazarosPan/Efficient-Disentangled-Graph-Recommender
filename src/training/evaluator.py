@@ -17,6 +17,7 @@ class Evaluator:
 
     def __init__(self, config: UCaGNNConfig) -> None:
         self.ks = config.eval_ks
+        self.eval_scoring_mode = config.eval_scoring_mode
         self._metrics: dict[str, LinkPredRecall | LinkPredNDCG] = {}
         for k in self.ks:
             self._metrics[f"Recall@{k}"] = LinkPredRecall(k=k)
@@ -74,7 +75,12 @@ class Evaluator:
 
         for start in range(0, unique_users.size(0), batch_size):
             batch_users = unique_users[start : start + batch_size]
-            scores = model.get_all_scores(edge_index, batch_users, edge_sign)
+            scores = model.get_all_scores(
+                edge_index,
+                batch_users,
+                edge_sign,
+                scoring_mode=self.eval_scoring_mode,
+            )
             gt_batch = gt_matrix[batch_users]
 
             # Skip users with no ground-truth

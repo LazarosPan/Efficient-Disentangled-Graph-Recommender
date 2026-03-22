@@ -76,7 +76,7 @@ class MiniBatchTrainer:
             ),
             n_users=data.n_users,
             n_items=data.n_items,
-            num_hops=config.n_gnn_layers,
+            num_hops=config.max_gnn_layers,
             max_neighbors_per_hop=config.num_neighbors,
         )
 
