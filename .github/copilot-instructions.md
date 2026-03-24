@@ -70,4 +70,6 @@ After the documentation is understood, use topic folders for code exploration:
 - Reuse existing code; avoid creating new duplicates in other files unless absolutely necessary.
 - The codebase should be as simple as possible while still meeting the requirements; avoid over-engineering.
 - Favor test-driven development (TDD) and full-cycle product thinking: code + tests + eval + iteration.
+- Every function must have a docstring with arguments, return values, and a brief description of its purpose.
+- The Python code should follow PEP 8 style guidelines for readability and consistency. Run `ruff format` in the terminal to automatically format the code.
 - After every change and update in the code, run `uv run scripts/quick_validate.py` to check if everything works fine.
