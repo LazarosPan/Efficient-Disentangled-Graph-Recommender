@@ -2,7 +2,7 @@
 
 Use `uv run experiment` for one run, `uv run benchmark` for the formal matrix, and `uv run ablation` for component-removal studies.
 
-Before longer experiment runs, use `uv run scripts/quick_validate.py` as the single repository validation command.
+Before longer experiment runs, use `uv run quick-validate` as the single repository validation command. For the full script workflow, resets, and diagnostics, see `docs/usage/scripts.md`.
 
 ## Paths
 
@@ -85,23 +85,7 @@ uv run mlflow ui --backend-store-uri "sqlite:///$PWD/results/mlflow.db" --port 5
 
 ## Cleanup
 
-Reset the thesis SQLite database:
-
-```bash
-uv run reset-experiment-db
-```
-
-Reset MLflow state and checkpoints:
-
-```bash
-uv run cleanup-experiment-artifacts
-```
-
-If you want a fresh experiment cycle, the intended sequence is:
-
-1. `uv run scripts/quick_validate.py`
-2. `uv run reset-experiment-db`
-3. `uv run cleanup-experiment-artifacts`
+For reset and cleanup commands, use the workflow in `docs/usage/scripts.md`.
 
 ### Run Identification
 
