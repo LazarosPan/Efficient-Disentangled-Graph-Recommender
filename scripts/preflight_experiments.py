@@ -32,11 +32,17 @@ FAST_SMOKE_RUNS = [
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run representative preflight experiments")
-    parser.add_argument("--dataset", default="movielens1m", help="Dataset to use for preflight")
+    parser = argparse.ArgumentParser(
+        description="Run representative preflight experiments"
+    )
+    parser.add_argument(
+        "--dataset", default="movielens1m", help="Dataset to use for preflight"
+    )
     parser.add_argument("--data-dir", default="data", help="Data directory")
     parser.add_argument("--device", default="cuda", help="Execution device")
-    parser.add_argument("--epochs", type=int, default=2, help="Epochs per representative run")
+    parser.add_argument(
+        "--epochs", type=int, default=2, help="Epochs per representative run"
+    )
     parser.add_argument(
         "--sample-interactions",
         type=int,
@@ -71,7 +77,9 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Reset the thesis SQLite database after all runs succeed.",
     )
-    parser.add_argument("--dry-run", action="store_true", help="Print the representative plan and exit")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print the representative plan and exit"
+    )
     return parser.parse_args()
 
 
@@ -122,12 +130,18 @@ def _print_plan(args: argparse.Namespace) -> None:
     print(f"Profile: {args.profile}")
     print(f"Epochs per run: {args.epochs}")
     print(f"Sample interactions: {args.sample_interactions}")
-    print(f"Batch size override: {args.batch_size if args.batch_size is not None else 'config default'}")
-    print(f"Loader max rows: {args.loader_max_rows if args.loader_max_rows is not None else 'full dataset'}")
+    print(
+        f"Batch size override: {args.batch_size if args.batch_size is not None else 'config default'}"
+    )
+    print(
+        f"Loader max rows: {args.loader_max_rows if args.loader_max_rows is not None else 'full dataset'}"
+    )
     print(f"MLflow experiment: {args.mlflow_experiment_name}")
     print("Representative runs:")
     for index, (preset, training_mode, graph_method) in enumerate(run_plan, start=1):
-        print(f"  {index}. preset={preset}, training_mode={training_mode}, graph_method={graph_method}")
+        print(
+            f"  {index}. preset={preset}, training_mode={training_mode}, graph_method={graph_method}"
+        )
 
 
 def main() -> int:
@@ -182,8 +196,12 @@ def main() -> int:
         checkpoint_path = Path(result["checkpoint_path"])
         peak_vram_mb = _sqlite_peak_vram(exp_id, DEFAULT_DB_PATH)
         checkpoint_exists = checkpoint_path.exists()
-        checkpoint_reload_ok = checkpoint_exists and _checkpoint_reload_ok(checkpoint_path)
-        resume_ok = checkpoint_exists and _rerun_resume_probe(config, preset, checkpoint_path)
+        checkpoint_reload_ok = checkpoint_exists and _checkpoint_reload_ok(
+            checkpoint_path
+        )
+        resume_ok = checkpoint_exists and _rerun_resume_probe(
+            config, preset, checkpoint_path
+        )
         losses_finite = _losses_finite(result["history"])
 
         summary = {

@@ -12,7 +12,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from experiments.run_experiment import build_config, run_experiment
-from src.data.feature_policy import datasets_with_feature_utility, datasets_with_policy_ablation
+from src.data.feature_policy import (
+    datasets_with_feature_utility,
+    datasets_with_policy_ablation,
+)
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -73,13 +76,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda", help="Execution device")
     parser.add_argument("--seed", type=int, default=13, help="Random seed")
     parser.add_argument("--epochs", type=int, default=1, help="Epochs per probe")
-    parser.add_argument("--batch-size", type=int, default=128, help="Batch size per probe")
+    parser.add_argument(
+        "--batch-size", type=int, default=128, help="Batch size per probe"
+    )
     parser.add_argument(
         "--output-json",
         default="results/feature_policy_probes.json",
         help="Optional JSON output path for probe results",
     )
-    parser.add_argument("--enable-mlflow", action="store_true", help="Enable MLflow tracking for probes")
+    parser.add_argument(
+        "--enable-mlflow", action="store_true", help="Enable MLflow tracking for probes"
+    )
     return parser.parse_args()
 
 
@@ -128,7 +135,9 @@ def _tracked_metrics(metrics: dict[str, float]) -> dict[str, float | None]:
     return {key: metrics.get(key) for key in DEFAULT_METRIC_KEYS}
 
 
-def _rank_delta(candidate: dict[str, float], baseline: dict[str, float], key: str) -> float:
+def _rank_delta(
+    candidate: dict[str, float], baseline: dict[str, float], key: str
+) -> float:
     return float(candidate.get(key, 0.0) - baseline.get(key, 0.0))
 
 
@@ -168,20 +177,44 @@ def _promotion_gate(
         reasons.append("AveragePopularity@50 increased")
 
     if comparison_kind == "policy":
-        if (ndcg_delta > 1e-4 or recall_delta > 1e-4 or map_delta > 1e-4 or mrr_delta > 1e-4) and diversity_ok:
-            return f"promote_{candidate_name}", reasons or ["ranking improved without PyG-metric regressions"]
+        if (
+            ndcg_delta > 1e-4
+            or recall_delta > 1e-4
+            or map_delta > 1e-4
+            or mrr_delta > 1e-4
+        ) and diversity_ok:
+            return f"promote_{candidate_name}", reasons or [
+                "ranking improved without PyG-metric regressions"
+            ]
         if ndcg_delta <= 1e-4 and recall_delta <= 1e-4:
-            return "keep_baseline", reasons or ["broader optional scans did not earn a ranking gain"]
+            return "keep_baseline", reasons or [
+                "broader optional scans did not earn a ranking gain"
+            ]
         return "review", reasons or ["mixed PyG metric signal"]
 
-    if ndcg_delta >= 0.0 and recall_delta >= 0.0 and map_delta >= 0.0 and mrr_delta >= 0.0 and diversity_ok:
-        return f"promote_{candidate_name}", reasons or ["ranking held or improved without PyG-metric regressions"]
+    if (
+        ndcg_delta >= 0.0
+        and recall_delta >= 0.0
+        and map_delta >= 0.0
+        and mrr_delta >= 0.0
+        and diversity_ok
+    ):
+        return f"promote_{candidate_name}", reasons or [
+            "ranking held or improved without PyG-metric regressions"
+        ]
     if ndcg_delta <= -0.01 and recall_delta <= -0.01:
         return "keep_baseline", reasons or ["ranking regressed materially"]
     return "review", reasons or ["mixed PyG metric signal"]
 
 
-def _run_probe_case(args: argparse.Namespace, dataset: str, *, use_features: bool, feature_policy: str, label: str) -> tuple[dict, float]:
+def _run_probe_case(
+    args: argparse.Namespace,
+    dataset: str,
+    *,
+    use_features: bool,
+    feature_policy: str,
+    label: str,
+) -> tuple[dict, float]:
     namespace = _make_namespace(
         args,
         dataset,
@@ -206,18 +239,23 @@ def _run_probe_case(args: argparse.Namespace, dataset: str, *, use_features: boo
     return result, time.perf_counter() - started
 
 
-def _print_case(dataset: str, label: str, elapsed: float, metrics: dict[str, float | None]) -> None:
+def _print_case(
+    dataset: str, label: str, elapsed: float, metrics: dict[str, float | None]
+) -> None:
     summary = ", ".join(
         f"{name}={value:.4f}"
         for name, value in metrics.items()
-        if value is not None and name in {"Precision@50", "Recall@50", "NDCG@50", "MAP@50", "Coverage@50"}
+        if value is not None
+        and name in {"Precision@50", "Recall@50", "NDCG@50", "MAP@50", "Coverage@50"}
     )
     print(f"OK   {dataset:<12} {label:<28} {elapsed:>7.2f}s | {summary}")
 
 
 def _run_utility_probes(args: argparse.Namespace) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    print(f"Utility probes: {len(args.utility_datasets)} datasets (id_only vs thesis_default)")
+    print(
+        f"Utility probes: {len(args.utility_datasets)} datasets (id_only vs thesis_default)"
+    )
     for dataset in args.utility_datasets:
         baseline_result, baseline_elapsed = _run_probe_case(
             args,
@@ -262,7 +300,9 @@ def _run_utility_probes(args: argparse.Namespace) -> list[dict[str, object]]:
 
 def _run_policy_probes(args: argparse.Namespace) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
-    print(f"Policy probes: {len(args.policy_datasets)} datasets (thesis_default vs all_optional)")
+    print(
+        f"Policy probes: {len(args.policy_datasets)} datasets (thesis_default vs all_optional)"
+    )
     for dataset in args.policy_datasets:
         baseline_result, baseline_elapsed = _run_probe_case(
             args,

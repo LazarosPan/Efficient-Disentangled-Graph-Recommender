@@ -14,10 +14,26 @@ logger = logging.getLogger(__name__)
 
 # ML-20M genre list (20 genres)
 _GENRES_20M = [
-    "Action", "Adventure", "Animation", "Children", "Comedy", "Crime",
-    "Documentary", "Drama", "Fantasy", "Film-Noir", "Horror", "IMAX",
-    "Musical", "Mystery", "Romance", "Sci-Fi", "Thriller", "War",
-    "Western", "(no genres listed)",
+    "Action",
+    "Adventure",
+    "Animation",
+    "Children",
+    "Comedy",
+    "Crime",
+    "Documentary",
+    "Drama",
+    "Fantasy",
+    "Film-Noir",
+    "Horror",
+    "IMAX",
+    "Musical",
+    "Mystery",
+    "Romance",
+    "Sci-Fi",
+    "Thriller",
+    "War",
+    "Western",
+    "(no genres listed)",
 ]
 _GENRE_TO_IDX_20M = {g: i for i, g in enumerate(_GENRES_20M)}
 
@@ -104,7 +120,8 @@ def _load_genome_scores(
 
     logger.info(
         "Loaded genome-score features: %d items x %d tags",
-        len(tag_data), n_tags,
+        len(tag_data),
+        n_tags,
     )
     return features
 
@@ -130,8 +147,12 @@ def load_movielens20m(
 
     # Use numpy for speed on 20M rows
     data = np.loadtxt(
-        path, delimiter=",", skiprows=1,
-        dtype=np.float64, usecols=(0, 1, 2, 3), max_rows=max_rows,
+        path,
+        delimiter=",",
+        skiprows=1,
+        dtype=np.float64,
+        usecols=(0, 1, 2, 3),
+        max_rows=max_rows,
     )
 
     raw_users = data[:, 0].astype(np.int64)
@@ -160,7 +181,9 @@ def load_movielens20m(
     if include_optional_features:
         raw_dir = Path(data_dir) / "MovieLens20M" / "raw"
         genre_feats = _load_movie_genres(raw_dir / "movies.csv", item_map, n_items)
-        genome_feats = _load_genome_scores(raw_dir / "genome-scores.csv", item_map, n_items)
+        genome_feats = _load_genome_scores(
+            raw_dir / "genome-scores.csv", item_map, n_items
+        )
         item_parts = [f for f in [genre_feats, genome_feats] if f is not None]
         item_features = np.hstack(item_parts) if item_parts else None
 

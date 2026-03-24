@@ -29,7 +29,9 @@ class EmbeddingModule(nn.Module):
         self.n_items = n_items
         d = config.embed_dim
         self.has_item_features = bool(
-            config.use_features and item_features is not None and item_features.numel() > 0
+            config.use_features
+            and item_features is not None
+            and item_features.numel() > 0
         )
 
         # User embeddings (xavier_uniform_ per PyG LightGCN convention)
@@ -101,7 +103,9 @@ class EmbeddingModule(nn.Module):
         self,
         item_ids: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        item_embed, projected_features, popularity = self._get_item_base_embeddings(item_ids)
+        item_embed, projected_features, popularity = self._get_item_base_embeddings(
+            item_ids
+        )
         if projected_features is None or popularity is None:
             return {"item": item_embed}
 
@@ -110,7 +114,9 @@ class EmbeddingModule(nn.Module):
         popularity_gate = self.popularity_modulator(popularity.unsqueeze(-1))
 
         item_interest = item_embed + interest_gate * projected_features
-        item_conformity = item_embed + conformity_gate * (projected_features * popularity_gate)
+        item_conformity = item_embed + conformity_gate * (
+            projected_features * popularity_gate
+        )
         return {
             "item": item_embed,
             "item_interest": item_interest,

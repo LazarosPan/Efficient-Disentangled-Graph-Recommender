@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 """Verify SQLite experiment tracking is working correctly."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -51,6 +52,7 @@ def check_experiment_logger_import():
     print("\n2. ExperimentLogger Import:")
     try:
         from src.utils.experiment_logger import ExperimentLogger
+
         print("   ✓ ExperimentLogger imported successfully")
         return True
     except ImportError as e:
@@ -88,7 +90,9 @@ def check_experiment_logger_operations(args):
             graph_method="dense",
             profiling_cadence=2,
         )
-        exp_id = logger.log_experiment("test_dataset", config, preset="test", intervention="baseline")
+        exp_id = logger.log_experiment(
+            "test_dataset", config, preset="test", intervention="baseline"
+        )
         print(f"   ✓ Experiment logged (id={exp_id})")
 
         # Log metrics
@@ -127,14 +131,18 @@ def check_experiment_logger_operations(args):
             (exp_id,),
         ).fetchone()
         assert profiling_row is not None, "Missing profiling row"
-        assert profiling_row[:2] == (123.4, 2), f"Unexpected profiling row: {profiling_row}"
+        assert profiling_row[:2] == (123.4, 2), (
+            f"Unexpected profiling row: {profiling_row}"
+        )
         assert profiling_row[2], "Profiling timestamp should be populated"
 
         metric_timestamp = conn.execute(
             "SELECT timestamp FROM metrics WHERE experiment_id = ? ORDER BY id LIMIT 1",
             (exp_id,),
         ).fetchone()
-        assert metric_timestamp is not None and metric_timestamp[0], "Metric timestamp should be populated"
+        assert metric_timestamp is not None and metric_timestamp[0], (
+            "Metric timestamp should be populated"
+        )
 
         experiment_row = conn.execute(
             "SELECT training_mode, graph_method, timestamp FROM experiments WHERE id = ?",
@@ -152,11 +160,21 @@ def check_experiment_logger_operations(args):
             (exp_id,),
         ).fetchone()
         assert summary_row is not None, "experiment_summary view returned no row"
-        assert abs(summary_row[0] - 1.25) < 1e-9, f"Unexpected avg_epoch_time_s: {summary_row[0]}"
-        assert abs(summary_row[1] - 0.15) < 1e-9, f"Unexpected best_recall_20: {summary_row[1]}"
-        assert abs(summary_row[2] - 0.12) < 1e-9, f"Unexpected best_ndcg_20: {summary_row[2]}"
-        assert abs(summary_row[3] - 61.7) < 1e-9, f"Unexpected avg_forward_ms: {summary_row[3]}"
-        assert abs(summary_row[4] - 1500.0) < 1e-9, f"Unexpected peak_vram_mb: {summary_row[4]}"
+        assert abs(summary_row[0] - 1.25) < 1e-9, (
+            f"Unexpected avg_epoch_time_s: {summary_row[0]}"
+        )
+        assert abs(summary_row[1] - 0.15) < 1e-9, (
+            f"Unexpected best_recall_20: {summary_row[1]}"
+        )
+        assert abs(summary_row[2] - 0.12) < 1e-9, (
+            f"Unexpected best_ndcg_20: {summary_row[2]}"
+        )
+        assert abs(summary_row[3] - 61.7) < 1e-9, (
+            f"Unexpected avg_forward_ms: {summary_row[3]}"
+        )
+        assert abs(summary_row[4] - 1500.0) < 1e-9, (
+            f"Unexpected peak_vram_mb: {summary_row[4]}"
+        )
 
         profiling_columns = conn.execute("PRAGMA table_info(profiling)").fetchall()
         assert [row[1] for row in profiling_columns][-1] == "timestamp", (
@@ -177,7 +195,8 @@ def check_experiment_logger_operations(args):
         )
 
         index_names = {
-            row[0] for row in conn.execute(
+            row[0]
+            for row in conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='index'"
             ).fetchall()
         }
@@ -239,11 +258,17 @@ def check_query_examples():
     print("   # View all experiments:")
     print('   sqlite3 results/thesis_experiments.db "SELECT * FROM experiments;"')
     print("\n   # Validation metrics over epochs:")
-    print('   sqlite3 results/thesis_experiments.db "SELECT epoch, metric_name, metric_value, timestamp FROM metrics WHERE split=\'val\' ORDER BY epoch, timestamp;"')
+    print(
+        "   sqlite3 results/thesis_experiments.db \"SELECT epoch, metric_name, metric_value, timestamp FROM metrics WHERE split='val' ORDER BY epoch, timestamp;\""
+    )
     print("\n   # Profiling breakdown:")
-    print('   sqlite3 results/thesis_experiments.db "SELECT stage, SUM(duration_ms) AS total_ms, SUM(stage_call_count) AS calls FROM profiling GROUP BY stage ORDER BY total_ms DESC;"')
+    print(
+        '   sqlite3 results/thesis_experiments.db "SELECT stage, SUM(duration_ms) AS total_ms, SUM(stage_call_count) AS calls FROM profiling GROUP BY stage ORDER BY total_ms DESC;"'
+    )
     print("\n   # Per-experiment summary view:")
-    print('   sqlite3 results/thesis_experiments.db "SELECT dataset, preset, training_mode, graph_method, best_ndcg_20, avg_epoch_time_s FROM experiment_summary;"')
+    print(
+        '   sqlite3 results/thesis_experiments.db "SELECT dataset, preset, training_mode, graph_method, best_ndcg_20, avg_epoch_time_s FROM experiment_summary;"'
+    )
     return True
 
 
@@ -253,13 +278,15 @@ def main():
     print("SQLITE EXPERIMENT TRACKING VERIFICATION")
     print("=" * 60)
 
-    all_good = all([
-        check_sqlite_version(),
-        check_experiment_logger_import(),
-        check_experiment_logger_operations(args),
-        check_results_directory(),
-        check_query_examples(),
-    ])
+    all_good = all(
+        [
+            check_sqlite_version(),
+            check_experiment_logger_import(),
+            check_experiment_logger_operations(args),
+            check_results_directory(),
+            check_query_examples(),
+        ]
+    )
 
     print("\n" + "=" * 60)
     if all_good:

@@ -24,4 +24,4 @@ def orthogonality_loss(
         Scalar loss.
     """
     cos_sim = F.cosine_similarity(interest, conformity, dim=-1)
-    return (cos_sim ** 2).mean()
+    return (cos_sim**2).mean()

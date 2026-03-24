@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 """Legacy compatibility alias for the unified quick validation suite."""
+
 from __future__ import annotations
 
 import argparse
@@ -15,9 +16,15 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
         description="Legacy alias for scripts/quick_validate.py",
         add_help=False,
     )
-    parser.add_argument("--keep-db", action="store_true", help="Deprecated legacy flag; ignored.")
-    parser.add_argument("--db-path", type=str, default=None, help="Deprecated legacy flag; ignored.")
-    parser.add_argument("-h", "--help", action="store_true", help="Show quick_validate help.")
+    parser.add_argument(
+        "--keep-db", action="store_true", help="Deprecated legacy flag; ignored."
+    )
+    parser.add_argument(
+        "--db-path", type=str, default=None, help="Deprecated legacy flag; ignored."
+    )
+    parser.add_argument(
+        "-h", "--help", action="store_true", help="Show quick_validate help."
+    )
     return parser.parse_known_args()
 
 
@@ -26,7 +33,9 @@ def main() -> int:
     from scripts.quick_validate import main as quick_validate_main
 
     if args.keep_db or args.db_path is not None:
-        print("verify-pipeline is now an alias for scripts/quick_validate.py; --keep-db and --db-path are ignored.")
+        print(
+            "verify-pipeline is now an alias for scripts/quick_validate.py; --keep-db and --db-path are ignored."
+        )
 
     forwarded_argv = [sys.argv[0], *passthrough]
     if args.help:

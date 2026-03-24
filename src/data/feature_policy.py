@@ -90,7 +90,9 @@ def thesis_default_columns(
     relative_path: str,
 ) -> tuple[str, ...] | None:
     """Return the thesis-default allowed columns for a file, if any."""
-    dataset_policy = _THESIS_DEFAULT_COLUMNS.get(normalize_dataset_name(dataset_name), {})
+    dataset_policy = _THESIS_DEFAULT_COLUMNS.get(
+        normalize_dataset_name(dataset_name), {}
+    )
     aspect_policy = dataset_policy.get(aspect, {})
     normalized_path = relative_path.replace("\\", "/")
     for suffix, columns in aspect_policy.items():
@@ -99,7 +101,9 @@ def thesis_default_columns(
     return None
 
 
-def thesis_default_file_enabled(dataset_name: str, aspect: str, relative_path: str) -> bool:
+def thesis_default_file_enabled(
+    dataset_name: str, aspect: str, relative_path: str
+) -> bool:
     """Return whether a file contributes to the thesis-default feature path."""
     return thesis_default_columns(dataset_name, aspect, relative_path) is not None
 

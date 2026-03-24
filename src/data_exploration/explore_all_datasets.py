@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 """Validate all 6 benchmark loaders and print per-dataset statistics."""
+
 from __future__ import annotations
 
 import sys
@@ -12,7 +13,14 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from src.data.loaders import LOADERS, load_dataset
 
-BENCHMARK_DATASETS = ["amazonbook", "movielens1m", "movielens20m", "kuairec_v2", "taobao", "kuairand1k"]
+BENCHMARK_DATASETS = [
+    "amazonbook",
+    "movielens1m",
+    "movielens20m",
+    "kuairec_v2",
+    "taobao",
+    "kuairand1k",
+]
 
 
 def describe(name: str, data_dir: str = "data") -> dict | None:
@@ -30,15 +38,21 @@ def describe(name: str, data_dir: str = "data") -> dict | None:
         "n_users": c.n_users,
         "n_items": c.n_items,
         "n_interactions": len(c),
-        "density": len(c) / (c.n_users * c.n_items) * 100 if c.n_users * c.n_items > 0 else 0,
+        "density": len(c) / (c.n_users * c.n_items) * 100
+        if c.n_users * c.n_items > 0
+        else 0,
         "pos_rate": float(c.label.mean()),
         "sign_min": float(c.sign.min()),
         "sign_q25": float(np.percentile(c.sign, 25)),
         "sign_median": float(np.median(c.sign)),
         "sign_q75": float(np.percentile(c.sign, 75)),
         "sign_max": float(c.sign.max()),
-        "user_feat_shape": c.user_features.shape if c.user_features is not None else None,
-        "item_feat_shape": c.item_features.shape if c.item_features is not None else None,
+        "user_feat_shape": c.user_features.shape
+        if c.user_features is not None
+        else None,
+        "item_feat_shape": c.item_features.shape
+        if c.item_features is not None
+        else None,
         "has_predefined_splits": c.train_mask is not None,
         "split_source": "predefined" if c.train_mask is not None else "derived",
     }
@@ -67,14 +81,18 @@ def describe(name: str, data_dir: str = "data") -> dict | None:
 
     # Popularity distribution
     pop = c.popularity
-    print(f"  Popularity: min={pop.min():.4f} median={np.median(pop):.4f} max={pop.max():.4f}")
+    print(
+        f"  Popularity: min={pop.min():.4f} median={np.median(pop):.4f} max={pop.max():.4f}"
+    )
     print(f"  Sign range: [{stats['sign_min']:.2f}, {stats['sign_max']:.2f}]")
     print(f"  Positive rate: {stats['pos_rate']:.2%}")
 
     if c.metadata:
         for k, v in c.metadata.items():
             if isinstance(v, np.ndarray):
-                print(f"  Metadata[{k}]: shape={v.shape}, unique={np.unique(v).tolist()[:10]}")
+                print(
+                    f"  Metadata[{k}]: shape={v.shape}, unique={np.unique(v).tolist()[:10]}"
+                )
             else:
                 print(f"  Metadata[{k}]: {v}")
 
@@ -83,9 +101,12 @@ def describe(name: str, data_dir: str = "data") -> dict | None:
 
 def main():
     import argparse
+
     parser = argparse.ArgumentParser(description="Explore all benchmark datasets")
     parser.add_argument("--data-dir", default="data", help="Data directory")
-    parser.add_argument("--datasets", nargs="*", default=BENCHMARK_DATASETS, help="Datasets to explore")
+    parser.add_argument(
+        "--datasets", nargs="*", default=BENCHMARK_DATASETS, help="Datasets to explore"
+    )
     args = parser.parse_args()
 
     print("=" * 70)
@@ -107,7 +128,9 @@ def main():
         print("\n" + "=" * 70)
         print("COMPARATIVE SUMMARY")
         print("=" * 70)
-        print(f"{'Dataset':<15} {'Users':>10} {'Items':>10} {'Interact.':>12} {'Density':>8} {'Pos%':>7} {'Splits':>10}")
+        print(
+            f"{'Dataset':<15} {'Users':>10} {'Items':>10} {'Interact.':>12} {'Density':>8} {'Pos%':>7} {'Splits':>10}"
+        )
         print("-" * 70)
         for s in results:
             print(

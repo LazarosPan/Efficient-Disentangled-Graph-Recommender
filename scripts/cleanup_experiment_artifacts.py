@@ -63,7 +63,9 @@ def print_plan(selected: tuple[CleanupTarget, ...]) -> None:
         print(f"  note: {target.description}")
         if target.kind == "file":
             sidecars = iter_sidecar_paths(target.path)
-            present_sidecars = [str(sidecar) for sidecar in sidecars if sidecar.exists()]
+            present_sidecars = [
+                str(sidecar) for sidecar in sidecars if sidecar.exists()
+            ]
             if present_sidecars:
                 print(f"  sidecars: {', '.join(present_sidecars)}")
     print("=" * 72)

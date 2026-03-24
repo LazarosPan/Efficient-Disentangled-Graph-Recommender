@@ -80,7 +80,11 @@ class ExperimentLogger:
         qualified_name: str,
         default_sql: str,
     ) -> str:
-        return qualified_name if qualified_name.split(".")[-1] in legacy_columns else default_sql
+        return (
+            qualified_name
+            if qualified_name.split(".")[-1] in legacy_columns
+            else default_sql
+        )
 
     def _table_exists(self, table_name: str) -> bool:
         row = self.conn.execute(
@@ -188,9 +192,9 @@ class ExperimentLogger:
                 intervention,
                 config_json,
                 seed,
-                {self._qualified_or_default(legacy_columns, 'e.training_mode', 'NULL')} AS training_mode,
-                {self._qualified_or_default(legacy_columns, 'e.graph_method', 'NULL')} AS graph_method,
-                {self._qualified_or_default(legacy_columns, 'e.timestamp', self._SQLITE_NOW_UTC)} AS timestamp
+                {self._qualified_or_default(legacy_columns, "e.training_mode", "NULL")} AS training_mode,
+                {self._qualified_or_default(legacy_columns, "e.graph_method", "NULL")} AS graph_method,
+                {self._qualified_or_default(legacy_columns, "e.timestamp", self._SQLITE_NOW_UTC)} AS timestamp
             FROM {legacy_table} e
             ORDER BY id
             """
@@ -234,9 +238,9 @@ class ExperimentLogger:
                 p.vram_before_mb,
                 p.vram_after_mb,
                 p.vram_peak_mb,
-                {self._qualified_or_default(legacy_columns, 'p.stage_call_count', '1')} AS stage_call_count,
+                {self._qualified_or_default(legacy_columns, "p.stage_call_count", "1")} AS stage_call_count,
                 COALESCE(
-                    {self._qualified_or_default(legacy_columns, 'p.timestamp', 'NULL')},
+                    {self._qualified_or_default(legacy_columns, "p.timestamp", "NULL")},
                     e.timestamp,
                     {self._SQLITE_NOW_UTC}
                 ) AS timestamp
@@ -280,7 +284,7 @@ class ExperimentLogger:
                 m.metric_name,
                 m.metric_value,
                 COALESCE(
-                    {self._qualified_or_default(legacy_columns, 'm.timestamp', 'NULL')},
+                    {self._qualified_or_default(legacy_columns, "m.timestamp", "NULL")},
                     e.timestamp,
                     {self._SQLITE_NOW_UTC}
                 ) AS timestamp
@@ -372,7 +376,9 @@ class ExperimentLogger:
 
         for stage in profiler_stages:
             bucket = aggregated[stage.name]
-            bucket["duration_ms"] = float(bucket["duration_ms"]) + float(stage.elapsed_ms)
+            bucket["duration_ms"] = float(bucket["duration_ms"]) + float(
+                stage.elapsed_ms
+            )
             bucket["vram_before_mb"].append(stage.vram_before_mb)
             bucket["vram_after_mb"].append(stage.vram_after_mb)
             bucket["vram_peak_mb"].append(stage.vram_peak_mb)
@@ -385,7 +391,11 @@ class ExperimentLogger:
                 "vram_before_mb": self._mean_or_none(values["vram_before_mb"]),
                 "vram_after_mb": self._mean_or_none(values["vram_after_mb"]),
                 "vram_peak_mb": max(
-                    (float(value) for value in values["vram_peak_mb"] if value is not None),
+                    (
+                        float(value)
+                        for value in values["vram_peak_mb"]
+                        if value is not None
+                    ),
                     default=None,
                 ),
                 "stage_call_count": int(values["stage_call_count"]),
@@ -453,7 +463,14 @@ class ExperimentLogger:
             ),
         )
 
-    def log_metric(self, exp_id: int, metric_name: str, value: float, epoch: int | None = None, split: str = "test") -> None:
+    def log_metric(
+        self,
+        exp_id: int,
+        metric_name: str,
+        value: float,
+        epoch: int | None = None,
+        split: str = "test",
+    ) -> None:
         """Log a single metric value."""
         if not math.isfinite(float(value)):
             raise ValueError(
@@ -464,7 +481,14 @@ class ExperimentLogger:
         self.conn.execute(
             "INSERT INTO metrics (experiment_id, epoch, split, metric_name, metric_value, timestamp) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (exp_id, epoch, split, metric_name, value, datetime.now(timezone.utc).isoformat()),
+            (
+                exp_id,
+                epoch,
+                split,
+                metric_name,
+                value,
+                datetime.now(timezone.utc).isoformat(),
+            ),
         )
 
     def log_epoch(
@@ -479,7 +503,9 @@ class ExperimentLogger:
     ) -> None:
         """Convenience: log all data for one epoch in a single call."""
         self.log_metric(exp_id, "loss", train_loss, epoch=epoch, split="train")
-        self.log_metric(exp_id, "epoch_time_s", epoch_time_s, epoch=epoch, split="train")
+        self.log_metric(
+            exp_id, "epoch_time_s", epoch_time_s, epoch=epoch, split="train"
+        )
 
         for name, value in val_metrics.items():
             self.log_metric(exp_id, name, value, epoch=epoch, split="val")
@@ -508,7 +534,9 @@ class ExperimentLogger:
                 for attr in ("alpha_pos", "alpha_neg"):
                     param = getattr(gcn, attr, None)
                     if param is not None:
-                        self.log_metric(exp_id, attr, param.item(), epoch=epoch, split="train")
+                        self.log_metric(
+                            exp_id, attr, param.item(), epoch=epoch, split="train"
+                        )
 
         self.conn.commit()
 

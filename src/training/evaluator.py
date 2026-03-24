@@ -26,7 +26,9 @@ class Evaluator:
         self.ks = config.eval_ks
         self.eval_scoring_mode = config.eval_scoring_mode
 
-    def _build_metrics(self, n_items: int, popularity: torch.Tensor) -> dict[str, object]:
+    def _build_metrics(
+        self, n_items: int, popularity: torch.Tensor
+    ) -> dict[str, object]:
         metrics: dict[str, object] = {}
         for k in self.ks:
             metrics[f"Precision@{k}"] = LinkPredPrecision(k=k)
@@ -37,7 +39,9 @@ class Evaluator:
             metrics[f"MRR@{k}"] = LinkPredMRR(k=k)
             metrics[f"HitRatio@{k}"] = LinkPredHitRatio(k=k)
             metrics[f"Coverage@{k}"] = LinkPredCoverage(k=k, num_dst_nodes=n_items)
-            metrics[f"AveragePopularity@{k}"] = LinkPredAveragePopularity(k=k, popularity=popularity)
+            metrics[f"AveragePopularity@{k}"] = LinkPredAveragePopularity(
+                k=k, popularity=popularity
+            )
         return metrics
 
     @torch.no_grad()

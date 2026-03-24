@@ -49,7 +49,8 @@ def build_graph(
 
     # Split masks (predefined if available, else temporal)
     train_mask, val_mask, test_mask = canonical.get_splits(
-        config.train_ratio, config.val_ratio,
+        config.train_ratio,
+        config.val_ratio,
     )
     train_mask_t = torch.from_numpy(train_mask)
     val_mask_t = torch.from_numpy(val_mask)
@@ -58,17 +59,32 @@ def build_graph(
     # Build edge_index + aligned edge_sign depending on method
     if config.graph_method == "dense":
         edge_index, edge_sign = _build_dense(
-            user_nodes, item_nodes, train_mask_t, all_signs,
+            user_nodes,
+            item_nodes,
+            train_mask_t,
+            all_signs,
         )
     elif config.graph_method == "knn":
         edge_index, edge_sign = _build_knn(
-            user_nodes, item_nodes, train_mask_t, all_signs,
-            embeddings, config.knn_k, n_users, n_items,
+            user_nodes,
+            item_nodes,
+            train_mask_t,
+            all_signs,
+            embeddings,
+            config.knn_k,
+            n_users,
+            n_items,
         )
     elif config.graph_method == "cagra":
         edge_index, edge_sign = _build_cagra(
-            user_nodes, item_nodes, train_mask_t, all_signs,
-            embeddings, config, n_users, n_items,
+            user_nodes,
+            item_nodes,
+            train_mask_t,
+            all_signs,
+            embeddings,
+            config,
+            n_users,
+            n_items,
         )
     else:
         raise ValueError(f"Unknown graph_method: {config.graph_method}")
@@ -118,10 +134,13 @@ def _build_dense(
     train_signs = all_signs[train_mask]
 
     # Undirected: add both directions
-    edge_index = torch.stack([
-        torch.cat([src, dst]),
-        torch.cat([dst, src]),
-    ], dim=0)
+    edge_index = torch.stack(
+        [
+            torch.cat([src, dst]),
+            torch.cat([dst, src]),
+        ],
+        dim=0,
+    )
 
     # Duplicate signs for both directions (forward + backward)
     edge_sign = torch.cat([train_signs, train_signs])
@@ -146,7 +165,10 @@ def _build_knn(
     """
     # Always include bipartite interaction edges
     bipartite_ei, bipartite_sign = _build_dense(
-        user_nodes, item_nodes, train_mask, all_signs,
+        user_nodes,
+        item_nodes,
+        train_mask,
+        all_signs,
     )
 
     if embeddings is None:
@@ -179,7 +201,10 @@ def _build_cagra(
     CAGRA edges receive a neutral sign of 0.0.
     """
     bipartite_ei, bipartite_sign = _build_dense(
-        user_nodes, item_nodes, train_mask, all_signs,
+        user_nodes,
+        item_nodes,
+        train_mask,
+        all_signs,
     )
 
     if embeddings is None:
@@ -197,7 +222,10 @@ def _build_cagra(
 
         search_params = cagra.SearchParams(team_size=config.cagra_team_size)
         distances, neighbors = cagra.search(
-            search_params, index, emb_np, k=config.knn_k,
+            search_params,
+            index,
+            emb_np,
+            k=config.knn_k,
         )
 
         neighbors_np = neighbors.copy_to_host()
@@ -220,6 +248,12 @@ def _build_cagra(
     except ImportError:
         # Fallback to kNN if cuvs not available
         return _build_knn(
-            user_nodes, item_nodes, train_mask, all_signs,
-            embeddings, config.knn_k, n_users, n_items,
+            user_nodes,
+            item_nodes,
+            train_mask,
+            all_signs,
+            embeddings,
+            config.knn_k,
+            n_users,
+            n_items,
         )

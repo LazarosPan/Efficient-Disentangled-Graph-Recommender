@@ -6,6 +6,7 @@ Usage:
     python scripts/visualize_results.py --plot performance  # Just performance table
     python scripts/visualize_results.py --plot ablation     # Ablation heatmap
 """
+
 from __future__ import annotations
 
 import argparse
@@ -15,6 +16,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")  # Non-interactive backend
 import matplotlib.pyplot as plt
 import numpy as np
@@ -27,15 +29,17 @@ DB_PATH = REPO_ROOT / "results" / "thesis_experiments.db"
 FIGURE_DIR = REPO_ROOT / "results" / "figures"
 
 # Thesis-quality defaults
-plt.rcParams.update({
-    "font.size": 11,
-    "axes.titlesize": 13,
-    "axes.labelsize": 12,
-    "legend.fontsize": 10,
-    "figure.dpi": 150,
-    "savefig.dpi": 300,
-    "savefig.bbox": "tight",
-})
+plt.rcParams.update(
+    {
+        "font.size": 11,
+        "axes.titlesize": 13,
+        "axes.labelsize": 12,
+        "legend.fontsize": 10,
+        "figure.dpi": 150,
+        "savefig.dpi": 300,
+        "savefig.bbox": "tight",
+    }
+)
 
 
 def connect():
@@ -83,7 +87,9 @@ def plot_performance_table(conn):
     width = 0.8 / max(len(presets), 1)
 
     for i, preset in enumerate(presets):
-        values = [data[ds].get(preset, {}).get(metric_name, (0, 0))[0] for ds in datasets]
+        values = [
+            data[ds].get(preset, {}).get(metric_name, (0, 0))[0] for ds in datasets
+        ]
         offset = (i - len(presets) / 2 + 0.5) * width
         ax.bar(x + offset, values, width * 0.9, label=preset or "custom")
 
@@ -116,7 +122,9 @@ def plot_training_curves(conn):
     for exp_id, dataset, preset, seed in experiments:
         groups[(dataset, preset or "custom")].append(exp_id)
 
-    fig, axes = plt.subplots(1, min(len(groups), 4), figsize=(5 * min(len(groups), 4), 4), squeeze=False)
+    fig, axes = plt.subplots(
+        1, min(len(groups), 4), figsize=(5 * min(len(groups), 4), 4), squeeze=False
+    )
     axes = axes.flatten()
 
     for idx, ((dataset, preset), exp_ids) in enumerate(sorted(groups.items())):
@@ -124,11 +132,14 @@ def plot_training_curves(conn):
             break
         ax = axes[idx]
         for exp_id in exp_ids:
-            losses = conn.execute("""
+            losses = conn.execute(
+                """
                 SELECT epoch, metric_value FROM metrics
                 WHERE experiment_id = ? AND split = 'train' AND metric_name = 'loss'
                 ORDER BY epoch
-            """, (exp_id,)).fetchall()
+            """,
+                (exp_id,),
+            ).fetchall()
             if losses:
                 epochs, values = zip(*losses)
                 ax.plot(epochs, values, alpha=0.7)
@@ -177,7 +188,9 @@ def plot_profiling_breakdown(conn):
     groups = sorted(epoch_total_data.keys())
     stages = sorted(labels)
 
-    fig, axes = plt.subplots(1, 2, figsize=(max(12, len(groups) * 2.4), 5), squeeze=False)
+    fig, axes = plt.subplots(
+        1, 2, figsize=(max(12, len(groups) * 2.4), 5), squeeze=False
+    )
     ax_epoch, ax_call = axes[0]
     x = np.arange(len(groups))
     bottom = np.zeros(len(groups))
@@ -290,7 +303,9 @@ def plot_ablation_heatmap(conn):
             if var in data[ds]:
                 matrix[i, j] = data[ds][var] - baseline
 
-    fig, ax = plt.subplots(figsize=(max(8, len(variants) * 1.2), max(4, len(datasets) * 0.8)))
+    fig, ax = plt.subplots(
+        figsize=(max(8, len(variants) * 1.2), max(4, len(datasets) * 0.8))
+    )
 
     # Mask NaN for display
     masked = np.ma.masked_invalid(matrix)
@@ -307,7 +322,9 @@ def plot_ablation_heatmap(conn):
     for i in range(len(datasets)):
         for j in range(len(variants)):
             if not np.isnan(matrix[i, j]):
-                ax.text(j, i, f"{matrix[i, j]:+.4f}", ha="center", va="center", fontsize=8)
+                ax.text(
+                    j, i, f"{matrix[i, j]:+.4f}", ha="center", va="center", fontsize=8
+                )
 
     fig.colorbar(im, ax=ax, label=f"{metric_name} Delta")
 
@@ -327,8 +344,12 @@ PLOT_FUNCTIONS = {
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate thesis figures from experiment results")
-    parser.add_argument("--plot", choices=list(PLOT_FUNCTIONS.keys()), help="Generate specific plot")
+    parser = argparse.ArgumentParser(
+        description="Generate thesis figures from experiment results"
+    )
+    parser.add_argument(
+        "--plot", choices=list(PLOT_FUNCTIONS.keys()), help="Generate specific plot"
+    )
     args = parser.parse_args()
 
     FIGURE_DIR.mkdir(parents=True, exist_ok=True)

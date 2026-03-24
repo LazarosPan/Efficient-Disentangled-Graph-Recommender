@@ -5,6 +5,7 @@ Usage:
     python scripts/verify_setup.py          # Basic environment check
     python scripts/verify_setup.py --all    # Full check (env + sqlite + pipeline)
 """
+
 import argparse
 import subprocess
 import sys
@@ -56,7 +57,11 @@ def check_project_imports():
 
 def main():
     parser = argparse.ArgumentParser(description="Verify thesis environment setup")
-    parser.add_argument("--all", action="store_true", help="Run full verification (env + sqlite + pipeline)")
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Run full verification (env + sqlite + pipeline)",
+    )
     args = parser.parse_args()
 
     print("=" * 60)
@@ -64,28 +69,36 @@ def main():
     print("=" * 60)
 
     print("\n1. PyTorch:")
-    all_good = all([
-        check_import("torch", "PyTorch"),
-    ])
+    all_good = all(
+        [
+            check_import("torch", "PyTorch"),
+        ]
+    )
 
     print("\n2. PyTorch-Geometric:")
-    all_good &= all([
-        check_import("torch_geometric", "PyTorch Geometric"),
-    ])
+    all_good &= all(
+        [
+            check_import("torch_geometric", "PyTorch Geometric"),
+        ]
+    )
 
     print("\n3. MLFlow:")
-    all_good &= all([
-        check_import("mlflow", "MLFlow"),
-    ])
+    all_good &= all(
+        [
+            check_import("mlflow", "MLFlow"),
+        ]
+    )
 
     print("\n4. Data libraries:")
-    all_good &= all([
-        check_import("pandas", "Pandas"),
-        check_import("numpy", "NumPy"),
-        check_import("scipy", "SciPy"),
-        check_import("sklearn", "scikit-learn"),
-        check_import("polars", "Polars"),
-    ])
+    all_good &= all(
+        [
+            check_import("pandas", "Pandas"),
+            check_import("numpy", "NumPy"),
+            check_import("scipy", "SciPy"),
+            check_import("sklearn", "scikit-learn"),
+            check_import("polars", "Polars"),
+        ]
+    )
 
     print("\n5. Visualization:")
     all_good &= check_import("matplotlib", "Matplotlib")
@@ -96,6 +109,7 @@ def main():
     print("\n7. GPU test:")
     try:
         import torch
+
         if torch.cuda.is_available():
             gpu_name = torch.cuda.get_device_name(0)
             vram = torch.cuda.get_device_properties(0).total_memory / 1e9
@@ -132,7 +146,14 @@ def main():
         print("=" * 60)
         print("RUNNING QUICK VALIDATION...")
         print("=" * 60)
-        result = subprocess.run([sys.executable, scripts_dir / "quick_validate.py", "--categories", "evaluation"])
+        result = subprocess.run(
+            [
+                sys.executable,
+                scripts_dir / "quick_validate.py",
+                "--categories",
+                "evaluation",
+            ]
+        )
         if result.returncode != 0:
             sys.exit(1)
 

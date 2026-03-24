@@ -2,6 +2,7 @@
 
 Each variant starts from ``preset_full()`` and disables one component.
 """
+
 from __future__ import annotations
 
 from src.utils.config import UCaGNNConfig

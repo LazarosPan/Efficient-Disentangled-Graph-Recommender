@@ -16,15 +16,15 @@ from torch_geometric.utils import k_hop_subgraph
 class SubgraphBatch:
     """Pre-processed subgraph ready for DualBranchGCN."""
 
-    sub_edge_index: torch.Tensor       # (2, E_sub) — users-first layout
+    sub_edge_index: torch.Tensor  # (2, E_sub) — users-first layout
     sub_edge_sign: torch.Tensor | None  # (E_sub,) aligned signs, or None
-    user_global_ids: torch.Tensor      # global user IDs in subgraph
-    item_global_ids: torch.Tensor      # global item IDs (0-indexed, not offset)
+    user_global_ids: torch.Tensor  # global user IDs in subgraph
+    item_global_ids: torch.Tensor  # global item IDs (0-indexed, not offset)
     n_sub_users: int
     n_sub_items: int
-    batch_user_local: torch.Tensor     # local indices for batch users
-    batch_pos_local: torch.Tensor      # local indices for batch pos items
-    batch_neg_local: torch.Tensor      # local indices for batch neg items
+    batch_user_local: torch.Tensor  # local indices for batch users
+    batch_pos_local: torch.Tensor  # local indices for batch pos items
+    batch_neg_local: torch.Tensor  # local indices for batch neg items
 
 
 class SubgraphSampler:
@@ -97,7 +97,9 @@ class SubgraphSampler:
         # Apply fan-out limits if configured
         if self.max_neighbors_per_hop is not None:
             sub_ei, edge_mask = self._apply_fanout(
-                subset, sub_ei, edge_mask,
+                subset,
+                sub_ei,
+                edge_mask,
             )
 
         # Separate users and items in the subgraph
@@ -125,13 +127,16 @@ class SubgraphSampler:
 
         # Map batch user/item IDs to local indices in the users-first layout
         batch_user_local = self._map_to_local(
-            batch_users, user_global_ids,
+            batch_users,
+            user_global_ids,
         )
         batch_pos_local = self._map_to_local(
-            batch_pos_items, item_global_ids,
+            batch_pos_items,
+            item_global_ids,
         )
         batch_neg_local = self._map_to_local(
-            batch_neg_items, item_global_ids,
+            batch_neg_items,
+            item_global_ids,
         )
 
         return SubgraphBatch(
@@ -167,7 +172,9 @@ class SubgraphSampler:
         for node_local in range(n_sub):
             incoming = (sub_ei[1] == node_local).nonzero(as_tuple=True)[0]
             if incoming.size(0) > max_nb:
-                drop_idx = incoming[torch.randperm(incoming.size(0), device=device)[max_nb:]]
+                drop_idx = incoming[
+                    torch.randperm(incoming.size(0), device=device)[max_nb:]
+                ]
                 keep_mask[drop_idx] = False
 
         sub_ei = sub_ei[:, keep_mask]

@@ -16,7 +16,9 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
-PYG_METRICS_DOC = PROJECT_ROOT / ".github" / "skills" / "pytorch-geometric" / "metrics.md"
+PYG_METRICS_DOC = (
+    PROJECT_ROOT / ".github" / "skills" / "pytorch-geometric" / "metrics.md"
+)
 THESIS_DB_PATH = PROJECT_ROOT / "results" / "thesis_experiments.db"
 MLFLOW_DB_PATH = PROJECT_ROOT / "results" / "mlflow.db"
 SCAN_ROOTS = ("src", "scripts", "experiments")
@@ -33,9 +35,19 @@ class MetricOccurrence:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Audit repo/database metric names against the PyG metrics doc")
-    parser.add_argument("--include-docs", action="store_true", help="Also scan implementation docs for metric literals")
-    parser.add_argument("--strict", action="store_true", help="Exit non-zero when non-PyG metric names are found")
+    parser = argparse.ArgumentParser(
+        description="Audit repo/database metric names against the PyG metrics doc"
+    )
+    parser.add_argument(
+        "--include-docs",
+        action="store_true",
+        help="Also scan implementation docs for metric literals",
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero when non-PyG metric names are found",
+    )
     return parser.parse_args()
 
 
@@ -65,14 +77,18 @@ def _iter_files(include_docs: bool) -> list[Path]:
     return sorted(files)
 
 
-def _scan_source_literals(allowed: set[str], include_docs: bool) -> tuple[list[MetricOccurrence], list[MetricOccurrence]]:
+def _scan_source_literals(
+    allowed: set[str], include_docs: bool
+) -> tuple[list[MetricOccurrence], list[MetricOccurrence]]:
     allowed_hits: list[MetricOccurrence] = []
     disallowed_hits: list[MetricOccurrence] = []
     for path in _iter_files(include_docs):
         relative = path.relative_to(PROJECT_ROOT).as_posix()
         text = path.read_text(encoding="utf-8")
         for family, k_value in METRIC_LITERAL_RE.findall(text):
-            occurrence = MetricOccurrence(family=family, literal=f"{family}@{k_value}", location=relative)
+            occurrence = MetricOccurrence(
+                family=family, literal=f"{family}@{k_value}", location=relative
+            )
             if family in allowed:
                 allowed_hits.append(occurrence)
             else:
@@ -107,13 +123,15 @@ def _query_mlflow_metric_names(db_path: Path) -> list[str]:
     for (key,) in rows:
         if not key.startswith(MLFLOW_TEST_PREFIX):
             continue
-        unsuffixed = key[len(MLFLOW_TEST_PREFIX):]
+        unsuffixed = key[len(MLFLOW_TEST_PREFIX) :]
         normalized = unsuffixed.replace("_at_", "@")
         names.append(normalized)
     return sorted(set(names))
 
 
-def _partition_metric_names(names: list[str], allowed: set[str]) -> tuple[list[str], list[str]]:
+def _partition_metric_names(
+    names: list[str], allowed: set[str]
+) -> tuple[list[str], list[str]]:
     allowed_names: list[str] = []
     disallowed_names: list[str] = []
     for name in names:
@@ -156,7 +174,9 @@ def _print_names(title: str, names: list[str]) -> None:
 def main() -> int:
     args = parse_args()
     allowed = _allowed_metric_families()
-    source_allowed, source_disallowed = _scan_source_literals(allowed, include_docs=args.include_docs)
+    source_allowed, source_disallowed = _scan_source_literals(
+        allowed, include_docs=args.include_docs
+    )
     sqlite_names = _query_sqlite_metric_names(THESIS_DB_PATH)
     sqlite_allowed, sqlite_disallowed = _partition_metric_names(sqlite_names, allowed)
     mlflow_names = _query_mlflow_metric_names(MLFLOW_DB_PATH)
@@ -165,8 +185,12 @@ def main() -> int:
     _print_section("PYG METRIC AUDIT")
     print("Allowed metric families from metrics.md:")
     print("  " + ", ".join(sorted(allowed)))
-    print("  note: Diversity and Personalization are allowed by PyG, but not currently logged by the evaluator.")
-    print("  note: database findings report distinct metric names across stored history, so stale rows from older runs remain visible until cleaned.")
+    print(
+        "  note: Diversity and Personalization are allowed by PyG, but not currently logged by the evaluator."
+    )
+    print(
+        "  note: database findings report distinct metric names across stored history, so stale rows from older runs remain visible until cleaned."
+    )
 
     print("-" * 78)
     _print_occurrences("Implementation-source metric literals", source_allowed)

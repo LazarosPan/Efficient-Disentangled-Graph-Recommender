@@ -50,7 +50,9 @@ class MiniBatchTrainer:
         self.exp_id = exp_id
         self.evaluator = Evaluator(config)
 
-        self.device = torch.device(config.device if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(
+            config.device if torch.cuda.is_available() else "cpu"
+        )
         self.model.to(self.device)
         self.loss_suite.to(self.device)
 
@@ -147,13 +149,17 @@ class MiniBatchTrainer:
                 # Negative sampling
                 with profile_stage("neg_sample", self.profiler):
                     batch_neg_items = self.sampler.sample(
-                        batch_size, batch_pos_items, self.device,
+                        batch_size,
+                        batch_pos_items,
+                        self.device,
                     ).squeeze(-1)
 
                 # Extract subgraph
                 with profile_stage("subgraph", self.profiler):
                     sub_batch = self.subgraph_sampler.sample(
-                        batch_users, batch_pos_items, batch_neg_items,
+                        batch_users,
+                        batch_pos_items,
+                        batch_neg_items,
                     )
 
                 # Forward pass on subgraph
@@ -164,8 +170,10 @@ class MiniBatchTrainer:
                 with profile_stage("loss", self.profiler):
                     local_popularity = popularity[sub_batch.item_global_ids]
                     losses = self.loss_suite(
-                        output, local_popularity,
-                        sub_batch.batch_pos_local, epoch,
+                        output,
+                        local_popularity,
+                        sub_batch.batch_pos_local,
+                        epoch,
                     )
 
                 # Backward + step
@@ -173,7 +181,8 @@ class MiniBatchTrainer:
                     self.optimizer.zero_grad()
                     losses["total"].backward()
                     torch.nn.utils.clip_grad_norm_(
-                        list(self.model.parameters()) + list(self.loss_suite.parameters()),
+                        list(self.model.parameters())
+                        + list(self.loss_suite.parameters()),
                         max_norm=self.config.grad_clip_norm,
                     )
                     self.optimizer.step()
@@ -186,7 +195,9 @@ class MiniBatchTrainer:
             # Validation (full-graph — inference VRAM is lower due to torch.no_grad)
             with profile_stage("eval", self.profiler):
                 val_metrics = self.evaluator.evaluate(
-                    self.model, data, data.val_mask,
+                    self.model,
+                    data,
+                    data.val_mask,
                 )
             history["val_metrics"].append(val_metrics)
             epoch_time_s = time.perf_counter() - epoch_start
@@ -195,7 +206,7 @@ class MiniBatchTrainer:
             primary_metric = f"NDCG@{self.config.eval_ks[-1]}"
             current_ndcg = val_metrics.get(primary_metric, 0.0)
             logger.info(
-                f"Epoch {epoch+1:3d}/{self.config.epochs} | "
+                f"Epoch {epoch + 1:3d}/{self.config.epochs} | "
                 f"Loss: {avg_loss:.4f} | "
                 f"{primary_metric}: {current_ndcg:.4f} [mini-batch]"
             )
@@ -206,7 +217,11 @@ class MiniBatchTrainer:
             # SQLite experiment logging
             if self.experiment_logger and self.exp_id is not None:
                 self.experiment_logger.log_epoch(
-                    self.exp_id, epoch, avg_loss, epoch_time_s, val_metrics,
+                    self.exp_id,
+                    epoch,
+                    avg_loss,
+                    epoch_time_s,
+                    val_metrics,
                     self.profiler.stages if should_profile and self.profiler else [],
                     self.model,
                 )
@@ -225,7 +240,7 @@ class MiniBatchTrainer:
                 self.patience_counter += 1
                 if self.patience_counter >= self.config.patience:
                     logger.info(
-                        f"Early stopping at epoch {epoch+1} "
+                        f"Early stopping at epoch {epoch + 1} "
                         f"(best {primary_metric}: {self.best_ndcg:.4f})"
                     )
                     if checkpoint_path is not None and checkpoint_every > 0:
@@ -298,6 +313,8 @@ class MiniBatchTrainer:
             try:
                 torch.cuda.set_rng_state_all(cuda_rng_state_all)
             except RuntimeError:
-                logger.warning("Failed to restore CUDA RNG state from checkpoint %s", path)
+                logger.warning(
+                    "Failed to restore CUDA RNG state from checkpoint %s", path
+                )
         logger.info(f"Checkpoint loaded from {path}")
         return ckpt

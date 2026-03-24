@@ -9,6 +9,7 @@ Usage:
     python scripts/query_results.py --alpha 1          # Show alpha drift for experiment 1
     python scripts/query_results.py --bottleneck 1     # Show bottleneck breakdown for experiment 1
 """
+
 from __future__ import annotations
 
 import argparse
@@ -30,8 +31,12 @@ def connect():
     """Connect to experiment database."""
     if not DB_PATH.exists():
         print(f"Database not found: {DB_PATH.resolve()}")
-        print("Run a real experiment first to create the persistent database in results/.")
-        print("The verify scripts use temporary .db files and remove them when they finish.")
+        print(
+            "Run a real experiment first to create the persistent database in results/."
+        )
+        print(
+            "The verify scripts use temporary .db files and remove them when they finish."
+        )
         sys.exit(1)
 
     from src.utils.experiment_logger import ExperimentLogger
@@ -58,18 +63,25 @@ def list_experiments(conn):
         print("No experiments found.")
         return
 
-    print(f"{'ID':>4} | {'Timestamp':<20} | {'Dataset':<15} | {'Preset':<12} | {'Intervention':<12} | Seed")
+    print(
+        f"{'ID':>4} | {'Timestamp':<20} | {'Dataset':<15} | {'Preset':<12} | {'Intervention':<12} | Seed"
+    )
     print("-" * 80)
     for row in rows:
-        print(f"{row[0]:>4} | {row[1][:20]:<20} | {row[2] or '-':<15} | {row[3] or '-':<12} | {row[4] or '-':<12} | {row[5] or '-'}")
+        print(
+            f"{row[0]:>4} | {row[1][:20]:<20} | {row[2] or '-':<15} | {row[3] or '-':<12} | {row[4] or '-':<12} | {row[5] or '-'}"
+        )
 
 
 def show_experiment(conn, exp_id):
     """Show experiment details."""
-    row = conn.execute("""
+    row = conn.execute(
+        """
         SELECT id, timestamp, dataset, preset, intervention, config_json, seed
         FROM experiments WHERE id = ?
-    """, (exp_id,)).fetchone()
+    """,
+        (exp_id,),
+    ).fetchone()
 
     if not row:
         print(f"Experiment {exp_id} not found.")
@@ -100,12 +112,15 @@ def show_metrics(conn, exp_id):
 
     # Group by split
     for split in ["train", "val", "test"]:
-        rows = conn.execute("""
+        rows = conn.execute(
+            """
             SELECT epoch, metric_name, metric_value, timestamp
             FROM metrics
             WHERE experiment_id = ? AND split = ?
             ORDER BY epoch, metric_name, timestamp
-        """, (exp_id, split)).fetchall()
+        """,
+            (exp_id, split),
+        ).fetchall()
 
         if rows:
             print(f"\n{split.upper()}:")
@@ -123,7 +138,8 @@ def show_profiling(conn, exp_id):
     print("=" * 80)
 
     # Summary by stage
-    rows = conn.execute("""
+    rows = conn.execute(
+        """
         SELECT stage,
                SUM(duration_ms) as total_ms,
                AVG(duration_ms) as avg_epoch_ms,
@@ -139,7 +155,9 @@ def show_profiling(conn, exp_id):
         WHERE experiment_id = ?
         GROUP BY stage
         ORDER BY total_ms DESC
-    """, (exp_id,)).fetchall()
+    """,
+        (exp_id,),
+    ).fetchall()
 
     if not rows:
         print("No profiling data found.")
@@ -168,12 +186,15 @@ def show_alpha_drift(conn, exp_id):
     print(f"ALPHA DRIFT (Experiment {exp_id})")
     print("=" * 80)
 
-    rows = conn.execute("""
+    rows = conn.execute(
+        """
         SELECT epoch, metric_name, metric_value
         FROM metrics
         WHERE experiment_id = ? AND metric_name LIKE 'alpha%'
         ORDER BY epoch, metric_name
-    """, (exp_id,)).fetchall()
+    """,
+        (exp_id,),
+    ).fetchall()
 
     if not rows:
         print("No alpha values found. (Sign-aware mode may be disabled)")
@@ -184,6 +205,7 @@ def show_alpha_drift(conn, exp_id):
 
     # Group by epoch
     from collections import defaultdict
+
     epochs = defaultdict(dict)
     for row in rows:
         epochs[row[0]][row[1]] = row[2]
@@ -200,7 +222,8 @@ def show_bottleneck(conn, exp_id):
     print(f"BOTTLENECK ANALYSIS (Experiment {exp_id})")
     print("=" * 80)
 
-    rows = conn.execute("""
+    rows = conn.execute(
+        """
         SELECT stage,
                SUM(duration_ms) as total_ms,
              SUM(stage_call_count) as n_calls
@@ -208,7 +231,9 @@ def show_bottleneck(conn, exp_id):
         WHERE experiment_id = ?
         GROUP BY stage
         ORDER BY total_ms DESC
-    """, (exp_id,)).fetchall()
+    """,
+        (exp_id,),
+    ).fetchall()
 
     if not rows:
         print("No profiling data found.")
@@ -216,14 +241,18 @@ def show_bottleneck(conn, exp_id):
 
     grand_total = sum(row[1] for row in rows)
 
-    print(f"\n{'Rank':>4} | {'Stage':<15} | {'Total (ms)':>12} | {'Calls':>6} | {'% of Total':>10}")
+    print(
+        f"\n{'Rank':>4} | {'Stage':<15} | {'Total (ms)':>12} | {'Calls':>6} | {'% of Total':>10}"
+    )
     print("-" * 60)
     for i, row in enumerate(rows, 1):
         pct = (row[1] / grand_total * 100) if grand_total > 0 else 0
         print(f"{i:>4} | {row[0]:<15} | {row[1]:>12.1f} | {row[2]:>6} | {pct:>9.1f}%")
 
     print("-" * 60)
-    print(f"\nBottleneck: {rows[0][0]} ({rows[0][1] / grand_total * 100:.1f}% of total time)")
+    print(
+        f"\nBottleneck: {rows[0][0]} ({rows[0][1] / grand_total * 100:.1f}% of total time)"
+    )
 
 
 def main():
@@ -232,7 +261,9 @@ def main():
     parser.add_argument("--metrics", type=int, help="Show metrics for experiment")
     parser.add_argument("--profiling", type=int, help="Show profiling for experiment")
     parser.add_argument("--alpha", type=int, help="Show alpha drift for experiment")
-    parser.add_argument("--bottleneck", type=int, help="Show bottleneck analysis for experiment")
+    parser.add_argument(
+        "--bottleneck", type=int, help="Show bottleneck analysis for experiment"
+    )
     args = parser.parse_args()
 
     conn = connect()

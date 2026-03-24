@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 """Download selected PyTorch-Geometric datasets to data/<dataset>/ in repository root."""
+
 from pathlib import Path
 import torch_geometric.datasets as pyg_datasets
 
@@ -19,7 +20,9 @@ def main():
 
         exists = proc.exists() or (raw.exists() and any(raw.iterdir()))
         if exists:
-            print(f"Skipping {dataset_name}; data already present (processed or raw files)")
+            print(
+                f"Skipping {dataset_name}; data already present (processed or raw files)"
+            )
             return None
         try:
             return cls(root=str(dataset_root), **kwargs)

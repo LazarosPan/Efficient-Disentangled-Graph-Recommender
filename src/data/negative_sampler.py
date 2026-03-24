@@ -26,7 +26,9 @@ class NegativeSampler:
 
         # Pre-compute popularity sampling weights
         pop = popularity.float()
-        self._pop_weights = pop / pop.sum() if pop.sum() > 0 else torch.ones(n_items) / n_items
+        self._pop_weights = (
+            pop / pop.sum() if pop.sum() > 0 else torch.ones(n_items) / n_items
+        )
 
     def sample(
         self,
@@ -67,7 +69,10 @@ class NegativeSampler:
             collision_mask = neg_items == pos_expanded
             if collision_mask.any():
                 replacements = torch.randint(
-                    0, self.n_items, (collision_mask.sum().item(),), device=device,
+                    0,
+                    self.n_items,
+                    (collision_mask.sum().item(),),
+                    device=device,
                 )
                 neg_items[collision_mask] = replacements
 

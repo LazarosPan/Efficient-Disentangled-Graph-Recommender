@@ -8,6 +8,7 @@ Usage:
     python experiments/run_ablation.py --dataset movielens1m --variants full no_ipw no_dual_branch
     python experiments/run_ablation.py --dataset movielens1m --dry-run
 """
+
 from __future__ import annotations
 
 import argparse
@@ -28,11 +29,17 @@ logger = logging.getLogger("ucagnn.ablation")
 def main():
     parser = argparse.ArgumentParser(description="Run U-CaGNN ablation study")
     parser.add_argument("--dataset", required=True, help="Dataset name")
-    parser.add_argument("--variants", nargs="*", default=list(ABLATION_VARIANTS.keys()),
-                        help="Ablation variants to run")
+    parser.add_argument(
+        "--variants",
+        nargs="*",
+        default=list(ABLATION_VARIANTS.keys()),
+        help="Ablation variants to run",
+    )
     parser.add_argument("--seed", type=int, default=13, help="Random seed")
     parser.add_argument("--epochs", type=int, default=None, help="Override epochs")
-    parser.add_argument("--batch-size", type=int, default=None, help="Override batch size")
+    parser.add_argument(
+        "--batch-size", type=int, default=None, help="Override batch size"
+    )
     parser.add_argument(
         "--sample-interactions",
         type=int,
@@ -47,10 +54,24 @@ def main():
     )
     parser.add_argument("--device", default="cuda", help="Device")
     parser.add_argument("--data-dir", default="data", help="Data directory")
-    parser.add_argument("--no-mlflow", action="store_true", help="Disable MLflow tracking for all ablation runs")
-    parser.add_argument("--mlflow-tracking-uri", default=None, help="Override MLflow tracking URI for all ablation runs")
-    parser.add_argument("--mlflow-experiment-name", default="ucagnn-ablation", help="MLflow experiment name for ablation runs")
-    parser.add_argument("--dry-run", action="store_true", help="Print plan without running")
+    parser.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Disable MLflow tracking for all ablation runs",
+    )
+    parser.add_argument(
+        "--mlflow-tracking-uri",
+        default=None,
+        help="Override MLflow tracking URI for all ablation runs",
+    )
+    parser.add_argument(
+        "--mlflow-experiment-name",
+        default="ucagnn-ablation",
+        help="MLflow experiment name for ablation runs",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print plan without running"
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -76,7 +97,9 @@ def main():
         print("-" * 60)
         for i, variant in enumerate(args.variants, 1):
             overrides = ABLATION_VARIANTS[variant]
-            override_str = ", ".join(f"{k}={v}" for k, v in overrides.items()) or "(baseline)"
+            override_str = (
+                ", ".join(f"{k}={v}" for k, v in overrides.items()) or "(baseline)"
+            )
             print(f"{i:>4} | {variant:<20} | {override_str}")
         print(f"\nTotal: {len(args.variants)} variants (dry run, nothing executed)")
         return 0
@@ -87,7 +110,7 @@ def main():
     results = []
 
     for i, variant in enumerate(args.variants, 1):
-        print(f"\n{'='*70}")
+        print(f"\n{'=' * 70}")
         print(f"[{i}/{len(args.variants)}] Ablation: {variant}")
         print("=" * 70)
 
@@ -121,12 +144,14 @@ def main():
             )
             elapsed = time.time() - t0
 
-            results.append({
-                "variant": variant,
-                "exp_id": result["exp_id"],
-                "metrics": result["test_metrics"],
-                "elapsed_s": elapsed,
-            })
+            results.append(
+                {
+                    "variant": variant,
+                    "exp_id": result["exp_id"],
+                    "metrics": result["test_metrics"],
+                    "elapsed_s": elapsed,
+                }
+            )
             completed += 1
             logger.info(f"Completed in {elapsed:.1f}s")
 
@@ -150,15 +175,21 @@ def main():
                 baseline_metrics = r["metrics"]
                 break
 
-        print(f"\n{'Variant':<20} | {'NDCG@50':>8} | {'Delta':>7} | {'Recall@50':>10} | {'Delta':>7} | Time")
+        print(
+            f"\n{'Variant':<20} | {'NDCG@50':>8} | {'Delta':>7} | {'Recall@50':>10} | {'Delta':>7} | Time"
+        )
         print("-" * 80)
         for r in results:
             ndcg = r["metrics"].get("NDCG@50", r["metrics"].get("NDCG@20", 0.0))
             recall = r["metrics"].get("Recall@50", r["metrics"].get("Recall@20", 0.0))
 
             if baseline_metrics and r["variant"] != "full":
-                base_ndcg = baseline_metrics.get("NDCG@50", baseline_metrics.get("NDCG@20", 0.0))
-                base_recall = baseline_metrics.get("Recall@50", baseline_metrics.get("Recall@20", 0.0))
+                base_ndcg = baseline_metrics.get(
+                    "NDCG@50", baseline_metrics.get("NDCG@20", 0.0)
+                )
+                base_recall = baseline_metrics.get(
+                    "Recall@50", baseline_metrics.get("Recall@20", 0.0)
+                )
                 ndcg_delta = f"{ndcg - base_ndcg:+.4f}"
                 recall_delta = f"{recall - base_recall:+.4f}"
             else:

@@ -6,6 +6,7 @@ Usage:
     python experiments/run_benchmark.py --tier small --seeds 13 298 132
     python experiments/run_benchmark.py --tier all
 """
+
 from __future__ import annotations
 
 import argparse
@@ -35,8 +36,12 @@ DEFAULT_GRAPH_METHODS = ["dense", "knn", "cagra"]
 
 def main():
     parser = argparse.ArgumentParser(description="Run U-CaGNN benchmark matrix")
-    parser.add_argument("--tier", choices=list(TIERS.keys()), default="small", help="Dataset tier")
-    parser.add_argument("--presets", nargs="*", default=list(PRESETS.keys()), help="Presets to run")
+    parser.add_argument(
+        "--tier", choices=list(TIERS.keys()), default="small", help="Dataset tier"
+    )
+    parser.add_argument(
+        "--presets", nargs="*", default=list(PRESETS.keys()), help="Presets to run"
+    )
     parser.add_argument(
         "--training-modes",
         nargs="*",
@@ -51,8 +56,12 @@ def main():
         choices=DEFAULT_GRAPH_METHODS,
         help="Graph construction methods to run across the matrix",
     )
-    parser.add_argument("--seeds", nargs="*", type=int, default=DEFAULT_SEEDS, help="Random seeds")
-    parser.add_argument("--epochs", type=int, default=None, help="Override epochs for all")
+    parser.add_argument(
+        "--seeds", nargs="*", type=int, default=DEFAULT_SEEDS, help="Random seeds"
+    )
+    parser.add_argument(
+        "--epochs", type=int, default=None, help="Override epochs for all"
+    )
     parser.add_argument(
         "--sample-interactions",
         type=int,
@@ -61,10 +70,24 @@ def main():
     )
     parser.add_argument("--device", default="cuda", help="Device")
     parser.add_argument("--data-dir", default="data", help="Data directory")
-    parser.add_argument("--no-mlflow", action="store_true", help="Disable MLflow tracking for all benchmark runs")
-    parser.add_argument("--mlflow-tracking-uri", default=None, help="Override MLflow tracking URI for all benchmark runs")
-    parser.add_argument("--mlflow-experiment-name", default="ucagnn-benchmark", help="MLflow experiment name for benchmark runs")
-    parser.add_argument("--dry-run", action="store_true", help="Print plan without running")
+    parser.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Disable MLflow tracking for all benchmark runs",
+    )
+    parser.add_argument(
+        "--mlflow-tracking-uri",
+        default=None,
+        help="Override MLflow tracking URI for all benchmark runs",
+    )
+    parser.add_argument(
+        "--mlflow-experiment-name",
+        default="ucagnn-benchmark",
+        help="MLflow experiment name for benchmark runs",
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print plan without running"
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -80,7 +103,9 @@ def main():
             for training_mode in args.training_modes:
                 for graph_method in args.graph_methods:
                     for seed in args.seeds:
-                        experiments.append((dataset, preset, training_mode, graph_method, seed))
+                        experiments.append(
+                            (dataset, preset, training_mode, graph_method, seed)
+                        )
 
     print("=" * 70)
     print(f"BENCHMARK PLAN: {len(experiments)} experiments")
@@ -92,7 +117,9 @@ def main():
     print("=" * 70)
 
     if args.dry_run:
-        print(f"\n{'#':>4} | {'Dataset':<15} | {'Preset':<12} | {'Mode':<18} | {'Graph':<5} | Seed")
+        print(
+            f"\n{'#':>4} | {'Dataset':<15} | {'Preset':<12} | {'Mode':<18} | {'Graph':<5} | Seed"
+        )
         print("-" * 86)
         for i, (ds, pr, tm, gm, sd) in enumerate(experiments, 1):
             print(f"{i:>4} | {ds:<15} | {pr:<12} | {tm:<18} | {gm:<5} | {sd}")
@@ -104,8 +131,10 @@ def main():
     failed = 0
     results = []
 
-    for i, (dataset, preset, training_mode, graph_method, seed) in enumerate(experiments, 1):
-        print(f"\n{'='*70}")
+    for i, (dataset, preset, training_mode, graph_method, seed) in enumerate(
+        experiments, 1
+    ):
+        print(f"\n{'=' * 70}")
         print(
             f"[{i}/{len(experiments)}] {dataset} / {preset} / {training_mode} / {graph_method} / seed={seed}"
         )
@@ -142,16 +171,18 @@ def main():
             )
             elapsed = time.time() - t0
 
-            results.append({
-                "dataset": dataset,
-                "preset": preset,
-                "training_mode": training_mode,
-                "graph_method": graph_method,
-                "seed": seed,
-                "exp_id": result["exp_id"],
-                "metrics": result["test_metrics"],
-                "elapsed_s": elapsed,
-            })
+            results.append(
+                {
+                    "dataset": dataset,
+                    "preset": preset,
+                    "training_mode": training_mode,
+                    "graph_method": graph_method,
+                    "seed": seed,
+                    "exp_id": result["exp_id"],
+                    "metrics": result["test_metrics"],
+                    "elapsed_s": elapsed,
+                }
+            )
             completed += 1
             logger.info(f"Completed in {elapsed:.1f}s (exp_id={result['exp_id']})")
 

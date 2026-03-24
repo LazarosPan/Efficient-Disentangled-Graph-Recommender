@@ -31,7 +31,8 @@ class LossSuite(nn.Module):
 
         if config.use_dual_branch and config.lambda_pop > 0:
             self.pop_predictor = PopularityPredictor(
-                config.embed_dim, config.pop_embed_dim,
+                config.embed_dim,
+                config.pop_embed_dim,
             )
 
     def forward(
@@ -65,7 +66,9 @@ class LossSuite(nn.Module):
         # L_rec: BPR (always active)
         weights = ipw_weights if cfg.use_ipw else None
         losses["rec"] = bpr_loss(
-            pos_scores["final_score"], neg_scores["final_score"], weights,
+            pos_scores["final_score"],
+            neg_scores["final_score"],
+            weights,
         )
 
         # Curriculum: check phase thresholds
@@ -75,7 +78,8 @@ class LossSuite(nn.Module):
         # L_ortho: orthogonality (phase 2+)
         if cfg.use_dual_branch and cfg.lambda_ortho > 0 and phase2_active:
             losses["ortho"] = orthogonality_loss(
-                propagated["user_interest"], propagated["user_conformity"],
+                propagated["user_interest"],
+                propagated["user_conformity"],
             )
         else:
             losses["ortho"] = zero
@@ -93,7 +97,8 @@ class LossSuite(nn.Module):
         # L_cf: counterfactual divergence (phase 3+)
         if cfg.use_dual_branch and cfg.lambda_cf > 0 and phase3_active:
             losses["cf"] = counterfactual_loss(
-                pos_scores["interest_score"], pos_scores["conformity_score"],
+                pos_scores["interest_score"],
+                pos_scores["conformity_score"],
             )
         else:
             losses["cf"] = zero

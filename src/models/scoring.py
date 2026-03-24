@@ -77,7 +77,9 @@ class ScoringModule(nn.Module):
         if not self.config.use_dual_branch:
             resolved_device = device or torch.device("cpu")
             resolved_dtype = dtype or torch.float32
-            return torch.tensor([1.0, 0.0, 0.0], device=resolved_device, dtype=resolved_dtype)
+            return torch.tensor(
+                [1.0, 0.0, 0.0], device=resolved_device, dtype=resolved_dtype
+            )
 
         if self.config.scoring_weight_mode == "fixed":
             resolved_device = device or torch.device("cpu")
@@ -85,12 +87,19 @@ class ScoringModule(nn.Module):
             base_weights = self._fixed_weight_tensor(resolved_device, resolved_dtype)
         else:
             if self.score_weight_logits is None:
-                raise RuntimeError("Learned scoring weights requested without score_weight_logits")
+                raise RuntimeError(
+                    "Learned scoring weights requested without score_weight_logits"
+                )
             base_weights = self.score_weight_logits
             if device is not None or dtype is not None:
-                base_weights = base_weights.to(device=device or base_weights.device, dtype=dtype or base_weights.dtype)
+                base_weights = base_weights.to(
+                    device=device or base_weights.device,
+                    dtype=dtype or base_weights.dtype,
+                )
 
-        mask = self._mode_mask(scoring_mode, self.config.use_counterfactual).to(base_weights.device)
+        mask = self._mode_mask(scoring_mode, self.config.use_counterfactual).to(
+            base_weights.device
+        )
         if self.config.scoring_weight_mode == "fixed":
             weights = torch.where(mask, base_weights, torch.zeros_like(base_weights))
             return weights
@@ -104,8 +113,15 @@ class ScoringModule(nn.Module):
         weights[mask] = active_weights
         return weights
 
-    def get_score_weight_summary(self, scoring_mode: str = "default") -> dict[str, float]:
-        weights = self.get_score_weight_tensor(scoring_mode=scoring_mode).detach().cpu().tolist()
+    def get_score_weight_summary(
+        self, scoring_mode: str = "default"
+    ) -> dict[str, float]:
+        weights = (
+            self.get_score_weight_tensor(scoring_mode=scoring_mode)
+            .detach()
+            .cpu()
+            .tolist()
+        )
         return {
             f"score_weight_{name}": float(weight)
             for name, weight in zip(self.component_names, weights, strict=True)

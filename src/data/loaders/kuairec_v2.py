@@ -27,7 +27,11 @@ def _load_csv_features(
         if include_columns is None:
             feat_indices = [i for i in range(len(header)) if i != id_idx]
         else:
-            feat_indices = [header.index(column) for column in include_columns if column in header and column != id_col]
+            feat_indices = [
+                header.index(column)
+                for column in include_columns
+                if column in header and column != id_col
+            ]
         if not feat_indices:
             return None
 
@@ -59,7 +63,9 @@ def _load_csv_features(
     return features
 
 
-def _load_item_categories(path: Path, id_map: dict[int, int], n_items: int) -> np.ndarray | None:
+def _load_item_categories(
+    path: Path, id_map: dict[int, int], n_items: int
+) -> np.ndarray | None:
     """Load item_categories.csv -> (n_items, n_categories) multi-hot vector.
 
     Format: video_id, feat (where feat is a list-like string of category IDs).
@@ -119,7 +125,14 @@ def _load_caption_categories(
     if not path.exists():
         return None
 
-    target_cols = list(include_columns or ("first_level_category_id", "second_level_category_id", "third_level_category_id"))
+    target_cols = list(
+        include_columns
+        or (
+            "first_level_category_id",
+            "second_level_category_id",
+            "third_level_category_id",
+        )
+    )
     with open(path, encoding="utf-8") as f:
         header = f.readline().strip().split(",")
         vid_idx = header.index("video_id") if "video_id" in header else -1
@@ -180,8 +193,7 @@ def load_kuairec_v2(
     path = base / "big_matrix.csv"
     if not path.exists():
         raise FileNotFoundError(
-            f"KuaiRec v2 not found at {path}. "
-            "Download from https://kuairec.com/"
+            f"KuaiRec v2 not found at {path}. Download from https://kuairec.com/"
         )
 
     raw_users, raw_items, watch_ratios, timestamps = [], [], [], []
@@ -279,7 +291,11 @@ def load_kuairec_v2(
         item_cat_feats = _load_item_categories(
             base / "item_categories.csv", item_map, n_items
         )
-        item_parts = [f for f in [item_features_daily, item_cat_feats, item_caption_cats] if f is not None]
+        item_parts = [
+            f
+            for f in [item_features_daily, item_cat_feats, item_caption_cats]
+            if f is not None
+        ]
         item_features = np.hstack(item_parts) if item_parts else None
 
     return CanonicalInteractions(

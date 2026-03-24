@@ -27,7 +27,11 @@ def _load_csv_features(
         if include_columns is None:
             feat_indices = [i for i in range(len(header)) if i != id_idx]
         else:
-            feat_indices = [header.index(column) for column in include_columns if column in header and column != id_col]
+            feat_indices = [
+                header.index(column)
+                for column in include_columns
+                if column in header and column != id_col
+            ]
         if not feat_indices:
             return None
 
@@ -101,14 +105,15 @@ def load_kuairand1k(
     base = Path(data_dir) / "KuaiRand-1K" / "data"
     if not base.exists():
         raise FileNotFoundError(
-            f"KuaiRand-1K not found at {base}. "
-            "Download from https://kuairand.com/"
+            f"KuaiRand-1K not found at {base}. Download from https://kuairand.com/"
         )
 
     csv_files = sorted(base.glob("log_standard*.csv"))
     csv_files += sorted(base.glob("log_random*.csv"))
     if not csv_files:
-        raise FileNotFoundError(f"No log_standard*.csv or log_random*.csv files found in {base}")
+        raise FileNotFoundError(
+            f"No log_standard*.csv or log_random*.csv files found in {base}"
+        )
 
     # Collect all columns
     raw_users, raw_items, timestamps = [], [], []
@@ -208,7 +213,10 @@ def load_kuairand1k(
                 feat_base / "video_features_basic_1k.csv", "video_id", item_map, n_items
             )
             item_features_stat = _load_csv_features(
-                feat_base / "video_features_statistic_1k.csv", "video_id", item_map, n_items
+                feat_base / "video_features_statistic_1k.csv",
+                "video_id",
+                item_map,
+                n_items,
             )
             if item_features_basic is not None and item_features_stat is not None:
                 item_features = np.hstack([item_features_basic, item_features_stat])

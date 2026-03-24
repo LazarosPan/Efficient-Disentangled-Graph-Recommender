@@ -65,21 +65,25 @@ class GPUProfiler:
         vram_after = torch.cuda.memory_allocated() / 1024 / 1024
         vram_peak = torch.cuda.max_memory_allocated() / 1024 / 1024
 
-        self.stages.append(StageMetrics(
-            name=name,
-            elapsed_ms=elapsed,
-            vram_before_mb=vram_before,
-            vram_after_mb=vram_after,
-            vram_peak_mb=vram_peak,
-        ))
+        self.stages.append(
+            StageMetrics(
+                name=name,
+                elapsed_ms=elapsed,
+                vram_before_mb=vram_before,
+                vram_after_mb=vram_after,
+                vram_peak_mb=vram_peak,
+            )
+        )
 
     def summary(self) -> str:
         lines = ["=== GPU Profile ==="]
         total_ms = sum(s.elapsed_ms for s in self.stages)
         for s in self.stages:
             pct = (s.elapsed_ms / total_ms * 100) if total_ms > 0 else 0
-            lines.append(f"  {s.name:20s} {s.elapsed_ms:8.1f}ms ({pct:5.1f}%) | "
-                         f"VRAM peak {s.vram_peak_mb:.0f} MB")
+            lines.append(
+                f"  {s.name:20s} {s.elapsed_ms:8.1f}ms ({pct:5.1f}%) | "
+                f"VRAM peak {s.vram_peak_mb:.0f} MB"
+            )
         lines.append(f"  {'TOTAL':20s} {total_ms:8.1f}ms")
         return "\n".join(lines)
 

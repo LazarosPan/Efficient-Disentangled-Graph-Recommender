@@ -23,7 +23,9 @@ def _raw_recipe(recipe_name: str) -> dict[str, Any]:
     recipes = catalog.get("recipes", {})
     if recipe_name not in recipes:
         available = ", ".join(sorted(recipes))
-        raise KeyError(f"Unknown recipe '{recipe_name}'. Available recipes: {available}")
+        raise KeyError(
+            f"Unknown recipe '{recipe_name}'. Available recipes: {available}"
+        )
     return recipes[recipe_name]
 
 

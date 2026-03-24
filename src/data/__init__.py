@@ -21,5 +21,7 @@ def __getattr__(name: str):
     if name in {"SubgraphSampler", "SubgraphBatch"}:
         from .subgraph_sampler import SubgraphBatch, SubgraphSampler
 
-        return {"SubgraphSampler": SubgraphSampler, "SubgraphBatch": SubgraphBatch}[name]
+        return {"SubgraphSampler": SubgraphSampler, "SubgraphBatch": SubgraphBatch}[
+            name
+        ]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

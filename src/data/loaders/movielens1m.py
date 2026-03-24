@@ -15,14 +15,31 @@ _AGE_MAP = {1: 0, 18: 1, 25: 2, 35: 3, 45: 4, 50: 5, 56: 6}
 
 # ML-1M genre list (18 genres)
 _GENRES = [
-    "Action", "Adventure", "Animation", "Children's", "Comedy", "Crime",
-    "Documentary", "Drama", "Fantasy", "Film-Noir", "Horror", "Musical",
-    "Mystery", "Romance", "Sci-Fi", "Thriller", "War", "Western",
+    "Action",
+    "Adventure",
+    "Animation",
+    "Children's",
+    "Comedy",
+    "Crime",
+    "Documentary",
+    "Drama",
+    "Fantasy",
+    "Film-Noir",
+    "Horror",
+    "Musical",
+    "Mystery",
+    "Romance",
+    "Sci-Fi",
+    "Thriller",
+    "War",
+    "Western",
 ]
 _GENRE_TO_IDX = {g: i for i, g in enumerate(_GENRES)}
 
 
-def _parse_users_dat(raw_dir: Path, user_map: dict[int, int], n_users: int) -> np.ndarray | None:
+def _parse_users_dat(
+    raw_dir: Path, user_map: dict[int, int], n_users: int
+) -> np.ndarray | None:
     """Parse users.dat -> (n_users, 3) array: [gender, age_ordinal, occupation]."""
     path = raw_dir / "users.dat"
     if not path.exists():
@@ -44,7 +61,9 @@ def _parse_users_dat(raw_dir: Path, user_map: dict[int, int], n_users: int) -> n
     return features
 
 
-def _parse_movies_dat(raw_dir: Path, item_map: dict[int, int], n_items: int) -> np.ndarray | None:
+def _parse_movies_dat(
+    raw_dir: Path, item_map: dict[int, int], n_items: int
+) -> np.ndarray | None:
     """Parse movies.dat -> (n_items, 18) multi-hot genre vector."""
     path = raw_dir / "movies.dat"
     if not path.exists():
@@ -137,7 +156,9 @@ def load_movielens1m(
     """
     del feature_policy
     raw_dir = _resolve_raw_dir(data_dir)
-    raw_users, raw_items, ratings, timestamps = _parse_ratings_dat(raw_dir, max_rows=max_rows)
+    raw_users, raw_items, ratings, timestamps = _parse_ratings_dat(
+        raw_dir, max_rows=max_rows
+    )
 
     # Re-index to contiguous 0-based IDs
     unique_users = np.unique(raw_users)

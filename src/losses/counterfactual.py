@@ -24,4 +24,4 @@ def counterfactual_loss(
         Scalar loss.
     """
     diff = interest_scores - conformity_scores
-    return (diff ** 2).mean()
+    return (diff**2).mean()

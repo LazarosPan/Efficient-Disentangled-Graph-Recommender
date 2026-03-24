@@ -63,7 +63,7 @@ def _build_arrays(
     train_mask = np.zeros(len(all_pairs), dtype=bool)
     test_mask = np.zeros(len(all_pairs), dtype=bool)
     train_mask[: len(train_pairs)] = True
-    test_mask[len(train_pairs):] = True
+    test_mask[len(train_pairs) :] = True
 
     timestamps = np.zeros(len(all_pairs), dtype=np.int64)
     return raw_users, raw_items, train_mask, test_mask, timestamps

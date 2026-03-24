@@ -5,6 +5,7 @@ Usage:
     python experiments/run_experiment.py --dataset movielens1m --preset lightgcn --epochs 3
     python experiments/run_experiment.py --dataset kuairec_v2 --preset full --seed 123 --device cuda
 """
+
 from __future__ import annotations
 
 import argparse
@@ -186,13 +187,21 @@ def _sample_canonical_interactions(
             chosen = np.sort(rng.choice(indices, size=count, replace=False))
         chosen_parts.append(chosen)
 
-    selected = np.sort(np.concatenate(chosen_parts)) if chosen_parts else np.array([], dtype=np.int64)
+    selected = (
+        np.sort(np.concatenate(chosen_parts))
+        if chosen_parts
+        else np.array([], dtype=np.int64)
+    )
     selected_train = np.isin(selected, split_indices[0])
     selected_val = np.isin(selected, split_indices[1])
     selected_test = np.isin(selected, split_indices[2])
 
-    selected_users, user_inverse = np.unique(canonical.user_id[selected], return_inverse=True)
-    selected_items, item_inverse = np.unique(canonical.item_id[selected], return_inverse=True)
+    selected_users, user_inverse = np.unique(
+        canonical.user_id[selected], return_inverse=True
+    )
+    selected_items, item_inverse = np.unique(
+        canonical.item_id[selected], return_inverse=True
+    )
 
     reverse_user_map = {value: key for key, value in canonical.user_map.items()}
     reverse_item_map = {value: key for key, value in canonical.item_map.items()}
@@ -230,8 +239,14 @@ def _sample_canonical_interactions(
         popularity=canonical.popularity[selected_items],
         n_users=int(len(selected_users)),
         n_items=int(len(selected_items)),
-        user_map={reverse_user_map[int(old_id)]: new_id for new_id, old_id in enumerate(selected_users.tolist())},
-        item_map={reverse_item_map[int(old_id)]: new_id for new_id, old_id in enumerate(selected_items.tolist())},
+        user_map={
+            reverse_user_map[int(old_id)]: new_id
+            for new_id, old_id in enumerate(selected_users.tolist())
+        },
+        item_map={
+            reverse_item_map[int(old_id)]: new_id
+            for new_id, old_id in enumerate(selected_items.tolist())
+        },
         user_features=_slice_entity_features(canonical.user_features, selected_users),
         item_features=_slice_entity_features(canonical.item_features, selected_items),
         train_mask=selected_train,
@@ -351,7 +366,12 @@ def _git_commit_short() -> str:
 
 def _run_started_at_utc() -> str:
     """Return the current UTC timestamp in ISO-8601 format."""
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _build_mlflow_params(
@@ -437,9 +457,17 @@ def _start_mlflow_run(
         except Exception as exc:
             logger.info("MLflow system metrics logging unavailable: %s", exc)
         mlflow.set_experiment(experiment_name)
-        mlflow.start_run(run_name=run_name or _build_mlflow_run_name(config, preset, intervention))
-        mlflow.set_tags(_build_mlflow_tags(config, preset, intervention, experiment_id, recipe_name))
-        mlflow.log_params(_build_mlflow_params(config, preset, intervention, recipe_name, run_started_at_utc))
+        mlflow.start_run(
+            run_name=run_name or _build_mlflow_run_name(config, preset, intervention)
+        )
+        mlflow.set_tags(
+            _build_mlflow_tags(config, preset, intervention, experiment_id, recipe_name)
+        )
+        mlflow.log_params(
+            _build_mlflow_params(
+                config, preset, intervention, recipe_name, run_started_at_utc
+            )
+        )
         logger.info("MLflow tracking enabled: %s", resolved_tracking_uri)
         return mlflow
     except Exception as exc:
@@ -556,7 +584,9 @@ def run_experiment(
 
     if checkpoint_state is not None:
         saved_config = checkpoint_state.get("config")
-        if saved_config is not None and _config_as_dict(saved_config) != _config_as_dict(config):
+        if saved_config is not None and _config_as_dict(
+            saved_config
+        ) != _config_as_dict(config):
             raise ValueError(
                 f"Checkpoint config mismatch for {resolved_checkpoint_path}. "
                 "Use a different checkpoint path or disable auto-resume."
@@ -592,7 +622,9 @@ def run_experiment(
     logger.info("Building graph...")
     data = build_graph(canonical, config, embeddings=None)
     logger.info(f"  Nodes: {data.num_nodes:,}, Edges: {data.edge_index.size(1):,}")
-    logger.info(f"  Train: {data.train_mask.sum():,}, Val: {data.val_mask.sum():,}, Test: {data.test_mask.sum():,}")
+    logger.info(
+        f"  Train: {data.train_mask.sum():,}, Val: {data.val_mask.sum():,}, Test: {data.test_mask.sum():,}"
+    )
 
     # Model
     model = UCaGNN(
@@ -608,9 +640,7 @@ def run_experiment(
     # Loss + profiler
     loss_suite = LossSuite(config)
     profiler = (
-        GPUProfiler()
-        if torch.cuda.is_available() and config.enable_profiling
-        else None
+        GPUProfiler() if torch.cuda.is_available() and config.enable_profiling else None
     )
 
     # Experiment logger
@@ -626,12 +656,17 @@ def run_experiment(
     logger.info(f"Experiment ID: {exp_id}")
 
     if checkpoint_state is not None and checkpoint_state.get("is_complete"):
-        logger.info("Checkpoint already marked complete. Returning cached result from %s", resolved_checkpoint_path)
+        logger.info(
+            "Checkpoint already marked complete. Returning cached result from %s",
+            resolved_checkpoint_path,
+        )
         experiment_logger.close()
         return {
             "exp_id": exp_id,
             "test_metrics": checkpoint_state.get("test_metrics", {}),
-            "history": checkpoint_state.get("history", {"train_loss": [], "val_metrics": []}),
+            "history": checkpoint_state.get(
+                "history", {"train_loss": [], "val_metrics": []}
+            ),
             "checkpoint_path": str(resolved_checkpoint_path),
             "canonical_name": canonical_name,
             "resumed": True,
@@ -684,12 +719,16 @@ def run_experiment(
             history = trainer.train(
                 start_epoch=start_epoch,
                 history=history,
-                checkpoint_path=resolved_checkpoint_path if should_persist_checkpoint else None,
+                checkpoint_path=resolved_checkpoint_path
+                if should_persist_checkpoint
+                else None,
                 checkpoint_every=checkpoint_every,
             )
         else:
             history = history or {"train_loss": [], "val_metrics": []}
-            logger.info("Checkpoint already reached configured epoch budget; skipping training.")
+            logger.info(
+                "Checkpoint already reached configured epoch budget; skipping training."
+            )
         if history["train_loss"]:
             logger.info(f"Final train loss: {history['train_loss'][-1]:.4f}")
 
@@ -714,12 +753,16 @@ def run_experiment(
 
         if mlflow_module is not None:
             try:
-                mlflow_module.log_metrics({
-                    _sanitize_mlflow_metric_name(f"test_{metric}"): float(value)
-                    for metric, value in test_metrics.items()
-                })
+                mlflow_module.log_metrics(
+                    {
+                        _sanitize_mlflow_metric_name(f"test_{metric}"): float(value)
+                        for metric, value in test_metrics.items()
+                    }
+                )
                 if checkpoint_path is not None:
-                    mlflow_module.log_artifact(str(checkpoint_path), artifact_path="checkpoints")
+                    mlflow_module.log_artifact(
+                        str(checkpoint_path), artifact_path="checkpoints"
+                    )
                 mlflow_module.set_tag("status", "completed")
             except Exception as exc:
                 logger.warning("Failed to log MLflow metrics or artifacts: %s", exc)
@@ -729,7 +772,9 @@ def run_experiment(
             "exp_id": exp_id,
             "test_metrics": test_metrics,
             "history": history,
-            "checkpoint_path": str(checkpoint_path) if checkpoint_path is not None else None,
+            "checkpoint_path": str(checkpoint_path)
+            if checkpoint_path is not None
+            else None,
             "canonical_name": canonical_name,
             "resumed": checkpoint_state is not None,
         }
@@ -752,13 +797,21 @@ def run_experiment(
 def main():
     parser = argparse.ArgumentParser(description="Run a U-CaGNN experiment")
     parser.add_argument("--dataset", default="movielens1m", help="Dataset name")
-    parser.add_argument("--recipe", choices=recipe_names(), help="Named experiment recipe")
+    parser.add_argument(
+        "--recipe", choices=recipe_names(), help="Named experiment recipe"
+    )
     parser.add_argument("--preset", choices=list(PRESETS.keys()), help="Config preset")
     parser.add_argument("--seed", type=int, default=13, help="Random seed")
     parser.add_argument("--epochs", type=int, default=None, help="Override epochs")
-    parser.add_argument("--batch-size", type=int, default=None, help="Override batch size")
-    parser.add_argument("--embed-dim", type=int, default=None, help="Override embed dim")
-    parser.add_argument("--n-gnn-layers", type=int, default=None, help="Override shared GNN depth")
+    parser.add_argument(
+        "--batch-size", type=int, default=None, help="Override batch size"
+    )
+    parser.add_argument(
+        "--embed-dim", type=int, default=None, help="Override embed dim"
+    )
+    parser.add_argument(
+        "--n-gnn-layers", type=int, default=None, help="Override shared GNN depth"
+    )
     parser.add_argument(
         "--interest-gnn-layers",
         type=int,
@@ -808,7 +861,9 @@ def main():
         default=None,
         help="Feature-loading policy: thesis_default enforces the safe thesis allowlist; all_optional restores the full optional side-feature scans.",
     )
-    parser.add_argument("--graph-method", choices=["dense", "knn", "cagra"], default=None)
+    parser.add_argument(
+        "--graph-method", choices=["dense", "knn", "cagra"], default=None
+    )
     parser.add_argument(
         "--training-mode",
         choices=["full_graph", "cached_propagation", "mini_batch"],
@@ -816,7 +871,10 @@ def main():
         help="Training mode: full_graph (default), cached_propagation, or mini_batch",
     )
     parser.add_argument(
-        "--num-neighbors", type=int, nargs="+", default=None,
+        "--num-neighbors",
+        type=int,
+        nargs="+",
+        default=None,
         help="Fan-out per GNN layer for mini_batch mode (e.g., 10 10)",
     )
     parser.add_argument(
@@ -833,23 +891,65 @@ def main():
     )
     parser.add_argument("--device", default="cuda", help="Device (cuda/cpu)")
     parser.add_argument("--data-dir", default="data", help="Data directory")
-    parser.add_argument("--no-checkpoint", action="store_true", help="Skip saving checkpoint")
-    parser.add_argument("--checkpoint-path", default=None, help="Optional explicit checkpoint path")
-    parser.add_argument("--checkpoint-every", type=int, default=1, help="Save checkpoint every N epochs")
-    parser.add_argument("--auto-resume", dest="auto_resume", action="store_true", help="Resume automatically from a matching checkpoint")
-    parser.add_argument("--no-auto-resume", dest="auto_resume", action="store_false", help="Disable automatic checkpoint resume for this run")
-    parser.add_argument("--intervention", default=None, help="Ablation intervention name")
-    parser.add_argument("--enable-mlflow", dest="enable_mlflow", action="store_true", help="Explicitly enable MLflow tracking")
-    parser.add_argument("--no-mlflow", dest="enable_mlflow", action="store_false", help="Disable MLflow tracking for this run")
+    parser.add_argument(
+        "--no-checkpoint", action="store_true", help="Skip saving checkpoint"
+    )
+    parser.add_argument(
+        "--checkpoint-path", default=None, help="Optional explicit checkpoint path"
+    )
+    parser.add_argument(
+        "--checkpoint-every", type=int, default=1, help="Save checkpoint every N epochs"
+    )
+    parser.add_argument(
+        "--auto-resume",
+        dest="auto_resume",
+        action="store_true",
+        help="Resume automatically from a matching checkpoint",
+    )
+    parser.add_argument(
+        "--no-auto-resume",
+        dest="auto_resume",
+        action="store_false",
+        help="Disable automatic checkpoint resume for this run",
+    )
+    parser.add_argument(
+        "--intervention", default=None, help="Ablation intervention name"
+    )
+    parser.add_argument(
+        "--enable-mlflow",
+        dest="enable_mlflow",
+        action="store_true",
+        help="Explicitly enable MLflow tracking",
+    )
+    parser.add_argument(
+        "--no-mlflow",
+        dest="enable_mlflow",
+        action="store_false",
+        help="Disable MLflow tracking for this run",
+    )
     parser.add_argument(
         "--mlflow-tracking-uri",
         default=None,
         help="Override MLflow tracking URI (otherwise uses MLFLOW_TRACKING_URI or results/mlflow.db)",
     )
-    parser.add_argument("--mlflow-experiment-name", default="ucagnn-thesis", help="MLflow experiment name")
-    parser.add_argument("--mlflow-run-name", default=None, help="Optional explicit MLflow run name")
-    parser.add_argument("--experiment-id", default=None, help="Optional thesis experiment identifier tag, e.g. E1")
-    parser.add_argument("--list-recipes", action="store_true", help="Print available named recipes and exit")
+    parser.add_argument(
+        "--mlflow-experiment-name",
+        default="ucagnn-thesis",
+        help="MLflow experiment name",
+    )
+    parser.add_argument(
+        "--mlflow-run-name", default=None, help="Optional explicit MLflow run name"
+    )
+    parser.add_argument(
+        "--experiment-id",
+        default=None,
+        help="Optional thesis experiment identifier tag, e.g. E1",
+    )
+    parser.add_argument(
+        "--list-recipes",
+        action="store_true",
+        help="Print available named recipes and exit",
+    )
     parser.set_defaults(enable_mlflow=True)
     parser.set_defaults(auto_resume=True)
     parser.set_defaults(use_features=None)

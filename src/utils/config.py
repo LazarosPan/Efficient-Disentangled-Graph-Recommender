@@ -69,7 +69,9 @@ class UCaGNNConfig:
         "conformity_suppressed",
     ] = "default"
     # ── Training mode ─────────────────────────────────────────────────
-    training_mode: Literal["full_graph", "cached_propagation", "mini_batch"] = "full_graph"
+    training_mode: Literal["full_graph", "cached_propagation", "mini_batch"] = (
+        "full_graph"
+    )
     num_neighbors: list[int] = field(default_factory=lambda: [10, 10])
     mini_batch_num_workers: int = 0
     sample_interactions: int | None = None
@@ -77,10 +79,12 @@ class UCaGNNConfig:
 
     # ── Negative sampling ────────────────────────────────────────────────
     n_negatives: int = 1
-    hard_negative_ratio: float = 0.0  # fraction of negatives that are popularity-weighted
+    hard_negative_ratio: float = (
+        0.0  # fraction of negatives that are popularity-weighted
+    )
 
     # ── Curriculum schedule (epoch thresholds) ───────────────────────────
-    curriculum_phase1_end: int = 0   # 0 = no curriculum (all losses from epoch 0)
+    curriculum_phase1_end: int = 0  # 0 = no curriculum (all losses from epoch 0)
     curriculum_phase2_end: int = 0
 
     # ── Side features ─────────────────────────────────────────────────────
@@ -120,6 +124,7 @@ class UCaGNNConfig:
             raise ValueError("loader_max_rows must be > 0 when provided")
         if self.profiling_cadence < 1:
             raise ValueError("profiling_cadence must be >= 1")
+
     @property
     def use_cagra(self) -> bool:
         return self.graph_method == "cagra"
@@ -136,7 +141,9 @@ class UCaGNNConfig:
     def max_gnn_layers(self) -> int:
         if not self.use_dual_branch:
             return self.n_gnn_layers
-        return max(self.resolved_interest_gnn_layers, self.resolved_conformity_gnn_layers)
+        return max(
+            self.resolved_interest_gnn_layers, self.resolved_conformity_gnn_layers
+        )
 
     def preset_lightgcn(self) -> UCaGNNConfig:
         """Non-causal LightGCN baseline."""

@@ -52,7 +52,9 @@ class DualBranchGCN(nn.Module):
 
         if config.use_dual_branch:
             self.interest_branch = LightGCNBranch(config.resolved_interest_gnn_layers)
-            self.conformity_branch = LightGCNBranch(config.resolved_conformity_gnn_layers)
+            self.conformity_branch = LightGCNBranch(
+                config.resolved_conformity_gnn_layers
+            )
         else:
             self.single_branch = LightGCNBranch(config.n_gnn_layers)
 
@@ -125,8 +127,4 @@ class DualBranchGCN(nn.Module):
         pos_mask = (edge_sign > 0).float()
         neg_mask = (edge_sign < 0).float()
         neutral_mask = (edge_sign == 0).float()
-        return (
-            self.alpha_pos * pos_mask
-            + self.alpha_neg * neg_mask
-            + neutral_mask
-        )
+        return self.alpha_pos * pos_mask + self.alpha_neg * neg_mask + neutral_mask

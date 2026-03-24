@@ -36,7 +36,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
-from src.data.feature_policy import normalize_dataset_name, thesis_default_column_enabled
+from src.data.feature_policy import (
+    normalize_dataset_name,
+    thesis_default_column_enabled,
+)
 
 
 def load_exploration_api() -> tuple[Any, Any, Any]:
@@ -69,7 +72,16 @@ TEXT_EXTENSIONS = {
 }
 
 USER_COLUMN_MARKERS = {"user", "user_id", "userid", "uid"}
-ITEM_COLUMN_MARKERS = {"item", "item_id", "itemid", "iid", "movieid", "movie_id", "video_id", "videoid"}
+ITEM_COLUMN_MARKERS = {
+    "item",
+    "item_id",
+    "itemid",
+    "iid",
+    "movieid",
+    "movie_id",
+    "video_id",
+    "videoid",
+}
 INTERACTION_SIGNAL_MARKERS = {
     "rating",
     "watch_ratio",
@@ -162,7 +174,13 @@ POST_TREATMENT_MARKERS = {
 }
 RANDOMIZATION_MARKERS = {"is_rand"}
 SOCIAL_MARKERS = {"friend_list", "user_follow_id", "social_network"}
-SEARCH_MARKERS = {"search", "search_session_id", "search_session_source", "keyword", "search_photo_related"}
+SEARCH_MARKERS = {
+    "search",
+    "search_session_id",
+    "search_session_source",
+    "keyword",
+    "search_photo_related",
+}
 TEXT_MARKERS = {"title", "caption", "manual_cover_text", "tag", "topic_tag", "keyword"}
 NON_CAUSAL_MARKERS = {
     "imdbid",
@@ -346,6 +364,7 @@ def safe_count_lines(file_path: Path) -> int | None:
     # *any* text file and is the fastest option on Linux.
     try:
         import subprocess
+
         output = subprocess.check_output(["wc", "-l", str(file_path)])
         return int(output.strip().split()[0])
     except Exception:
@@ -374,7 +393,9 @@ def parse_csv_counts(file_path: Path) -> tuple[int | None, dict[str, Any]]:
     has_header = False
     first_row: list[str] | None = None
     try:
-        with file_path.open("r", encoding="utf-8", errors="ignore", newline="") as handle:
+        with file_path.open(
+            "r", encoding="utf-8", errors="ignore", newline=""
+        ) as handle:
             sample = handle.read(4096)
             handle.seek(0)
             has_header = csv.Sniffer().has_header(sample) if sample.strip() else False
@@ -393,10 +414,9 @@ def parse_csv_counts(file_path: Path) -> tuple[int | None, dict[str, Any]]:
     # row count via wc; avoids loading entire CSV into memory
     try:
         import subprocess
+
         total_rows = int(
-            subprocess.check_output(["wc", "-l", str(file_path)])
-            .strip()
-            .split()[0]
+            subprocess.check_output(["wc", "-l", str(file_path)]).strip().split()[0]
         )
         parsed = total_rows - 1 if has_header and total_rows > 0 else total_rows
         return parsed, details
@@ -404,7 +424,9 @@ def parse_csv_counts(file_path: Path) -> tuple[int | None, dict[str, Any]]:
         return None, details
 
 
-def parse_dat_counts(file_path: Path, line_count: int | None) -> tuple[int | None, dict[str, Any]]:
+def parse_dat_counts(
+    file_path: Path, line_count: int | None
+) -> tuple[int | None, dict[str, Any]]:
     """Compute parsed record counts for ``.dat`` files.
 
     Args:
@@ -438,11 +460,10 @@ def parse_amazonbook_interactions(file_path: Path) -> tuple[int | None, dict[str
 
     try:
         import subprocess
+
         # count rows
         users = int(
-            subprocess.check_output(["wc", "-l", str(file_path)])
-            .strip()
-            .split()[0]
+            subprocess.check_output(["wc", "-l", str(file_path)]).strip().split()[0]
         )
         # sum(i=1..N) (NF - 1)
         awkcmd = [
@@ -500,7 +521,10 @@ def try_json_metadata(file_path: Path) -> dict[str, Any]:
     Returns:
         Metadata dictionary (possibly empty).
     """
-    if MAX_JSON_PARSE_BYTES is not None and file_path.stat().st_size > MAX_JSON_PARSE_BYTES:
+    if (
+        MAX_JSON_PARSE_BYTES is not None
+        and file_path.stat().st_size > MAX_JSON_PARSE_BYTES
+    ):
         return {"json_parse": "skipped_large_file"}
 
     try:
@@ -550,7 +574,9 @@ def build_file_record(dataset_root: Path, file_path: Path) -> FileRecord:
         elif extension == ".dat":
             parsed_count, parsed_details = parse_dat_counts(file_path, line_count)
             details.update(parsed_details)
-        elif file_path.name in {"train.txt", "test.txt"} and "AmazonBook" in str(dataset_root):
+        elif file_path.name in {"train.txt", "test.txt"} and "AmazonBook" in str(
+            dataset_root
+        ):
             parsed_count, parsed_details = parse_amazonbook_interactions(file_path)
             details.update(parsed_details)
         elif line_count is not None:
@@ -636,7 +662,13 @@ def relevant_feature_columns(columns: list[str]) -> list[str]:
             continue
         if column in USER_COLUMN_MARKERS or column in ITEM_COLUMN_MARKERS:
             continue
-        if column.endswith("id") and column not in {"music_id", "author_id", "category_id", "tagid", "tag_id"}:
+        if column.endswith("id") and column not in {
+            "music_id",
+            "author_id",
+            "category_id",
+            "tagid",
+            "tag_id",
+        }:
             continue
         feature_columns.append(column)
     return feature_columns
@@ -658,7 +690,20 @@ def is_interaction_source(file_record: FileRecord) -> bool:
     file_name = Path(relative_path).name
     columns = schema_columns(file_record)
 
-    if file_name in {"train.txt", "valid.txt", "test.txt", "ratings.dat", "ratings.csv", "userbehavior.csv", "big_matrix.csv", "small_matrix.csv", "record.csv", "train_record.csv", "val_record.csv", "test_record.csv"}:
+    if file_name in {
+        "train.txt",
+        "valid.txt",
+        "test.txt",
+        "ratings.dat",
+        "ratings.csv",
+        "userbehavior.csv",
+        "big_matrix.csv",
+        "small_matrix.csv",
+        "record.csv",
+        "train_record.csv",
+        "val_record.csv",
+        "test_record.csv",
+    }:
         return True
 
     if "user_features" in relative_path or "social_network" in relative_path:
@@ -667,18 +712,24 @@ def is_interaction_source(file_record: FileRecord) -> bool:
     has_user = has_exact_marker(columns, USER_COLUMN_MARKERS)
     has_item = has_exact_marker(columns, ITEM_COLUMN_MARKERS)
     has_signal = has_exact_marker(columns, INTERACTION_SIGNAL_MARKERS)
-    return has_user and has_item and (has_signal or file_record.parsed_count is not None)
+    return (
+        has_user and has_item and (has_signal or file_record.parsed_count is not None)
+    )
 
 
 def is_user_feature_source(file_record: FileRecord) -> bool:
     """Identify user-side covariate files."""
     relative_path = file_record.relative_path.lower()
-    if any(token in relative_path for token in ["user_features", "users.dat", "user.txt"]):
+    if any(
+        token in relative_path for token in ["user_features", "users.dat", "user.txt"]
+    ):
         return True
 
     columns = schema_columns(file_record)
     feature_columns = relevant_feature_columns(columns)
-    return has_exact_marker(columns, USER_COLUMN_MARKERS) and has_substring_marker(feature_columns, USER_FEATURE_HINTS)
+    return has_exact_marker(columns, USER_COLUMN_MARKERS) and has_substring_marker(
+        feature_columns, USER_FEATURE_HINTS
+    )
 
 
 def is_item_feature_source(file_record: FileRecord) -> bool:
@@ -689,11 +740,25 @@ def is_item_feature_source(file_record: FileRecord) -> bool:
 
     path_hint = any(
         token in relative_path
-        for token in ["movies.dat", "movies.csv", "video_features", "genome", "caption", "category", "categories", "item_daily_features", "item_categories"]
+        for token in [
+            "movies.dat",
+            "movies.csv",
+            "video_features",
+            "genome",
+            "caption",
+            "category",
+            "categories",
+            "item_daily_features",
+            "item_categories",
+        ]
     )
     column_hint = has_substring_marker(columns + feature_columns, ITEM_FEATURE_HINTS)
     item_id_hint = has_exact_marker(columns, ITEM_COLUMN_MARKERS)
-    return (item_id_hint and bool(feature_columns) and column_hint) or path_hint or column_hint
+    return (
+        (item_id_hint and bool(feature_columns) and column_hint)
+        or path_hint
+        or column_hint
+    )
 
 
 def is_metadata_source(file_record: FileRecord) -> bool:
@@ -701,9 +766,21 @@ def is_metadata_source(file_record: FileRecord) -> bool:
     relative_path = file_record.relative_path.lower()
     columns = schema_columns(file_record)
 
-    if has_exact_marker(columns, RANDOMIZATION_MARKERS | SOCIAL_MARKERS) or has_substring_marker(columns, SEARCH_MARKERS):
+    if has_exact_marker(
+        columns, RANDOMIZATION_MARKERS | SOCIAL_MARKERS
+    ) or has_substring_marker(columns, SEARCH_MARKERS):
         return True
-    if any(token in relative_path for token in ["social_network", "links.csv", "tags.csv", "popularity", "role.json", "class_map.json"]):
+    if any(
+        token in relative_path
+        for token in [
+            "social_network",
+            "links.csv",
+            "tags.csv",
+            "popularity",
+            "role.json",
+            "class_map.json",
+        ]
+    ):
         return True
     return False
 
@@ -746,7 +823,9 @@ def summarize_columns(files: list[FileRecord]) -> set[str]:
     return columns
 
 
-def loader_support_text(record: DatasetRecord, aspect: str, files: list[FileRecord]) -> str:
+def loader_support_text(
+    record: DatasetRecord, aspect: str, files: list[FileRecord]
+) -> str:
     """Describe whether the current loader path uses a given aspect."""
     coverage = get_loader_coverage(record)
     if aspect == "metadata":
@@ -831,16 +910,24 @@ def build_causal_audit(record: DatasetRecord) -> dict[str, Any]:
     risks: list[str] = []
     if POST_TREATMENT_MARKERS & feature_columns:
         risks.append("behavioral aggregate features may leak post-exposure outcomes")
-    if has_substring_marker(interaction_columns | metadata_columns | feature_columns, SEARCH_MARKERS):
-        risks.append("search and recommendation signals are mixed and need causal separation")
+    if has_substring_marker(
+        interaction_columns | metadata_columns | feature_columns, SEARCH_MARKERS
+    ):
+        risks.append(
+            "search and recommendation signals are mixed and need causal separation"
+        )
     if SOCIAL_MARKERS & metadata_columns:
         risks.append("social links may act as confounders and need explicit treatment")
     if has_substring_marker(feature_columns, TEXT_MARKERS):
-        risks.append("textual descriptors need encoding and leakage checks before promotion")
+        risks.append(
+            "textual descriptors need encoding and leakage checks before promotion"
+        )
     if coverage.get("user_features") and coverage.get("loader_name"):
         risks.append("user features are loaded today but remain unused by the model")
     if requirements.get("preprocessing_cost") == "high":
-        risks.append("preprocessing cost is high before the dataset can join the formal matrix")
+        risks.append(
+            "preprocessing cost is high before the dataset can join the formal matrix"
+        )
 
     if RANDOMIZATION_MARKERS & metadata_columns:
         priority = "highest"
@@ -850,7 +937,9 @@ def build_causal_audit(record: DatasetRecord) -> dict[str, Any]:
         next_step = "separate pre-treatment descriptors from post-treatment aggregates and promote only safe features"
     elif coverage.get("loader_name"):
         priority = "medium"
-        next_step = "use as an interaction-only baseline unless new covariates are engineered"
+        next_step = (
+            "use as an interaction-only baseline unless new covariates are engineered"
+        )
     else:
         priority = "low"
         next_step = "implement a canonical loader before considering formal experiments"
@@ -889,7 +978,9 @@ def aspect_note(aspect: str, files: list[FileRecord]) -> str:
         notes: list[str] = []
         if RANDOMIZATION_MARKERS & columns:
             notes.append("contains randomized exposure indicator")
-        if has_exact_marker(list(columns), {"rating", "watch_ratio", "behavior_type", "is_hate"}):
+        if has_exact_marker(
+            list(columns), {"rating", "watch_ratio", "behavior_type", "is_hate"}
+        ):
             notes.append("supports label/sign construction")
         if has_exact_marker(list(columns), {"timestamp", "time_ms", "ts", "date"}):
             notes.append("supports temporal splitting")
@@ -942,7 +1033,15 @@ def render_causal_audit_table(record: DatasetRecord) -> list[str]:
         return ["- No causal feature sources detected."]
 
     lines = [
-        render_table_row(["Aspect", "Source Files", "Current Loader Coverage", "Current Model Use", "Causal Notes"]),
+        render_table_row(
+            [
+                "Aspect",
+                "Source Files",
+                "Current Loader Coverage",
+                "Current Model Use",
+                "Causal Notes",
+            ]
+        ),
         render_table_row(["---", "---", "---", "---", "---"]),
     ]
     lines.extend(render_table_row(row) for row in rows)
@@ -977,7 +1076,9 @@ def infer_column_aspect(file_record: FileRecord) -> str:
     return "interactions"
 
 
-def infer_pipeline_stage(record: DatasetRecord, file_record: FileRecord, column: str) -> str:
+def infer_pipeline_stage(
+    record: DatasetRecord, file_record: FileRecord, column: str
+) -> str:
     """Describe how far fields from a file currently travel in the pipeline."""
     aspect = infer_column_aspect(file_record)
     coverage = get_loader_coverage(record)
@@ -987,11 +1088,15 @@ def infer_pipeline_stage(record: DatasetRecord, file_record: FileRecord, column:
     if aspect == "interactions":
         return "model_consumed"
     if aspect == "item_features":
-        if thesis_default_column_enabled(record.name, aspect, file_record.relative_path, column):
+        if thesis_default_column_enabled(
+            record.name, aspect, file_record.relative_path, column
+        ):
             return "model_consumed"
         return "raw_only"
     if aspect == "user_features":
-        if thesis_default_column_enabled(record.name, aspect, file_record.relative_path, column):
+        if thesis_default_column_enabled(
+            record.name, aspect, file_record.relative_path, column
+        ):
             return "graph_retained"
         return "raw_only"
     metadata_keys = coverage.get("metadata", [])
@@ -1017,17 +1122,69 @@ def infer_causal_role(file_record: FileRecord, column: str) -> str:
         return "pre_treatment"
     if normalized == "feat" and relative_path.endswith("item_categories.csv"):
         return "pre_treatment"
-    if normalized in {"rating", "watch_ratio", "behavior_type", "is_click", "click", "label", "play_duration", "duration_ms", "is_like", "is_follow", "is_comment", "is_forward", "is_hate", "long_view"}:
+    if normalized in {
+        "rating",
+        "watch_ratio",
+        "behavior_type",
+        "is_click",
+        "click",
+        "label",
+        "play_duration",
+        "duration_ms",
+        "is_like",
+        "is_follow",
+        "is_comment",
+        "is_forward",
+        "is_hate",
+        "long_view",
+    }:
         return "post_treatment"
-    if normalized.endswith("_cnt") or normalized.endswith("_user_num") or normalized.endswith("_duration") or normalized.endswith("_progress"):
+    if (
+        normalized.endswith("_cnt")
+        or normalized.endswith("_user_num")
+        or normalized.endswith("_duration")
+        or normalized.endswith("_progress")
+    ):
         return "post_treatment"
     if normalized.startswith("onehot_feat") or normalized.endswith("_range"):
         return "pre_treatment"
-    if normalized in {"gender", "age", "occupation", "zip_code", "genres", "genre", "category_id", "category_name", "author_id", "music_id", "music_type", "video_type", "video_duration", "server_width", "server_height", "tag", "topic_tag", "caption", "manual_cover_text", "first_level_category_id", "second_level_category_id", "third_level_category_id"}:
+    if normalized in {
+        "gender",
+        "age",
+        "occupation",
+        "zip_code",
+        "genres",
+        "genre",
+        "category_id",
+        "category_name",
+        "author_id",
+        "music_id",
+        "music_type",
+        "video_type",
+        "video_duration",
+        "server_width",
+        "server_height",
+        "tag",
+        "topic_tag",
+        "caption",
+        "manual_cover_text",
+        "first_level_category_id",
+        "second_level_category_id",
+        "third_level_category_id",
+    }:
         if "tags.csv" in relative_path:
             return "proxy"
         return "pre_treatment"
-    if normalized.endswith("id") and normalized not in {"author_id", "music_id", "category_id", "tagid", "tag_id", "first_level_category_id", "second_level_category_id", "third_level_category_id"}:
+    if normalized.endswith("id") and normalized not in {
+        "author_id",
+        "music_id",
+        "category_id",
+        "tagid",
+        "tag_id",
+        "first_level_category_id",
+        "second_level_category_id",
+        "third_level_category_id",
+    }:
         return "non_causal"
     if normalized in TEXT_MARKERS:
         if "tags.csv" in relative_path:
@@ -1036,7 +1193,9 @@ def infer_causal_role(file_record: FileRecord, column: str) -> str:
     return "unknown"
 
 
-def quick_safe_use_check(file_record: FileRecord, column: str, causal_role: str, pipeline_stage: str) -> tuple[str, str]:
+def quick_safe_use_check(
+    file_record: FileRecord, column: str, causal_role: str, pipeline_stage: str
+) -> tuple[str, str]:
     """Return a minimal policy verdict for whether a field is safe to use now."""
     normalized = column.lower()
     relative_path = file_record.relative_path.lower()
@@ -1044,18 +1203,40 @@ def quick_safe_use_check(file_record: FileRecord, column: str, causal_role: str,
     if causal_role == "non_causal":
         return "exclude", "identifier or bookkeeping field"
     if causal_role == "post_treatment":
-        return "defer", "likely downstream of exposure or outcome; keep out of default causal features"
+        return (
+            "defer",
+            "likely downstream of exposure or outcome; keep out of default causal features",
+        )
     if causal_role == "proxy":
-        return "ablation_only", "potentially useful but entangled with exposure, search, or social context"
+        return (
+            "ablation_only",
+            "potentially useful but entangled with exposure, search, or social context",
+        )
     if causal_role == "unknown":
         return "review", "needs manual causal review before promotion"
-    if normalized in TEXT_MARKERS or "caption" in relative_path or normalized == "title":
-        return "encode_then_test", "pre-treatment descriptor but needs encoding and leakage review"
+    if (
+        normalized in TEXT_MARKERS
+        or "caption" in relative_path
+        or normalized == "title"
+    ):
+        return (
+            "encode_then_test",
+            "pre-treatment descriptor but needs encoding and leakage review",
+        )
     if pipeline_stage == "raw_only":
-        return "load_then_test", "looks safe enough to prototype after adding loader support"
+        return (
+            "load_then_test",
+            "looks safe enough to prototype after adding loader support",
+        )
     if pipeline_stage == "graph_retained":
-        return "model_extension_needed", "already loaded but not consumed by the current model"
-    return "safe_candidate", "eligible for quick utility probes in the current feature-aware path"
+        return (
+            "model_extension_needed",
+            "already loaded but not consumed by the current model",
+        )
+    return (
+        "safe_candidate",
+        "eligible for quick utility probes in the current feature-aware path",
+    )
 
 
 def collect_candidate_feature_rows(record: DatasetRecord) -> list[dict[str, str]]:
@@ -1069,7 +1250,9 @@ def collect_candidate_feature_rows(record: DatasetRecord) -> list[dict[str, str]
         for column in columns:
             pipeline_stage = infer_pipeline_stage(record, file_record, column)
             causal_role = infer_causal_role(file_record, column)
-            safe_use, rationale = quick_safe_use_check(file_record, column, causal_role, pipeline_stage)
+            safe_use, rationale = quick_safe_use_check(
+                file_record, column, causal_role, pipeline_stage
+            )
             rows.append(
                 {
                     "file": file_record.relative_path,
@@ -1092,16 +1275,18 @@ def render_candidate_feature_table(record: DatasetRecord) -> list[str]:
         return ["- No candidate columns detected."]
 
     lines = [
-        render_table_row([
-            "File",
-            "Aspect",
-            "Entity",
-            "Column",
-            "Causal Role",
-            "Pipeline Stage",
-            "Quick Check",
-            "Rationale",
-        ]),
+        render_table_row(
+            [
+                "File",
+                "Aspect",
+                "Entity",
+                "Column",
+                "Causal Role",
+                "Pipeline Stage",
+                "Quick Check",
+                "Rationale",
+            ]
+        ),
         render_table_row(["---", "---", "---", "---", "---", "---", "---", "---"]),
     ]
     for row in rows:
@@ -1122,7 +1307,9 @@ def render_candidate_feature_table(record: DatasetRecord) -> list[str]:
     return lines
 
 
-def build_feature_audit_payload(records: list[DatasetRecord], data_root: Path) -> dict[str, Any]:
+def build_feature_audit_payload(
+    records: list[DatasetRecord], data_root: Path
+) -> dict[str, Any]:
     """Build a machine-readable feature-audit export."""
     generated_at = dt.datetime.now().isoformat(timespec="seconds")
     datasets: list[dict[str, Any]] = []
@@ -1148,7 +1335,9 @@ def build_feature_audit_payload(records: list[DatasetRecord], data_root: Path) -
     }
 
 
-def detect_status(has_raw_content: bool, has_processed_data: bool, file_count: int) -> str:
+def detect_status(
+    has_raw_content: bool, has_processed_data: bool, file_count: int
+) -> str:
     """Compute dataset availability status.
 
     Args:
@@ -1189,7 +1378,11 @@ def load_pyg_data_from_processed(processed_path: Path) -> Any:
     except TypeError:
         payload = torch.load(processed_path, map_location="cpu")
 
-    if isinstance(payload, tuple) and len(payload) >= 3 and isinstance(payload[0], dict):
+    if (
+        isinstance(payload, tuple)
+        and len(payload) >= 3
+        and isinstance(payload[0], dict)
+    ):
         data_dict = payload[0]
         data_cls = payload[2]
         if hasattr(data_cls, "from_dict"):
@@ -1223,13 +1416,19 @@ def infer_graph_info(data_obj: Any, source_path: str) -> dict[str, Any]:
         # homogeneous Data objects store them as attributes
         if hasattr(obj, "__dict__"):
             for k, v in obj.__dict__.items():
-                if isinstance(v, torch.Tensor) and any(prefix in k for prefix in ["train", "val", "test"]):
+                if isinstance(v, torch.Tensor) and any(
+                    prefix in k for prefix in ["train", "val", "test"]
+                ):
                     splits[k] = list(v.size())
         # hetero stores have dict-like semantics
         if hasattr(obj, "node_types") and hasattr(obj, "edge_types"):
-            for store in list(getattr(obj, "node_stores", [])) + list(getattr(obj, "edge_stores", [])):
+            for store in list(getattr(obj, "node_stores", [])) + list(
+                getattr(obj, "edge_stores", [])
+            ):
                 for k, v in store.items():
-                    if isinstance(v, torch.Tensor) and any(prefix in k for prefix in ["train", "val", "test"]):
+                    if isinstance(v, torch.Tensor) and any(
+                        prefix in k for prefix in ["train", "val", "test"]
+                    ):
                         keyname = f"{store._key}.{k}"
                         splits[keyname] = list(v.size())
         return splits
@@ -1243,7 +1442,11 @@ def infer_graph_info(data_obj: Any, source_path: str) -> dict[str, Any]:
             node_store = data_obj[node_type]
             node_counts[node_type] = int(getattr(node_store, "num_nodes", 0) or 0)
             x_value = getattr(node_store, "x", None)
-            if x_value is not None and hasattr(x_value, "shape") and len(x_value.shape) == 2:
+            if (
+                x_value is not None
+                and hasattr(x_value, "shape")
+                and len(x_value.shape) == 2
+            ):
                 node_features[node_type] = int(x_value.shape[1])
             else:
                 node_features[node_type] = 0
@@ -1252,7 +1455,7 @@ def infer_graph_info(data_obj: Any, source_path: str) -> dict[str, Any]:
             edge_key = str(edge_type)
             edge_store = data_obj[edge_type]
             edge_counts[edge_key] = int(getattr(edge_store, "num_edges", 0) or 0)
-            
+
             # Detect Graph Transformation / Tensor formats
             layout = "unknown"
             if hasattr(edge_store, "edge_index") and edge_store.edge_index is not None:
@@ -1274,7 +1477,9 @@ def infer_graph_info(data_obj: Any, source_path: str) -> dict[str, Any]:
             "node_counts": node_counts,
             "edge_counts": edge_counts,
             "node_feature_dims": node_features,
-            "edge_layouts": "sparse" if any(hasattr(data_obj[et], "adj_t") for et in edge_types) else "dense",
+            "edge_layouts": "sparse"
+            if any(hasattr(data_obj[et], "adj_t") for et in edge_types)
+            else "dense",
         }
         if splits_info:
             result["splits"] = splits_info
@@ -1295,7 +1500,9 @@ def infer_graph_info(data_obj: Any, source_path: str) -> dict[str, Any]:
     }
 
 
-def extract_graph_info_from_processed(dataset_root: Path, processed_paths: list[Path]) -> tuple[dict[str, Any] | None, str | None]:
+def extract_graph_info_from_processed(
+    dataset_root: Path, processed_paths: list[Path]
+) -> tuple[dict[str, Any] | None, str | None]:
     """Try extracting graph metadata from ``processed/data.pt``.
 
     Args:
@@ -1311,15 +1518,14 @@ def extract_graph_info_from_processed(dataset_root: Path, processed_paths: list[
     for processed_path in processed_paths:
         try:
             data_obj = load_pyg_data_from_processed(processed_path)
-            graph_info = infer_graph_info(data_obj, str(processed_path.relative_to(dataset_root)))
+            graph_info = infer_graph_info(
+                data_obj, str(processed_path.relative_to(dataset_root))
+            )
             return graph_info, None
         except Exception:
             continue
 
     return None, "failed to parse processed/data*.pt"
-
-
-
 
 
 def scan_dataset(dataset_root: Path) -> DatasetRecord:
@@ -1342,18 +1548,20 @@ def scan_dataset(dataset_root: Path) -> DatasetRecord:
             notes.append(f"file_scan_failed:{file_path.name}:{exc}")
 
     raw_files = [path for path in dataset_root.rglob("raw/**/*") if path.is_file()]
-    processed_files = [path for path in dataset_root.rglob("processed/**/*") if path.is_file()]
+    processed_files = [
+        path for path in dataset_root.rglob("processed/**/*") if path.is_file()
+    ]
     processed_paths = [
-        path
-        for path in dataset_root.rglob("processed/data*.pt")
-        if path.is_file()
+        path for path in dataset_root.rglob("processed/data*.pt") if path.is_file()
     ]
 
     has_raw_content = len(raw_files) > 0
     has_processed_data = len(processed_files) > 0
     status = detect_status(has_raw_content, has_processed_data, len(file_records))
 
-    graph_info, graph_error = extract_graph_info_from_processed(dataset_root, processed_paths)
+    graph_info, graph_error = extract_graph_info_from_processed(
+        dataset_root, processed_paths
+    )
     if graph_error:
         notes.append(graph_error)
 
@@ -1363,7 +1571,9 @@ def scan_dataset(dataset_root: Path) -> DatasetRecord:
         file_records=file_records,
         has_raw_content=has_raw_content,
         has_processed_data=has_processed_data,
-        processed_paths=[str(path.relative_to(dataset_root)) for path in processed_paths],
+        processed_paths=[
+            str(path.relative_to(dataset_root)) for path in processed_paths
+        ],
         status=status,
         notes=notes,
         graph_info=graph_info,
@@ -1402,7 +1612,7 @@ def format_ucagnn_summary(summary: dict[str, Any] | None) -> list[str]:
         ),
         (
             f"- File-level semantic inspection errors: {len(summary.get('file_errors', []))}"
-            if summary.get('file_errors')
+            if summary.get("file_errors")
             else "- File-level semantic inspection errors: 0"
         ),
         f"- Assessment: {summary['note']}",
@@ -1448,19 +1658,29 @@ def build_markdown_report(records: list[DatasetRecord], data_root: Path) -> str:
 
     lines.append("## Dataset Summary")
     lines.append("")
-    lines.append(render_table_row([
-        "Dataset",
-        "Status",
-        "Files",
-        "Total Size",
-        "Pairwise",
-        "Sign",
-        "Preprocessing",
-        "Raw",
-        "Processed",
-    ]))
-    lines.append(render_table_row(["---", "---", "---:", "---:", "---", "---", "---", "---", "---"]))
-    ordered_records = sorted(records, key=lambda item: (-item.total_bytes, item.name.lower()))
+    lines.append(
+        render_table_row(
+            [
+                "Dataset",
+                "Status",
+                "Files",
+                "Total Size",
+                "Pairwise",
+                "Sign",
+                "Preprocessing",
+                "Raw",
+                "Processed",
+            ]
+        )
+    )
+    lines.append(
+        render_table_row(
+            ["---", "---", "---:", "---:", "---", "---", "---", "---", "---"]
+        )
+    )
+    ordered_records = sorted(
+        records, key=lambda item: (-item.total_bytes, item.name.lower())
+    )
     for record in ordered_records:
         requirements = (record.exploration_summary or {}).get("ucagnn_requirements", {})
         lines.append(
@@ -1482,14 +1702,18 @@ def build_markdown_report(records: list[DatasetRecord], data_root: Path) -> str:
 
     lines.append("## Causal Audit Summary")
     lines.append("")
-    lines.append(render_table_row([
-        "Dataset",
-        "Experiment Path",
-        "Strongest Asset",
-        "Primary Risk",
-        "Priority",
-        "Next Step",
-    ]))
+    lines.append(
+        render_table_row(
+            [
+                "Dataset",
+                "Experiment Path",
+                "Strongest Asset",
+                "Primary Risk",
+                "Priority",
+                "Next Step",
+            ]
+        )
+    )
     lines.append(render_table_row(["---", "---", "---", "---", "---", "---"]))
     for record in ordered_records:
         audit = build_causal_audit(record)
@@ -1514,15 +1738,24 @@ def build_markdown_report(records: list[DatasetRecord], data_root: Path) -> str:
         lines.append(f"- Root: `{record.root_path}`")
         lines.append(f"- Total files: {len(record.file_records)}")
         lines.append(f"- Dataset size: {format_bytes(record.total_bytes)}")
-        lines.append(f"- Raw files present: {'yes' if record.has_raw_content else 'no'}")
-        lines.append(f"- Processed files present: {'yes' if record.has_processed_data else 'no'}")
+        lines.append(
+            f"- Raw files present: {'yes' if record.has_raw_content else 'no'}"
+        )
+        lines.append(
+            f"- Processed files present: {'yes' if record.has_processed_data else 'no'}"
+        )
         if record.processed_paths:
             lines.append(f"- Processed file(s): {', '.join(record.processed_paths)}")
 
-        extension_counter = Counter(file.extension or "<no_ext>" for file in record.file_records)
+        extension_counter = Counter(
+            file.extension or "<no_ext>" for file in record.file_records
+        )
         if extension_counter:
             ext_items = ", ".join(
-                f"{ext}: {count}" for ext, count in sorted(extension_counter.items(), key=lambda item: item[0])
+                f"{ext}: {count}"
+                for ext, count in sorted(
+                    extension_counter.items(), key=lambda item: item[0]
+                )
             )
             lines.append(f"- Extension breakdown: {ext_items}")
 
@@ -1552,36 +1785,59 @@ def build_markdown_report(records: list[DatasetRecord], data_root: Path) -> str:
         lines.append("")
         lines.append("### Files")
         lines.append("")
-        lines.append(render_table_row([
-            "Path",
-            "Extension",
-            "Size",
-            "Line Count",
-            "Parsed Count",
-            "Column Count",
-            "Column Names",
-            "Details",
-        ]))
-        lines.append(render_table_row(["---", "---", "---:", "---:", "---:", "---:", "---", "---"]))
+        lines.append(
+            render_table_row(
+                [
+                    "Path",
+                    "Extension",
+                    "Size",
+                    "Line Count",
+                    "Parsed Count",
+                    "Column Count",
+                    "Column Names",
+                    "Details",
+                ]
+            )
+        )
+        lines.append(
+            render_table_row(
+                ["---", "---", "---:", "---:", "---:", "---:", "---", "---"]
+            )
+        )
 
-        for file_record in sorted(record.file_records, key=lambda item: (-item.size_bytes, item.relative_path)):
+        for file_record in sorted(
+            record.file_records, key=lambda item: (-item.size_bytes, item.relative_path)
+        ):
             details_text = ""
             if file_record.details:
-                details_text = "; ".join(f"{key}={value}" for key, value in sorted(file_record.details.items()))
+                details_text = "; ".join(
+                    f"{key}={value}"
+                    for key, value in sorted(file_record.details.items())
+                )
             schema = file_record.schema or {}
             schema_error = schema.get("schema_error")
             column_count = schema.get("column_count")
-            column_names = format_columns(schema.get("columns", [])) if not schema_error else "-"
+            column_names = (
+                format_columns(schema.get("columns", [])) if not schema_error else "-"
+            )
             if schema_error:
-                details_text = f"{details_text}; schema_error={schema_error}" if details_text else f"schema_error={schema_error}"
+                details_text = (
+                    f"{details_text}; schema_error={schema_error}"
+                    if details_text
+                    else f"schema_error={schema_error}"
+                )
             lines.append(
                 render_table_row(
                     [
                         file_record.relative_path,
                         file_record.extension or "<no_ext>",
                         f"{file_record.size_bytes / (1024**2):,.2f} MiB",
-                        str(file_record.line_count) if file_record.line_count is not None else "-",
-                        str(file_record.parsed_count) if file_record.parsed_count is not None else "-",
+                        str(file_record.line_count)
+                        if file_record.line_count is not None
+                        else "-",
+                        str(file_record.parsed_count)
+                        if file_record.parsed_count is not None
+                        else "-",
                         str(column_count) if column_count is not None else "-",
                         column_names,
                         details_text or "-",

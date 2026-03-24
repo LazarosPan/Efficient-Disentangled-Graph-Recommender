@@ -14,12 +14,12 @@ class CanonicalInteractions:
     All loaders produce this; downstream code never touches raw formats.
     """
 
-    user_id: np.ndarray       # (N,) int64 — re-indexed from 0
-    item_id: np.ndarray       # (N,) int64 — re-indexed from 0
-    label: np.ndarray         # (N,) float32 — 1.0 positive, 0.0 negative
-    timestamp: np.ndarray     # (N,) int64 — unix seconds (0 if unavailable)
-    sign: np.ndarray          # (N,) float32 — [-1, 1] continuous sentiment
-    popularity: np.ndarray    # (I,) float32 — per-item interaction count (normalized)
+    user_id: np.ndarray  # (N,) int64 — re-indexed from 0
+    item_id: np.ndarray  # (N,) int64 — re-indexed from 0
+    label: np.ndarray  # (N,) float32 — 1.0 positive, 0.0 negative
+    timestamp: np.ndarray  # (N,) int64 — unix seconds (0 if unavailable)
+    sign: np.ndarray  # (N,) float32 — [-1, 1] continuous sentiment
+    popularity: np.ndarray  # (I,) float32 — per-item interaction count (normalized)
 
     n_users: int
     n_items: int
@@ -30,9 +30,9 @@ class CanonicalInteractions:
     item_features: np.ndarray | None = None  # (n_items, F_i) optional side features
 
     # Predefined split masks (set by loaders that have train/test files)
-    train_mask: np.ndarray | None = None     # (N,) bool
-    val_mask: np.ndarray | None = None       # (N,) bool
-    test_mask: np.ndarray | None = None      # (N,) bool
+    train_mask: np.ndarray | None = None  # (N,) bool
+    val_mask: np.ndarray | None = None  # (N,) bool
+    test_mask: np.ndarray | None = None  # (N,) bool
 
     # Metadata (e.g., is_rand flags for causal analysis)
     metadata: dict | None = None
@@ -41,8 +41,16 @@ class CanonicalInteractions:
         return len(self.user_id)
 
     def __repr__(self) -> str:
-        uf = f", user_feat={self.user_features.shape}" if self.user_features is not None else ""
-        itf = f", item_feat={self.item_features.shape}" if self.item_features is not None else ""
+        uf = (
+            f", user_feat={self.user_features.shape}"
+            if self.user_features is not None
+            else ""
+        )
+        itf = (
+            f", item_feat={self.item_features.shape}"
+            if self.item_features is not None
+            else ""
+        )
         splits = ", predefined_splits=True" if self.train_mask is not None else ""
         return (
             f"CanonicalInteractions(n_users={self.n_users}, n_items={self.n_items}, "

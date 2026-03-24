@@ -88,8 +88,11 @@ class UCaGNN(nn.Module):
 
         # Module B: GCN propagation
         propagated = self.gcn(
-            init_embs, edge_index, edge_sign,
-            n_users=self.n_users, n_items=self.n_items,
+            init_embs,
+            edge_index,
+            edge_sign,
+            n_users=self.n_users,
+            n_items=self.n_items,
         )
 
         # Module C: Score positive and negative pairs
@@ -135,13 +138,20 @@ class UCaGNN(nn.Module):
 
         # GCN on subgraph
         propagated = self.gcn(
-            sub_embs, batch.sub_edge_index, batch.sub_edge_sign,
-            n_users=batch.n_sub_users, n_items=batch.n_sub_items,
+            sub_embs,
+            batch.sub_edge_index,
+            batch.sub_edge_sign,
+            n_users=batch.n_sub_users,
+            n_items=batch.n_sub_items,
         )
 
         # Score using local indices
-        pos_scores = self.scoring(propagated, batch.batch_user_local, batch.batch_pos_local)
-        neg_scores = self.scoring(propagated, batch.batch_user_local, batch.batch_neg_local)
+        pos_scores = self.scoring(
+            propagated, batch.batch_user_local, batch.batch_pos_local
+        )
+        neg_scores = self.scoring(
+            propagated, batch.batch_user_local, batch.batch_neg_local
+        )
 
         result: dict[str, torch.Tensor | dict] = {
             "pos_scores": pos_scores,
@@ -199,8 +209,11 @@ class UCaGNN(nn.Module):
         """Return full-catalog score components for evaluation and diagnostics."""
         init_embs = self.embedding.get_all_embeddings()
         propagated = self.gcn(
-            init_embs, edge_index, edge_sign,
-            n_users=self.n_users, n_items=self.n_items,
+            init_embs,
+            edge_index,
+            edge_sign,
+            n_users=self.n_users,
+            n_items=self.n_items,
         )
         resolved_scoring_mode = scoring_mode or self.config.eval_scoring_mode
 
@@ -244,5 +257,7 @@ class UCaGNN(nn.Module):
             "final_score": interest_scores,
         }
 
-    def get_score_weight_summary(self, scoring_mode: str = "default") -> dict[str, float]:
+    def get_score_weight_summary(
+        self, scoring_mode: str = "default"
+    ) -> dict[str, float]:
         return self.scoring.get_score_weight_summary(scoring_mode=scoring_mode)
