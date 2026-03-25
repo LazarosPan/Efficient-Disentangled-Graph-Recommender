@@ -214,20 +214,17 @@ def _assert_profiling_logging(exp_id: int) -> None:
 
 
 def _assert_ranking_metrics(test_metrics: dict[str, float]) -> None:
-    required_prefixes = (
-        "Precision@",
-        "Recall@",
-        "F1@",
-        "MAP@",
-        "NDCG@",
-        "MRR@",
-        "HitRatio@",
-        "Coverage@",
-        "AveragePopularity@",
+    required_metric_names = (
+        "NDCG@20",
+        "Recall@20",
+        "AveragePopularity@20",
+        "NDCG@50",
+        "Recall@50",
+        "AveragePopularity@50",
     )
-    for prefix in required_prefixes:
-        if not any(name.startswith(prefix) for name in test_metrics):
-            raise AssertionError(f"Ranking metrics missing {prefix}K")
+    for metric_name in required_metric_names:
+        if metric_name not in test_metrics:
+            raise AssertionError(f"Ranking metrics missing {metric_name}")
 
 
 def _print_case(

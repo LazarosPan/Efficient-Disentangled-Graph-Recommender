@@ -6,14 +6,8 @@ import torch
 from typing import Final
 from torch_geometric.metrics import (
     LinkPredAveragePopularity,
-    LinkPredCoverage,
-    LinkPredF1,
-    LinkPredHitRatio,
-    LinkPredMAP,
     LinkPredMetricCollection,
-    LinkPredMRR,
     LinkPredNDCG,
-    LinkPredPrecision,
     LinkPredRecall,
 )
 
@@ -31,41 +25,36 @@ THESIS_PRIMARY_METRICS: Final[tuple[str, ...]] = (
 LOWER_IS_BETTER_METRICS: Final[frozenset[str]] = frozenset(
     {"AveragePopularity@20", "AveragePopularity@50"}
 )
+THESIS_EVAL_KS: Final[tuple[int, ...]] = (20, 50)
 
 
 class Evaluator:
     """Batched GPU evaluation for the PyG link-prediction metric suite.
 
-    This module also owns the thesis-primary metric constants consumed by the
-    reporting and mechanism-evaluation entry points.
+    Runtime evaluation is intentionally restricted to the thesis-primary
+    metric set so reporting, validation, and saved results stay aligned.
     """
 
     def __init__(self, config: UCaGNNConfig) -> None:
         self.config = config
-        self.ks = config.eval_ks
         self.eval_scoring_mode = config.eval_scoring_mode
 
     def _build_metrics(
         self, n_items: int, popularity: torch.Tensor
     ) -> LinkPredMetricCollection:
-        """Build the full PyG metric bundle for all configured cutoffs.
+        """Build the thesis-primary PyG metric bundle.
 
-        The small loop here is only construction-time setup for the metric set.
-        Runtime efficiency comes from updating the resulting
-        ``LinkPredMetricCollection`` once per evaluation batch.
+        ``LinkPredMetricCollection`` still needs one metric instance per metric
+        family and cutoff, but runtime updates happen through a single shared
+        collection call.
         """
         metrics: dict[str, object] = {}
-        for k in self.ks:
-            metrics[f"Precision@{k}"] = LinkPredPrecision(k=k)
-            metrics[f"Recall@{k}"] = LinkPredRecall(k=k)
-            metrics[f"F1@{k}"] = LinkPredF1(k=k)
-            metrics[f"MAP@{k}"] = LinkPredMAP(k=k)
+        for k in THESIS_EVAL_KS:
             metrics[f"NDCG@{k}"] = LinkPredNDCG(k=k)
-            metrics[f"MRR@{k}"] = LinkPredMRR(k=k)
-            metrics[f"HitRatio@{k}"] = LinkPredHitRatio(k=k)
-            metrics[f"Coverage@{k}"] = LinkPredCoverage(k=k, num_dst_nodes=n_items)
+            metrics[f"Recall@{k}"] = LinkPredRecall(k=k)
             metrics[f"AveragePopularity@{k}"] = LinkPredAveragePopularity(
-                k=k, popularity=popularity
+                k=k,
+                popularity=popularity,
             )
         return LinkPredMetricCollection(metrics)
 
@@ -97,7 +86,7 @@ class Evaluator:
         metrics = self._build_metrics(n_items=n_items, popularity=popularity)
         metrics = metrics.to(device)
 
-        max_k = max(self.ks)
+        max_k = max(THESIS_EVAL_KS)
         for start in range(0, unique_users.size(0), batch_size):
             batch_users = unique_users[start : start + batch_size]
             scores = model.get_all_scores(

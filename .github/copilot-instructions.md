@@ -1,78 +1,68 @@
 # Workspace Instructions
 
-You are a team of researchers and engineers working on a thesis project about causal embeddings for recommendations. This file provides instructions on how to navigate the codebase, documentation, and workflow for implementation iterations.
+You are working on a thesis project about causal embeddings for recommendation. These instructions describe how to use the docs, codebase, and workflow.
 
-## Mandatory Iteration Workflow
+## Iteration Workflow (Mandatory)
 
-Before each implementation iteration, read all files in:
+Before each implementation iteration:
 
-1. `.github/skills/ucagnn-implementation/`
-   Fast routing layer for the implementation area. Read this first to decide what part of the system is relevant.
-2. `docs/ucagnn_implementation/`
-   Authoritative implementation reference. Read this before changing code so behavior, defaults, and workflow stay aligned.
+1. Read `.github/skills/ucagnn-implementation/`  
+   – Fast routing layer for implementation work; use it to decide what parts of the system matter.
 
-After every iteration, update the relevant files in the same two folders so the implementation instructions stay current with the codebase:
+2. Read `docs/ucagnn_implementation/`  
+   – Authoritative implementation reference; follow it to keep behavior, defaults, and workflow aligned.
 
-1. `.github/skills/ucagnn-implementation/`
-2. `docs/ucagnn_implementation/`
-
-## .github Layout
-
-Use this repository structure when deciding where instructions belong:
-
-- `.github/copilot-instructions.md`
-  Always-on router. Keep it concise and pointer-based.
-- `.github/instructions/`
-  File-scoped or topic-scoped instructions.
-- `.github/prompts/`
-  Reusable prompt templates.
-- `.github/agents/`
-  Custom agents for specialized workflows.
-- `.github/skills/<skill-name>/SKILL.md`
-  Entry point for a skill; supporting files stay in the same skill folder.
-
-## What To Read Next
-
-Start with the core documentation folders:
+After each iteration, update both so they match the code:
 
 - `.github/skills/ucagnn-implementation/`
-  Fast routing skill layer for implementation decisions; load these first.
 - `docs/ucagnn_implementation/`
-  Authoritative implementation docs; use these to understand architecture, config, data, losses, and training.
 
-After the documentation is understood, use topic folders for code exploration:
+Keep changes minimal and concise.
 
-- `src/training/` for training loops, checkpointing, and evaluation
-- `src/models/` for model architecture and scoring
-- `src/data/` for dataset loaders and graph builders
-- `src/losses/` for loss functions and multi-task orchestration
-- `experiments/` for runner orchestration and catalog definitions
-- `scripts/` for preflight and maintenance utilities
+## Repository Layout (Guidance)
+
+Use this structure to place and find instructions:
+
+- `.github/copilot-instructions.md` – Always-on router; keep short and pointer-based.
+- `.github/instructions/` – File- or topic-scoped guidance.
+- `.github/prompts/` – Reusable prompt templates.
+- `.github/agents/` – Custom agents for specialized workflows.
+- `.github/skills/<skill-name>/SKILL.md` – Entry point for a skill and its supporting files.
+
+Core project folders for code:
+
+- `src/training/` – Training loops, checkpointing, evaluation.
+- `src/models/` – Model architecture and scoring.
+- `src/data/` – Dataset loaders and graph builders.
+- `src/losses/` – Loss functions and multi-task orchestration.
+- `experiments/` – Experiment runners and catalog definitions.
+- `scripts/` – Preflight and maintenance utilities.
 
 ## Project Rules
 
-- SQLite is the primary thesis record. MLflow is secondary UI and artifact tracking.
-- The formal experiment matrix is `dataset × preset × training_mode × graph_method`.
-- Treat `batch_size`, `num_neighbors`, and similar values as support parameters to validate via preflight, not as frozen thesis axes.
-- One experiment should map to one training run and one saved checkpoint, with later evaluation possible without retraining.
-- Updates to `.github/skills/ucagnn-implementation/` and `docs/ucagnn_implementation/` should be concise and minimal; avoid excessive verbosity.
-- Prefer concise, auditable changes. Keep this file focused on routing to the right folders and files, not on embedding large code instructions here.
-- Choose the correct data structures and algorithms to make code efficient.
-- Apply KISS, YAGNI, DRY, and SOLID where appropriate:
-  - KISS: prefer clear, minimal designs over complexity.
-  - YAGNI: you ain’t gonna need it — build only what is proven needed.
-  - DRY: keep behavior and logic in one place, avoid duplicate code.
-  - SOLID: build single-responsibility, extensible, interface-driven components.
-- WET: write everything twice before abstracting; avoid premature abstraction, refactor only once duplication reaches 3x.
-- TDD: test-driven design—write a failing test first, then implement minimal code to pass it.
-- Maintain consistent levels of abstraction in each function/class/file: avoid mixing low-level and high-level details in the same block.
-- Write code that is easy to maintain, readable, and self-explanatory.
-- Reuse existing code; avoid creating new duplicates in other files unless absolutely necessary.
-- Default to editing existing files, functions, and entry points before adding new files, scripts, modules, exports, or CLIs.
-- For policy, reporting, config, and wiring changes, prefer the smallest viable diff; every new file, helper, export, or public surface must justify its maintenance cost.
-- Treat cleanup as part of implementation: when a change creates or exposes duplication, collapse or remove the redundant path when safe instead of leaving parallel logic behind.
-- The codebase should be as simple as possible while still meeting the requirements; avoid over-engineering.
-- Favor test-driven development (TDD) and full-cycle product thinking: code + tests + eval + iteration.
-- Every function must include typing and have a docstring with arguments, return values, and a brief description of its purpose.
-- The Python code should follow PEP 8 style guidelines for readability and consistency. Run `ruff format` in the terminal to automatically format the code.
-- After every change and update in the code, run `uv run scripts/quick_validate.py` to check if everything works fine.
+- SQLite is the primary experiment record; MLflow is a secondary UI and artifact tracker.
+- The formal experiment grid is `dataset × preset × training_mode × graph_method`.
+- Treat `batch_size`, `num_neighbors`, etc. as support parameters to validate via preflight, not as thesis axes.
+- One experiment = one training run = one checkpoint; evaluation should reuse checkpoints, not retrain.
+
+- Prefer editing existing files over adding new ones; avoid new scripts/CLIs unless clearly justified.
+- Keep diffs small and auditable, especially for policy, reporting, config, and wiring changes.
+- When a change exposes duplication, remove or merge redundant paths instead of leaving parallel logic.
+
+## Engineering Principles
+
+- Use KISS, YAGNI, DRY, and SOLID pragmatically:
+  - KISS: prefer simple, clear designs.
+  - YAGNI: implement only what is actually needed.
+  - DRY: avoid duplicating behavior and logic.
+  - SOLID: keep responsibilities narrow and components extensible.
+- Prefer test-driven development: write a failing test, then the minimal implementation.
+- Maintain consistent abstraction levels within a file/function; do not mix very high- and low-level concerns.
+- Reuse existing code whenever possible; do not reimplement utilities elsewhere.
+
+## Coding Standards
+
+- Every function must be type-annotated and have a short docstring describing purpose, arguments, and return values.
+- Prefer vectorized operations and efficient data structures over explicit Python loops where feasible.
+- Follow PEP 8. Run `ruff format` to format code.
+- After any change, run `uv run scripts/quick_validate.py` to validate the project.

@@ -16,23 +16,14 @@ from src.data.feature_policy import (
     datasets_with_feature_utility,
     datasets_with_policy_ablation,
 )
+from src.training.evaluator import THESIS_PRIMARY_METRICS
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
 DEFAULT_CATEGORIES = ("utility", "policy")
 DEFAULT_UTILITY_DATASETS = list(datasets_with_feature_utility())
 DEFAULT_POLICY_DATASETS = list(datasets_with_policy_ablation())
-DEFAULT_METRIC_KEYS = (
-    "Precision@50",
-    "Recall@50",
-    "F1@50",
-    "NDCG@50",
-    "HitRatio@50",
-    "MAP@50",
-    "MRR@50",
-    "Coverage@50",
-    "AveragePopularity@50",
-)
+DEFAULT_METRIC_KEYS = THESIS_PRIMARY_METRICS
 TINY_SAMPLE_INTERACTIONS = {
     "movielens1m": 100,
     "movielens20m": 100,
@@ -149,62 +140,69 @@ def _promotion_gate(
     comparison_kind: str,
 ) -> tuple[str, list[str]]:
     reasons: list[str] = []
+    ndcg_20_delta = _rank_delta(candidate, baseline, "NDCG@20")
+    recall_20_delta = _rank_delta(candidate, baseline, "Recall@20")
+    avg_pop_20_delta = _rank_delta(candidate, baseline, "AveragePopularity@20")
     ndcg_delta = _rank_delta(candidate, baseline, "NDCG@50")
     recall_delta = _rank_delta(candidate, baseline, "Recall@50")
-    map_delta = _rank_delta(candidate, baseline, "MAP@50")
-    mrr_delta = _rank_delta(candidate, baseline, "MRR@50")
-    hitratio_delta = _rank_delta(candidate, baseline, "HitRatio@50")
-    coverage_delta = _rank_delta(candidate, baseline, "Coverage@50")
     avg_pop_delta = _rank_delta(candidate, baseline, "AveragePopularity@50")
 
+    if ndcg_20_delta > 0.0:
+        reasons.append(f"NDCG@20 improved by {ndcg_20_delta:.4f}")
+    if recall_20_delta > 0.0:
+        reasons.append(f"Recall@20 improved by {recall_20_delta:.4f}")
     if ndcg_delta > 0.0:
         reasons.append(f"NDCG@50 improved by {ndcg_delta:.4f}")
     if recall_delta > 0.0:
         reasons.append(f"Recall@50 improved by {recall_delta:.4f}")
-    if map_delta > 0.0:
-        reasons.append(f"MAP@50 improved by {map_delta:.4f}")
-    if mrr_delta > 0.0:
-        reasons.append(f"MRR@50 improved by {mrr_delta:.4f}")
-    if hitratio_delta > 0.0:
-        reasons.append(f"HitRatio@50 improved by {hitratio_delta:.4f}")
 
-    diversity_ok = True
-    if coverage_delta < -1e-4:
-        diversity_ok = False
-        reasons.append("Coverage@50 regressed")
+    popularity_ok = True
+    if avg_pop_20_delta > 1e-4:
+        popularity_ok = False
+        reasons.append("AveragePopularity@20 increased (worse)")
     if avg_pop_delta > 1e-4:
-        diversity_ok = False
+        popularity_ok = False
         reasons.append("AveragePopularity@50 increased (worse)")
 
     if comparison_kind == "policy":
         if (
             ndcg_delta > 1e-4
             or recall_delta > 1e-4
-            or map_delta > 1e-4
-            or mrr_delta > 1e-4
-        ) and diversity_ok:
+            or ndcg_20_delta > 1e-4
+            or recall_20_delta > 1e-4
+        ) and popularity_ok:
             return f"promote_{candidate_name}", reasons or [
-                "ranking improved without PyG-metric regressions"
+                "thesis metrics improved without popularity regressions"
             ]
-        if ndcg_delta <= 1e-4 and recall_delta <= 1e-4:
+        if (
+            ndcg_20_delta <= 1e-4
+            and recall_20_delta <= 1e-4
+            and ndcg_delta <= 1e-4
+            and recall_delta <= 1e-4
+        ):
             return "keep_baseline", reasons or [
-                "broader optional scans did not earn a ranking gain"
+                "broader optional scans did not earn a thesis-metric gain"
             ]
-        return "review", reasons or ["mixed PyG metric signal"]
+        return "review", reasons or ["mixed thesis-metric signal"]
 
     if (
-        ndcg_delta >= 0.0
+        ndcg_20_delta >= 0.0
+        and recall_20_delta >= 0.0
+        and ndcg_delta >= 0.0
         and recall_delta >= 0.0
-        and map_delta >= 0.0
-        and mrr_delta >= 0.0
-        and diversity_ok
+        and popularity_ok
     ):
         return f"promote_{candidate_name}", reasons or [
-            "ranking held or improved without PyG-metric regressions"
+            "thesis metrics held or improved without popularity regressions"
         ]
-    if ndcg_delta <= -0.01 and recall_delta <= -0.01:
-        return "keep_baseline", reasons or ["ranking regressed materially"]
-    return "review", reasons or ["mixed PyG metric signal"]
+    if (
+        ndcg_20_delta <= -0.01
+        and recall_20_delta <= -0.01
+        and ndcg_delta <= -0.01
+        and recall_delta <= -0.01
+    ):
+        return "keep_baseline", reasons or ["thesis metrics regressed materially"]
+    return "review", reasons or ["mixed thesis-metric signal"]
 
 
 def _run_probe_case(
@@ -243,10 +241,7 @@ def _print_case(
     dataset: str, label: str, elapsed: float, metrics: dict[str, float | None]
 ) -> None:
     summary = ", ".join(
-        f"{name}={value:.4f}"
-        for name, value in metrics.items()
-        if value is not None
-        and name in {"Precision@50", "Recall@50", "NDCG@50", "MAP@50", "Coverage@50"}
+        f"{name}={value:.4f}" for name, value in metrics.items() if value is not None
     )
     print(f"OK   {dataset:<12} {label:<28} {elapsed:>7.2f}s | {summary}")
 
