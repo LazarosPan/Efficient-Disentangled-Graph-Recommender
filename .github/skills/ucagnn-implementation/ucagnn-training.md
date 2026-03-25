@@ -51,7 +51,7 @@ trainer.save_checkpoint("results/checkpoints/ucagnn_best.pt")
 - Validation and test metrics now honor `config.eval_scoring_mode`, so the thesis metric suite can be computed under intervention-style scoring without changing the checkpointed model weights.
 - Validation and test evaluation logs only the thesis-facing PyG metrics: `NDCG@20`, `Recall@20`, `AveragePopularity@20`, `NDCG@50`, `Recall@50`, and `AveragePopularity@50`.
 - The evaluator builds those six metrics via `LinkPredMetricCollection`. MetricCollection removes per-metric runtime update loops; construction still needs one metric instance per metric and cutoff.
-- `src/training/evaluator.py` is also the source of truth for the thesis-primary metric subset and lower-is-better metric polarity, so downstream benchmark, ablation, plotting, and scoring-mode scripts should import those constants instead of re-declaring them.
+- `src/training/evaluator.py` is also the source of truth for the thesis-primary metric subset and lower-is-better metric polarity, so downstream benchmark, ablation, reporting, and scoring-mode scripts should import those constants instead of re-declaring them.
 - Treat `AveragePopularity@20` and `AveragePopularity@50` as debiasing readouts where lower values are better. Summary aggregation, delta interpretation, and heatmap colors should reflect that polarity.
 - The preferred mechanism comparison is same-checkpoint evaluation under `default`, `interest_only`, and `conformity_suppressed`. Leave `conformity_only` and `counterfactual_only` available for debugging rather than thesis headline tables.
 - Use `scripts/evaluate_scoring_modes.py` to run the thesis mechanism table from one saved checkpoint without retraining separate runs.
@@ -69,12 +69,15 @@ trainer.save_checkpoint("results/checkpoints/ucagnn_best.pt")
 
 ## Fast Validation Workflow
 - Use `quick-validate` as the default ultra-fast post-change validation path across all six datasets.
+- Use `list-commands --command <name>` when you want the repository's short workflow summary before opening a command's full `--help` output.
 - `quick_validate.py` is now the unified tiny-scale pipeline validator. By default it exercises the canonical recipe matrix, all ablation variants, representative observability probes (profiling, checkpoint/resume, feature path), and evaluation scoring modes with aggressive row caps and sampled interactions.
 - Feature usage now follows the formal config default (`use_features=True`, `feature_policy="thesis_default"`), so tiny validation covers the same feature-aware model path as formal runs. The capped dataset loader path stays practical by reusing cached capped loads across repeated recipe cases.
 - Treat tiny validation as row-scaled, not schema-changed: the intended invariant is that formal and tiny runs share the same canonical fields and feature-engineering path, while `loader_max_rows`, `sample_interactions`, `epochs`, `batch_size`, and semantic-eval caps control runtime.
 - Use category filters such as `--categories recipes` or `--categories observability` only when debugging a specific surface; the default command is intended to be the single broad post-change validation entry point.
 - Quick validation keeps MLflow disabled by default, so `uv run quick-validate` does not create MLflow tables or artifact files unless `--mlflow` is passed explicitly.
 - Use `scripts/preflight_experiments.py --profile fast` when you want a single smoke/preflight-style pass without the paired ablation check.
+- Use `query-results` as the supported SQLite inspection path after runs. The repository currently does not expose a supported plotting command in the main workflow.
+- Keep the tiny validation CLIs locally explicit. Shared helpers should stay limited to low-level utilities such as dataset-limit lookup, timed `run_experiment()` execution, and JSON report writing; config and namespace wiring belongs in each script.
 
 ## Feature Probe Workflow
 - Use `feature-probes` when you want tiny thesis-oriented feature screening rather than full-matrix validation.

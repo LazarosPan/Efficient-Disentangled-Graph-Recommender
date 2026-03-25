@@ -15,6 +15,8 @@ import torch
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from experiments.run_experiment import build_config, run_experiment
+from scripts._workflow_helpers import timed_run_experiment
+from scripts.reset_experiment_db import delete_database
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -29,6 +31,7 @@ DEFAULT_RUNS = [
 FAST_SMOKE_RUNS = [
     ("full", "full_graph", "dense"),
 ]
+DEFAULT_SEED = 13
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,6 +84,44 @@ def parse_args() -> argparse.Namespace:
         "--dry-run", action="store_true", help="Print the representative plan and exit"
     )
     return parser.parse_args()
+
+
+def _build_runtime_config(
+    args: argparse.Namespace,
+    *,
+    preset: str,
+    training_mode: str,
+    graph_method: str,
+):
+    namespace = argparse.Namespace(
+        dataset=args.dataset,
+        recipe=None,
+        preset=preset,
+        seed=DEFAULT_SEED,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        embed_dim=None,
+        n_gnn_layers=None,
+        interest_gnn_layers=None,
+        conformity_gnn_layers=None,
+        lr=None,
+        eval_scoring_mode=None,
+        scoring_weight_mode=None,
+        use_features=None,
+        feature_policy=None,
+        graph_method=graph_method,
+        training_mode=training_mode,
+        num_neighbors=None,
+        sample_interactions=args.sample_interactions,
+        loader_max_rows=args.loader_max_rows,
+        device=args.device,
+        data_dir=args.data_dir,
+        intervention="preflight",
+    )
+    config = build_config(namespace)
+    config.enable_profiling = True
+    config.profiling_cadence = 1
+    return config
 
 
 def _sqlite_peak_vram(exp_id: int, db_path: Path) -> float | None:
@@ -155,33 +196,15 @@ def main() -> int:
     run_plan = DEFAULT_RUNS if args.profile == "representative" else FAST_SMOKE_RUNS
 
     for preset, training_mode, graph_method in run_plan:
-        namespace = argparse.Namespace(
-            dataset=args.dataset,
-            recipe=None,
+        config = _build_runtime_config(
+            args,
             preset=preset,
-            seed=13,
-            epochs=args.epochs,
-            batch_size=args.batch_size,
-            embed_dim=None,
-            lr=None,
-            graph_method=graph_method,
             training_mode=training_mode,
-            num_neighbors=None,
-            sample_interactions=args.sample_interactions,
-            loader_max_rows=args.loader_max_rows,
-            device=args.device,
-            data_dir=args.data_dir,
-            intervention="preflight",
-            eval_scoring_mode=None,
-            scoring_weight_mode=None,
-            use_features=None,
+            graph_method=graph_method,
         )
-        config = build_config(namespace)
-        config.enable_profiling = True
-        config.profiling_cadence = 1
 
         rss_before_mb = process.memory_info().rss / (1024 * 1024)
-        result = run_experiment(
+        result, _ = timed_run_experiment(
             config,
             preset=preset,
             intervention="preflight",
@@ -247,15 +270,7 @@ def main() -> int:
         )
 
     if args.reset_sqlite_after and all_ok:
-        from scripts.reset_experiment_db import delete_rows, ordered_tables, TABLES
-
-        conn = sqlite3.connect(DEFAULT_DB_PATH)
-        conn.execute("PRAGMA foreign_keys=ON")
-        try:
-            delete_rows(conn, ordered_tables(list(TABLES)))
-            conn.commit()
-        finally:
-            conn.close()
+        delete_database(DEFAULT_DB_PATH)
         print("SQLite thesis database reset after successful preflight.")
 
     return 0 if all_ok else 1

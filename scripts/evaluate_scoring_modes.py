@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -26,6 +25,7 @@ from src.data.loaders import load_dataset
 from src.models.ucagnn import UCaGNN
 from src.training.evaluator import Evaluator, THESIS_PRIMARY_METRICS
 from src.utils.config import UCaGNNConfig
+from scripts._workflow_helpers import write_json_report
 
 DEFAULT_MODES = ("default", "interest_only", "conformity_suppressed")
 
@@ -216,9 +216,7 @@ def main() -> int:
         _print_table(split_name, split_results)
 
     if args.output_json is not None:
-        output_path = Path(args.output_json)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        output_path = write_json_report(args.output_json, payload)
         print(f"\nSaved JSON: {output_path}")
 
     return 0

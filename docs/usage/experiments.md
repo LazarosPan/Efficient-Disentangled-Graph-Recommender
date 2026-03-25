@@ -2,7 +2,7 @@
 
 Use `uv run experiment` for one run, `uv run benchmark` for the formal matrix, and `uv run ablation` for component-removal studies.
 
-Before longer experiment runs, use `uv run quick-validate` as the single repository validation command. For the full script workflow, resets, and diagnostics, see `docs/usage/scripts.md`.
+Before longer experiment runs, use `uv run quick-validate` as the single repository validation command. For resets, diagnostics, and result inspection, see `docs/usage/scripts.md`.
 
 ## Paths
 
@@ -35,6 +35,10 @@ uv run experiment --dataset movielens1m --recipe full --mlflow-experiment-name u
 uv run experiment --dataset movielens1m --recipe full --mlflow-tracking-uri "sqlite:///$PWD/results/mlflow.db"
 ```
 
+- `--recipe` is the normal way to choose a known experiment path.
+- `--sample-interactions` is for smoke checks and preflight-style runs, not thesis metrics.
+- `--no-auto-resume` forces a fresh run even if a matching checkpoint already exists.
+
 ## Benchmark Matrix
 
 ```bash
@@ -46,14 +50,20 @@ uv run benchmark --tier small --presets full --training-modes full_graph cached_
 `benchmark` uses the same tracking defaults as `experiment`.
 Default MLflow experiment name: `ucagnn-benchmark`.
 
+- Use `--dry-run` first when you are changing orchestration flags.
+- The formal matrix is `dataset × preset × training_mode × graph_method × seed`.
+
 ## Ablations
 
 ```bash
 uv run ablation --dataset movielens1m
+uv run ablation --dataset movielens1m --dry-run
 ```
 
 `ablation` uses the same tracking defaults as `experiment`.
 Default MLflow experiment name: `ucagnn-ablation`.
+
+- Use `--dry-run` to inspect planned variants before starting the run.
 
 ## MLflow Tracking
 
@@ -86,6 +96,19 @@ uv run mlflow ui --backend-store-uri "sqlite:///$PWD/results/mlflow.db" --port 5
 ## Cleanup
 
 For reset and cleanup commands, use the workflow in `docs/usage/scripts.md`.
+
+## Result Inspection
+
+After runs finish, inspect the SQLite record with:
+
+```bash
+uv run query-results
+uv run query-results --exp 12
+uv run query-results --metrics 12
+uv run query-results --profiling 12
+```
+
+The supported workflow is SQLite-first inspection through `query-results`. There is currently no supported plotting command in the main workflow.
 
 ### Run Identification
 

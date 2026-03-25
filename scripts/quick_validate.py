@@ -22,6 +22,7 @@ import torch
 from experiments.ablation_configs import ABLATION_VARIANTS, make_ablation_config
 from experiments.recipes import get_recipe, load_experiment_catalog
 from experiments.run_experiment import MLFLOW_DB_PATH, build_config, run_experiment
+from scripts._workflow_helpers import dataset_limit, timed_run_experiment
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -112,6 +113,67 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _build_run_namespace(
+    args: argparse.Namespace,
+    dataset: str,
+    *,
+    recipe: str | None = None,
+    preset: str | None = None,
+    eval_scoring_mode: str | None = None,
+    scoring_weight_mode: str | None = None,
+    use_features: bool | None = None,
+    feature_policy: str | None = None,
+    graph_method: str | None = None,
+    training_mode: str | None = None,
+    num_neighbors: list[int] | None = None,
+    sample_interactions: int | None = None,
+    loader_max_rows: int | None = None,
+    intervention: str | None = None,
+) -> argparse.Namespace:
+    return argparse.Namespace(
+        dataset=dataset,
+        recipe=recipe,
+        preset=preset,
+        seed=args.seed,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        embed_dim=None,
+        n_gnn_layers=None,
+        interest_gnn_layers=None,
+        conformity_gnn_layers=None,
+        lr=None,
+        eval_scoring_mode=eval_scoring_mode,
+        scoring_weight_mode=scoring_weight_mode,
+        use_features=use_features,
+        feature_policy=feature_policy,
+        graph_method=graph_method,
+        training_mode=training_mode,
+        num_neighbors=num_neighbors,
+        sample_interactions=sample_interactions,
+        loader_max_rows=loader_max_rows,
+        device=args.device,
+        data_dir=args.data_dir,
+        intervention=intervention,
+    )
+
+
+def _build_runtime_config(
+    namespace: argparse.Namespace,
+    *,
+    patience: int | None = None,
+    enable_profiling: bool | None = None,
+    profiling_cadence: int | None = None,
+):
+    config = build_config(namespace)
+    if patience is not None:
+        config.patience = patience
+    if enable_profiling is not None:
+        config.enable_profiling = enable_profiling
+    if profiling_cadence is not None:
+        config.profiling_cadence = profiling_cadence
+    return config
+
+
 def _canonical_recipe_names() -> list[str]:
     recipes = load_experiment_catalog().get("recipes", {})
     return sorted(name for name, spec in recipes.items() if "alias_for" not in spec)
@@ -133,55 +195,6 @@ def _representative_dataset(datasets: list[str], preferred: list[str]) -> str:
         if candidate in datasets:
             return candidate
     return datasets[0]
-
-
-def _sample_interactions(dataset: str) -> int:
-    return TINY_SAMPLE_INTERACTIONS.get(dataset, 100)
-
-
-def _loader_max_rows(dataset: str) -> int:
-    return TINY_LOADER_MAX_ROWS.get(dataset, 100)
-
-
-def _base_namespace(
-    args: argparse.Namespace,
-    dataset: str,
-    *,
-    recipe: str | None = None,
-    preset: str | None = None,
-    eval_scoring_mode: str | None = None,
-    scoring_weight_mode: str | None = None,
-    use_features: bool | None = None,
-) -> argparse.Namespace:
-    return argparse.Namespace(
-        dataset=dataset,
-        recipe=recipe,
-        preset=preset,
-        seed=args.seed,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        embed_dim=None,
-        n_gnn_layers=None,
-        interest_gnn_layers=None,
-        conformity_gnn_layers=None,
-        lr=None,
-        eval_scoring_mode=eval_scoring_mode,
-        scoring_weight_mode=scoring_weight_mode,
-        use_features=use_features,
-        graph_method=None,
-        training_mode=None,
-        num_neighbors=None,
-        sample_interactions=_sample_interactions(dataset),
-        loader_max_rows=_loader_max_rows(dataset),
-        device=args.device,
-        data_dir=args.data_dir,
-    )
-
-
-def _finalize_config(config, *, enable_profiling: bool) -> None:
-    config.patience = 1
-    config.enable_profiling = enable_profiling
-    config.profiling_cadence = 1
 
 
 def _sqlite_count(query: str, params: tuple[object, ...]) -> int:
@@ -264,8 +277,7 @@ def _run_single_case(
         if expect_mlflow_db_touch and MLFLOW_DB_PATH.exists()
         else None
     )
-    started = time.perf_counter()
-    result = run_experiment(
+    result, elapsed = timed_run_experiment(
         config,
         preset=preset,
         intervention=intervention,
@@ -277,7 +289,6 @@ def _run_single_case(
         checkpoint_every=1,
         auto_resume=auto_resume,
     )
-    elapsed = time.perf_counter() - started
 
     exp_id = int(result["exp_id"])
     if expect_logging:
@@ -306,9 +317,23 @@ def _run_recipe_category(args: argparse.Namespace, results: list[dict]) -> None:
     for dataset in args.datasets:
         for recipe_name in recipe_names:
             recipe = get_recipe(recipe_name)
-            namespace = _base_namespace(args, dataset, recipe=recipe_name)
-            config = build_config(namespace)
-            _finalize_config(config, enable_profiling=False)
+            namespace = _build_run_namespace(
+                args,
+                dataset,
+                recipe=recipe_name,
+                sample_interactions=dataset_limit(
+                    dataset, TINY_SAMPLE_INTERACTIONS, default=100
+                ),
+                loader_max_rows=dataset_limit(
+                    dataset, TINY_LOADER_MAX_ROWS, default=100
+                ),
+            )
+            config = _build_runtime_config(
+                namespace,
+                patience=1,
+                enable_profiling=False,
+                profiling_cadence=1,
+            )
             label = f"recipe:{recipe_name}"
             try:
                 _, elapsed = _run_single_case(
@@ -364,10 +389,16 @@ def _run_ablation_category(args: argparse.Namespace, results: list[dict]) -> Non
                 device=args.device,
                 epochs=args.epochs,
                 batch_size=args.batch_size,
-                sample_interactions=_sample_interactions(dataset),
-                loader_max_rows=_loader_max_rows(dataset),
+                sample_interactions=dataset_limit(
+                    dataset, TINY_SAMPLE_INTERACTIONS, default=100
+                ),
+                loader_max_rows=dataset_limit(
+                    dataset, TINY_LOADER_MAX_ROWS, default=100
+                ),
             )
-            _finalize_config(config, enable_profiling=False)
+            config.patience = 1
+            config.enable_profiling = False
+            config.profiling_cadence = 1
             label = f"ablation:{variant}"
             try:
                 _, elapsed = _run_single_case(
@@ -437,9 +468,23 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
     else:
         for recipe_name in profiling_recipes:
             recipe = get_recipe(recipe_name)
-            namespace = _base_namespace(args, probe_dataset, recipe=recipe_name)
-            config = build_config(namespace)
-            _finalize_config(config, enable_profiling=True)
+            namespace = _build_run_namespace(
+                args,
+                probe_dataset,
+                recipe=recipe_name,
+                sample_interactions=dataset_limit(
+                    probe_dataset, TINY_SAMPLE_INTERACTIONS, default=100
+                ),
+                loader_max_rows=dataset_limit(
+                    probe_dataset, TINY_LOADER_MAX_ROWS, default=100
+                ),
+            )
+            config = _build_runtime_config(
+                namespace,
+                patience=1,
+                enable_profiling=True,
+                profiling_cadence=1,
+            )
             label = f"profiling:{recipe_name}"
             try:
                 _, elapsed = _run_single_case(
@@ -481,11 +526,24 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
                     return
 
     feature_recipe = "full_full_graph_knn"
-    feature_namespace = _base_namespace(
-        args, feature_dataset, recipe=feature_recipe, use_features=True
+    feature_namespace = _build_run_namespace(
+        args,
+        feature_dataset,
+        recipe=feature_recipe,
+        use_features=True,
+        sample_interactions=dataset_limit(
+            feature_dataset, TINY_SAMPLE_INTERACTIONS, default=100
+        ),
+        loader_max_rows=dataset_limit(
+            feature_dataset, TINY_LOADER_MAX_ROWS, default=100
+        ),
     )
-    feature_config = build_config(feature_namespace)
-    _finalize_config(feature_config, enable_profiling=False)
+    feature_config = _build_runtime_config(
+        feature_namespace,
+        patience=1,
+        enable_profiling=False,
+        profiling_cadence=1,
+    )
     feature_label = "features:full_full_graph_knn"
     try:
         _, elapsed = _run_single_case(
@@ -530,11 +588,21 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
         PROJECT_ROOT / "results" / "checkpoints" / "quick_validate_resume_probe.pt"
     )
     checkpoint_path.unlink(missing_ok=True)
-    resume_namespace = _base_namespace(
-        args, probe_dataset, recipe="full_full_graph_dense"
+    resume_namespace = _build_run_namespace(
+        args,
+        probe_dataset,
+        recipe="full_full_graph_dense",
+        sample_interactions=dataset_limit(
+            probe_dataset, TINY_SAMPLE_INTERACTIONS, default=100
+        ),
+        loader_max_rows=dataset_limit(probe_dataset, TINY_LOADER_MAX_ROWS, default=100),
     )
-    resume_config = build_config(resume_namespace)
-    _finalize_config(resume_config, enable_profiling=False)
+    resume_config = _build_runtime_config(
+        resume_namespace,
+        patience=1,
+        enable_profiling=False,
+        profiling_cadence=1,
+    )
     resume_label = "checkpoint-resume:full_full_graph_dense"
     try:
         _, first_elapsed = _run_single_case(
@@ -608,11 +676,24 @@ def _run_evaluation_category(args: argparse.Namespace, results: list[dict]) -> N
         args.datasets, ["movielens1m", "kuairec_v2", "taobao"]
     )
     for mode in DEFAULT_EVAL_MODES:
-        namespace = _base_namespace(
-            args, eval_dataset, recipe="full_full_graph_knn", eval_scoring_mode=mode
+        namespace = _build_run_namespace(
+            args,
+            eval_dataset,
+            recipe="full_full_graph_knn",
+            eval_scoring_mode=mode,
+            sample_interactions=dataset_limit(
+                eval_dataset, TINY_SAMPLE_INTERACTIONS, default=100
+            ),
+            loader_max_rows=dataset_limit(
+                eval_dataset, TINY_LOADER_MAX_ROWS, default=100
+            ),
         )
-        config = build_config(namespace)
-        _finalize_config(config, enable_profiling=False)
+        config = _build_runtime_config(
+            namespace,
+            patience=1,
+            enable_profiling=False,
+            profiling_cadence=1,
+        )
         label = f"eval:{mode}"
         try:
             _, elapsed = _run_single_case(

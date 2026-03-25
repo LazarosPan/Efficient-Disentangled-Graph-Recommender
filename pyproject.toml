@@ -59,7 +59,6 @@ verify-setup = "scripts.verify_setup:main"
 verify-pipeline = "scripts.verify_pipeline:main"
 verify-sqlite = "scripts.verify_sqlite:main"
 audit-metrics = "scripts.audit_metrics:main"
-visualize-results = "scripts.visualize_results:main"
 
 [tool.setuptools]
 include-package-data = false

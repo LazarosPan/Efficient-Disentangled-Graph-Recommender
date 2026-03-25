@@ -4,19 +4,23 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from experiments.run_experiment import build_config, run_experiment
+from experiments.run_experiment import build_config
 from src.data.feature_policy import (
     datasets_with_feature_utility,
     datasets_with_policy_ablation,
 )
 from src.training.evaluator import THESIS_PRIMARY_METRICS
+from scripts._workflow_helpers import (
+    dataset_limit,
+    timed_run_experiment,
+    write_json_report,
+)
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -82,11 +86,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def _sample_interactions(dataset: str) -> int:
-    return TINY_SAMPLE_INTERACTIONS.get(dataset, 100)
+    return dataset_limit(dataset, TINY_SAMPLE_INTERACTIONS, default=100)
 
 
 def _loader_max_rows(dataset: str) -> int:
-    return TINY_LOADER_MAX_ROWS.get(dataset, 100)
+    return dataset_limit(dataset, TINY_LOADER_MAX_ROWS, default=100)
 
 
 def _make_namespace(
@@ -95,7 +99,7 @@ def _make_namespace(
     *,
     use_features: bool,
     feature_policy: str = "thesis_default",
-):
+) -> argparse.Namespace:
     return argparse.Namespace(
         dataset=dataset,
         recipe="full_full_graph_knn",
@@ -119,7 +123,15 @@ def _make_namespace(
         loader_max_rows=_loader_max_rows(dataset),
         device=args.device,
         data_dir=args.data_dir,
+        intervention=None,
     )
+
+
+def _build_runtime_config(namespace: argparse.Namespace):
+    config = build_config(namespace)
+    config.patience = 1
+    config.enable_profiling = False
+    return config
 
 
 def _tracked_metrics(metrics: dict[str, float]) -> dict[str, float | None]:
@@ -219,12 +231,9 @@ def _run_probe_case(
         use_features=use_features,
         feature_policy=feature_policy,
     )
-    config = build_config(namespace)
-    config.patience = 1
-    config.enable_profiling = False
+    config = _build_runtime_config(namespace)
 
-    started = time.perf_counter()
-    result = run_experiment(
+    return timed_run_experiment(
         config,
         preset="full",
         intervention=f"feature_probe_{label}",
@@ -234,7 +243,6 @@ def _run_probe_case(
         recipe_name="full_full_graph_knn",
         auto_resume=False,
     )
-    return result, time.perf_counter() - started
 
 
 def _print_case(
@@ -354,19 +362,13 @@ def main() -> int:
     if "policy" in args.categories:
         rows.extend(_run_policy_probes(args))
 
-    output_path = Path(args.output_json)
-    if not output_path.is_absolute():
-        output_path = PROJECT_ROOT / output_path
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(
-        json.dumps(
-            {
-                "generated_at_seconds": time.time(),
-                "rows": rows,
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
+    output_path = write_json_report(
+        args.output_json,
+        {
+            "generated_at_seconds": time.time(),
+            "rows": rows,
+        },
+        root=PROJECT_ROOT,
     )
 
     print("-" * 78)
