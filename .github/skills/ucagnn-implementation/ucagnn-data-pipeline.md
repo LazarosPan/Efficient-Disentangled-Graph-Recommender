@@ -9,6 +9,7 @@ Use this skill when working on data loading, graph construction, negative sampli
 - `src/data/canonical.py` - CanonicalInteractions format
 - `src/data/graph_builder.py` - Graph construction (build_graph)
 - `src/data/negative_sampler.py` - NegativeSampler
+- `src/utils/interaction_indexing.py` - Contiguous user/item ID remapping and max-normalized popularity
 
 ## Graph Construction Methods
 | Method | Function | When to Use |
@@ -41,6 +42,8 @@ For capped smoke or tiny-validation runs, pass `max_rows=...` through the experi
 - The current feature-aware model path is item-feature-first: `data.item_features` and `data.popularity` are passed into `UCaGNN`, while user features remain available for later extensions.
 - `load_dataset(..., max_rows=...)` now caches capped loads in-process, so tiny validation can reuse the same feature-enriched canonical dataset across many recipe cases instead of rescanning the same files repeatedly.
 - The shared loader path now also accepts `feature_policy=...`. `thesis_default` is the default and enforces the thesis-safe allowlist; `all_optional` restores the broader optional side-feature scans for explicit ablations. The shared policy definitions live in `src/data/feature_policy.py` so data-side rules stay with the loaders and audit tooling.
+- Numeric CSV side-feature parsing shared by `kuairec_v2` and `kuairand1k` now lives in `src/utils/csv_features.py`; keep only dataset-specific feature-policy assembly inside the individual loaders.
+- Contiguous user/item ID remapping and max-normalized popularity now live in `src/utils/interaction_indexing.py`; keep dataset-specific parsing, labels, signs, and feature assembly inside the individual loaders.
 - Under `thesis_default`, `kuairec_v2` keeps only safe item descriptor columns from `item_daily_features.csv` plus `item_categories.csv` and caption-category IDs, and `kuairand1k` keeps only safe descriptor columns from `video_features_basic_1k.csv`; both datasets stop loading deferred user-feature blocks by default.
 - `src/data_exploration/data_information.py` now emits a causal feature audit in `data/datasets_information.md` that separates file availability, loader coverage, and current model consumption for interactions, user features, item features, and metadata.
 - The dataset audit now also emits a per-column candidate-column table and can export a machine-readable JSON payload with `--audit-json ...` for feature-policy automation.

@@ -8,6 +8,10 @@ import numpy as np
 
 from ..canonical import CanonicalInteractions
 from ..feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
+from ...utils.interaction_indexing import (
+    compute_normalized_popularity,
+    remap_interaction_ids,
+)
 
 
 # ML-1M age buckets mapped to ordinal values
@@ -160,24 +164,20 @@ def load_movielens1m(
         raw_dir, max_rows=max_rows
     )
 
-    # Re-index to contiguous 0-based IDs
-    unique_users = np.unique(raw_users)
-    unique_items = np.unique(raw_items)
-    user_map = {int(uid): idx for idx, uid in enumerate(unique_users)}
-    item_map = {int(iid): idx for idx, iid in enumerate(unique_items)}
-
-    user_id = np.array([user_map[int(u)] for u in raw_users], dtype=np.int64)
-    item_id = np.array([item_map[int(i)] for i in raw_items], dtype=np.int64)
+    indexed = remap_interaction_ids(raw_users, raw_items)
+    user_id = indexed.user_id
+    item_id = indexed.item_id
+    n_users = indexed.n_users
+    n_items = indexed.n_items
+    user_map = indexed.user_map
+    item_map = indexed.item_map
 
     # Labels and signs
     label = (ratings >= 4.0).astype(np.float32)
     sign = ((ratings - 3.0) / 2.0).astype(np.float32)
 
     # Popularity: per-item interaction count, normalized to [0, 1]
-    n_users = len(unique_users)
-    n_items = len(unique_items)
-    pop_counts = np.bincount(item_id, minlength=n_items).astype(np.float32)
-    popularity = pop_counts / pop_counts.max() if pop_counts.max() > 0 else pop_counts
+    popularity = compute_normalized_popularity(item_id, n_items)
 
     user_features = None
     item_features = None

@@ -8,6 +8,10 @@ import numpy as np
 
 from ..canonical import CanonicalInteractions
 from ..feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
+from ...utils.interaction_indexing import (
+    compute_normalized_popularity,
+    remap_interaction_ids,
+)
 
 # Behavior -> sign mapping:  buy > cart > fav > pv
 _BEHAVIOR_SIGN = {"buy": 1.0, "cart": 0.5, "fav": 0.25, "pv": -0.25}
@@ -53,20 +57,18 @@ def load_taobao(
     categories_arr = np.array(categories, dtype=np.int64)
     timestamps_arr = np.array(timestamps, dtype=np.int64)
 
-    unique_users = np.unique(raw_users_arr)
-    unique_items = np.unique(raw_items_arr)
-    user_map = {int(uid): idx for idx, uid in enumerate(unique_users)}
-    item_map = {int(iid): idx for idx, iid in enumerate(unique_items)}
-
-    user_id = np.array([user_map[int(u)] for u in raw_users_arr], dtype=np.int64)
-    item_id = np.array([item_map[int(i)] for i in raw_items_arr], dtype=np.int64)
+    indexed = remap_interaction_ids(raw_users_arr, raw_items_arr)
+    user_id = indexed.user_id
+    item_id = indexed.item_id
+    n_users = indexed.n_users
+    n_items = indexed.n_items
+    user_map = indexed.user_map
+    item_map = indexed.item_map
 
     label = np.array([_BEHAVIOR_LABEL.get(b, 0.0) for b in behaviors], dtype=np.float32)
     sign = np.array([_BEHAVIOR_SIGN.get(b, 0.0) for b in behaviors], dtype=np.float32)
 
-    n_items = len(unique_items)
-    pop_counts = np.bincount(item_id, minlength=n_items).astype(np.float32)
-    popularity = pop_counts / pop_counts.max() if pop_counts.max() > 0 else pop_counts
+    popularity = compute_normalized_popularity(item_id, n_items)
 
     item_cat_reindexed = None
     if include_optional_features:
@@ -88,7 +90,7 @@ def load_taobao(
         timestamp=timestamps_arr,
         sign=sign,
         popularity=popularity,
-        n_users=len(unique_users),
+        n_users=n_users,
         n_items=n_items,
         user_map=user_map,
         item_map=item_map,

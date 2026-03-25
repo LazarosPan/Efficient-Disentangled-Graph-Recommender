@@ -8,59 +8,11 @@ import numpy as np
 
 from ..canonical import CanonicalInteractions
 from ..feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
-
-
-def _load_csv_features(
-    path: Path,
-    id_col: str,
-    id_map: dict[int, int],
-    n_entities: int,
-    include_columns: tuple[str, ...] | None = None,
-) -> np.ndarray | None:
-    """Load a feature CSV, re-index rows by id_map, return (n_entities, F) float32 array."""
-    if not path.exists():
-        return None
-
-    with open(path, encoding="utf-8") as f:
-        header = f.readline().strip().split(",")
-        id_idx = header.index(id_col)
-        if include_columns is None:
-            feat_indices = [i for i in range(len(header)) if i != id_idx]
-        else:
-            feat_indices = [
-                header.index(column)
-                for column in include_columns
-                if column in header and column != id_col
-            ]
-        if not feat_indices:
-            return None
-
-        rows: dict[int, list[float]] = {}
-        for line in f:
-            parts = line.strip().split(",")
-            if len(parts) < len(header):
-                continue
-            entity_id = int(parts[id_idx])
-            if entity_id not in id_map:
-                continue
-            mapped_id = id_map[entity_id]
-            feats = []
-            for fi in feat_indices:
-                try:
-                    feats.append(float(parts[fi]))
-                except (ValueError, IndexError):
-                    feats.append(0.0)
-            rows[mapped_id] = feats
-
-    if not rows:
-        return None
-
-    n_feats = len(feat_indices)
-    features = np.zeros((n_entities, n_feats), dtype=np.float32)
-    for mapped_id, feats in rows.items():
-        features[mapped_id] = feats
-
-    return features
+from ...utils.csv_features import load_csv_features
+from ...utils.interaction_indexing import (
+    compute_normalized_popularity,
+    remap_interaction_ids,
+)
 
 
 def _safe_col(parts: list[str], idx: int, default: str = "0") -> str:
@@ -177,13 +129,13 @@ def load_kuairand1k(
     is_rand_arr = np.array(is_rands, dtype=np.int32)
     timestamps_arr = np.array(timestamps, dtype=np.int64)
 
-    unique_users = np.unique(raw_users_arr)
-    unique_items = np.unique(raw_items_arr)
-    user_map = {int(uid): idx for idx, uid in enumerate(unique_users)}
-    item_map = {int(iid): idx for idx, iid in enumerate(unique_items)}
-
-    user_id = np.array([user_map[int(u)] for u in raw_users_arr], dtype=np.int64)
-    item_id = np.array([item_map[int(i)] for i in raw_items_arr], dtype=np.int64)
+    indexed = remap_interaction_ids(raw_users_arr, raw_items_arr)
+    user_id = indexed.user_id
+    item_id = indexed.item_id
+    n_users = indexed.n_users
+    n_items = indexed.n_items
+    user_map = indexed.user_map
+    item_map = indexed.item_map
 
     # Expanded label: click OR like OR follow
     label = ((clicks_arr > 0) | (likes_arr > 0) | (follows_arr > 0)).astype(np.float32)
@@ -196,23 +148,20 @@ def load_kuairand1k(
     sign[follows_arr > 0] = 0.7
     sign[likes_arr > 0] = 1.0  # highest priority: last assignment wins
 
-    n_users = len(unique_users)
-    n_items = len(unique_items)
-    pop_counts = np.bincount(item_id, minlength=n_items).astype(np.float32)
-    popularity = pop_counts / pop_counts.max() if pop_counts.max() > 0 else pop_counts
+    popularity = compute_normalized_popularity(item_id, n_items)
 
     user_features = None
     item_features = None
     if include_optional_features:
         feat_base = Path(data_dir) / "KuaiRand-1K" / "data"
         if feature_policy == "all_optional":
-            user_features = _load_csv_features(
+            user_features = load_csv_features(
                 feat_base / "user_features_1k.csv", "user_id", user_map, n_users
             )
-            item_features_basic = _load_csv_features(
+            item_features_basic = load_csv_features(
                 feat_base / "video_features_basic_1k.csv", "video_id", item_map, n_items
             )
-            item_features_stat = _load_csv_features(
+            item_features_stat = load_csv_features(
                 feat_base / "video_features_statistic_1k.csv",
                 "video_id",
                 item_map,
@@ -225,7 +174,7 @@ def load_kuairand1k(
             elif item_features_stat is not None:
                 item_features = item_features_stat
         else:
-            item_features = _load_csv_features(
+            item_features = load_csv_features(
                 feat_base / "video_features_basic_1k.csv",
                 "video_id",
                 item_map,

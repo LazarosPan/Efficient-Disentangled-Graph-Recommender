@@ -8,6 +8,10 @@ import numpy as np
 
 from ..canonical import CanonicalInteractions
 from ..feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
+from ...utils.interaction_indexing import (
+    compute_normalized_popularity,
+    remap_interaction_ids,
+)
 
 
 def _parse_interaction_file(
@@ -95,20 +99,18 @@ def load_amazonbook(
         test_pairs,
     )
 
-    unique_users = np.unique(raw_users)
-    unique_items = np.unique(raw_items)
-    user_map = {int(uid): idx for idx, uid in enumerate(unique_users)}
-    item_map = {int(iid): idx for idx, iid in enumerate(unique_items)}
-
-    user_id = np.array([user_map[int(u)] for u in raw_users], dtype=np.int64)
-    item_id = np.array([item_map[int(i)] for i in raw_items], dtype=np.int64)
+    indexed = remap_interaction_ids(raw_users, raw_items)
+    user_id = indexed.user_id
+    item_id = indexed.item_id
+    user_map = indexed.user_map
+    item_map = indexed.item_map
 
     label = np.ones(len(user_id), dtype=np.float32)
-    sign = np.ones(len(user_id), dtype=np.float32)
+    sign = np.zeros(len(user_id), dtype=np.float32)
 
-    n_items = len(unique_items)
-    pop_counts = np.bincount(item_id, minlength=n_items).astype(np.float32)
-    popularity = pop_counts / pop_counts.max() if pop_counts.max() > 0 else pop_counts
+    n_users = indexed.n_users
+    n_items = indexed.n_items
+    popularity = compute_normalized_popularity(item_id, n_items)
 
     return CanonicalInteractions(
         user_id=user_id,
@@ -117,7 +119,7 @@ def load_amazonbook(
         timestamp=timestamps,
         sign=sign,
         popularity=popularity,
-        n_users=len(unique_users),
+        n_users=n_users,
         n_items=n_items,
         user_map=user_map,
         item_map=item_map,
