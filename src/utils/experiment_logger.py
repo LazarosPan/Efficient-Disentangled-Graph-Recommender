@@ -334,6 +334,22 @@ class ExperimentLogger:
                     WHEN m.metric_name = 'NDCG@20' AND m.split = 'val'
                     THEN m.metric_value
                 END) AS best_ndcg_20,
+                MIN(CASE
+                    WHEN m.metric_name = 'AveragePopularity@20' AND m.split = 'val'
+                    THEN m.metric_value
+                END) AS best_average_popularity_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'NDCG@50' AND m.split = 'val'
+                    THEN m.metric_value
+                END) AS best_ndcg_50,
+                MAX(CASE
+                    WHEN m.metric_name = 'Recall@50' AND m.split = 'val'
+                    THEN m.metric_value
+                END) AS best_recall_50,
+                MIN(CASE
+                    WHEN m.metric_name = 'AveragePopularity@50' AND m.split = 'val'
+                    THEN m.metric_value
+                END) AS best_average_popularity_50,
                 AVG(CASE
                     WHEN p.stage = 'forward'
                     THEN p.duration_ms / NULLIF(p.stage_call_count, 0)

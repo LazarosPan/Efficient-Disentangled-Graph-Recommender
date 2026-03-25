@@ -22,8 +22,19 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from experiments.ablation_configs import ABLATION_VARIANTS, make_ablation_config
 from experiments.run_experiment import run_experiment
+from src.training import THESIS_PRIMARY_METRICS
 
 logger = logging.getLogger("ucagnn.ablation")
+
+
+def _metric_value(metrics: dict[str, float], metric_name: str) -> float:
+    """Return a metric value, falling back from @50 to @20 when needed."""
+    if metric_name in metrics:
+        return metrics[metric_name]
+    if metric_name.endswith("@50"):
+        fallback = metric_name.replace("@50", "@20")
+        return metrics.get(fallback, 0.0)
+    return 0.0
 
 
 def main():
@@ -175,31 +186,33 @@ def main():
                 baseline_metrics = r["metrics"]
                 break
 
+        print("Note: AvgPop@20 and AvgPop@50 are lower-is-better.")
         print(
-            f"\n{'Variant':<20} | {'NDCG@50':>8} | {'Delta':>7} | {'Recall@50':>10} | {'Delta':>7} | Time"
+            f"\n{'Variant':<20} | {'NDCG@20':>8} | {'Recall@20':>10} | {'AvgPop@20':>10} | {'NDCG@50':>8} | {'Recall@50':>10} | {'AvgPop@50':>10} | Time"
         )
-        print("-" * 80)
+        print("-" * 117)
         for r in results:
-            ndcg = r["metrics"].get("NDCG@50", r["metrics"].get("NDCG@20", 0.0))
-            recall = r["metrics"].get("Recall@50", r["metrics"].get("Recall@20", 0.0))
-
-            if baseline_metrics and r["variant"] != "full":
-                base_ndcg = baseline_metrics.get(
-                    "NDCG@50", baseline_metrics.get("NDCG@20", 0.0)
-                )
-                base_recall = baseline_metrics.get(
-                    "Recall@50", baseline_metrics.get("Recall@20", 0.0)
-                )
-                ndcg_delta = f"{ndcg - base_ndcg:+.4f}"
-                recall_delta = f"{recall - base_recall:+.4f}"
-            else:
-                ndcg_delta = "  base"
-                recall_delta = "  base"
+            metric_values = {
+                metric_name: _metric_value(r["metrics"], metric_name)
+                for metric_name in THESIS_PRIMARY_METRICS
+            }
 
             print(
-                f"{r['variant']:<20} | {ndcg:>8.4f} | {ndcg_delta:>7} | "
-                f"{recall:>10.4f} | {recall_delta:>7} | {r['elapsed_s']:.0f}s"
+                f"{r['variant']:<20} | {metric_values['NDCG@20']:>8.4f} | "
+                f"{metric_values['Recall@20']:>10.4f} | {metric_values['AveragePopularity@20']:>10.4f} | "
+                f"{metric_values['NDCG@50']:>8.4f} | {metric_values['Recall@50']:>10.4f} | "
+                f"{metric_values['AveragePopularity@50']:>10.4f} | {r['elapsed_s']:.0f}s"
             )
+            if baseline_metrics and r["variant"] != "full":
+                deltas = []
+                for metric_name in THESIS_PRIMARY_METRICS:
+                    delta = metric_values[metric_name] - _metric_value(
+                        baseline_metrics, metric_name
+                    )
+                    deltas.append(f"{metric_name} {delta:+.4f}")
+                print(f"{'':<20}   deltas: {' | '.join(deltas)}")
+            else:
+                print(f"{'':<20}   deltas: baseline")
 
     return 0 if failed == 0 else 1
 

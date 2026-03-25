@@ -19,6 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from experiments.run_experiment import build_config, run_experiment, PRESETS
+from src.training import THESIS_PRIMARY_METRICS
 
 logger = logging.getLogger("ucagnn.benchmark")
 
@@ -32,6 +33,16 @@ TIERS["all"] = TIERS["small"] + TIERS["medium"] + TIERS["large"]
 DEFAULT_SEEDS = [13, 298, 132]
 DEFAULT_TRAINING_MODES = ["full_graph", "cached_propagation", "mini_batch"]
 DEFAULT_GRAPH_METHODS = ["dense", "knn", "cagra"]
+
+
+def _metric_value(metrics: dict[str, float], metric_name: str) -> float:
+    """Return a metric value, falling back from @50 to @20 when needed."""
+    if metric_name in metrics:
+        return metrics[metric_name]
+    if metric_name.endswith("@50"):
+        fallback = metric_name.replace("@50", "@20")
+        return metrics.get(fallback, 0.0)
+    return 0.0
 
 
 def main():
@@ -200,16 +211,21 @@ def main():
     print(f"Failed: {failed}/{len(experiments)}")
 
     if results:
+        print("Note: AvgPop@20 and AvgPop@50 are lower-is-better.")
         print(
-            f"\n{'Dataset':<15} | {'Preset':<12} | {'Mode':<18} | {'Graph':<5} | Seed | {'NDCG@50':>8} | {'Recall@50':>10} | Time"
+            f"\n{'Dataset':<15} | {'Preset':<12} | {'Mode':<18} | {'Graph':<5} | Seed | {'NDCG@20':>8} | {'Recall@20':>10} | {'AvgPop@20':>10} | {'NDCG@50':>8} | {'Recall@50':>10} | {'AvgPop@50':>10} | Time"
         )
-        print("-" * 114)
+        print("-" * 169)
         for r in results:
-            ndcg = r["metrics"].get("NDCG@50", r["metrics"].get("NDCG@20", 0.0))
-            recall = r["metrics"].get("Recall@50", r["metrics"].get("Recall@20", 0.0))
+            ndcg_20 = _metric_value(r["metrics"], "NDCG@20")
+            recall_20 = _metric_value(r["metrics"], "Recall@20")
+            avg_pop_20 = _metric_value(r["metrics"], "AveragePopularity@20")
+            ndcg_50 = _metric_value(r["metrics"], "NDCG@50")
+            recall_50 = _metric_value(r["metrics"], "Recall@50")
+            avg_pop_50 = _metric_value(r["metrics"], "AveragePopularity@50")
             print(
                 f"{r['dataset']:<15} | {r['preset']:<12} | {r['training_mode']:<18} | {r['graph_method']:<5} | {r['seed']:>4} | "
-                f"{ndcg:>8.4f} | {recall:>10.4f} | {r['elapsed_s']:.0f}s"
+                f"{ndcg_20:>8.4f} | {recall_20:>10.4f} | {avg_pop_20:>10.4f} | {ndcg_50:>8.4f} | {recall_50:>10.4f} | {avg_pop_50:>10.4f} | {r['elapsed_s']:.0f}s"
             )
 
     return 0 if failed == 0 else 1

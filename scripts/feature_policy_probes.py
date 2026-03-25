@@ -174,7 +174,7 @@ def _promotion_gate(
         reasons.append("Coverage@50 regressed")
     if avg_pop_delta > 1e-4:
         diversity_ok = False
-        reasons.append("AveragePopularity@50 increased")
+        reasons.append("AveragePopularity@50 increased (worse)")
 
     if comparison_kind == "policy":
         if (

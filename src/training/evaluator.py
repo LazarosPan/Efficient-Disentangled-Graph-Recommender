@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import torch
+from typing import Final
 from torch_geometric.metrics import (
     LinkPredAveragePopularity,
     LinkPredCoverage,
     LinkPredF1,
     LinkPredHitRatio,
     LinkPredMAP,
+    LinkPredMetricCollection,
     LinkPredMRR,
     LinkPredNDCG,
     LinkPredPrecision,
@@ -17,9 +19,26 @@ from torch_geometric.metrics import (
 
 from ..utils.config import UCaGNNConfig
 
+THESIS_PRIMARY_METRICS: Final[tuple[str, ...]] = (
+    "NDCG@20",
+    "Recall@20",
+    "AveragePopularity@20",
+    "NDCG@50",
+    "Recall@50",
+    "AveragePopularity@50",
+)
+
+LOWER_IS_BETTER_METRICS: Final[frozenset[str]] = frozenset(
+    {"AveragePopularity@20", "AveragePopularity@50"}
+)
+
 
 class Evaluator:
-    """Batched GPU evaluation for the PyG link-prediction metric suite."""
+    """Batched GPU evaluation for the PyG link-prediction metric suite.
+
+    This module also owns the thesis-primary metric constants consumed by the
+    reporting and mechanism-evaluation entry points.
+    """
 
     def __init__(self, config: UCaGNNConfig) -> None:
         self.config = config
@@ -28,7 +47,13 @@ class Evaluator:
 
     def _build_metrics(
         self, n_items: int, popularity: torch.Tensor
-    ) -> dict[str, object]:
+    ) -> LinkPredMetricCollection:
+        """Build the full PyG metric bundle for all configured cutoffs.
+
+        The small loop here is only construction-time setup for the metric set.
+        Runtime efficiency comes from updating the resulting
+        ``LinkPredMetricCollection`` once per evaluation batch.
+        """
         metrics: dict[str, object] = {}
         for k in self.ks:
             metrics[f"Precision@{k}"] = LinkPredPrecision(k=k)
@@ -42,7 +67,7 @@ class Evaluator:
             metrics[f"AveragePopularity@{k}"] = LinkPredAveragePopularity(
                 k=k, popularity=popularity
             )
-        return metrics
+        return LinkPredMetricCollection(metrics)
 
     @torch.no_grad()
     def evaluate(
@@ -70,8 +95,7 @@ class Evaluator:
         edge_sign = data.edge_sign.to(device) if hasattr(data, "edge_sign") else None
         popularity = data.popularity.to(device).float()
         metrics = self._build_metrics(n_items=n_items, popularity=popularity)
-        for metric in metrics.values():
-            metric.to(device)
+        metrics = metrics.to(device)
 
         max_k = max(self.ks)
         for start in range(0, unique_users.size(0), batch_size):
@@ -96,7 +120,6 @@ class Evaluator:
             _, pred_index_mat = torch.topk(scores, max_k, dim=-1)
             batch_gt_users, batch_gt_items = gt_batch.nonzero(as_tuple=True)
             edge_label_index = (batch_gt_users, batch_gt_items)
-            for metric in metrics.values():
-                metric.update(pred_index_mat, edge_label_index)
+            metrics.update(pred_index_mat, edge_label_index)
 
-        return {name: metric.compute().item() for name, metric in metrics.items()}
+        return {name: value.item() for name, value in metrics.compute().items()}

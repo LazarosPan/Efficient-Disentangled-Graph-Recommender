@@ -25,8 +25,18 @@ REPO_ROOT = Path(__file__).parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from src.training import LOWER_IS_BETTER_METRICS, THESIS_PRIMARY_METRICS  # noqa: E402
+
 DB_PATH = REPO_ROOT / "results" / "thesis_experiments.db"
 FIGURE_DIR = REPO_ROOT / "results" / "figures"
+THESIS_METRIC_LABELS = {
+    "NDCG@20": "NDCG@20",
+    "Recall@20": "Recall@20",
+    "AveragePopularity@20": "AveragePopularity@20 (lower is better)",
+    "NDCG@50": "NDCG@50",
+    "Recall@50": "Recall@50",
+    "AveragePopularity@50": "AveragePopularity@50 (lower is better)",
+}
 
 # Thesis-quality defaults
 plt.rcParams.update(
@@ -56,7 +66,7 @@ def connect():
 
 
 def plot_performance_table(conn):
-    """Generate performance comparison table (Recall@K, NDCG@K per preset per dataset)."""
+    """Generate thesis-primary performance comparisons across datasets."""
     rows = conn.execute("""
         SELECT e.dataset, e.preset, m.metric_name, AVG(m.metric_value) as avg_val,
                COUNT(DISTINCT e.seed) as n_seeds
@@ -77,29 +87,34 @@ def plot_performance_table(conn):
     for dataset, preset, metric, avg_val, n_seeds in rows:
         data[dataset][preset][metric] = (avg_val, n_seeds)
 
-    # Build figure: grouped bar chart for NDCG@20 across datasets
     datasets = sorted(data.keys())
     presets = sorted({p for d in data.values() for p in d})
-    metric_name = "NDCG@20"
-
-    fig, ax = plt.subplots(figsize=(max(8, len(datasets) * 2), 5))
+    fig, axes = plt.subplots(2, 3, figsize=(max(12, len(datasets) * 2.8), 8))
+    axes = axes.flatten()
     x = np.arange(len(datasets))
     width = 0.8 / max(len(presets), 1)
 
-    for i, preset in enumerate(presets):
-        values = [
-            data[ds].get(preset, {}).get(metric_name, (0, 0))[0] for ds in datasets
-        ]
-        offset = (i - len(presets) / 2 + 0.5) * width
-        ax.bar(x + offset, values, width * 0.9, label=preset or "custom")
+    for axis, metric_name in zip(axes, THESIS_PRIMARY_METRICS):
+        for i, preset in enumerate(presets):
+            values = [
+                data[ds].get(preset, {}).get(metric_name, (0, 0))[0] for ds in datasets
+            ]
+            offset = (i - len(presets) / 2 + 0.5) * width
+            axis.bar(x + offset, values, width * 0.9, label=preset or "custom")
 
-    ax.set_xlabel("Dataset")
-    ax.set_ylabel(metric_name)
-    ax.set_title(f"Performance Comparison: {metric_name}")
-    ax.set_xticks(x)
-    ax.set_xticklabels(datasets, rotation=30, ha="right")
-    ax.legend()
-    ax.grid(axis="y", alpha=0.3)
+        axis.set_xlabel("Dataset")
+        axis.set_ylabel(THESIS_METRIC_LABELS[metric_name])
+        axis.set_title(THESIS_METRIC_LABELS[metric_name])
+        axis.set_xticks(x)
+        axis.set_xticklabels(datasets, rotation=30, ha="right")
+        axis.grid(axis="y", alpha=0.3)
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    if handles:
+        axes[0].legend(handles, labels, loc="best")
+
+    fig.suptitle("Thesis-Primary Performance Comparison", fontsize=14)
+    fig.tight_layout()
 
     path = FIGURE_DIR / "performance_comparison.png"
     fig.savefig(path)
@@ -263,7 +278,7 @@ def plot_scaling_analysis(conn):
 
 
 def plot_ablation_heatmap(conn):
-    """Ablation heatmap: performance delta per component."""
+    """Ablation heatmaps for thesis-primary metrics."""
     rows = conn.execute("""
         SELECT e.dataset, e.intervention, m.metric_name, AVG(m.metric_value) as avg_val
         FROM experiments e
@@ -278,15 +293,13 @@ def plot_ablation_heatmap(conn):
         print("No ablation results found.")
         return
 
-    # Find best metric to display
-    metric_name = "NDCG@20"
-    data = defaultdict(dict)
+    data = defaultdict(lambda: defaultdict(dict))
     for dataset, intervention, metric, avg_val in rows:
-        if metric == metric_name:
-            data[dataset][intervention] = avg_val
+        if metric in THESIS_PRIMARY_METRICS:
+            data[dataset][intervention][metric] = avg_val
 
     if not data:
-        print(f"No {metric_name} ablation results found.")
+        print("No thesis-primary ablation results found.")
         return
 
     datasets = sorted(data.keys())
@@ -295,39 +308,50 @@ def plot_ablation_heatmap(conn):
         all_variants.update(d.keys())
     variants = sorted(all_variants)
 
-    # Build matrix of deltas from baseline (full)
-    matrix = np.full((len(datasets), len(variants)), np.nan)
-    for i, ds in enumerate(datasets):
-        baseline = data[ds].get("full", 0.0)
-        for j, var in enumerate(variants):
-            if var in data[ds]:
-                matrix[i, j] = data[ds][var] - baseline
-
-    fig, ax = plt.subplots(
-        figsize=(max(8, len(variants) * 1.2), max(4, len(datasets) * 0.8))
+    fig, axes = plt.subplots(
+        2,
+        3,
+        figsize=(max(12, len(variants) * 2.2), max(7, len(datasets) * 1.5)),
     )
+    axes = axes.flatten()
 
-    # Mask NaN for display
-    masked = np.ma.masked_invalid(matrix)
-    vmax = max(abs(np.nanmin(matrix)), abs(np.nanmax(matrix)), 0.001)
-    im = ax.imshow(masked, cmap="RdYlGn", aspect="auto", vmin=-vmax, vmax=vmax)
+    for axis, metric_name in zip(axes, THESIS_PRIMARY_METRICS):
+        matrix = np.full((len(datasets), len(variants)), np.nan)
+        for i, ds in enumerate(datasets):
+            baseline = data[ds].get("full", {}).get(metric_name)
+            for j, var in enumerate(variants):
+                metric_value = data[ds].get(var, {}).get(metric_name)
+                if baseline is not None and metric_value is not None:
+                    matrix[i, j] = metric_value - baseline
 
-    ax.set_xticks(range(len(variants)))
-    ax.set_xticklabels(variants, rotation=45, ha="right", fontsize=9)
-    ax.set_yticks(range(len(datasets)))
-    ax.set_yticklabels(datasets)
-    ax.set_title(f"Ablation: {metric_name} Delta from Full Model")
+        masked = np.ma.masked_invalid(matrix)
+        finite = matrix[np.isfinite(matrix)]
+        vmax = max(float(np.max(np.abs(finite))) if finite.size else 0.0, 0.001)
+        cmap = "RdYlGn_r" if metric_name in LOWER_IS_BETTER_METRICS else "RdYlGn"
+        im = axis.imshow(masked, cmap=cmap, aspect="auto", vmin=-vmax, vmax=vmax)
 
-    # Annotate cells
-    for i in range(len(datasets)):
-        for j in range(len(variants)):
-            if not np.isnan(matrix[i, j]):
-                ax.text(
-                    j, i, f"{matrix[i, j]:+.4f}", ha="center", va="center", fontsize=8
-                )
+        axis.set_xticks(range(len(variants)))
+        axis.set_xticklabels(variants, rotation=45, ha="right", fontsize=9)
+        axis.set_yticks(range(len(datasets)))
+        axis.set_yticklabels(datasets)
+        axis.set_title(f"{THESIS_METRIC_LABELS[metric_name]} Delta")
 
-    fig.colorbar(im, ax=ax, label=f"{metric_name} Delta")
+        for i in range(len(datasets)):
+            for j in range(len(variants)):
+                if not np.isnan(matrix[i, j]):
+                    axis.text(
+                        j,
+                        i,
+                        f"{matrix[i, j]:+.4f}",
+                        ha="center",
+                        va="center",
+                        fontsize=8,
+                    )
 
+        fig.colorbar(im, ax=axis, fraction=0.046, pad=0.04)
+
+    fig.suptitle("Ablation Deltas for Thesis-Primary Metrics", fontsize=14)
+    fig.tight_layout()
     path = FIGURE_DIR / "ablation_heatmap.png"
     fig.savefig(path)
     plt.close(fig)

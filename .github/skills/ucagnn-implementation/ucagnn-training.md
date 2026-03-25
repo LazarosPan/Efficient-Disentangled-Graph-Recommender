@@ -50,7 +50,14 @@ trainer.save_checkpoint("results/checkpoints/ucagnn_best.pt")
 ## Evaluation Notes
 - Validation and test metrics now honor `config.eval_scoring_mode`, so the full PyG metric suite can be computed under intervention-style scoring without changing the checkpointed model weights.
 - Validation and test evaluation now log only PyG-backed link-prediction metrics at each configured `K`: Precision, Recall, F1, MAP, NDCG, MRR, HitRatio, Coverage, and AveragePopularity.
+- The evaluator now builds the PyG metric set via `LinkPredMetricCollection`, keyed by the repository's metric names. The small loop in `src/training/evaluator.py` is construction-time only; each batch still updates the full metric bundle in one call instead of iterating metric-by-metric at runtime.
+- `src/training/evaluator.py` is also the source of truth for the thesis-primary metric subset and lower-is-better metric polarity, so downstream benchmark, ablation, plotting, and scoring-mode scripts should import those constants instead of re-declaring them.
+- Thesis-facing reporting should emphasize only `NDCG@20`, `Recall@20`, `AveragePopularity@20`, `NDCG@50`, `Recall@50`, and `AveragePopularity@50`; keep the rest of the logged PyG bundle for diagnostics and validation coverage.
+- Treat `AveragePopularity@20` and `AveragePopularity@50` as debiasing readouts where lower values are better. Summary aggregation, delta interpretation, and heatmap colors should reflect that polarity.
+- The preferred mechanism comparison is same-checkpoint evaluation under `default`, `interest_only`, and `conformity_suppressed`. Leave `conformity_only` and `counterfactual_only` available for debugging rather than thesis headline tables.
+- Use `scripts/evaluate_scoring_modes.py` to run the thesis mechanism table from one saved checkpoint without retraining separate runs.
 - PyG 2.7 also exposes Diversity and Personalization. They are allowed by the repo's metric audit, but the current evaluator does not log them because they require extra category inputs or additional pairwise recommendation computation.
+- External implementation audits may discuss non-PyG causal-uplift evaluators such as PropCare's semi-simulated `CPrec` or `CDCG` pipeline, but those remain reference analyses unless the runtime data contract is extended with treatment, propensity, and causal-effect labels.
 
 ## MLflow Routing
 - `experiments/run_experiment.py` uses `--mlflow-tracking-uri` first, then `MLFLOW_TRACKING_URI`, then the project default `results/mlflow.db`.
