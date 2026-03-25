@@ -68,8 +68,11 @@ After the documentation is understood, use topic folders for code exploration:
 - Maintain consistent levels of abstraction in each function/class/file: avoid mixing low-level and high-level details in the same block.
 - Write code that is easy to maintain, readable, and self-explanatory.
 - Reuse existing code; avoid creating new duplicates in other files unless absolutely necessary.
+- Default to editing existing files, functions, and entry points before adding new files, scripts, modules, exports, or CLIs.
+- For policy, reporting, config, and wiring changes, prefer the smallest viable diff; every new file, helper, export, or public surface must justify its maintenance cost.
+- Treat cleanup as part of implementation: when a change creates or exposes duplication, collapse or remove the redundant path when safe instead of leaving parallel logic behind.
 - The codebase should be as simple as possible while still meeting the requirements; avoid over-engineering.
 - Favor test-driven development (TDD) and full-cycle product thinking: code + tests + eval + iteration.
-- Every function must have a docstring with arguments, return values, and a brief description of its purpose.
+- Every function must include typing and have a docstring with arguments, return values, and a brief description of its purpose.
 - The Python code should follow PEP 8 style guidelines for readability and consistency. Run `ruff format` in the terminal to automatically format the code.
 - After every change and update in the code, run `uv run scripts/quick_validate.py` to check if everything works fine.

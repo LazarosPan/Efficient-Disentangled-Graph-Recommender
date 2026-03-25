@@ -7,6 +7,8 @@ description: Implementation guide for U-CaGNN covering architecture, configurati
 
 Use this skill set when working on the U-CaGNN recommendation system implementation.
 
+Prefer changing an existing routed file before adding a new script or module; add new entry points only when reuse would make the current path less clear.
+
 ## Read the Most Relevant File
 
 - [ucagnn-architecture.md](ucagnn-architecture.md) — Model architecture, module layout, embeddings, LightGCN backbone, scoring, and propensity components.
