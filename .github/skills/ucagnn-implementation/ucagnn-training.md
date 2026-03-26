@@ -4,6 +4,7 @@ Use this skill when working on training loop, evaluation, checkpoints, profiling
 
 ## Key Files
 - `docs/ucagnn_implementation/training.md` - Training pipeline with paper cross-references
+- `src/utils/trainer_runtime.py` - Shared trainer setup, checkpointing, profiling helpers, and early-stopping state
 - `src/training/trainer.py` - Trainer class
 - `src/training/evaluator.py` - Evaluator (PyG link-prediction metrics at K)
 - `src/profiling/gpu_profiler.py` - GPUProfiler and profile_stage
@@ -37,6 +38,11 @@ for metric, value in test_metrics.items():
 experiment_logger.close()
 trainer.save_checkpoint("results/checkpoints/ucagnn_best.pt")
 ```
+
+## Ownership Notes
+- The three trainer modes keep separate epoch loops for readability and behavior isolation.
+- `src/utils/trainer_runtime.py` owns only duplicated lifecycle machinery through `TrainerRuntime`: module/device setup, optimizer creation, checkpoint save/load, profiling toggles, resume history, and early-stopping helpers.
+- Keep mode-specific semantics local to the concrete trainers: full-graph non-finite batch skipping, cached propagation `retain_graph` handling, and mini-batch subgraph/local-index behavior should not be hidden behind a generic batch callback.
 
 ## What Gets Logged Automatically
 | Data | SQLite Table | Split |
