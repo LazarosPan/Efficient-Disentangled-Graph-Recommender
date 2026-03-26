@@ -5,11 +5,11 @@ Use this skill when working on loss functions, multi-task learning, curriculum s
 ## Key Files
 - `docs/ucagnn_implementation/losses.md` - Loss components with paper cross-references
 - `src/losses/loss_suite.py` - LossSuite orchestrator
-- `src/losses/bpr.py` - L_rec (BPR with optional IPW)
-- `src/losses/orthogonality.py` - L_ortho (cosine similarity squared)
-- `src/losses/contrastive.py` - L_contr (NT-Xent)
-- `src/losses/counterfactual.py` - L_cf (KL divergence)
-- `src/losses/popularity.py` - L_pop (learned MLP predictor)
+
+## Ownership Notes
+- `LossSuite` is the only public loss-layer surface.
+- The individual loss implementations now live as private helpers inside `src/losses/loss_suite.py`; keep them there unless an external caller with a real separate lifecycle appears.
+- Preserve the existing curriculum gating and popularity-predictor activation rules when editing the file.
 
 ## Loss Formula
 ```
