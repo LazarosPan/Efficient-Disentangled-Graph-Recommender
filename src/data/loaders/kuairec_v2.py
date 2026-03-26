@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
 
+from ...utils.dataset_loader_utils import try_parse_timestamp_seconds
 from ..canonical import CanonicalInteractions
 from ..feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 from ...utils.csv_features import load_csv_features
@@ -13,6 +15,8 @@ from ...utils.interaction_indexing import (
     compute_normalized_popularity,
     remap_interaction_ids,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _load_item_categories(
@@ -121,14 +125,6 @@ def _load_caption_categories(
     return features
 
 
-def _safe_timestamp(value: str) -> int:
-    """Parse integer or float-formatted timestamps into unix seconds."""
-    try:
-        return int(float(value))
-    except ValueError:
-        return 0
-
-
 def load_kuairec_v2(
     data_dir: str = "data",
     max_rows: int | None = None,
@@ -149,6 +145,7 @@ def load_kuairec_v2(
         )
 
     raw_users, raw_items, watch_ratios, timestamps = [], [], [], []
+    malformed_timestamp_count = 0
     row_count = 0
     with open(path, encoding="utf-8") as f:
         header = f.readline().strip().split(",")
@@ -164,10 +161,20 @@ def load_kuairec_v2(
             raw_users.append(int(parts[uid_col]))
             raw_items.append(int(parts[vid_col]))
             watch_ratios.append(float(parts[wr_col]))
-            timestamps.append(_safe_timestamp(parts[ts_col]) if ts_col >= 0 else 0)
+            raw_timestamp = parts[ts_col] if ts_col >= 0 else None
+            parsed_timestamp = try_parse_timestamp_seconds(raw_timestamp)
+            if raw_timestamp is not None and parsed_timestamp is None:
+                malformed_timestamp_count += 1
+            timestamps.append(parsed_timestamp if parsed_timestamp is not None else 0)
             row_count += 1
             if max_rows is not None and row_count >= max_rows:
                 break
+
+    if malformed_timestamp_count > 0:
+        logger.warning(
+            "KuaiRec v2 loader coerced %d malformed timestamp values to 0.",
+            malformed_timestamp_count,
+        )
 
     raw_users_arr = np.array(raw_users, dtype=np.int64)
     raw_items_arr = np.array(raw_items, dtype=np.int64)

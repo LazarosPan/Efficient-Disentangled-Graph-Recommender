@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ...utils.dataset_loader_utils import resolve_local_dataset_dir
 from ..canonical import CanonicalInteractions
 from ..feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 from ...utils.interaction_indexing import (
@@ -41,17 +42,16 @@ def _parse_interaction_file(
 
 def _resolve_raw_dir(data_dir: str) -> Path:
     """Resolve the local Amazon-Book raw directory without triggering downloads."""
-    candidates = [
-        Path(data_dir) / "AmazonBook" / "raw",
-        Path(data_dir) / "AmazonBook" / "raw" / "amazon-book",
-    ]
-    required_files = {"train.txt", "test.txt", "user_list.txt", "item_list.txt"}
-    for raw_dir in candidates:
-        if all((raw_dir / name).exists() for name in required_files):
-            return raw_dir
-    raise FileNotFoundError(
-        "AmazonBook raw files not found under data/AmazonBook/raw. "
-        "Expected train.txt, test.txt, user_list.txt, and item_list.txt."
+    return resolve_local_dataset_dir(
+        candidates=[
+            Path(data_dir) / "AmazonBook" / "raw",
+            Path(data_dir) / "AmazonBook" / "raw" / "amazon-book",
+        ],
+        required_files=["train.txt", "test.txt", "user_list.txt", "item_list.txt"],
+        missing_message=(
+            "AmazonBook raw files not found under data/AmazonBook/raw. "
+            "Expected train.txt, test.txt, user_list.txt, and item_list.txt."
+        ),
     )
 
 
@@ -84,7 +84,6 @@ def load_amazonbook(
     This avoids PyG download side effects and uses the repository-local data
     folder directly. All interactions are implicit positives.
     """
-    del include_optional_features, feature_policy
     raw_dir = _resolve_raw_dir(data_dir)
     train_target = max_rows
     test_target = None

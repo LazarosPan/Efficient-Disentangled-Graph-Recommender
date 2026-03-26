@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
 
+from ...utils.dataset_loader_utils import (
+    get_optional_csv_field,
+    try_parse_float,
+    try_parse_int,
+)
 from ..canonical import CanonicalInteractions
 from ..feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 from ...utils.csv_features import load_csv_features
@@ -14,28 +20,7 @@ from ...utils.interaction_indexing import (
     remap_interaction_ids,
 )
 
-
-def _safe_col(parts: list[str], idx: int, default: str = "0") -> str:
-    """Safely access a column by index, returning default if out of range."""
-    if idx < 0 or idx >= len(parts):
-        return default
-    return parts[idx]
-
-
-def _safe_int(value: str, default: int = 0) -> int:
-    """Parse int from CSV field, returning default on failure."""
-    try:
-        return int(value)
-    except (ValueError, IndexError):
-        return default
-
-
-def _safe_float(value: str, default: float = 0.0) -> float:
-    """Parse float from CSV field, returning default on failure."""
-    try:
-        return float(value)
-    except (ValueError, IndexError):
-        return default
+logger = logging.getLogger(__name__)
 
 
 def load_kuairand1k(
@@ -74,6 +59,19 @@ def load_kuairand1k(
     long_views = []
     play_times, durations = [], []
     is_rands = []
+    malformed_counts = {
+        "is_click": 0,
+        "is_like": 0,
+        "is_hate": 0,
+        "is_follow": 0,
+        "is_comment": 0,
+        "is_forward": 0,
+        "long_view": 0,
+        "play_time_ms": 0,
+        "duration_ms": 0,
+        "is_rand": 0,
+        "time_ms|timestamp": 0,
+    }
 
     row_count = 0
     for csv_path in csv_files:
@@ -101,22 +99,86 @@ def load_kuairand1k(
                     continue
                 raw_users.append(int(parts[uid_c]))
                 raw_items.append(int(parts[vid_c]))
-                clicks.append(_safe_int(_safe_col(parts, click_c)))
-                likes.append(_safe_int(_safe_col(parts, like_c)))
-                hates.append(_safe_int(_safe_col(parts, hate_c)))
-                follows.append(_safe_int(_safe_col(parts, follow_c)))
-                comments.append(_safe_int(_safe_col(parts, comment_c)))
-                forwards.append(_safe_int(_safe_col(parts, forward_c)))
-                long_views.append(_safe_int(_safe_col(parts, long_view_c)))
-                play_times.append(_safe_float(_safe_col(parts, play_time_c, "0.0")))
-                durations.append(_safe_float(_safe_col(parts, duration_c, "0.0")))
-                is_rands.append(_safe_int(_safe_col(parts, is_rand_c)))
-                timestamps.append(_safe_int(_safe_col(parts, ts_c)))
+                raw_click = get_optional_csv_field(parts, click_c)
+                raw_like = get_optional_csv_field(parts, like_c)
+                raw_hate = get_optional_csv_field(parts, hate_c)
+                raw_follow = get_optional_csv_field(parts, follow_c)
+                raw_comment = get_optional_csv_field(parts, comment_c)
+                raw_forward = get_optional_csv_field(parts, forward_c)
+                raw_long_view = get_optional_csv_field(parts, long_view_c)
+                raw_play_time = get_optional_csv_field(parts, play_time_c)
+                raw_duration = get_optional_csv_field(parts, duration_c)
+                raw_is_rand = get_optional_csv_field(parts, is_rand_c)
+                raw_timestamp = get_optional_csv_field(parts, ts_c)
+
+                parsed_click = try_parse_int(raw_click)
+                parsed_like = try_parse_int(raw_like)
+                parsed_hate = try_parse_int(raw_hate)
+                parsed_follow = try_parse_int(raw_follow)
+                parsed_comment = try_parse_int(raw_comment)
+                parsed_forward = try_parse_int(raw_forward)
+                parsed_long_view = try_parse_int(raw_long_view)
+                parsed_play_time = try_parse_float(raw_play_time)
+                parsed_duration = try_parse_float(raw_duration)
+                parsed_is_rand = try_parse_int(raw_is_rand)
+                parsed_timestamp = try_parse_int(raw_timestamp)
+
+                if raw_click is not None and parsed_click is None:
+                    malformed_counts["is_click"] += 1
+                if raw_like is not None and parsed_like is None:
+                    malformed_counts["is_like"] += 1
+                if raw_hate is not None and parsed_hate is None:
+                    malformed_counts["is_hate"] += 1
+                if raw_follow is not None and parsed_follow is None:
+                    malformed_counts["is_follow"] += 1
+                if raw_comment is not None and parsed_comment is None:
+                    malformed_counts["is_comment"] += 1
+                if raw_forward is not None and parsed_forward is None:
+                    malformed_counts["is_forward"] += 1
+                if raw_long_view is not None and parsed_long_view is None:
+                    malformed_counts["long_view"] += 1
+                if raw_play_time is not None and parsed_play_time is None:
+                    malformed_counts["play_time_ms"] += 1
+                if raw_duration is not None and parsed_duration is None:
+                    malformed_counts["duration_ms"] += 1
+                if raw_is_rand is not None and parsed_is_rand is None:
+                    malformed_counts["is_rand"] += 1
+                if raw_timestamp is not None and parsed_timestamp is None:
+                    malformed_counts["time_ms|timestamp"] += 1
+
+                clicks.append(parsed_click if parsed_click is not None else 0)
+                likes.append(parsed_like if parsed_like is not None else 0)
+                hates.append(parsed_hate if parsed_hate is not None else 0)
+                follows.append(parsed_follow if parsed_follow is not None else 0)
+                comments.append(parsed_comment if parsed_comment is not None else 0)
+                forwards.append(parsed_forward if parsed_forward is not None else 0)
+                long_views.append(
+                    parsed_long_view if parsed_long_view is not None else 0
+                )
+                play_times.append(
+                    parsed_play_time if parsed_play_time is not None else 0.0
+                )
+                durations.append(
+                    parsed_duration if parsed_duration is not None else 0.0
+                )
+                is_rands.append(parsed_is_rand if parsed_is_rand is not None else 0)
+                timestamps.append(
+                    parsed_timestamp if parsed_timestamp is not None else 0
+                )
                 row_count += 1
                 if max_rows is not None and row_count >= max_rows:
                     break
         if max_rows is not None and row_count >= max_rows:
             break
+
+    malformed_counts = {
+        name: count for name, count in malformed_counts.items() if count > 0
+    }
+    if malformed_counts:
+        logger.warning(
+            "KuaiRand-1K loader coerced malformed optional field values to neutral defaults: %s",
+            malformed_counts,
+        )
 
     raw_users_arr = np.array(raw_users, dtype=np.int64)
     raw_items_arr = np.array(raw_items, dtype=np.int64)

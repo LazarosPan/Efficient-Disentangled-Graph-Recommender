@@ -6,6 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ...utils.dataset_loader_utils import resolve_local_dataset_dir
 from ..canonical import CanonicalInteractions
 from ..feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 from ...utils.interaction_indexing import (
@@ -93,20 +94,17 @@ def _parse_movies_dat(
 def _resolve_raw_dir(data_dir: str) -> Path:
     """Resolve the raw ML-1M directory from local repository data only."""
     raw_base = Path(data_dir) / "MovieLens1M" / "raw"
-    candidate_dirs = [
-        raw_base,
-        raw_base / "ml-1m",
-        Path(data_dir) / "ml-1m",
-    ]
-    required_files = {"ratings.dat", "users.dat", "movies.dat"}
-
-    for raw_dir in candidate_dirs:
-        if all((raw_dir / name).exists() for name in required_files):
-            return raw_dir
-
-    raise FileNotFoundError(
-        "MovieLens1M raw files not found in the local data directory. "
-        f"Checked under {raw_base}."
+    return resolve_local_dataset_dir(
+        candidates=[
+            raw_base,
+            raw_base / "ml-1m",
+            Path(data_dir) / "ml-1m",
+        ],
+        required_files=["ratings.dat", "users.dat", "movies.dat"],
+        missing_message=(
+            "MovieLens1M raw files not found in the local data directory. "
+            f"Checked under {raw_base}."
+        ),
     )
 
 
@@ -158,7 +156,6 @@ def load_movielens1m(
     Label: rating >= 4 -> positive (1.0), else negative (0.0)
     Sign:  rating mapped to [-1, 1] via ``(rating - 3) / 2``
     """
-    del feature_policy
     raw_dir = _resolve_raw_dir(data_dir)
     raw_users, raw_items, ratings, timestamps = _parse_ratings_dat(
         raw_dir, max_rows=max_rows

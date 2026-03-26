@@ -28,7 +28,6 @@ def load_taobao(
 
     Format: UserID,ItemID,CategoryID,BehaviorType,Timestamp (no header)
     """
-    del feature_policy
     path = Path(data_dir) / "Taobao" / "raw" / "UserBehavior.csv"
     if not path.exists():
         raise FileNotFoundError(

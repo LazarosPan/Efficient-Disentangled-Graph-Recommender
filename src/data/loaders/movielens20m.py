@@ -177,7 +177,6 @@ def load_movielens20m(
 
     popularity = compute_normalized_popularity(item_id, n_items)
 
-    del feature_policy
     item_features = None
     if include_optional_features:
         raw_dir = Path(data_dir) / "MovieLens20M" / "raw"
