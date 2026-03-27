@@ -21,6 +21,16 @@ class ScoringModule(nn.Module):
         self.config = config
         self.component_names = ("interest", "conformity", "counterfactual")
 
+        # Pre-compute mode masks (bool tensors, independent of device)
+        cf = config.use_counterfactual
+        self._mode_masks: dict[str, torch.Tensor] = {
+            "default": torch.tensor([True, True, cf]),
+            "interest_only": torch.tensor([True, False, False]),
+            "conformity_only": torch.tensor([False, True, False]),
+            "counterfactual_only": torch.tensor([False, False, cf]),
+            "conformity_suppressed": torch.tensor([True, False, cf]),
+        }
+
         if config.scoring_weight_mode == "learned" and config.use_dual_branch:
             initial_weights = torch.tensor(
                 [
@@ -36,37 +46,35 @@ class ScoringModule(nn.Module):
         else:
             self.register_parameter("score_weight_logits", None)
 
+        # Register fixed weights as a buffer (moves with .to(device) automatically)
+        self.register_buffer(
+            "_fixed_weights",
+            torch.tensor(
+                [
+                    config.alpha_interest,
+                    config.beta_conformity,
+                    config.gamma_counterfactual,
+                ],
+                dtype=torch.float32,
+            ),
+        )
+
     def _fixed_weight_tensor(
         self,
         device: torch.device,
         dtype: torch.dtype,
     ) -> torch.Tensor:
-        return torch.tensor(
-            [
-                self.config.alpha_interest,
-                self.config.beta_conformity,
-                self.config.gamma_counterfactual,
-            ],
-            device=device,
-            dtype=dtype,
-        )
+        return self._fixed_weights.to(device=device, dtype=dtype)
 
     def _mode_mask(
         self,
         scoring_mode: str,
         use_counterfactual: bool,
     ) -> torch.Tensor:
-        if scoring_mode == "default":
-            return torch.tensor([True, True, use_counterfactual])
-        if scoring_mode == "interest_only":
-            return torch.tensor([True, False, False])
-        if scoring_mode == "conformity_only":
-            return torch.tensor([False, True, False])
-        if scoring_mode == "counterfactual_only":
-            return torch.tensor([False, False, use_counterfactual])
-        if scoring_mode == "conformity_suppressed":
-            return torch.tensor([True, False, use_counterfactual])
-        raise ValueError(f"Unknown scoring_mode: {scoring_mode}")
+        mask = self._mode_masks.get(scoring_mode)
+        if mask is None:
+            raise ValueError(f"Unknown scoring_mode: {scoring_mode}")
+        return mask
 
     def get_score_weight_tensor(
         self,

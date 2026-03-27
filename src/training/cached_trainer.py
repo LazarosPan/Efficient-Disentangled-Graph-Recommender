@@ -166,6 +166,7 @@ class CachedPropagationTrainer(TrainerRuntime):
 
             primary_metric = self._primary_metric_name()
             current_ndcg = val_metrics.get(primary_metric, 0.0)
+            self._step_scheduler(current_ndcg)
             self._log_epoch_summary(
                 epoch,
                 avg_loss,

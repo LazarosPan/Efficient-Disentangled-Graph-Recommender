@@ -167,15 +167,20 @@ class SubgraphSampler:
         n_sub = subset.size(0)
         device = sub_ei.device
 
-        keep_mask = torch.ones(sub_ei.size(1), dtype=torch.bool, device=device)
+        targets = sub_ei[1]
+        counts = torch.bincount(targets, minlength=n_sub)
+        overcrowded = (counts > max_nb).nonzero(as_tuple=True)[0]
 
-        for node_local in range(n_sub):
-            incoming = (sub_ei[1] == node_local).nonzero(as_tuple=True)[0]
-            if incoming.size(0) > max_nb:
-                drop_idx = incoming[
-                    torch.randperm(incoming.size(0), device=device)[max_nb:]
-                ]
-                keep_mask[drop_idx] = False
+        if overcrowded.numel() == 0:
+            return sub_ei, edge_mask
+
+        keep_mask = torch.ones(sub_ei.size(1), dtype=torch.bool, device=device)
+        for node_local in overcrowded:
+            incoming = (targets == node_local).nonzero(as_tuple=True)[0]
+            drop_idx = incoming[
+                torch.randperm(incoming.size(0), device=device)[max_nb:]
+            ]
+            keep_mask[drop_idx] = False
 
         sub_ei = sub_ei[:, keep_mask]
 

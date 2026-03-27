@@ -175,6 +175,7 @@ class UCaGNN(nn.Module):
 
         return result
 
+    @torch.no_grad()
     def get_all_scores(
         self,
         edge_index: torch.Tensor,
@@ -199,6 +200,7 @@ class UCaGNN(nn.Module):
             scoring_mode=scoring_mode,
         )["final_score"]
 
+    @torch.no_grad()
     def get_all_score_components(
         self,
         edge_index: torch.Tensor,

@@ -32,6 +32,9 @@ config = UCaGNNConfig().preset_full()
 | epochs | 60 | thesis_plan.md |
 | patience | 10 | DDCE |
 | grad_clip_norm | 1.0 | DICE |
+| lr_scheduler | "none" | PyTorch ReduceLROnPlateau; opt-in |
+| lr_scheduler_factor | 0.5 | PyTorch default halving |
+| lr_scheduler_patience | 5 | Half of early-stopping patience |
 | temperature | 0.1 | SimCLR, DCCL |
 | propensity_clip_min | 0.01 | Surveys S1-S4 |
 | propensity_clip_max | 0.99 | Surveys S1-S4 |

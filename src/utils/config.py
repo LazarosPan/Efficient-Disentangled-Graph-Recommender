@@ -60,6 +60,9 @@ class UCaGNNConfig:
     epochs: int = 60
     patience: int = 10
     grad_clip_norm: float = 1.0
+    lr_scheduler: Literal["none", "plateau"] = "none"
+    lr_scheduler_factor: float = 0.5
+    lr_scheduler_patience: int = 5
     eval_ks: list[int] = field(default_factory=lambda: [10, 20, 50])
     eval_scoring_mode: Literal[
         "default",

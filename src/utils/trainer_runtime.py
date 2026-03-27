@@ -8,6 +8,7 @@ from typing import Any
 
 import torch
 import torch.optim as optim
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from ..data.negative_sampler import NegativeSampler
 from ..losses.loss_suite import LossSuite
@@ -46,14 +47,28 @@ class TrainerRuntime:
         self.device = torch.device(
             config.device if torch.cuda.is_available() else "cpu"
         )
+        if self.device.type == "cuda":
+            torch.backends.cudnn.benchmark = True
+            torch.set_float32_matmul_precision("high")
         self.model.to(self.device)
         self.loss_suite.to(self.device)
 
+        use_fused = self.device.type == "cuda"
         self.optimizer = optim.Adam(
             list(model.parameters()) + list(loss_suite.parameters()),
             lr=config.lr,
             weight_decay=config.weight_decay,
+            fused=use_fused,
         )
+
+        self.scheduler: ReduceLROnPlateau | None = None
+        if config.lr_scheduler == "plateau":
+            self.scheduler = ReduceLROnPlateau(
+                self.optimizer,
+                mode="max",
+                factor=config.lr_scheduler_factor,
+                patience=config.lr_scheduler_patience,
+            )
 
         self.sampler = NegativeSampler(
             n_items=data.n_items,
@@ -95,7 +110,7 @@ class TrainerRuntime:
         retain_graph: bool = False,
     ) -> None:
         """Apply the shared backward, clipping, and optimizer step sequence."""
-        self.optimizer.zero_grad()
+        self.optimizer.zero_grad(set_to_none=True)
         loss.backward(retain_graph=retain_graph)
         torch.nn.utils.clip_grad_norm_(
             list(self.model.parameters()) + list(self.loss_suite.parameters()),
@@ -159,6 +174,11 @@ class TrainerRuntime:
             self.profiler.set_enabled(should_profile)
             self.profiler.reset()
         return should_profile
+
+    def _step_scheduler(self, metric_value: float) -> None:
+        """Step the LR scheduler if one is configured."""
+        if self.scheduler is not None:
+            self.scheduler.step(metric_value)
 
     def _primary_metric_name(self) -> str:
         """Return the validation metric used for early stopping."""
@@ -272,6 +292,9 @@ class TrainerRuntime:
             "model_state": self.model.state_dict(),
             "loss_suite_state": self.loss_suite.state_dict(),
             "optimizer_state": self.optimizer.state_dict(),
+            "scheduler_state": (
+                self.scheduler.state_dict() if self.scheduler is not None else None
+            ),
             "config": self.config,
             "best_ndcg": self.best_ndcg,
             "patience_counter": self.patience_counter,
@@ -295,6 +318,9 @@ class TrainerRuntime:
         self.model.load_state_dict(ckpt["model_state"])
         self.loss_suite.load_state_dict(ckpt["loss_suite_state"])
         self.optimizer.load_state_dict(ckpt["optimizer_state"])
+        scheduler_state = ckpt.get("scheduler_state")
+        if scheduler_state is not None and self.scheduler is not None:
+            self.scheduler.load_state_dict(scheduler_state)
         self.best_ndcg = ckpt.get("best_ndcg", 0.0)
         self.patience_counter = ckpt.get("patience_counter", 0)
         self.best_state = ckpt.get("best_state")

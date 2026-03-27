@@ -13,7 +13,10 @@ Use this skill when working on training loop, evaluation, checkpoints, profiling
 ## Paper Sources
 | Feature | Source |
 |---------|--------|
-| Adam lr=1e-3 | LightGCN |
+| Adam lr=1e-3 (fused on CUDA) | LightGCN |
+| `set_to_none=True` in zero_grad | PyTorch performance guide |
+| cuDNN benchmark + TF32 precision | PyTorch CUDA best practices |
+| ReduceLROnPlateau (optional) | PyTorch |
 | Gradient clipping max_norm=1.0 | DICE |
 | Early stopping patience=10 | DDCE |
 | 60 epochs default | thesis_plan.md |
@@ -41,7 +44,9 @@ trainer.save_checkpoint("results/checkpoints/ucagnn_best.pt")
 
 ## Ownership Notes
 - The three trainer modes keep separate epoch loops for readability and behavior isolation.
-- `src/utils/trainer_runtime.py` owns only duplicated lifecycle machinery through `TrainerRuntime`: module/device setup, optimizer creation, checkpoint save/load, profiling toggles, resume history, and early-stopping helpers.
+- `src/utils/trainer_runtime.py` owns only duplicated lifecycle machinery through `TrainerRuntime`: module/device setup, optimizer creation (fused Adam on CUDA, `set_to_none=True`), optional LR scheduler, checkpoint save/load (including scheduler state), profiling toggles, resume history, and early-stopping helpers.
+- CUDA performance: On GPU, `TrainerRuntime.__init__` enables `cudnn.benchmark = True` and `set_float32_matmul_precision('high')` (TF32 on Ampere+). These are one-time global settings.
+- LR scheduler: When `config.lr_scheduler == "plateau"`, all three trainers call `_step_scheduler(current_ndcg)` after each validation pass. Scheduler state is saved/restored with checkpoints.
 - Keep mode-specific semantics local to the concrete trainers: full-graph non-finite batch skipping, cached propagation `retain_graph` handling, and mini-batch subgraph/local-index behavior should not be hidden behind a generic batch callback.
 - Treat `batch_size` as an interaction-loss knob, not a full-graph VRAM knob. In `full_graph`, each batch still propagates over the same full `edge_index`; move to `cached_propagation` or `mini_batch` before tuning `batch_size` for memory.
 - `num_neighbors` is only meaningful in `mini_batch` because it controls `SubgraphSampler` fan-out. It does not change memory usage for `full_graph` or `cached_propagation`.

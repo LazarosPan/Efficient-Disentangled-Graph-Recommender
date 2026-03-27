@@ -7,7 +7,7 @@ neighbours) receive a neutral sign of 0.0.
 
 from __future__ import annotations
 
-# import numpy as np
+import numpy as np
 import torch
 from torch_geometric.data import Data
 from torch_geometric.nn import knn_graph
@@ -230,14 +230,11 @@ def _build_cagra(
 
         neighbors_np = neighbors.copy_to_host()
         n_nodes = embeddings.shape[0]
-        src_list, dst_list = [], []
-        for node_id in range(n_nodes):
-            for nb in neighbors_np[node_id]:
-                if nb != node_id and nb < n_nodes:
-                    src_list.append(node_id)
-                    dst_list.append(int(nb))
-
-        cagra_edges = torch.tensor([src_list, dst_list], dtype=torch.long)
+        k = neighbors_np.shape[1]
+        src = np.repeat(np.arange(n_nodes), k)
+        dst = neighbors_np.ravel()
+        valid = (src != dst) & (dst >= 0) & (dst < n_nodes)
+        cagra_edges = torch.tensor(np.stack([src[valid], dst[valid]]), dtype=torch.long)
         cagra_sign = torch.zeros(cagra_edges.size(1))
 
         combined_ei = torch.cat([bipartite_ei, cagra_edges], dim=1)
