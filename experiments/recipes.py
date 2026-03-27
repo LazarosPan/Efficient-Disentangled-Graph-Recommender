@@ -34,6 +34,30 @@ def recipe_names() -> list[str]:
     return sorted(load_experiment_catalog().get("recipes", {}))
 
 
+def formal_profile_names() -> list[str]:
+    """Return all available formal profile names."""
+    return sorted(load_experiment_catalog().get("formal_profiles", {}))
+
+
+def get_formal_profile(profile_name: str) -> dict[str, Any]:
+    """Return a named formal profile from the experiment catalog."""
+    catalog = load_experiment_catalog()
+    profiles = catalog.get("formal_profiles", {})
+    if profile_name not in profiles:
+        available = ", ".join(sorted(profiles))
+        raise KeyError(
+            f"Unknown formal profile '{profile_name}'. Available profiles: {available}"
+        )
+
+    profile = dict(profiles[profile_name])
+    return {
+        "name": profile_name,
+        "description": profile.get("description", ""),
+        "matrix": dict(profile.get("matrix", {})),
+        "config_overrides": dict(profile.get("config_overrides", {})),
+    }
+
+
 def get_recipe(recipe_name: str) -> dict[str, Any]:
     """Resolve a recipe, following aliases to their canonical target."""
     recipe = dict(_raw_recipe(recipe_name))

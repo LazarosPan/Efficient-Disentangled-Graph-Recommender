@@ -96,6 +96,31 @@ def build_parser() -> argparse.ArgumentParser:
         "--epochs", type=int, default=None, help="Override epochs for all"
     )
     parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=None,
+        help="Override batch size for all runs in the matrix.",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=None,
+        help="Override learning rate for all runs in the matrix.",
+    )
+    parser.add_argument(
+        "--num-neighbors",
+        nargs="*",
+        type=int,
+        default=None,
+        help="Optional mini-batch fan-out override applied to all matrix items.",
+    )
+    parser.add_argument(
+        "--loader-max-rows",
+        type=int,
+        default=None,
+        help="Optional dataset loader row cap for all runs in the matrix.",
+    )
+    parser.add_argument(
         "--sample-interactions",
         type=int,
         default=None,
@@ -122,6 +147,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--batch-id",
         default=None,
         help="Optional batch identifier for grouping and resuming benchmark runs.",
+    )
+    parser.add_argument(
+        "--profile-name",
+        default=None,
+        help="Optional semantic formal profile label to persist alongside batch metadata.",
     )
     parser.add_argument(
         "--resume-batch",
@@ -151,6 +181,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
 
     datasets = TIERS[args.tier]
     batch_id = _resolve_batch_id(args.batch_id, prefix="benchmark")
+    profile_name = getattr(args, "profile_name", None)
     experiments = []
     for dataset in datasets:
         for preset in args.presets:
@@ -169,6 +200,8 @@ def run_benchmark(args: argparse.Namespace) -> int:
     print(f"  Graph methods: {', '.join(args.graph_methods)}")
     print(f"  Seeds: {args.seeds}")
     print(f"  Batch ID: {batch_id}")
+    if profile_name:
+        print(f"  Profile: {profile_name}")
     print(f"  Resume batch: {args.resume_batch}")
     print(f"  Fallback on OOM: {args.fallback_on_oom}")
     print("=" * 70)
@@ -246,13 +279,14 @@ def run_benchmark(args: argparse.Namespace) -> int:
                 preset=preset,
                 seed=seed,
                 epochs=args.epochs,
-                batch_size=None,
+                batch_size=args.batch_size,
                 embed_dim=None,
-                lr=None,
+                lr=args.lr,
                 graph_method=graph_method,
                 training_mode=training_mode,
-                num_neighbors=None,
+                num_neighbors=args.num_neighbors,
                 sample_interactions=args.sample_interactions,
+                loader_max_rows=args.loader_max_rows,
                 device=args.device,
                 data_dir=args.data_dir,
                 intervention=None,
@@ -267,6 +301,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
                 mlflow_tracking_uri=args.mlflow_tracking_uri,
                 mlflow_experiment_name=args.mlflow_experiment_name,
                 batch_id=batch_id,
+                profile_name=profile_name,
             )
             elapsed = time.time() - t0
 
@@ -305,21 +340,21 @@ def run_benchmark(args: argparse.Namespace) -> int:
                     preset=preset,
                     seed=seed,
                     epochs=args.epochs,
-                    batch_size=None,
+                    batch_size=args.batch_size,
                     embed_dim=None,
                     n_gnn_layers=None,
                     interest_gnn_layers=None,
                     conformity_gnn_layers=None,
-                    lr=None,
+                    lr=args.lr,
                     eval_scoring_mode=None,
                     scoring_weight_mode=None,
                     use_features=None,
                     feature_policy=None,
                     graph_method=graph_method,
                     training_mode=args.fallback_on_oom,
-                    num_neighbors=None,
+                    num_neighbors=args.num_neighbors,
                     sample_interactions=args.sample_interactions,
-                    loader_max_rows=None,
+                    loader_max_rows=args.loader_max_rows,
                     device=args.device,
                     data_dir=args.data_dir,
                     intervention=None,
@@ -339,6 +374,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
                         mlflow_tracking_uri=args.mlflow_tracking_uri,
                         mlflow_experiment_name=args.mlflow_experiment_name,
                         batch_id=batch_id,
+                        profile_name=profile_name,
                     )
                     elapsed = time.time() - t0
                     results.append(

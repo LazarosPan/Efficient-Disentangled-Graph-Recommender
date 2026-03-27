@@ -29,19 +29,24 @@ results/checkpoints/            Local checkpoints
 ## Primary Formal Workflow
 
 ```bash
-uv run formal-run --version v1
-uv run formal-run --version v1 --tier all
-uv run formal-run --version v1 --fallback-on-oom mini_batch
+uv run formal-run --profile v1
+uv run formal-run --list-profiles
 uv run formal-run --resume-latest
-uv run formal-run --new-run --version v2
+uv run formal-run --new-run --profile v1
 ```
 
 - `formal-run` is the easiest way to launch the full formal matrix.
-- Re-running the same `--version` resumes from where that batch stopped.
+- `--profile` is the semantic experiment bundle. It is loaded directly from `experiments/experiment_catalog.json`, alongside the rest of the repository's predefined experiment definitions.
+- Each formal profile freezes both the matrix and the support parameters for that thesis run: dataset tier, presets, training modes, graph methods, seeds, epochs, learning rate, batch size, and mini-batch fan-out.
+- `--version` is still accepted as a compatibility alias for `--profile`, but the scientific meaning is now the profile bundle rather than the execution batch slug.
+- Re-running the same `--profile` resumes the saved batch for that profile when `results/formal_run_state.json` already points at it.
 - `--resume-latest` reuses the last saved formal-run state from `results/formal_run_state.json`.
-- `--new-run` forces a fresh version even if a resumable state file already exists.
-- `--restart` starts the selected version from the beginning under a fresh batch id, instead of reusing the old one.
+- `--new-run` forces a fresh batch even if a resumable state file already exists.
+- `--restart` starts the selected profile from the beginning under a fresh batch id, instead of reusing the old one.
+- `formal-run` always uses the full datasets. It does not expose sampled-interaction or loader-cap overrides, because those are smoke-test controls rather than formal thesis settings.
 - The wrapper still uses the benchmark runner underneath, so failed runs are logged and the matrix continues to the next item.
+- Formal OOM behavior is log-and-continue by default. The failing run is kept in SQLite and MLflow as thesis evidence, and the runner moves to the next experiment without an automatic fallback retry.
+- `batch_id` is now purely operational. It identifies one resumable execution of a formal profile and is kept separate from the semantic profile name in SQLite and MLflow.
 
 ## Low-Level Single Experiments
 
@@ -85,6 +90,7 @@ Default MLflow experiment name: `ucagnn-benchmark`.
 
 - Use `--dry-run` first when you are changing orchestration flags.
 - The formal matrix is `dataset × preset × training_mode × graph_method × seed`.
+- `--profile-name` is the optional semantic label recorded by higher-level wrappers such as `formal-run`; it is separate from `--batch-id`.
 - `--batch-id` groups a long benchmark run into one resumable batch record in SQLite.
 - `--resume-batch` skips matrix items that already reached a terminal state (`completed`, `oom`, or `failed`) for that batch.
 - `--fallback-on-oom cached_propagation` or `--fallback-on-oom mini_batch` records the original OOM run first, then launches a second explicit fallback run instead of mutating the failing run in place.
@@ -108,8 +114,8 @@ Default MLflow experiment name: `ucagnn-ablation`.
 ## Long-Run Resume Policy
 
 - Batch resume is orchestration-level, not checkpoint-level mutation. A run that OOMs remains logged as `status=oom` so the thesis record keeps the feasibility evidence.
-- Explicit fallback is a second run with a different `training_mode`, not a hidden retry inside the original experiment identity.
-- `formal-run` persists the latest formal batch configuration to `results/formal_run_state.json`, so a restart after a stopped process or powered-off machine can reuse the same batch plan.
+- Explicit fallback is a lower-level benchmark or ablation option. The default formal workflow does not use it; it logs the OOM row and continues.
+- `formal-run` persists the latest formal batch configuration to `results/formal_run_state.json`, including the semantic `profile_name` and the current execution `batch_id`, so a restart after a stopped process or powered-off machine can reuse the same batch plan.
 - Use `uv run query-results --view completed` for the clean finished list, `uv run query-results --view attention` for anything that still needs attention, and `uv run query-results --view errors` for the strict failed/OOM list.
 - Add `--batch-id <id>` when you want the same exploration flow scoped to one benchmark or ablation batch.
 
@@ -155,13 +161,14 @@ uv run query-results --view completed
 uv run query-results --view attention
 uv run query-results --view errors
 uv run query-results --batch-id smoke-bench
+uv run query-results --status completed
 uv run query-results --status oom
 uv run query-results --exp 12
 uv run query-results --metrics 12
 uv run query-results --profiling 12
 ```
 
-The supported workflow is SQLite-first inspection through `query-results`. The SQLite database now exposes convenience views for completed runs, attention-required runs, and strict error runs, and MLflow mirrors the same status/failure metadata through searchable tags. There is currently no supported plotting command in the main workflow.
+The supported workflow is SQLite-first inspection through `query-results`. The SQLite database now exposes convenience views for completed runs, attention-required runs, and strict error runs, and both SQLite and MLflow now record the semantic `profile_name` separately from the execution `batch_id`. There is currently no supported plotting command in the main workflow.
 
 ### Run Identification
 

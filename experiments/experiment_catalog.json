@@ -1,4 +1,22 @@
 {
+  "formal_profiles": {
+    "v1": {
+      "description": "Formal thesis matrix with the current grounded defaults and full dataset coverage.",
+      "matrix": {
+        "tier": "all",
+        "presets": ["full", "lightgcn", "dice_like"],
+        "training_modes": ["full_graph", "cached_propagation", "mini_batch"],
+        "graph_methods": ["dense", "knn", "cagra"],
+        "seeds": [13, 298, 132]
+      },
+      "config_overrides": {
+        "epochs": 60,
+        "lr": 0.001,
+        "batch_size": 2048,
+        "num_neighbors": [10, 10]
+      }
+    }
+  },
   "recipes": {
     "full_full_graph_dense": {
       "description": "Full U-CaGNN with full-graph training on dense edges.",

@@ -30,6 +30,7 @@ class ExperimentLogger:
         "failure_reason",
         "oom_flag",
         "batch_id",
+        "profile_name",
         "gpu_name",
         "gpu_vram_gb",
         "timestamp",
@@ -150,6 +151,7 @@ class ExperimentLogger:
                 failure_reason TEXT,
                 oom_flag     INTEGER NOT NULL DEFAULT 0,
                 batch_id     TEXT,
+                profile_name TEXT,
                 gpu_name     TEXT,
                 gpu_vram_gb  REAL,
                 timestamp    TEXT    NOT NULL
@@ -215,6 +217,7 @@ class ExperimentLogger:
                 failure_reason,
                 oom_flag,
                 batch_id,
+                profile_name,
                 gpu_name,
                 gpu_vram_gb,
                 timestamp,
@@ -233,6 +236,7 @@ class ExperimentLogger:
                 {self._qualified_or_default(legacy_columns, "e.failure_reason", "NULL")} AS failure_reason,
                 {self._qualified_or_default(legacy_columns, "e.oom_flag", "0")} AS oom_flag,
                 {self._qualified_or_default(legacy_columns, "e.batch_id", "NULL")} AS batch_id,
+                {self._qualified_or_default(legacy_columns, "e.profile_name", "NULL")} AS profile_name,
                 {self._qualified_or_default(legacy_columns, "e.gpu_name", "NULL")} AS gpu_name,
                 {self._qualified_or_default(legacy_columns, "e.gpu_vram_gb", "NULL")} AS gpu_vram_gb,
                 {self._qualified_or_default(legacy_columns, "e.timestamp", self._SQLITE_NOW_UTC)} AS timestamp,
@@ -354,6 +358,9 @@ class ExperimentLogger:
             CREATE INDEX IF NOT EXISTS idx_experiments_batch_lookup
                 ON experiments(batch_id, dataset, preset, intervention, training_mode, graph_method, seed, id DESC);
 
+            CREATE INDEX IF NOT EXISTS idx_experiments_profile_updated
+                ON experiments(profile_name, updated_at DESC);
+
             CREATE INDEX IF NOT EXISTS idx_experiments_status
                 ON experiments(status, oom_flag);
 
@@ -383,6 +390,7 @@ class ExperimentLogger:
                 e.failure_reason,
                 e.oom_flag,
                 e.batch_id,
+                e.profile_name,
                 e.gpu_name,
                 e.gpu_vram_gb,
                 AVG(CASE
@@ -552,6 +560,7 @@ class ExperimentLogger:
         intervention: str | None = None,
         status: str = "running",
         batch_id: str | None = None,
+        profile_name: str | None = None,
         gpu_name: str | None = None,
         gpu_vram_gb: float | None = None,
     ) -> int:
@@ -562,8 +571,8 @@ class ExperimentLogger:
         graph_method = getattr(config, "graph_method", None)
         now = datetime.now(timezone.utc).isoformat()
         cur = self.conn.execute(
-            "INSERT INTO experiments (dataset, preset, intervention, config_json, seed, training_mode, graph_method, status, failure_reason, oom_flag, batch_id, gpu_name, gpu_vram_gb, timestamp, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO experiments (dataset, preset, intervention, config_json, seed, training_mode, graph_method, status, failure_reason, oom_flag, batch_id, profile_name, gpu_name, gpu_vram_gb, timestamp, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 dataset,
                 preset,
@@ -576,6 +585,7 @@ class ExperimentLogger:
                 None,
                 0,
                 batch_id,
+                profile_name,
                 gpu_name,
                 gpu_vram_gb,
                 now,

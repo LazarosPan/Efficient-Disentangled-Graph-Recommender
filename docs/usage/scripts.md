@@ -30,7 +30,8 @@ uv run list-commands --command quick-validate
 Use these as the default day-to-day commands. Each one owns a distinct part of the workflow.
 
 ```bash
-uv run formal-run --version v1
+uv run formal-run --profile v1
+uv run formal-run --list-profiles
 uv run formal-run --resume-latest
 uv run quick-validate
 uv run quick-validate --mlflow
@@ -38,7 +39,7 @@ uv run reset-experiment-db
 uv run cleanup-experiment-artifacts
 ```
 
-- `formal-run`: primary formal experiment launcher. It writes `results/formal_run_state.json` and resumes the saved batch plan by version or via `--resume-latest`.
+- `formal-run`: primary formal experiment launcher. It reads predefined formal profiles from `experiments/experiment_catalog.json`, writes `results/formal_run_state.json`, and resumes the saved batch plan by semantic profile or via `--resume-latest`.
 - `quick-validate`: default post-change validator. It runs tiny recipe, ablation, observability, and evaluation checks.
 - `quick-validate --mlflow`: same validator, but also checks the optional MLflow logging path.
 - `reset-experiment-db`: deletes only `results/thesis_experiments.db` and its SQLite sidecars.
@@ -82,7 +83,7 @@ uv run audit-metrics
 
 There is currently no supported plotting command in the main workflow. Use `query-results` and its convenience views for result inspection until a smaller reporting path replaces the removed plotting script.
 
-The state file for the simple formal workflow is `results/formal_run_state.json`. Keep it if you want `uv run formal-run --resume-latest` to pick up from the last interrupted batch.
+The state file for the simple formal workflow is `results/formal_run_state.json`. It stores both the semantic `profile_name` and the current execution `batch_id`. Keep it if you want `uv run formal-run --resume-latest` to pick up from the last interrupted batch.
 
 ## Specialized Diagnostics
 

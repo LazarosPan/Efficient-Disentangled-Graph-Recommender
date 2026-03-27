@@ -48,8 +48,11 @@ trainer.save_checkpoint("results/checkpoints/ucagnn_best.pt")
 - Named recipes own matrix-defining fields such as `training_mode` and `graph_method`; conflicting CLI flags should be rejected rather than silently treated as an auto-scaling mechanism.
 - Formal batch runners expose `--batch-id` and `--resume-batch` so benchmark and ablation sweeps can skip terminal rows (`completed`, `oom`, `failed`) without hiding failed feasibility cases.
 - `main.py` is now the simple formal orchestration entry point via `uv run formal-run`. It persists `results/formal_run_state.json` and is the preferred path when the user wants one command that resumes formal experiments after interruption.
+- `formal-run` now separates semantic protocol identity from execution identity: `--profile` selects a predefined catalog entry from `experiments/experiment_catalog.json`, while `batch_id` is only the resumable execution label stored in SQLite and MLflow.
+- Formal profiles should own the full thesis matrix and support-parameter bundle directly in the catalog. The formal wrapper should stay thin and should not reintroduce parallel definitions for epochs, learning rate, sampled interactions, or fallback behavior.
 - `--fallback-on-oom` is orchestration-level only: keep the original OOM row as thesis evidence, then launch a second explicit fallback run under `cached_propagation` or `mini_batch` rather than mutating the original run identity.
 - SQLite experiment review now has three convenience views: completed runs, attention-required runs, and strict error runs. Prefer `query-results --view completed|attention|errors` over manual SQL when triaging long batches.
+- Formal runs now persist `profile_name` alongside status, batch id, and hardware metadata, so query and MLflow inspection can distinguish the scientific profile from the operational batch.
 
 ## What Gets Logged Automatically
 | Data | SQLite Table | Split |

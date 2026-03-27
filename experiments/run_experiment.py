@@ -331,6 +331,7 @@ def _build_mlflow_tags(
     experiment_id: str | None,
     recipe_name: str | None,
     batch_id: str | None,
+    profile_name: str | None,
 ) -> dict[str, str]:
     """Build compact MLflow tags without duplicating parameter columns in the UI."""
     tags = {
@@ -342,6 +343,8 @@ def _build_mlflow_tags(
         tags["recipe"] = recipe_name
     if batch_id:
         tags["batch_id"] = batch_id
+    if profile_name:
+        tags["profile_name"] = profile_name
     return tags
 
 
@@ -420,6 +423,7 @@ def _build_mlflow_params(
     recipe_name: str | None,
     run_started_at_utc: str,
     batch_id: str | None,
+    profile_name: str | None,
 ) -> dict[str, str | int | float | bool]:
     """Select compact config fields to expose as searchable MLflow params."""
     params: dict[str, str | int | float | bool] = {
@@ -458,6 +462,8 @@ def _build_mlflow_params(
         params["recipe"] = recipe_name
     if batch_id:
         params["batch_id"] = batch_id
+    if profile_name:
+        params["profile_name"] = profile_name
     if config.training_mode == "mini_batch":
         params["num_neighbors"] = "-".join(str(value) for value in config.num_neighbors)
     return params
@@ -478,6 +484,7 @@ def _start_mlflow_run(
     run_name: str | None,
     recipe_name: str | None,
     batch_id: str | None,
+    profile_name: str | None,
 ):
     """Start an MLflow run and log its static metadata.
 
@@ -511,6 +518,7 @@ def _start_mlflow_run(
                 experiment_id,
                 recipe_name,
                 batch_id,
+                profile_name,
             )
         )
         mlflow.log_params(
@@ -521,6 +529,7 @@ def _start_mlflow_run(
                 recipe_name,
                 run_started_at_utc,
                 batch_id,
+                profile_name,
             )
         )
         logger.info("MLflow tracking enabled: %s", resolved_tracking_uri)
@@ -658,6 +667,7 @@ def run_experiment(
     experiment_id: str | None = None,
     recipe_name: str | None = None,
     batch_id: str | None = None,
+    profile_name: str | None = None,
     checkpoint_path: str | None = None,
     checkpoint_every: int = 1,
     auto_resume: bool = True,
@@ -755,6 +765,7 @@ def run_experiment(
             intervention=intervention,
             status="running",
             batch_id=batch_id,
+            profile_name=profile_name,
             gpu_name=gpu_name,
             gpu_vram_gb=gpu_vram_gb,
         )
@@ -793,6 +804,7 @@ def run_experiment(
             run_name=mlflow_run_name,
             recipe_name=recipe_name,
             batch_id=batch_id,
+            profile_name=profile_name,
         )
         _log_mlflow_resume_tags(mlflow_module, checkpoint_state)
 
