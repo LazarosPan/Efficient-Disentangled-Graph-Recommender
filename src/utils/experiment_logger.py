@@ -14,6 +14,8 @@ from pathlib import Path
 class ExperimentLogger:
     """Persist experiment configs, per-epoch metrics, and profiling data to SQLite."""
 
+    TERMINAL_STATUSES = ("completed", "failed", "oom")
+
     _SQLITE_NOW_UTC = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
     _EXPECTED_EXPERIMENT_COLUMNS = [
         "id",
@@ -24,7 +26,14 @@ class ExperimentLogger:
         "seed",
         "training_mode",
         "graph_method",
+        "status",
+        "failure_reason",
+        "oom_flag",
+        "batch_id",
+        "gpu_name",
+        "gpu_vram_gb",
         "timestamp",
+        "updated_at",
     ]
     _EXPECTED_PROFILING_COLUMNS = [
         "id",
@@ -51,6 +60,7 @@ class ExperimentLogger:
     def __init__(self, db_path: str = "results/thesis_experiments.db") -> None:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(db_path)
+        self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.execute("PRAGMA journal_mode=WAL")
         self._create_tables()
@@ -59,6 +69,7 @@ class ExperimentLogger:
 
     def _create_tables(self) -> None:
         self._ensure_current_schema()
+        self._repair_experiment_statuses()
         self._create_indexes_and_views()
         self.conn.commit()
 
@@ -66,6 +77,9 @@ class ExperimentLogger:
         self.conn.execute("PRAGMA foreign_keys=OFF")
         try:
             self.conn.execute("DROP VIEW IF EXISTS experiment_summary")
+            self.conn.execute("DROP VIEW IF EXISTS experiment_completed_summary")
+            self.conn.execute("DROP VIEW IF EXISTS experiment_attention_summary")
+            self.conn.execute("DROP VIEW IF EXISTS experiment_error_summary")
             self._ensure_experiments_table()
             self._ensure_profiling_table()
             self._ensure_metrics_table()
@@ -96,6 +110,13 @@ class ExperimentLogger:
     def _table_columns(self, table_name: str) -> list[str]:
         return [row[1] for row in self.conn.execute(f"PRAGMA table_info({table_name})")]
 
+    def _foreign_key_targets(self, table_name: str) -> set[str]:
+        """Return referenced table names declared by a table's foreign keys."""
+        return {
+            row[2]
+            for row in self.conn.execute(f"PRAGMA foreign_key_list({table_name})")
+        }
+
     def _next_legacy_name(self, base_name: str) -> str:
         candidate = f"{base_name}__legacy"
         suffix = 2
@@ -125,7 +146,14 @@ class ExperimentLogger:
                 seed         INTEGER,
                 training_mode TEXT,
                 graph_method TEXT,
+                status       TEXT    NOT NULL DEFAULT 'unknown',
+                failure_reason TEXT,
+                oom_flag     INTEGER NOT NULL DEFAULT 0,
+                batch_id     TEXT,
+                gpu_name     TEXT,
+                gpu_vram_gb  REAL,
                 timestamp    TEXT    NOT NULL
+                ,updated_at  TEXT    NOT NULL
             )
         """)
 
@@ -183,7 +211,14 @@ class ExperimentLogger:
                 seed,
                 training_mode,
                 graph_method,
-                timestamp
+                status,
+                failure_reason,
+                oom_flag,
+                batch_id,
+                gpu_name,
+                gpu_vram_gb,
+                timestamp,
+                updated_at
             )
             SELECT
                 id,
@@ -194,7 +229,18 @@ class ExperimentLogger:
                 seed,
                 {self._qualified_or_default(legacy_columns, "e.training_mode", "NULL")} AS training_mode,
                 {self._qualified_or_default(legacy_columns, "e.graph_method", "NULL")} AS graph_method,
-                {self._qualified_or_default(legacy_columns, "e.timestamp", self._SQLITE_NOW_UTC)} AS timestamp
+                {self._qualified_or_default(legacy_columns, "e.status", "'unknown'")} AS status,
+                {self._qualified_or_default(legacy_columns, "e.failure_reason", "NULL")} AS failure_reason,
+                {self._qualified_or_default(legacy_columns, "e.oom_flag", "0")} AS oom_flag,
+                {self._qualified_or_default(legacy_columns, "e.batch_id", "NULL")} AS batch_id,
+                {self._qualified_or_default(legacy_columns, "e.gpu_name", "NULL")} AS gpu_name,
+                {self._qualified_or_default(legacy_columns, "e.gpu_vram_gb", "NULL")} AS gpu_vram_gb,
+                {self._qualified_or_default(legacy_columns, "e.timestamp", self._SQLITE_NOW_UTC)} AS timestamp,
+                COALESCE(
+                    {self._qualified_or_default(legacy_columns, "e.updated_at", "NULL")},
+                    {self._qualified_or_default(legacy_columns, "e.timestamp", self._SQLITE_NOW_UTC)},
+                    {self._SQLITE_NOW_UTC}
+                ) AS updated_at
             FROM {legacy_table} e
             ORDER BY id
             """
@@ -207,7 +253,11 @@ class ExperimentLogger:
             return
 
         current_columns = self._table_columns("profiling")
-        if current_columns == self._EXPECTED_PROFILING_COLUMNS:
+        fk_targets = self._foreign_key_targets("profiling")
+        if (
+            current_columns == self._EXPECTED_PROFILING_COLUMNS
+            and fk_targets == {"experiments"}
+        ):
             return
 
         legacy_table = self._next_legacy_name("profiling")
@@ -257,7 +307,8 @@ class ExperimentLogger:
             return
 
         current_columns = self._table_columns("metrics")
-        if current_columns == self._EXPECTED_METRIC_COLUMNS:
+        fk_targets = self._foreign_key_targets("metrics")
+        if current_columns == self._EXPECTED_METRIC_COLUMNS and fk_targets == {"experiments"}:
             return
 
         legacy_table = self._next_legacy_name("metrics")
@@ -300,6 +351,15 @@ class ExperimentLogger:
             CREATE INDEX IF NOT EXISTS idx_experiments_lookup
                 ON experiments(dataset, preset, training_mode, graph_method);
 
+            CREATE INDEX IF NOT EXISTS idx_experiments_batch_lookup
+                ON experiments(batch_id, dataset, preset, intervention, training_mode, graph_method, seed, id DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_experiments_status
+                ON experiments(status, oom_flag);
+
+            CREATE INDEX IF NOT EXISTS idx_experiments_status_updated
+                ON experiments(status, updated_at DESC);
+
             CREATE INDEX IF NOT EXISTS idx_metrics_exp_split_name_epoch
                 ON metrics(experiment_id, split, metric_name, epoch);
 
@@ -312,12 +372,19 @@ class ExperimentLogger:
             SELECT
                 e.id,
                 e.timestamp,
+                e.updated_at,
                 e.dataset,
                 e.preset,
                 e.intervention,
                 e.training_mode,
                 e.graph_method,
                 e.seed,
+                e.status,
+                e.failure_reason,
+                e.oom_flag,
+                e.batch_id,
+                e.gpu_name,
+                e.gpu_vram_gb,
                 AVG(CASE
                     WHEN m.metric_name = 'loss' AND m.split = 'train'
                     THEN m.metric_value
@@ -360,7 +427,63 @@ class ExperimentLogger:
             LEFT JOIN profiling p ON e.id = p.experiment_id
             GROUP BY e.id
             ORDER BY e.timestamp DESC;
+
+            DROP VIEW IF EXISTS experiment_completed_summary;
+            CREATE VIEW experiment_completed_summary AS
+            SELECT *
+            FROM experiment_summary
+            WHERE status = 'completed'
+            ORDER BY updated_at DESC, id DESC;
+
+            DROP VIEW IF EXISTS experiment_attention_summary;
+            CREATE VIEW experiment_attention_summary AS
+            SELECT *
+            FROM experiment_summary
+            WHERE status IS NULL OR status <> 'completed'
+            ORDER BY updated_at DESC, id DESC;
+
+            DROP VIEW IF EXISTS experiment_error_summary;
+            CREATE VIEW experiment_error_summary AS
+            SELECT *
+            FROM experiment_summary
+            WHERE status IN ('oom', 'failed')
+            ORDER BY updated_at DESC, id DESC;
         """)
+
+    def _repair_experiment_statuses(self) -> None:
+        """Backfill stale status rows so exploration views reflect historical reality."""
+        self.conn.execute(
+            f"""
+            UPDATE experiments
+            SET status = 'completed',
+                updated_at = COALESCE(updated_at, timestamp, {self._SQLITE_NOW_UTC})
+            WHERE status IN ('running', 'unknown')
+              AND EXISTS (
+                  SELECT 1
+                  FROM metrics m
+                  WHERE m.experiment_id = experiments.id
+                    AND m.split = 'test'
+              )
+            """
+        )
+        self.conn.execute(
+            f"""
+            UPDATE experiments
+            SET status = 'oom',
+                updated_at = COALESCE(updated_at, timestamp, {self._SQLITE_NOW_UTC})
+            WHERE status IN ('running', 'unknown')
+              AND oom_flag = 1
+            """
+        )
+        self.conn.execute(
+            f"""
+            UPDATE experiments
+            SET status = 'failed',
+                updated_at = COALESCE(updated_at, timestamp, {self._SQLITE_NOW_UTC})
+            WHERE status IN ('running', 'unknown')
+              AND failure_reason IS NOT NULL
+            """
+        )
 
     def _serialize_config(self, config) -> str:
         if hasattr(config, "model_dump"):
@@ -427,15 +550,20 @@ class ExperimentLogger:
         config,
         preset: str | None = None,
         intervention: str | None = None,
+        status: str = "running",
+        batch_id: str | None = None,
+        gpu_name: str | None = None,
+        gpu_vram_gb: float | None = None,
     ) -> int:
         """Create an experiment row and return its id."""
         config_json = self._serialize_config(config)
         seed = getattr(config, "seed", None)
         training_mode = getattr(config, "training_mode", None)
         graph_method = getattr(config, "graph_method", None)
+        now = datetime.now(timezone.utc).isoformat()
         cur = self.conn.execute(
-            "INSERT INTO experiments (dataset, preset, intervention, config_json, seed, training_mode, graph_method, timestamp) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO experiments (dataset, preset, intervention, config_json, seed, training_mode, graph_method, status, failure_reason, oom_flag, batch_id, gpu_name, gpu_vram_gb, timestamp, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 dataset,
                 preset,
@@ -444,11 +572,105 @@ class ExperimentLogger:
                 seed,
                 training_mode,
                 graph_method,
-                datetime.now(timezone.utc).isoformat(),
+                status,
+                None,
+                0,
+                batch_id,
+                gpu_name,
+                gpu_vram_gb,
+                now,
+                now,
             ),
         )
         self.conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
+
+    def update_experiment_status(
+        self,
+        exp_id: int,
+        *,
+        status: str,
+        failure_reason: str | None = None,
+        oom_flag: bool | None = None,
+    ) -> None:
+        """Update terminal or intermediate state for an experiment row.
+
+        Args:
+            exp_id: Experiment id to update.
+            status: New experiment status.
+            failure_reason: Optional free-form failure detail.
+            oom_flag: Optional explicit OOM indicator.
+        """
+        self.conn.execute(
+            "UPDATE experiments SET status = ?, failure_reason = ?, oom_flag = COALESCE(?, oom_flag), updated_at = ? WHERE id = ?",
+            (
+                status,
+                failure_reason,
+                None if oom_flag is None else int(oom_flag),
+                datetime.now(timezone.utc).isoformat(),
+                exp_id,
+            ),
+        )
+        self.conn.commit()
+
+    def find_latest_batch_experiment(
+        self,
+        *,
+        batch_id: str,
+        dataset: str,
+        preset: str | None,
+        intervention: str | None,
+        seed: int | None,
+        training_mode: str | None,
+        graph_method: str | None,
+    ) -> sqlite3.Row | None:
+        """Return the most recent experiment row for a batch-scoped matrix item."""
+        filters = {
+            "preset": preset,
+            "intervention": intervention,
+            "seed": seed,
+            "training_mode": training_mode,
+            "graph_method": graph_method,
+        }
+        where_clauses = ["batch_id = ?", "dataset = ?"]
+        params: list[object] = [batch_id, dataset]
+
+        for column_name, value in filters.items():
+            if value is None:
+                continue
+            where_clauses.append(f"{column_name} = ?")
+            params.append(value)
+
+        sql = (
+            "SELECT * FROM experiments WHERE "
+            + " AND ".join(where_clauses)
+            + " ORDER BY id DESC LIMIT 1"
+        )
+        return self.conn.execute(sql, params).fetchone()
+
+    def get_metrics_for_split(
+        self,
+        exp_id: int,
+        *,
+        split: str,
+    ) -> dict[str, float]:
+        """Return the latest metric values for a split keyed by metric name."""
+        rows = self.conn.execute(
+            """
+            SELECT metric_name, metric_value
+            FROM metrics
+            WHERE experiment_id = ? AND split = ?
+            ORDER BY metric_name, COALESCE(epoch, -1) DESC, id DESC
+            """,
+            (exp_id, split),
+        ).fetchall()
+
+        metrics: dict[str, float] = {}
+        for row in rows:
+            metric_name = row[0]
+            if metric_name not in metrics:
+                metrics[metric_name] = float(row[1])
+        return metrics
 
     def log_profiling(
         self,

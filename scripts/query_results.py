@@ -3,6 +3,11 @@
 
 Usage:
     python scripts/query_results.py                    # Show all experiments
+    python scripts/query_results.py --view completed   # Show only completed runs
+    python scripts/query_results.py --view attention   # Show failed, OOM, running, or unknown runs
+    python scripts/query_results.py --view errors      # Show only failed and OOM runs
+    python scripts/query_results.py --batch-id foo    # Show one batch only
+    python scripts/query_results.py --status oom      # Show only OOM rows
     python scripts/query_results.py --exp 1            # Show experiment 1 details
     python scripts/query_results.py --metrics 1        # Show metrics for experiment 1
     python scripts/query_results.py --profiling 1      # Show profiling for experiment 1
@@ -26,6 +31,13 @@ if str(REPO_ROOT) not in sys.path:
 
 DB_PATH = REPO_ROOT / "results" / "thesis_experiments.db"
 
+VIEW_TABLES = {
+    "all": "experiments",
+    "completed": "experiment_completed_summary",
+    "attention": "experiment_attention_summary",
+    "errors": "experiment_error_summary",
+}
+
 
 def connect():
     """Connect to experiment database."""
@@ -43,41 +55,72 @@ def connect():
 
     migrator = ExperimentLogger(db_path=str(DB_PATH))
     migrator.close()
-    return sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-def list_experiments(conn):
+def list_experiments(
+    conn: sqlite3.Connection,
+    *,
+    batch_id: str | None = None,
+    status: str | None = None,
+    view_name: str = "all",
+) -> None:
     """List all experiments."""
     print("=" * 80)
     print("EXPERIMENTS")
     print("=" * 80)
     print(f"Database: {DB_PATH.resolve()}")
+    print(f"View: {view_name}")
     print()
 
-    rows = conn.execute("""
-        SELECT id, timestamp, dataset, preset, intervention, seed
-        FROM experiments ORDER BY id DESC
-    """).fetchall()
+    where_clauses: list[str] = []
+    params: list[object] = []
+    if batch_id:
+        where_clauses.append("batch_id = ?")
+        params.append(batch_id)
+    if status:
+        where_clauses.append("status = ?")
+        params.append(status)
+
+    source_table = VIEW_TABLES[view_name]
+    sql = f"""
+        SELECT id, timestamp, dataset, preset, intervention, seed, status,
+               batch_id, training_mode, graph_method, oom_flag
+        FROM {source_table}
+    """
+    if where_clauses:
+        sql += " WHERE " + " AND ".join(where_clauses)
+    sql += " ORDER BY id DESC"
+
+    rows = conn.execute(sql, params).fetchall()
 
     if not rows:
         print("No experiments found.")
         return
 
     print(
-        f"{'ID':>4} | {'Timestamp':<20} | {'Dataset':<15} | {'Preset':<12} | {'Intervention':<12} | Seed"
+        f"{'ID':>4} | {'Status':<10} | {'Dataset':<14} | {'Preset':<12} | {'Mode':<10} | {'Graph':<8} | {'Batch':<14} | Seed"
     )
     print("-" * 80)
     for row in rows:
+        batch_label = row[7] or "-"
+        if len(batch_label) > 14:
+            batch_label = f"{batch_label[:11]}..."
+        status_label = row[6] or ("oom" if row[10] else "unknown")
         print(
-            f"{row[0]:>4} | {row[1][:20]:<20} | {row[2] or '-':<15} | {row[3] or '-':<12} | {row[4] or '-':<12} | {row[5] or '-'}"
+            f"{row[0]:>4} | {status_label:<10} | {row[2] or '-':<14} | {row[3] or '-':<12} | {row[8] or '-':<10} | {row[9] or '-':<8} | {batch_label:<14} | {row[5] or '-'}"
         )
 
 
-def show_experiment(conn, exp_id):
+def show_experiment(conn: sqlite3.Connection, exp_id: int) -> None:
     """Show experiment details."""
     row = conn.execute(
         """
-        SELECT id, timestamp, dataset, preset, intervention, config_json, seed
+        SELECT id, timestamp, dataset, preset, intervention, config_json, seed,
+               status, failure_reason, oom_flag, batch_id, gpu_name, gpu_vram_gb,
+               training_mode, graph_method, updated_at
         FROM experiments WHERE id = ?
     """,
         (exp_id,),
@@ -96,6 +139,17 @@ def show_experiment(conn, exp_id):
     print(f"Preset:       {row[3] or '-'}")
     print(f"Intervention: {row[4] or '-'}")
     print(f"Seed:         {row[6] or '-'}")
+    print(f"Status:       {row[7] or '-'}")
+    print(f"Training:     {row[13] or '-'}")
+    print(f"Graph:        {row[14] or '-'}")
+    print(f"Batch ID:     {row[10] or '-'}")
+    print(f"GPU:          {row[11] or '-'}")
+    print(f"VRAM (GiB):   {row[12] if row[12] is not None else '-'}")
+    print(f"Updated:      {row[15] or '-'}")
+    if row[9]:
+        print(f"OOM Flag:     {bool(row[9])}")
+    if row[8]:
+        print(f"Failure:      {row[8]}")
     print("\nConfig:")
 
     if row[5]:
@@ -257,6 +311,18 @@ def show_bottleneck(conn, exp_id):
 
 def main():
     parser = argparse.ArgumentParser(description="Query experiment results")
+    parser.add_argument(
+        "--view",
+        choices=["all", "completed", "attention", "errors"],
+        default="all",
+        help="Select a convenience exploration view before applying any extra filters.",
+    )
+    parser.add_argument("--batch-id", help="Filter experiment list to one batch id")
+    parser.add_argument(
+        "--status",
+        choices=["running", "completed", "oom", "failed", "unknown"],
+        help="Filter experiment list by status",
+    )
     parser.add_argument("--exp", type=int, help="Show experiment details")
     parser.add_argument("--metrics", type=int, help="Show metrics for experiment")
     parser.add_argument("--profiling", type=int, help="Show profiling for experiment")
@@ -279,7 +345,12 @@ def main():
     elif args.bottleneck:
         show_bottleneck(conn, args.bottleneck)
     else:
-        list_experiments(conn)
+        list_experiments(
+            conn,
+            batch_id=args.batch_id,
+            status=args.status,
+            view_name=args.view,
+        )
 
     conn.close()
 
