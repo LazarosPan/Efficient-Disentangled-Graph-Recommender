@@ -10,6 +10,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+import gc
 import logging
 import sys
 import time
@@ -18,8 +20,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from experiments.run_experiment import build_config, run_experiment, PRESETS
+import torch
+
+from experiments.run_experiment import DB_PATH, PRESETS, build_config, run_experiment
 from src.training import THESIS_PRIMARY_METRICS
+from src.utils.experiment_logger import ExperimentLogger
 
 logger = logging.getLogger("ucagnn.benchmark")
 
@@ -35,6 +40,22 @@ DEFAULT_TRAINING_MODES = ["full_graph", "cached_propagation", "mini_batch"]
 DEFAULT_GRAPH_METHODS = ["dense", "knn", "cagra"]
 
 
+def _resolve_batch_id(provided: str | None, prefix: str) -> str:
+    """Return an explicit or generated batch id for grouped runs."""
+    if provided:
+        return provided
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{prefix}-{stamp}"
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    """Return whether an exception represents a CUDA OOM failure."""
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    message = str(exc).lower()
+    return "out of memory" in message and "cuda" in message
+
+
 def _metric_value(metrics: dict[str, float], metric_name: str) -> float:
     """Return a metric value, falling back from @50 to @20 when needed."""
     if metric_name in metrics:
@@ -45,7 +66,8 @@ def _metric_value(metrics: dict[str, float], metric_name: str) -> float:
     return 0.0
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    """Build the benchmark CLI parser."""
     parser = argparse.ArgumentParser(description="Run U-CaGNN benchmark matrix")
     parser.add_argument(
         "--tier", choices=list(TIERS.keys()), default="small", help="Dataset tier"
@@ -97,9 +119,29 @@ def main():
         help="MLflow experiment name for benchmark runs",
     )
     parser.add_argument(
+        "--batch-id",
+        default=None,
+        help="Optional batch identifier for grouping and resuming benchmark runs.",
+    )
+    parser.add_argument(
+        "--resume-batch",
+        action="store_true",
+        help="Skip benchmark items already recorded with a terminal status for this batch id.",
+    )
+    parser.add_argument(
+        "--fallback-on-oom",
+        choices=["none", "cached_propagation", "mini_batch"],
+        default="none",
+        help="Optional fallback training mode to retry after a CUDA OOM. The fallback is logged as a separate explicit run.",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="Print plan without running"
     )
-    args = parser.parse_args()
+    return parser
+
+
+def run_benchmark(args: argparse.Namespace) -> int:
+    """Execute the formal benchmark matrix from parsed arguments."""
 
     logging.basicConfig(
         level=logging.INFO,
@@ -108,6 +150,7 @@ def main():
     )
 
     datasets = TIERS[args.tier]
+    batch_id = _resolve_batch_id(args.batch_id, prefix="benchmark")
     experiments = []
     for dataset in datasets:
         for preset in args.presets:
@@ -125,6 +168,9 @@ def main():
     print(f"  Training modes: {', '.join(args.training_modes)}")
     print(f"  Graph methods: {', '.join(args.graph_methods)}")
     print(f"  Seeds: {args.seeds}")
+    print(f"  Batch ID: {batch_id}")
+    print(f"  Resume batch: {args.resume_batch}")
+    print(f"  Fallback on OOM: {args.fallback_on_oom}")
     print("=" * 70)
 
     if args.dry_run:
@@ -138,8 +184,11 @@ def main():
         return 0
 
     # Run experiments
+    tracker = ExperimentLogger(db_path=str(DB_PATH))
     completed = 0
     failed = 0
+    skipped = 0
+    fallback_completed = 0
     results = []
 
     for i, (dataset, preset, training_mode, graph_method, seed) in enumerate(
@@ -150,6 +199,44 @@ def main():
             f"[{i}/{len(experiments)}] {dataset} / {preset} / {training_mode} / {graph_method} / seed={seed}"
         )
         print("=" * 70)
+
+        existing = tracker.find_latest_batch_experiment(
+            batch_id=batch_id,
+            dataset=dataset,
+            preset=preset,
+            intervention=None,
+            seed=seed,
+            training_mode=training_mode,
+            graph_method=graph_method,
+        )
+        if (
+            args.resume_batch
+            and existing is not None
+            and existing["status"] in ExperimentLogger.TERMINAL_STATUSES
+        ):
+            skipped += 1
+            logger.info(
+                "Skipping existing batch item (exp_id=%s, status=%s)",
+                existing["id"],
+                existing["status"],
+            )
+            if existing["status"] == "completed":
+                results.append(
+                    {
+                        "dataset": dataset,
+                        "preset": preset,
+                        "training_mode": training_mode,
+                        "graph_method": graph_method,
+                        "seed": seed,
+                        "exp_id": existing["id"],
+                        "metrics": tracker.get_metrics_for_split(
+                            int(existing["id"]),
+                            split="test",
+                        ),
+                        "elapsed_s": 0.0,
+                    }
+                )
+            continue
 
         try:
             # Build a namespace matching run_experiment.build_config expectations
@@ -179,6 +266,7 @@ def main():
                 enable_mlflow=not args.no_mlflow,
                 mlflow_tracking_uri=args.mlflow_tracking_uri,
                 mlflow_experiment_name=args.mlflow_experiment_name,
+                batch_id=batch_id,
             )
             elapsed = time.time() - t0
 
@@ -201,6 +289,79 @@ def main():
             failed += 1
             logger.error(f"FAILED: {e}")
             traceback.print_exc()
+
+            if (
+                _is_cuda_oom(e)
+                and args.fallback_on_oom != "none"
+                and training_mode != args.fallback_on_oom
+            ):
+                logger.info(
+                    "Retrying batch item with fallback training_mode=%s",
+                    args.fallback_on_oom,
+                )
+                fallback_args = argparse.Namespace(
+                    dataset=dataset,
+                    recipe=None,
+                    preset=preset,
+                    seed=seed,
+                    epochs=args.epochs,
+                    batch_size=None,
+                    embed_dim=None,
+                    n_gnn_layers=None,
+                    interest_gnn_layers=None,
+                    conformity_gnn_layers=None,
+                    lr=None,
+                    eval_scoring_mode=None,
+                    scoring_weight_mode=None,
+                    use_features=None,
+                    feature_policy=None,
+                    graph_method=graph_method,
+                    training_mode=args.fallback_on_oom,
+                    num_neighbors=None,
+                    sample_interactions=args.sample_interactions,
+                    loader_max_rows=None,
+                    device=args.device,
+                    data_dir=args.data_dir,
+                    intervention=None,
+                )
+
+                try:
+                    gc.collect()
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+
+                    fallback_config = build_config(fallback_args)
+                    t0 = time.time()
+                    fallback_result = run_experiment(
+                        fallback_config,
+                        preset=preset,
+                        enable_mlflow=not args.no_mlflow,
+                        mlflow_tracking_uri=args.mlflow_tracking_uri,
+                        mlflow_experiment_name=args.mlflow_experiment_name,
+                        batch_id=batch_id,
+                    )
+                    elapsed = time.time() - t0
+                    results.append(
+                        {
+                            "dataset": dataset,
+                            "preset": preset,
+                            "training_mode": args.fallback_on_oom,
+                            "graph_method": graph_method,
+                            "seed": seed,
+                            "exp_id": fallback_result["exp_id"],
+                            "metrics": fallback_result["test_metrics"],
+                            "elapsed_s": elapsed,
+                        }
+                    )
+                    fallback_completed += 1
+                    logger.info(
+                        "Fallback completed in %.1fs (exp_id=%s)",
+                        elapsed,
+                        fallback_result["exp_id"],
+                    )
+                except Exception as fallback_exc:
+                    logger.error("Fallback FAILED: %s", fallback_exc)
+                    traceback.print_exc()
             continue
 
     # Summary
@@ -208,7 +369,9 @@ def main():
     print("BENCHMARK SUMMARY")
     print("=" * 70)
     print(f"Completed: {completed}/{len(experiments)}")
+    print(f"Fallback completed: {fallback_completed}")
     print(f"Failed: {failed}/{len(experiments)}")
+    print(f"Skipped via resume: {skipped}")
 
     if results:
         print("Note: AvgPop@20 and AvgPop@50 are lower-is-better.")
@@ -228,7 +391,15 @@ def main():
                 f"{ndcg_20:>8.4f} | {recall_20:>10.4f} | {avg_pop_20:>10.4f} | {ndcg_50:>8.4f} | {recall_50:>10.4f} | {avg_pop_50:>10.4f} | {r['elapsed_s']:.0f}s"
             )
 
+    tracker.close()
     return 0 if failed == 0 else 1
+
+
+def main() -> int:
+    """Parse CLI arguments and run the benchmark matrix."""
+    parser = build_parser()
+    args = parser.parse_args()
+    return run_benchmark(args)
 
 
 if __name__ == "__main__":

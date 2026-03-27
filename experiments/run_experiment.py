@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import gc
 import dataclasses
 from datetime import datetime, timezone
 from importlib import metadata as importlib_metadata
@@ -329,6 +330,7 @@ def _build_mlflow_tags(
     intervention: str | None,
     experiment_id: str | None,
     recipe_name: str | None,
+    batch_id: str | None,
 ) -> dict[str, str]:
     """Build compact MLflow tags without duplicating parameter columns in the UI."""
     tags = {
@@ -338,7 +340,26 @@ def _build_mlflow_tags(
         tags["experiment_id"] = experiment_id
     if recipe_name:
         tags["recipe"] = recipe_name
+    if batch_id:
+        tags["batch_id"] = batch_id
     return tags
+
+
+def _set_mlflow_status_tags(
+    mlflow_module,
+    *,
+    status: str,
+    failure_reason: str | None = None,
+    oom_flag: bool | None = None,
+) -> None:
+    """Mirror SQLite status fields into MLflow tags for easier filtering."""
+    tags = {"status": status}
+    if oom_flag is not None:
+        tags["oom_flag"] = "true" if oom_flag else "false"
+    if failure_reason:
+        tags["failure_reason"] = failure_reason[:500]
+        tags["failure_type"] = failure_reason.split(":", 1)[0]
+    mlflow_module.set_tags(tags)
 
 
 def _project_version() -> str:
@@ -374,12 +395,31 @@ def _run_started_at_utc() -> str:
     )
 
 
+def _gpu_hardware_metadata(device: str) -> tuple[str | None, float | None]:
+    """Return GPU name and VRAM size in GiB when running on CUDA."""
+    if device != "cuda" or not torch.cuda.is_available():
+        return None, None
+
+    props = torch.cuda.get_device_properties(torch.cuda.current_device())
+    return props.name, props.total_memory / float(1024**3)
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    """Return whether an exception represents a CUDA out-of-memory failure."""
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+
+    message = str(exc).lower()
+    return "out of memory" in message and "cuda" in message
+
+
 def _build_mlflow_params(
     config: UCaGNNConfig,
     preset: str | None,
     intervention: str | None,
     recipe_name: str | None,
     run_started_at_utc: str,
+    batch_id: str | None,
 ) -> dict[str, str | int | float | bool]:
     """Select compact config fields to expose as searchable MLflow params."""
     params: dict[str, str | int | float | bool] = {
@@ -416,6 +456,8 @@ def _build_mlflow_params(
         params["intervention"] = intervention
     if recipe_name:
         params["recipe"] = recipe_name
+    if batch_id:
+        params["batch_id"] = batch_id
     if config.training_mode == "mini_batch":
         params["num_neighbors"] = "-".join(str(value) for value in config.num_neighbors)
     return params
@@ -435,6 +477,7 @@ def _start_mlflow_run(
     experiment_name: str,
     run_name: str | None,
     recipe_name: str | None,
+    batch_id: str | None,
 ):
     """Start an MLflow run and log its static metadata.
 
@@ -461,11 +504,23 @@ def _start_mlflow_run(
             run_name=run_name or _build_mlflow_run_name(config, preset, intervention)
         )
         mlflow.set_tags(
-            _build_mlflow_tags(config, preset, intervention, experiment_id, recipe_name)
+            _build_mlflow_tags(
+                config,
+                preset,
+                intervention,
+                experiment_id,
+                recipe_name,
+                batch_id,
+            )
         )
         mlflow.log_params(
             _build_mlflow_params(
-                config, preset, intervention, recipe_name, run_started_at_utc
+                config,
+                preset,
+                intervention,
+                recipe_name,
+                run_started_at_utc,
+                batch_id,
             )
         )
         logger.info("MLflow tracking enabled: %s", resolved_tracking_uri)
@@ -491,6 +546,7 @@ def build_config(args: argparse.Namespace) -> UCaGNNConfig:
     recipe = get_recipe(args.recipe) if getattr(args, "recipe", None) else None
     effective_preset = getattr(args, "preset", None)
     if recipe is not None:
+        _validate_recipe_cli_conflicts(args, recipe)
         kwargs.update(recipe.get("overrides", {}))
         if effective_preset is None:
             effective_preset = recipe.get("preset")
@@ -547,6 +603,49 @@ def build_config(args: argparse.Namespace) -> UCaGNNConfig:
     return config
 
 
+def _validate_recipe_cli_conflicts(
+    args: argparse.Namespace,
+    recipe: dict[str, object],
+) -> None:
+    """Reject CLI overrides that conflict with an explicitly selected recipe.
+
+    Args:
+        args: Parsed CLI arguments.
+        recipe: Resolved recipe metadata from the experiment catalog.
+
+    Raises:
+        ValueError: If the user supplies a matrix-defining CLI flag that conflicts
+            with the selected recipe.
+    """
+    conflicts: list[str] = []
+
+    recipe_preset = recipe.get("preset")
+    cli_preset = getattr(args, "preset", None)
+    if cli_preset is not None and recipe_preset is not None and cli_preset != recipe_preset:
+        conflicts.append(
+            f"preset={cli_preset!r} conflicts with recipe preset={recipe_preset!r}"
+        )
+
+    overrides = recipe.get("overrides", {})
+    assert isinstance(overrides, dict)
+
+    for field_name in ("training_mode", "graph_method"):
+        cli_value = getattr(args, field_name, None)
+        recipe_value = overrides.get(field_name)
+        if cli_value is not None and recipe_value is not None and cli_value != recipe_value:
+            cli_flag = field_name.replace("_", "-")
+            conflicts.append(
+                f"--{cli_flag}={cli_value!r} conflicts with recipe {field_name}={recipe_value!r}"
+            )
+
+    if conflicts:
+        raise ValueError(
+            "Selected recipe conflicts with explicit CLI matrix fields: "
+            + "; ".join(conflicts)
+            + ". Use the recipe as-is, choose a different recipe alias, or drop --recipe and pass --preset with explicit matrix flags."
+        )
+
+
 def run_experiment(
     config: UCaGNNConfig,
     preset: str | None = None,
@@ -558,6 +657,7 @@ def run_experiment(
     mlflow_run_name: str | None = None,
     experiment_id: str | None = None,
     recipe_name: str | None = None,
+    batch_id: str | None = None,
     checkpoint_path: str | None = None,
     checkpoint_every: int = 1,
     auto_resume: bool = True,
@@ -642,6 +742,7 @@ def run_experiment(
     profiler = (
         GPUProfiler() if torch.cuda.is_available() and config.enable_profiling else None
     )
+    gpu_name, gpu_vram_gb = _gpu_hardware_metadata(device)
 
     # Experiment logger
     experiment_logger = ExperimentLogger(db_path=str(DB_PATH))
@@ -652,10 +753,17 @@ def run_experiment(
             config,
             preset=preset,
             intervention=intervention,
+            status="running",
+            batch_id=batch_id,
+            gpu_name=gpu_name,
+            gpu_vram_gb=gpu_vram_gb,
         )
+    else:
+        experiment_logger.update_experiment_status(exp_id, status="running")
     logger.info(f"Experiment ID: {exp_id}")
 
     if checkpoint_state is not None and checkpoint_state.get("is_complete"):
+        experiment_logger.update_experiment_status(exp_id, status="completed")
         logger.info(
             "Checkpoint already marked complete. Returning cached result from %s",
             resolved_checkpoint_path,
@@ -684,6 +792,7 @@ def run_experiment(
             experiment_name=mlflow_experiment_name,
             run_name=mlflow_run_name,
             recipe_name=recipe_name,
+            batch_id=batch_id,
         )
         _log_mlflow_resume_tags(mlflow_module, checkpoint_state)
 
@@ -763,10 +872,15 @@ def run_experiment(
                     mlflow_module.log_artifact(
                         str(checkpoint_path), artifact_path="checkpoints"
                     )
-                mlflow_module.set_tag("status", "completed")
+                _set_mlflow_status_tags(
+                    mlflow_module,
+                    status="completed",
+                    oom_flag=False,
+                )
             except Exception as exc:
                 logger.warning("Failed to log MLflow metrics or artifacts: %s", exc)
 
+        experiment_logger.update_experiment_status(exp_id, status="completed")
         mlflow_status = "FINISHED"
         return {
             "exp_id": exp_id,
@@ -778,10 +892,25 @@ def run_experiment(
             "canonical_name": canonical_name,
             "resumed": checkpoint_state is not None,
         }
-    except Exception:
+    except Exception as exc:
+        is_oom = _is_cuda_oom(exc)
+        experiment_logger.update_experiment_status(
+            exp_id,
+            status="oom" if is_oom else "failed",
+            failure_reason=f"{type(exc).__name__}: {exc}",
+            oom_flag=is_oom,
+        )
+        if is_oom and torch.cuda.is_available():
+            gc.collect()
+            torch.cuda.empty_cache()
         if mlflow_module is not None:
             try:
-                mlflow_module.set_tag("status", "failed")
+                _set_mlflow_status_tags(
+                    mlflow_module,
+                    status="oom" if is_oom else "failed",
+                    failure_reason=f"{type(exc).__name__}: {exc}",
+                    oom_flag=is_oom,
+                )
             except Exception:
                 pass
         raise

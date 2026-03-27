@@ -43,6 +43,13 @@ trainer.save_checkpoint("results/checkpoints/ucagnn_best.pt")
 - The three trainer modes keep separate epoch loops for readability and behavior isolation.
 - `src/utils/trainer_runtime.py` owns only duplicated lifecycle machinery through `TrainerRuntime`: module/device setup, optimizer creation, checkpoint save/load, profiling toggles, resume history, and early-stopping helpers.
 - Keep mode-specific semantics local to the concrete trainers: full-graph non-finite batch skipping, cached propagation `retain_graph` handling, and mini-batch subgraph/local-index behavior should not be hidden behind a generic batch callback.
+- Treat `batch_size` as an interaction-loss knob, not a full-graph VRAM knob. In `full_graph`, each batch still propagates over the same full `edge_index`; move to `cached_propagation` or `mini_batch` before tuning `batch_size` for memory.
+- `num_neighbors` is only meaningful in `mini_batch` because it controls `SubgraphSampler` fan-out. It does not change memory usage for `full_graph` or `cached_propagation`.
+- Named recipes own matrix-defining fields such as `training_mode` and `graph_method`; conflicting CLI flags should be rejected rather than silently treated as an auto-scaling mechanism.
+- Formal batch runners expose `--batch-id` and `--resume-batch` so benchmark and ablation sweeps can skip terminal rows (`completed`, `oom`, `failed`) without hiding failed feasibility cases.
+- `main.py` is now the simple formal orchestration entry point via `uv run formal-run`. It persists `results/formal_run_state.json` and is the preferred path when the user wants one command that resumes formal experiments after interruption.
+- `--fallback-on-oom` is orchestration-level only: keep the original OOM row as thesis evidence, then launch a second explicit fallback run under `cached_propagation` or `mini_batch` rather than mutating the original run identity.
+- SQLite experiment review now has three convenience views: completed runs, attention-required runs, and strict error runs. Prefer `query-results --view completed|attention|errors` over manual SQL when triaging long batches.
 
 ## What Gets Logged Automatically
 | Data | SQLite Table | Split |
@@ -83,6 +90,7 @@ trainer.save_checkpoint("results/checkpoints/ucagnn_best.pt")
 - Quick validation keeps MLflow disabled by default, so `uv run quick-validate` does not create MLflow tables or artifact files unless `--mlflow` is passed explicitly.
 - Use `scripts/preflight_experiments.py --profile fast` when you want a single smoke/preflight-style pass without the paired ablation check.
 - Use `query-results` as the supported SQLite inspection path after runs. The repository currently does not expose a supported plotting command in the main workflow.
+- `query-results` now supports `--view`, `--batch-id`, and `--status` filters for resumable benchmark and ablation inspection.
 - Keep the tiny validation CLIs locally explicit. Shared helpers should stay limited to low-level utilities such as dataset-limit lookup, timed `run_experiment()` execution, and JSON report writing; config and namespace wiring belongs in each script.
 
 ## Feature Probe Workflow

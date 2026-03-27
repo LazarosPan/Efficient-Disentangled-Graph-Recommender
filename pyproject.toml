@@ -44,6 +44,7 @@ dependencies = [
 url = "https://download.pytorch.org/whl/cu131"
 
 [project.scripts]
+formal-run = "main:main"
 experiment = "experiments.run_experiment:main"
 benchmark = "experiments.run_benchmark:main"
 ablation = "experiments.run_ablation:main"
@@ -62,6 +63,7 @@ audit-metrics = "scripts.audit_metrics:main"
 
 [tool.setuptools]
 include-package-data = false
+py-modules = ["main"]
 
 [tool.setuptools.packages.find]
 include = ["experiments*", "scripts*", "src*"]

@@ -1,8 +1,10 @@
 # Running Experiments
 
-Use `uv run experiment` for one run, `uv run benchmark` for the formal matrix, and `uv run ablation` for component-removal studies.
+Use `uv run formal-run` as the default formal experiment entry point. Use `uv run experiment` and `uv run benchmark` only when you deliberately want lower-level control.
 
-Before longer experiment runs, use `uv run quick-validate` as the single repository validation command. For resets, diagnostics, and result inspection, see `docs/usage/scripts.md`.
+The runnable examples below are smoke-sized forms that were checked against the current CLI surface.
+
+Before changing training code, use `uv run quick-validate` as the single repository validation command. For formal thesis runs, the normal workflow should start from `formal-run`. For resets, diagnostics, and result inspection, see `docs/usage/scripts.md`.
 
 ## Paths
 
@@ -24,27 +26,58 @@ results/checkpoints/            Local checkpoints
 
 ## Single Experiments
 
+## Primary Formal Workflow
+
+```bash
+uv run formal-run --version v1
+uv run formal-run --version v1 --tier all
+uv run formal-run --version v1 --fallback-on-oom mini_batch
+uv run formal-run --resume-latest
+uv run formal-run --new-run --version v2
+```
+
+- `formal-run` is the easiest way to launch the full formal matrix.
+- Re-running the same `--version` resumes from where that batch stopped.
+- `--resume-latest` reuses the last saved formal-run state from `results/formal_run_state.json`.
+- `--new-run` forces a fresh version even if a resumable state file already exists.
+- `--restart` starts the selected version from the beginning under a fresh batch id, instead of reusing the old one.
+- The wrapper still uses the benchmark runner underneath, so failed runs are logged and the matrix continues to the next item.
+
+## Low-Level Single Experiments
+
 ```bash
 uv run experiment --list-recipes
-uv run experiment --dataset movielens1m --recipe full_full_graph_cagra
-uv run experiment --dataset taobao --recipe cached_cagra --epochs 30 --batch-size 512
-uv run experiment --dataset amazonbook --recipe full --sample-interactions 10000 --epochs 1
-uv run experiment --dataset kuairec_v2 --recipe mini_batch_knn --no-mlflow
-uv run experiment --dataset movielens1m --recipe full --no-auto-resume
-uv run experiment --dataset movielens1m --recipe full --mlflow-experiment-name ucagnn-debug
-uv run experiment --dataset movielens1m --recipe full --mlflow-tracking-uri "sqlite:///$PWD/results/mlflow.db"
+uv run experiment --dataset movielens1m --recipe full --sample-interactions 100 --loader-max-rows 100 --epochs 1 --device cpu --no-mlflow
+uv run experiment --dataset movielens1m --recipe cached --sample-interactions 100 --loader-max-rows 100 --epochs 1 --batch-size 128 --device cpu --no-mlflow
+uv run experiment --dataset amazonbook --recipe mini_batch --sample-interactions 100 --loader-max-rows 100 --epochs 1 --device cpu --no-mlflow
+uv run experiment --dataset kuairec_v2 --recipe mini_batch --num-neighbors 25 10 --epochs 1 --no-mlflow
+uv run experiment --dataset kuairec_v2 --preset full --training-mode mini_batch --graph-method knn --num-neighbors 25 10 --epochs 1 --no-mlflow
+uv run experiment --dataset movielens1m --recipe full --sample-interactions 100 --loader-max-rows 100 --epochs 1 --device cpu --no-auto-resume --no-mlflow
+uv run experiment --dataset movielens1m --recipe full --sample-interactions 100 --loader-max-rows 100 --epochs 1 --device cpu --mlflow-experiment-name ucagnn-debug
+uv run experiment --dataset movielens1m --recipe full --sample-interactions 100 --loader-max-rows 100 --epochs 1 --device cpu --mlflow-tracking-uri "sqlite:///$PWD/results/mlflow.db"
 ```
 
 - `--recipe` is the normal way to choose a known experiment path.
+- Recipes own the matrix-defining fields they declare. If you select `--recipe full`, conflicting `--training-mode` or `--graph-method` flags are rejected instead of being silently ignored.
 - `--sample-interactions` is for smoke checks and preflight-style runs, not thesis metrics.
+- `--loader-max-rows` is useful when you want the dataset loader itself to stay in smoke-test territory.
 - `--no-auto-resume` forces a fresh run even if a matching checkpoint already exists.
+
+## Large Graph Guidance
+
+- `batch_size` is not the main VRAM control for `full_graph`. The full graph is propagated on every forward pass, so shrinking `batch_size` does not remove the propagation spike.
+- For large datasets, use an explicit scalable path: `--recipe mini_batch`, `--recipe cached`, or `--preset ... --training-mode ... --graph-method ...`.
+- `--num-neighbors` only affects `mini_batch` mode. It is ignored by `full_graph` and `cached_propagation`.
+- For thesis-scale comparisons, keep `training_mode` explicit in the command, recipe, and resulting canonical run name rather than relying on hardware-specific auto-tuning.
 
 ## Benchmark Matrix
 
+`benchmark` still exists, but it is now the lower-level interface behind `formal-run`.
+
 ```bash
 uv run benchmark --tier small --dry-run  # Preview plan
-uv run benchmark --tier small            # Execute
-uv run benchmark --tier small --presets full --training-modes full_graph cached_propagation --seeds 42
+uv run benchmark --tier small --presets full --training-modes full_graph --graph-methods dense --seeds 42 --epochs 1 --sample-interactions 100 --device cpu --no-mlflow
+uv run benchmark --tier small --presets full --training-modes full_graph --graph-methods dense --seeds 42 --epochs 1 --sample-interactions 100 --device cpu --batch-id smoke-bench --resume-batch --no-mlflow
 ```
 
 `benchmark` uses the same tracking defaults as `experiment`.
@@ -52,18 +85,33 @@ Default MLflow experiment name: `ucagnn-benchmark`.
 
 - Use `--dry-run` first when you are changing orchestration flags.
 - The formal matrix is `dataset × preset × training_mode × graph_method × seed`.
+- `--batch-id` groups a long benchmark run into one resumable batch record in SQLite.
+- `--resume-batch` skips matrix items that already reached a terminal state (`completed`, `oom`, or `failed`) for that batch.
+- `--fallback-on-oom cached_propagation` or `--fallback-on-oom mini_batch` records the original OOM run first, then launches a second explicit fallback run instead of mutating the failing run in place.
 
 ## Ablations
 
+`ablation` is a secondary study command, not the main thesis workflow.
+
 ```bash
-uv run ablation --dataset movielens1m
 uv run ablation --dataset movielens1m --dry-run
+uv run ablation --dataset movielens1m --variants full --epochs 1 --sample-interactions 100 --loader-max-rows 100 --device cpu --no-mlflow
+uv run ablation --dataset movielens1m --variants full --epochs 1 --sample-interactions 100 --loader-max-rows 100 --device cpu --batch-id smoke-ablation --resume-batch --no-mlflow
 ```
 
 `ablation` uses the same tracking defaults as `experiment`.
 Default MLflow experiment name: `ucagnn-ablation`.
 
 - Use `--dry-run` to inspect planned variants before starting the run.
+- `--batch-id`, `--resume-batch`, and `--fallback-on-oom` behave the same way as in `benchmark`, but at the ablation-variant level.
+
+## Long-Run Resume Policy
+
+- Batch resume is orchestration-level, not checkpoint-level mutation. A run that OOMs remains logged as `status=oom` so the thesis record keeps the feasibility evidence.
+- Explicit fallback is a second run with a different `training_mode`, not a hidden retry inside the original experiment identity.
+- `formal-run` persists the latest formal batch configuration to `results/formal_run_state.json`, so a restart after a stopped process or powered-off machine can reuse the same batch plan.
+- Use `uv run query-results --view completed` for the clean finished list, `uv run query-results --view attention` for anything that still needs attention, and `uv run query-results --view errors` for the strict failed/OOM list.
+- Add `--batch-id <id>` when you want the same exploration flow scoped to one benchmark or ablation batch.
 
 ## MLflow Tracking
 
@@ -103,12 +151,17 @@ After runs finish, inspect the SQLite record with:
 
 ```bash
 uv run query-results
+uv run query-results --view completed
+uv run query-results --view attention
+uv run query-results --view errors
+uv run query-results --batch-id smoke-bench
+uv run query-results --status oom
 uv run query-results --exp 12
 uv run query-results --metrics 12
 uv run query-results --profiling 12
 ```
 
-The supported workflow is SQLite-first inspection through `query-results`. There is currently no supported plotting command in the main workflow.
+The supported workflow is SQLite-first inspection through `query-results`. The SQLite database now exposes convenience views for completed runs, attention-required runs, and strict error runs, and MLflow mirrors the same status/failure metadata through searchable tags. There is currently no supported plotting command in the main workflow.
 
 ### Run Identification
 
