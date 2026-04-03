@@ -28,15 +28,11 @@ REPO_ROOT = Path(__file__).parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from src.utils.experiment_logger import ExperimentLogger
+
 
 DB_PATH = REPO_ROOT / "results" / "thesis_experiments.db"
-
-VIEW_TABLES = {
-    "all": "experiments",
-    "completed": "experiment_completed_summary",
-    "attention": "experiment_attention_summary",
-    "errors": "experiment_error_summary",
-}
+VIEW_TABLES = ExperimentLogger.VIEW_TABLES
 
 
 def connect():
@@ -50,8 +46,6 @@ def connect():
             "The verify scripts use temporary .db files and remove them when they finish."
         )
         sys.exit(1)
-
-    from src.utils.experiment_logger import ExperimentLogger
 
     migrator = ExperimentLogger(db_path=str(DB_PATH))
     migrator.close()
@@ -100,17 +94,21 @@ def list_experiments(
         print("No experiments found.")
         return
 
+    profile_width = 28
     print(
-        f"{'ID':>4} | {'Status':<10} | {'Dataset':<14} | {'Preset':<12} | {'Profile':<8} | {'Mode':<18} | {'Graph':<8} | {'Batch':<22} | Seed"
+        f"{'ID':>4} | {'Status':<10} | {'Dataset':<14} | {'Preset':<12} | {'Profile':<{profile_width}} | {'Mode':<18} | {'Graph':<8} | {'Batch':<22} | Seed"
     )
-    print("-" * 126)
+    print("-" * (146 + profile_width - 8))
     for row in rows:
         batch_label = row["batch_id"] or "-"
         if len(batch_label) > 22:
             batch_label = f"{batch_label[:19]}..."
+        profile_label = row["profile_name"] or "-"
+        if len(profile_label) > profile_width:
+            profile_label = f"{profile_label[: profile_width - 3]}..."
         status_label = row["status"] or ("oom" if row["oom_flag"] else "unknown")
         print(
-            f"{row['id']:>4} | {status_label:<10} | {row['dataset'] or '-':<14} | {row['preset'] or '-':<12} | {row['profile_name'] or '-':<8} | {row['training_mode'] or '-':<18} | {row['graph_method'] or '-':<8} | {batch_label:<22} | {row['seed'] or '-'}"
+            f"{row['id']:>4} | {status_label:<10} | {row['dataset'] or '-':<14} | {row['preset'] or '-':<12} | {profile_label:<{profile_width}} | {row['training_mode'] or '-':<18} | {row['graph_method'] or '-':<8} | {batch_label:<22} | {row['seed'] or '-'}"
         )
 
 

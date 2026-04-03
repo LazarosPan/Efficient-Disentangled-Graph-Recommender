@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Delete the repository-local MLflow state and checkpoint artifacts."""
+"""Delete repository-local experiment artifacts and generated run-state files."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).parent.parent
 RESULTS_DIR = REPO_ROOT / "results"
 MLFLOW_DB_PATH = RESULTS_DIR / "mlflow.db"
+FORMAL_RUN_STATE_PATH = RESULTS_DIR / "formal_run_state.json"
 MLFLOW_ARTIFACTS_DIR = REPO_ROOT / "mlruns"
 CHECKPOINT_DIR = RESULTS_DIR / "checkpoints"
 
@@ -29,6 +30,12 @@ TARGETS = (
         path=MLFLOW_DB_PATH,
         kind="file",
         description="Delete the MLflow backend SQLite database file under results/.",
+    ),
+    CleanupTarget(
+        label="formal-run-state",
+        path=FORMAL_RUN_STATE_PATH,
+        kind="file",
+        description="Delete the generated formal-run resume state JSON under results/.",
     ),
     CleanupTarget(
         label="mlflow-artifacts",
@@ -53,7 +60,7 @@ def iter_sidecar_paths(path: Path) -> list[Path]:
 
 def print_plan(selected: tuple[CleanupTarget, ...]) -> None:
     print("=" * 72)
-    print("RESET MLFLOW AND ARTIFACTS")
+    print("RESET EXPERIMENT ARTIFACTS")
     print("=" * 72)
     for target in selected:
         exists = target.path.exists()
@@ -92,7 +99,7 @@ def main() -> int:
         else:
             delete_directory_target(target.path)
 
-    print("MLflow reset complete.")
+    print("Experiment artifact cleanup complete.")
     return 0
 
 

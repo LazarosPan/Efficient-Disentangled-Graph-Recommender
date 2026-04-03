@@ -2,15 +2,34 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import time
 from pathlib import Path
 from typing import Any
 
+import torch
+
 from experiments.run_experiment import run_experiment
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
+_TINY_SAMPLE_INTERACTIONS = {
+    "amazonbook": 100,
+    "movielens1m": 100,
+    "movielens20m": 100,
+    "kuairec_v2": 100,
+    "taobao": 100,
+    "kuairand1k": 100,
+}
+_TINY_LOADER_MAX_ROWS = {
+    "amazonbook": 100,
+    "movielens1m": 100,
+    "movielens20m": 100,
+    "kuairec_v2": 100,
+    "taobao": 100,
+    "kuairand1k": 100,
+}
 
 
 def dataset_limit(
@@ -30,6 +49,47 @@ def dataset_limit(
         The dataset-specific override when present, otherwise the fallback.
     """
     return int(overrides.get(dataset, default))
+
+
+def tiny_sample_interactions(dataset: str, *, default: int = 100) -> int:
+    """Return the shared tiny-run interaction budget for a dataset."""
+    return dataset_limit(dataset, _TINY_SAMPLE_INTERACTIONS, default=default)
+
+
+def tiny_loader_max_rows(dataset: str, *, default: int = 100) -> int:
+    """Return the shared tiny-run loader row cap for a dataset."""
+    return dataset_limit(dataset, _TINY_LOADER_MAX_ROWS, default=default)
+
+
+def default_runtime_device() -> str:
+    """Return the preferred execution device for smoke and utility scripts."""
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def resolve_batch_id(provided: str | None, prefix: str) -> str:
+    """Return an explicit or generated batch id for grouped runs."""
+    if provided:
+        return provided
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"{prefix}-{stamp}"
+
+
+def is_cuda_oom(exc: BaseException) -> bool:
+    """Return whether an exception represents a CUDA OOM failure."""
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    message = str(exc).lower()
+    return "out of memory" in message and "cuda" in message
+
+
+def metric_value(metrics: dict[str, float], metric_name: str) -> float:
+    """Return a metric value, falling back from @40 to @20 when needed."""
+    if metric_name in metrics:
+        return metrics[metric_name]
+    if metric_name.endswith("@40"):
+        fallback = metric_name.replace("@40", "@20")
+        return metrics.get(fallback, 0.0)
+    return 0.0
 
 
 def timed_run_experiment(

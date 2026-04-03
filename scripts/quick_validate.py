@@ -22,7 +22,14 @@ import torch
 from experiments.ablation_configs import ABLATION_VARIANTS, make_ablation_config
 from experiments.recipes import get_recipe, load_experiment_catalog
 from experiments.run_experiment import MLFLOW_DB_PATH, build_config, run_experiment
-from scripts._workflow_helpers import dataset_limit, timed_run_experiment
+from scripts._workflow_helpers import (
+    default_runtime_device,
+    timed_run_experiment,
+    tiny_loader_max_rows,
+    tiny_sample_interactions,
+)
+from src.data.feature_policy import supports_feature_utility
+from src.utils.config import DEFAULT_SEED
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -40,28 +47,8 @@ DEFAULT_CATEGORIES = ["recipes", "ablations", "observability", "evaluation"]
 DEFAULT_EVAL_MODES = [
     "default",
     "interest_only",
-    "conformity_only",
-    "counterfactual_only",
     "conformity_suppressed",
 ]
-
-TINY_LOADER_MAX_ROWS = {
-    "amazonbook": 100,
-    "movielens1m": 100,
-    "movielens20m": 100,
-    "kuairec_v2": 100,
-    "taobao": 100,
-    "kuairand1k": 100,
-}
-
-TINY_SAMPLE_INTERACTIONS = {
-    "amazonbook": 100,
-    "movielens1m": 100,
-    "movielens20m": 100,
-    "kuairec_v2": 100,
-    "taobao": 100,
-    "kuairand1k": 100,
-}
 
 
 def parse_args() -> argparse.Namespace:
@@ -91,8 +78,6 @@ def parse_args() -> argparse.Namespace:
         help="Optional ablation-variant filter",
     )
     parser.add_argument("--data-dir", default="data", help="Data directory")
-    parser.add_argument("--device", default="cuda", help="Execution device")
-    parser.add_argument("--seed", type=int, default=13, help="Random seed")
     parser.add_argument(
         "--epochs", type=int, default=1, help="Epochs for each tiny validation run"
     )
@@ -134,7 +119,7 @@ def _build_run_namespace(
         dataset=dataset,
         recipe=recipe,
         preset=preset,
-        seed=args.seed,
+        seed=DEFAULT_SEED,
         epochs=args.epochs,
         batch_size=args.batch_size,
         embed_dim=None,
@@ -151,7 +136,7 @@ def _build_run_namespace(
         num_neighbors=num_neighbors,
         sample_interactions=sample_interactions,
         loader_max_rows=loader_max_rows,
-        device=args.device,
+        device=default_runtime_device(),
         data_dir=args.data_dir,
         intervention=intervention,
     )
@@ -165,6 +150,9 @@ def _build_runtime_config(
     profiling_cadence: int | None = None,
 ):
     config = build_config(namespace)
+    # Disable torch.compile for smoke tests: 1-epoch runs don't benefit
+    # and running many configs in one process hits the recompile limit.
+    config.use_torch_compile = False
     if patience is not None:
         config.patience = patience
     if enable_profiling is not None:
@@ -231,9 +219,9 @@ def _assert_ranking_metrics(test_metrics: dict[str, float]) -> None:
         "NDCG@20",
         "Recall@20",
         "AveragePopularity@20",
-        "NDCG@50",
-        "Recall@50",
-        "AveragePopularity@50",
+        "NDCG@40",
+        "Recall@40",
+        "AveragePopularity@40",
     )
     for metric_name in required_metric_names:
         if metric_name not in test_metrics:
@@ -321,12 +309,8 @@ def _run_recipe_category(args: argparse.Namespace, results: list[dict]) -> None:
                 args,
                 dataset,
                 recipe=recipe_name,
-                sample_interactions=dataset_limit(
-                    dataset, TINY_SAMPLE_INTERACTIONS, default=100
-                ),
-                loader_max_rows=dataset_limit(
-                    dataset, TINY_LOADER_MAX_ROWS, default=100
-                ),
+                sample_interactions=tiny_sample_interactions(dataset),
+                loader_max_rows=tiny_loader_max_rows(dataset),
             )
             config = _build_runtime_config(
                 namespace,
@@ -385,17 +369,13 @@ def _run_ablation_category(args: argparse.Namespace, results: list[dict]) -> Non
                 variant,
                 dataset=dataset,
                 data_dir=args.data_dir,
-                seed=args.seed,
-                device=args.device,
+                device=default_runtime_device(),
                 epochs=args.epochs,
                 batch_size=args.batch_size,
-                sample_interactions=dataset_limit(
-                    dataset, TINY_SAMPLE_INTERACTIONS, default=100
-                ),
-                loader_max_rows=dataset_limit(
-                    dataset, TINY_LOADER_MAX_ROWS, default=100
-                ),
+                sample_interactions=tiny_sample_interactions(dataset),
+                loader_max_rows=tiny_loader_max_rows(dataset),
             )
+            config.use_torch_compile = False
             config.patience = 1
             config.enable_profiling = False
             config.profiling_cadence = 1
@@ -406,7 +386,7 @@ def _run_ablation_category(args: argparse.Namespace, results: list[dict]) -> Non
                     dataset=dataset,
                     label=label,
                     config=config,
-                    preset="full",
+                    preset="ucagnn",
                     intervention=f"quick_ablation_{variant}",
                 )
                 results.append(
@@ -437,238 +417,232 @@ def _run_ablation_category(args: argparse.Namespace, results: list[dict]) -> Non
 
 
 def _run_observability_category(args: argparse.Namespace, results: list[dict]) -> None:
-    probe_dataset = _representative_dataset(
-        args.datasets, ["movielens1m", "kuairec_v2", "amazonbook"]
-    )
-    feature_dataset = _representative_dataset(
-        args.datasets, ["kuairec_v2", "kuairand1k", "movielens1m"]
-    )
-
     profiling_recipes = [
-        "full_full_graph_dense",
-        "full_cached_propagation_cagra",
-        "full_mini_batch_knn",
+        "ucagnn",
+        "ucagnn_knn",
     ]
+    feature_datasets = [
+        dataset for dataset in args.datasets if supports_feature_utility(dataset)
+    ]
+    print(
+        "Observability coverage: "
+        f"{len(args.datasets)} datasets x {len(profiling_recipes)} profiling probes, "
+        f"{len(feature_datasets)} feature probes, "
+        f"{len(args.datasets)} resume probes"
+    )
     if not torch.cuda.is_available():
-        for recipe_name in profiling_recipes:
-            label = f"profiling:{recipe_name}"
-            results.append(
-                {
-                    "status": "skip",
-                    "category": "observability",
-                    "dataset": probe_dataset,
-                    "label": label,
-                    "elapsed": 0.0,
-                    "detail": "CUDA unavailable",
-                }
-            )
-            _print_case(
-                "SKIP", "observability", probe_dataset, label, 0.0, "CUDA unavailable"
-            )
-    else:
-        for recipe_name in profiling_recipes:
-            recipe = get_recipe(recipe_name)
-            namespace = _build_run_namespace(
-                args,
-                probe_dataset,
-                recipe=recipe_name,
-                sample_interactions=dataset_limit(
-                    probe_dataset, TINY_SAMPLE_INTERACTIONS, default=100
-                ),
-                loader_max_rows=dataset_limit(
-                    probe_dataset, TINY_LOADER_MAX_ROWS, default=100
-                ),
-            )
-            config = _build_runtime_config(
-                namespace,
-                patience=1,
-                enable_profiling=True,
-                profiling_cadence=1,
-            )
-            label = f"profiling:{recipe_name}"
-            try:
-                _, elapsed = _run_single_case(
-                    category="observability",
-                    dataset=probe_dataset,
-                    label=label,
-                    config=config,
-                    preset=recipe.get("preset"),
-                    intervention=f"quick_profile_{recipe_name}",
-                    recipe_name=recipe_name,
-                    expect_logging=True,
-                    expect_profiling=True,
-                )
+        for dataset in args.datasets:
+            for recipe_name in profiling_recipes:
+                label = f"profiling:{recipe_name}"
                 results.append(
                     {
-                        "status": "pass",
+                        "status": "skip",
                         "category": "observability",
-                        "dataset": probe_dataset,
-                        "label": label,
-                        "elapsed": elapsed,
-                    }
-                )
-                _print_case("OK", "observability", probe_dataset, label, elapsed)
-            except Exception as exc:
-                results.append(
-                    {
-                        "status": "fail",
-                        "category": "observability",
-                        "dataset": probe_dataset,
+                        "dataset": dataset,
                         "label": label,
                         "elapsed": 0.0,
-                        "detail": str(exc),
+                        "detail": "CUDA unavailable",
                     }
                 )
                 _print_case(
-                    "FAIL", "observability", probe_dataset, label, 0.0, str(exc)
+                    "SKIP", "observability", dataset, label, 0.0, "CUDA unavailable"
                 )
-                if args.fail_fast:
-                    return
+    else:
+        for dataset in args.datasets:
+            for recipe_name in profiling_recipes:
+                recipe = get_recipe(recipe_name)
+                namespace = _build_run_namespace(
+                    args,
+                    dataset,
+                    recipe=recipe_name,
+                    sample_interactions=tiny_sample_interactions(dataset),
+                    loader_max_rows=tiny_loader_max_rows(dataset),
+                )
+                config = _build_runtime_config(
+                    namespace,
+                    patience=1,
+                    enable_profiling=True,
+                    profiling_cadence=1,
+                )
+                label = f"profiling:{recipe_name}"
+                try:
+                    _, elapsed = _run_single_case(
+                        category="observability",
+                        dataset=dataset,
+                        label=label,
+                        config=config,
+                        preset=recipe.get("preset"),
+                        intervention=f"quick_profile_{recipe_name}",
+                        recipe_name=recipe_name,
+                        expect_logging=True,
+                        expect_profiling=True,
+                    )
+                    results.append(
+                        {
+                            "status": "pass",
+                            "category": "observability",
+                            "dataset": dataset,
+                            "label": label,
+                            "elapsed": elapsed,
+                        }
+                    )
+                    _print_case("OK", "observability", dataset, label, elapsed)
+                except Exception as exc:
+                    results.append(
+                        {
+                            "status": "fail",
+                            "category": "observability",
+                            "dataset": dataset,
+                            "label": label,
+                            "elapsed": 0.0,
+                            "detail": str(exc),
+                        }
+                    )
+                    _print_case("FAIL", "observability", dataset, label, 0.0, str(exc))
+                    if args.fail_fast:
+                        return
 
-    feature_recipe = "full_full_graph_knn"
-    feature_namespace = _build_run_namespace(
-        args,
-        feature_dataset,
-        recipe=feature_recipe,
-        use_features=True,
-        sample_interactions=dataset_limit(
-            feature_dataset, TINY_SAMPLE_INTERACTIONS, default=100
-        ),
-        loader_max_rows=dataset_limit(
-            feature_dataset, TINY_LOADER_MAX_ROWS, default=100
-        ),
-    )
-    feature_config = _build_runtime_config(
-        feature_namespace,
-        patience=1,
-        enable_profiling=False,
-        profiling_cadence=1,
-    )
-    feature_label = "features:full_full_graph_knn"
-    try:
-        _, elapsed = _run_single_case(
-            category="observability",
-            dataset=feature_dataset,
-            label=feature_label,
-            config=feature_config,
-            preset="full",
-            intervention="quick_features",
-            recipe_name=feature_recipe,
-            expect_logging=True,
-            expect_metrics=True,
+    feature_recipe = "ucagnn"
+    feature_label = "features:ucagnn"
+    for dataset in feature_datasets:
+        feature_namespace = _build_run_namespace(
+            args,
+            dataset,
+            recipe=feature_recipe,
+            use_features=True,
+            sample_interactions=tiny_sample_interactions(dataset),
+            loader_max_rows=tiny_loader_max_rows(dataset),
         )
-        results.append(
-            {
-                "status": "pass",
-                "category": "observability",
-                "dataset": feature_dataset,
-                "label": feature_label,
-                "elapsed": elapsed,
-            }
+        feature_config = _build_runtime_config(
+            feature_namespace,
+            patience=1,
+            enable_profiling=False,
+            profiling_cadence=1,
         )
-        _print_case("OK", "observability", feature_dataset, feature_label, elapsed)
-    except Exception as exc:
-        results.append(
-            {
-                "status": "fail",
-                "category": "observability",
-                "dataset": feature_dataset,
-                "label": feature_label,
-                "elapsed": 0.0,
-                "detail": str(exc),
-            }
-        )
-        _print_case(
-            "FAIL", "observability", feature_dataset, feature_label, 0.0, str(exc)
-        )
-        if args.fail_fast:
-            return
+        try:
+            _, elapsed = _run_single_case(
+                category="observability",
+                dataset=dataset,
+                label=feature_label,
+                config=feature_config,
+                preset="ucagnn",
+                intervention="quick_features",
+                recipe_name=feature_recipe,
+                expect_logging=True,
+                expect_metrics=True,
+            )
+            results.append(
+                {
+                    "status": "pass",
+                    "category": "observability",
+                    "dataset": dataset,
+                    "label": feature_label,
+                    "elapsed": elapsed,
+                }
+            )
+            _print_case("OK", "observability", dataset, feature_label, elapsed)
+        except Exception as exc:
+            results.append(
+                {
+                    "status": "fail",
+                    "category": "observability",
+                    "dataset": dataset,
+                    "label": feature_label,
+                    "elapsed": 0.0,
+                    "detail": str(exc),
+                }
+            )
+            _print_case("FAIL", "observability", dataset, feature_label, 0.0, str(exc))
+            if args.fail_fast:
+                return
 
-    checkpoint_path = (
-        PROJECT_ROOT / "results" / "checkpoints" / "quick_validate_resume_probe.pt"
-    )
-    checkpoint_path.unlink(missing_ok=True)
-    resume_namespace = _build_run_namespace(
-        args,
-        probe_dataset,
-        recipe="full_full_graph_dense",
-        sample_interactions=dataset_limit(
-            probe_dataset, TINY_SAMPLE_INTERACTIONS, default=100
-        ),
-        loader_max_rows=dataset_limit(probe_dataset, TINY_LOADER_MAX_ROWS, default=100),
-    )
-    resume_config = _build_runtime_config(
-        resume_namespace,
-        patience=1,
-        enable_profiling=False,
-        profiling_cadence=1,
-    )
-    resume_label = "checkpoint-resume:full_full_graph_dense"
-    try:
-        _, first_elapsed = _run_single_case(
-            category="observability",
-            dataset=probe_dataset,
-            label=resume_label,
-            config=resume_config,
-            preset="full",
-            intervention="quick_resume_probe",
-            recipe_name="full_full_graph_dense",
-            save_checkpoint=True,
-            enable_mlflow=args.mlflow,
-            auto_resume=False,
-            checkpoint_path=str(checkpoint_path),
-            expect_logging=True,
-            expect_metrics=True,
-            expect_mlflow_db_touch=args.mlflow,
+    resume_label = "checkpoint-resume:ucagnn"
+    for dataset in args.datasets:
+        checkpoint_path = (
+            PROJECT_ROOT
+            / "results"
+            / "checkpoints"
+            / f"quick_validate_resume_probe_{dataset}.pt"
         )
-        second_started = time.perf_counter()
-        resumed_result = run_experiment(
-            resume_config,
-            preset="full",
-            intervention="quick_resume_probe",
-            save_checkpoint=True,
-            enable_mlflow=False,
-            mlflow_experiment_name="ucagnn-quick-validate",
-            recipe_name="full_full_graph_dense",
-            checkpoint_path=str(checkpoint_path),
-            checkpoint_every=1,
-            auto_resume=True,
-        )
-        second_elapsed = time.perf_counter() - second_started
-        if not resumed_result.get("resumed"):
-            raise AssertionError("Auto-resume probe did not report resumed=True")
-        results.append(
-            {
-                "status": "pass",
-                "category": "observability",
-                "dataset": probe_dataset,
-                "label": resume_label,
-                "elapsed": first_elapsed + second_elapsed,
-            }
-        )
-        _print_case(
-            "OK",
-            "observability",
-            probe_dataset,
-            resume_label,
-            first_elapsed + second_elapsed,
-        )
-    except Exception as exc:
-        results.append(
-            {
-                "status": "fail",
-                "category": "observability",
-                "dataset": probe_dataset,
-                "label": resume_label,
-                "elapsed": 0.0,
-                "detail": str(exc),
-            }
-        )
-        _print_case("FAIL", "observability", probe_dataset, resume_label, 0.0, str(exc))
-        if args.fail_fast:
-            return
-    finally:
         checkpoint_path.unlink(missing_ok=True)
+        resume_namespace = _build_run_namespace(
+            args,
+            dataset,
+            recipe="ucagnn",
+            sample_interactions=tiny_sample_interactions(dataset),
+            loader_max_rows=tiny_loader_max_rows(dataset),
+        )
+        resume_config = _build_runtime_config(
+            resume_namespace,
+            patience=1,
+            enable_profiling=False,
+            profiling_cadence=1,
+        )
+        try:
+            _, first_elapsed = _run_single_case(
+                category="observability",
+                dataset=dataset,
+                label=resume_label,
+                config=resume_config,
+                preset="ucagnn",
+                intervention="quick_resume_probe",
+                recipe_name="ucagnn",
+                save_checkpoint=True,
+                enable_mlflow=args.mlflow,
+                auto_resume=False,
+                checkpoint_path=str(checkpoint_path),
+                expect_logging=True,
+                expect_metrics=True,
+                expect_mlflow_db_touch=args.mlflow,
+            )
+            second_started = time.perf_counter()
+            resumed_result = run_experiment(
+                resume_config,
+                preset="ucagnn",
+                intervention="quick_resume_probe",
+                save_checkpoint=True,
+                enable_mlflow=False,
+                mlflow_experiment_name="ucagnn-quick-validate",
+                recipe_name="ucagnn",
+                checkpoint_path=str(checkpoint_path),
+                checkpoint_every=1,
+                auto_resume=True,
+            )
+            second_elapsed = time.perf_counter() - second_started
+            if not resumed_result.get("resumed"):
+                raise AssertionError("Auto-resume probe did not report resumed=True")
+            results.append(
+                {
+                    "status": "pass",
+                    "category": "observability",
+                    "dataset": dataset,
+                    "label": resume_label,
+                    "elapsed": first_elapsed + second_elapsed,
+                }
+            )
+            _print_case(
+                "OK",
+                "observability",
+                dataset,
+                resume_label,
+                first_elapsed + second_elapsed,
+            )
+        except Exception as exc:
+            results.append(
+                {
+                    "status": "fail",
+                    "category": "observability",
+                    "dataset": dataset,
+                    "label": resume_label,
+                    "elapsed": 0.0,
+                    "detail": str(exc),
+                }
+            )
+            _print_case("FAIL", "observability", dataset, resume_label, 0.0, str(exc))
+            if args.fail_fast:
+                return
+        finally:
+            checkpoint_path.unlink(missing_ok=True)
 
 
 def _run_evaluation_category(args: argparse.Namespace, results: list[dict]) -> None:
@@ -679,14 +653,10 @@ def _run_evaluation_category(args: argparse.Namespace, results: list[dict]) -> N
         namespace = _build_run_namespace(
             args,
             eval_dataset,
-            recipe="full_full_graph_knn",
+            recipe="ucagnn_knn",
             eval_scoring_mode=mode,
-            sample_interactions=dataset_limit(
-                eval_dataset, TINY_SAMPLE_INTERACTIONS, default=100
-            ),
-            loader_max_rows=dataset_limit(
-                eval_dataset, TINY_LOADER_MAX_ROWS, default=100
-            ),
+            sample_interactions=tiny_sample_interactions(eval_dataset),
+            loader_max_rows=tiny_loader_max_rows(eval_dataset),
         )
         config = _build_runtime_config(
             namespace,
@@ -701,9 +671,9 @@ def _run_evaluation_category(args: argparse.Namespace, results: list[dict]) -> N
                 dataset=eval_dataset,
                 label=label,
                 config=config,
-                preset="full",
+                preset="ucagnn",
                 intervention=f"quick_eval_{mode}",
-                recipe_name="full_full_graph_knn",
+                recipe_name="ucagnn_knn",
                 expect_metrics=True,
             )
             results.append(
@@ -784,7 +754,7 @@ def main() -> int:
     print("=" * 78)
     print(f"Datasets: {', '.join(args.datasets)}")
     print(f"Categories: {', '.join(args.categories)}")
-    print(f"Epochs: {args.epochs} | Batch size: {args.batch_size} | Seed: {args.seed}")
+    print(f"Epochs: {args.epochs} | Batch size: {args.batch_size}")
     print(f"MLflow probe: {'enabled' if args.mlflow else 'disabled'}")
 
     if "recipes" in args.categories:

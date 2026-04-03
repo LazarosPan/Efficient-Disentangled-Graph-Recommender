@@ -19,9 +19,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import torch
 
-from experiments.run_experiment import _sample_canonical_interactions
-from src.data.graph_builder import build_graph
-from src.data.loaders import load_dataset
+from experiments.run_experiment import (
+    build_runtime_model,
+    load_checkpoint_payload,
+    load_runtime_data,
+)
 from src.models.ucagnn import UCaGNN
 from src.training.evaluator import Evaluator, THESIS_PRIMARY_METRICS
 from src.utils.config import UCaGNNConfig
@@ -78,59 +80,12 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _load_checkpoint(path: Path, device: str) -> dict[str, Any]:
-    """Load a checkpoint payload and validate the expected config field."""
-    checkpoint = torch.load(path, map_location=device, weights_only=False)
-    config = checkpoint.get("config")
-    if not isinstance(config, UCaGNNConfig):
-        raise TypeError(
-            "Checkpoint does not contain a UCaGNNConfig under the 'config' field."
-        )
-    return checkpoint
-
-
 def _resolve_device(config: UCaGNNConfig, override: str | None) -> str:
     """Resolve the runtime device, falling back to CPU if CUDA is unavailable."""
     requested = override or config.device
     if requested == "cuda" and not torch.cuda.is_available():
         return "cpu"
     return requested
-
-
-def _load_data(config: UCaGNNConfig):
-    """Rebuild the canonical dataset and graph that match the checkpoint config."""
-    canonical = load_dataset(
-        config.dataset,
-        config.data_dir,
-        max_rows=config.loader_max_rows,
-        include_optional_features=config.use_features,
-        feature_policy=config.feature_policy,
-    )
-    canonical = _sample_canonical_interactions(
-        canonical,
-        config.sample_interactions,
-        config.seed,
-        config.train_ratio,
-        config.val_ratio,
-    )
-    data = build_graph(canonical, config, embeddings=None)
-    return canonical, data
-
-
-def _load_model(checkpoint: dict[str, Any], canonical, data, device: str) -> UCaGNN:
-    """Instantiate the model and restore the checkpoint weights."""
-    config = checkpoint["config"]
-    model = UCaGNN(
-        canonical.n_users,
-        canonical.n_items,
-        config,
-        item_features=getattr(data, "item_features", None),
-        item_popularity=data.popularity,
-    )
-    model.load_state_dict(checkpoint["model_state"])
-    model.to(device)
-    model.eval()
-    return model
 
 
 def _mask_for_split(data, split: str):
@@ -169,13 +124,13 @@ def _print_table(split: str, results: dict[str, dict[str, float]]) -> None:
     print(f"\nSCORING MODE EVALUATION ({split})")
     print("Note: AveragePopularity is lower-is-better.")
     print(
-        f"{'Mode':<24} | {'NDCG@20':>8} | {'Recall@20':>10} | {'AvgPop@20':>10} | {'NDCG@50':>8} | {'Recall@50':>10} | {'AvgPop@50':>10}"
+        f"{'Mode':<24} | {'NDCG@20':>8} | {'Recall@20':>10} | {'AvgPop@20':>10} | {'NDCG@40':>8} | {'Recall@40':>10} | {'AvgPop@40':>10}"
     )
     print("-" * 101)
     for mode, metrics in results.items():
         print(
             f"{mode:<24} | {metrics['NDCG@20']:>8.4f} | {metrics['Recall@20']:>10.4f} | {metrics['AveragePopularity@20']:>10.4f} | "
-            f"{metrics['NDCG@50']:>8.4f} | {metrics['Recall@50']:>10.4f} | {metrics['AveragePopularity@50']:>10.4f}"
+            f"{metrics['NDCG@40']:>8.4f} | {metrics['Recall@40']:>10.4f} | {metrics['AveragePopularity@40']:>10.4f}"
         )
 
 
@@ -187,13 +142,21 @@ def main() -> int:
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
     probe_device = "cuda" if torch.cuda.is_available() else "cpu"
-    checkpoint = _load_checkpoint(checkpoint_path, probe_device)
+    checkpoint = load_checkpoint_payload(
+        checkpoint_path,
+        probe_device,
+        require_runtime_keys=True,
+        require_config=True,
+    )
     config: UCaGNNConfig = checkpoint["config"]
     resolved_device = _resolve_device(config, args.device)
     config.device = resolved_device
 
-    canonical, data = _load_data(config)
-    model = _load_model(checkpoint, canonical, data, resolved_device)
+    canonical, data = load_runtime_data(config)
+    model = build_runtime_model(config, canonical, data)
+    model.load_state_dict(checkpoint["model_state"])
+    model.to(resolved_device)
+    model.eval()
 
     split_names = ["val", "test"] if args.split == "both" else [args.split]
     payload = {
