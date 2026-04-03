@@ -1,32 +1,46 @@
 #!/usr/bin/env python
-"""Formal matrix benchmark runner for dataset x preset x training_mode x graph_method.
+"""Formal matrix benchmark runner for dataset x preset x graph_method.
 
 Usage:
     python experiments/run_benchmark.py --tier small --dry-run
-    python experiments/run_benchmark.py --tier small --seeds 13 298 132
+    python experiments/run_benchmark.py --tier small --presets ucagnn
     python experiments/run_benchmark.py --tier all
 """
 
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
-import gc
+import json
+from itertools import product
 import logging
 import sys
 import time
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import torch
-
-from experiments.run_experiment import DB_PATH, PRESETS, build_config, run_experiment
-from src.training import THESIS_PRIMARY_METRICS
+from experiments.recipes import (
+    default_formal_profile_name,
+    formal_profile_names,
+    get_formal_profile,
+)
+from experiments.run_experiment import (
+    DB_PATH,
+    DEFAULT_PRESET_ORDER,
+    PRESETS,
+    build_config,
+    canonicalize_preset_names,
+    run_experiment,
+)
+from scripts._workflow_helpers import metric_value, resolve_batch_id
+from src.utils.config import DEFAULT_SEED
 from src.utils.experiment_logger import ExperimentLogger
 
 logger = logging.getLogger("ucagnn.benchmark")
+STATE_PATH = Path(__file__).parent.parent / "results" / "formal_run_state.json"
+DEFAULT_PROFILE_NAME = default_formal_profile_name()
 
 TIERS = {
     "small": ["amazonbook", "movielens1m"],
@@ -35,35 +49,358 @@ TIERS = {
 }
 TIERS["all"] = TIERS["small"] + TIERS["medium"] + TIERS["large"]
 
-DEFAULT_SEEDS = [13, 298, 132]
-DEFAULT_TRAINING_MODES = ["full_graph", "cached_propagation", "mini_batch"]
-DEFAULT_GRAPH_METHODS = ["dense", "knn", "cagra"]
+DEFAULT_GRAPH_METHODS = ["cagra", "knn"]
+DEFAULT_SCORING_WEIGHT_MODES = ["learned"]
+SCORING_WEIGHT_MODE_CHOICES = ["learned", "fixed"]
 
 
-def _resolve_batch_id(provided: str | None, prefix: str) -> str:
-    """Return an explicit or generated batch id for grouped runs."""
-    if provided:
-        return provided
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return f"{prefix}-{stamp}"
+def _timestamp_slug() -> str:
+    """Return a compact UTC timestamp slug."""
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
 
-def _is_cuda_oom(exc: BaseException) -> bool:
-    """Return whether an exception represents a CUDA OOM failure."""
-    if isinstance(exc, torch.OutOfMemoryError):
-        return True
-    message = str(exc).lower()
-    return "out of memory" in message and "cuda" in message
+def _normalize_profile_name(raw_profile: str) -> str:
+    """Normalize a user-facing formal profile label into a filesystem-safe slug."""
+    normalized = "".join(
+        character.lower() if character.isalnum() else "-"
+        for character in raw_profile.strip()
+    )
+    collapsed = "-".join(part for part in normalized.split("-") if part)
+    if not collapsed:
+        raise ValueError("Profile label must contain at least one letter or number.")
+    return collapsed
 
 
-def _metric_value(metrics: dict[str, float], metric_name: str) -> float:
-    """Return a metric value, falling back from @50 to @20 when needed."""
-    if metric_name in metrics:
-        return metrics[metric_name]
-    if metric_name.endswith("@50"):
-        fallback = metric_name.replace("@50", "@20")
-        return metrics.get(fallback, 0.0)
-    return 0.0
+def _resolve_profile_bundle(profile_name: str) -> dict[str, object]:
+    """Return the predefined support-parameter bundle for a formal profile."""
+    try:
+        return get_formal_profile(profile_name)
+    except KeyError as exc:
+        supported = ", ".join(formal_profile_names())
+        raise ValueError(
+            f"Unknown formal profile {profile_name!r}. Supported profiles: {supported}."
+        ) from exc
+
+
+def _build_batch_id(profile_name: str) -> str:
+    """Build a fresh execution batch identifier for a formal profile run."""
+    return f"formal-{profile_name}-{_timestamp_slug()}"
+
+
+def _load_state() -> dict[str, object] | None:
+    """Load the last formal-run state file if it exists."""
+    if not STATE_PATH.exists():
+        return None
+    return json.loads(STATE_PATH.read_text())
+
+
+def _write_state(payload: dict[str, object]) -> None:
+    """Persist the formal-run state file."""
+    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    STATE_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def _args_to_state(args: argparse.Namespace) -> dict[str, object]:
+    """Convert benchmark arguments into a JSON-safe state payload."""
+    return {
+        "tier": args.tier,
+        "presets": list(args.presets),
+        "graph_methods": list(args.graph_methods),
+        "scoring_weight_modes": list(args.scoring_weight_modes),
+        "profile_name": args.profile_name,
+        "epochs": args.epochs,
+        "use_early_stopping": args.use_early_stopping,
+        "batch_size": args.batch_size,
+        "lr": args.lr,
+        "n_gnn_layers": args.n_gnn_layers,
+        "interest_gnn_layers": args.interest_gnn_layers,
+        "conformity_gnn_layers": args.conformity_gnn_layers,
+        "dropout": args.dropout,
+        "num_neighbors": list(args.num_neighbors)
+        if args.num_neighbors is not None
+        else None,
+        "hard_negative_ratio": args.hard_negative_ratio,
+        "curriculum_phase1_end": args.curriculum_phase1_end,
+        "curriculum_phase2_end": args.curriculum_phase2_end,
+        "loss_schedule": getattr(args, "loss_schedule", None),
+        "loader_max_rows": args.loader_max_rows,
+        "device": args.device,
+        "data_dir": args.data_dir,
+        "no_mlflow": args.no_mlflow,
+        "mlflow_tracking_uri": args.mlflow_tracking_uri,
+        "mlflow_experiment_name": args.mlflow_experiment_name,
+        "batch_id": args.batch_id,
+        "resume_batch": args.resume_batch,
+        "dry_run": args.dry_run,
+    }
+
+
+def _state_to_args(state: dict[str, object]) -> argparse.Namespace:
+    """Restore benchmark arguments from saved state."""
+    benchmark_args = state["benchmark_args"]
+    assert isinstance(benchmark_args, dict)
+    scoring_weight_modes = benchmark_args.get("scoring_weight_modes")
+    if not isinstance(scoring_weight_modes, list) or not scoring_weight_modes:
+        scoring_weight_modes = list(DEFAULT_SCORING_WEIGHT_MODES)
+    normalized_args = {
+        "batch_size": None,
+        "lr": None,
+        "num_neighbors": None,
+        "hard_negative_ratio": None,
+        "curriculum_phase1_end": None,
+        "curriculum_phase2_end": None,
+        "loss_schedule": None,
+        "loader_max_rows": None,
+        "sample_interactions": None,
+        "scoring_weight_modes": list(scoring_weight_modes),
+        "use_early_stopping": benchmark_args.get("use_early_stopping", True),
+        "profile_name": state.get("profile_name") or state.get("version"),
+        "n_gnn_layers": benchmark_args.get("n_gnn_layers"),
+        "interest_gnn_layers": benchmark_args.get("interest_gnn_layers"),
+        "conformity_gnn_layers": benchmark_args.get("conformity_gnn_layers"),
+        "dropout": benchmark_args.get("dropout"),
+        **benchmark_args,
+    }
+    return argparse.Namespace(**normalized_args)
+
+
+def _plans_match(
+    saved_args: argparse.Namespace,
+    expected_args: argparse.Namespace,
+) -> bool:
+    """Return whether a saved formal benchmark plan matches the current profile plan."""
+    comparable_fields = (
+        "tier",
+        "presets",
+        "graph_methods",
+        "scoring_weight_modes",
+        "epochs",
+        "use_early_stopping",
+        "batch_size",
+        "lr",
+        "n_gnn_layers",
+        "interest_gnn_layers",
+        "conformity_gnn_layers",
+        "dropout",
+        "num_neighbors",
+        "hard_negative_ratio",
+        "curriculum_phase1_end",
+        "curriculum_phase2_end",
+        "loss_schedule",
+        "loader_max_rows",
+        "sample_interactions",
+        "profile_name",
+    )
+    for field_name in comparable_fields:
+        if getattr(saved_args, field_name, None) != getattr(
+            expected_args, field_name, None
+        ):
+            return False
+    return True
+
+
+def _build_new_run_args(
+    cli_args: argparse.Namespace,
+    profile_name: str,
+) -> argparse.Namespace:
+    """Build benchmark arguments for a fresh formal run."""
+    profile_bundle = _resolve_profile_bundle(profile_name)
+    matrix = profile_bundle["matrix"]
+    assert isinstance(matrix, dict)
+    config_overrides = profile_bundle["config_overrides"]
+    assert isinstance(config_overrides, dict)
+    return argparse.Namespace(
+        tier=str(matrix["tier"]),
+        presets=list(matrix["presets"]),
+        graph_methods=list(matrix["graph_methods"]),
+        scoring_weight_modes=list(
+            matrix.get("scoring_weight_modes", DEFAULT_SCORING_WEIGHT_MODES)
+        ),
+        profile_name=profile_name,
+        epochs=int(config_overrides["epochs"]),
+        use_early_stopping=bool(config_overrides.get("use_early_stopping", True)),
+        batch_size=int(config_overrides["batch_size"]),
+        lr=float(config_overrides["lr"]),
+        n_gnn_layers=int(config_overrides["n_gnn_layers"])
+        if config_overrides.get("n_gnn_layers") is not None
+        else None,
+        interest_gnn_layers=int(config_overrides["interest_gnn_layers"])
+        if config_overrides.get("interest_gnn_layers") is not None
+        else None,
+        conformity_gnn_layers=int(config_overrides["conformity_gnn_layers"])
+        if config_overrides.get("conformity_gnn_layers") is not None
+        else None,
+        dropout=float(config_overrides["dropout"])
+        if config_overrides.get("dropout") is not None
+        else None,
+        num_neighbors=list(config_overrides["num_neighbors"]),
+        hard_negative_ratio=float(config_overrides.get("hard_negative_ratio", 0.0)),
+        curriculum_phase1_end=int(config_overrides.get("curriculum_phase1_end", 15)),
+        curriculum_phase2_end=int(config_overrides.get("curriculum_phase2_end", 30)),
+        loss_schedule=str(config_overrides["loss_schedule"])
+        if config_overrides.get("loss_schedule") is not None
+        else None,
+        loader_max_rows=None,
+        sample_interactions=None,
+        device=cli_args.device or "cuda",
+        data_dir=cli_args.data_dir or "data",
+        no_mlflow=bool(cli_args.no_mlflow),
+        mlflow_tracking_uri=cli_args.mlflow_tracking_uri,
+        mlflow_experiment_name=cli_args.mlflow_experiment_name or "ucagnn-formal",
+        batch_id=_build_batch_id(profile_name),
+        resume_batch=True,
+        dry_run=cli_args.dry_run,
+    )
+
+
+def _override_resumed_args(
+    benchmark_args: argparse.Namespace,
+    cli_args: argparse.Namespace,
+    profile_name: str,
+) -> argparse.Namespace:
+    """Apply a small set of runtime overrides when resuming a saved run."""
+    if cli_args.device is not None:
+        benchmark_args.device = cli_args.device
+    if cli_args.data_dir is not None:
+        benchmark_args.data_dir = cli_args.data_dir
+    if cli_args.mlflow_tracking_uri is not None:
+        benchmark_args.mlflow_tracking_uri = cli_args.mlflow_tracking_uri
+    if cli_args.mlflow_experiment_name is not None:
+        benchmark_args.mlflow_experiment_name = cli_args.mlflow_experiment_name
+    if cli_args.no_mlflow:
+        benchmark_args.no_mlflow = True
+    benchmark_args.dry_run = cli_args.dry_run
+    benchmark_args.resume_batch = True
+    benchmark_args.sample_interactions = None
+    benchmark_args.loader_max_rows = None
+    if cli_args.restart:
+        benchmark_args.batch_id = _build_batch_id(profile_name)
+    return benchmark_args
+
+
+def _resolve_benchmark_args(
+    cli_args: argparse.Namespace,
+) -> tuple[argparse.Namespace, str, bool]:
+    """Resolve whether to create a new formal run or resume the saved one."""
+    saved_state = _load_state()
+    current_profile_bundle = None
+
+    requested_profile = None
+    if cli_args.profile is not None:
+        current_profile_bundle = _resolve_profile_bundle(
+            _normalize_profile_name(cli_args.profile)
+        )
+        requested_profile = str(current_profile_bundle["name"])
+    saved_profile = None
+    saved_profile_bundle = None
+    if saved_state is not None:
+        raw_saved_profile = str(
+            saved_state.get("profile_name")
+            or saved_state.get("version")
+            or DEFAULT_PROFILE_NAME
+        )
+        try:
+            saved_profile_bundle = _resolve_profile_bundle(raw_saved_profile)
+            saved_profile = str(saved_profile_bundle["name"])
+        except ValueError:
+            saved_profile = raw_saved_profile
+            saved_profile_bundle = saved_state.get("profile_config")
+
+    should_resume_latest = cli_args.resume_latest or (
+        requested_profile is None and not cli_args.new_run and saved_state is not None
+    )
+    if should_resume_latest:
+        if saved_state is None:
+            raise ValueError("No saved formal-run state exists to resume.")
+        if saved_profile_bundle is None:
+            if cli_args.resume_latest:
+                raise ValueError(
+                    "The saved formal-run state references a profile that is no longer defined. "
+                    "Use --new-run or --restart to start a fresh batch."
+                )
+            profile_name = requested_profile or DEFAULT_PROFILE_NAME
+            benchmark_args = _build_new_run_args(cli_args, profile_name)
+            return benchmark_args, profile_name, False
+        benchmark_args = _state_to_args(saved_state)
+        profile_name = saved_profile or DEFAULT_PROFILE_NAME
+        expected_args = _build_new_run_args(cli_args, profile_name)
+        if not _plans_match(benchmark_args, expected_args):
+            if cli_args.resume_latest:
+                raise ValueError(
+                    "The saved formal-run state no longer matches the current profile bundle. "
+                    "Use --new-run or --restart to start a fresh mini-batch-only batch."
+                )
+            benchmark_args = expected_args
+            return benchmark_args, profile_name, False
+        benchmark_args = _override_resumed_args(benchmark_args, cli_args, profile_name)
+        benchmark_args.profile_name = profile_name
+        return benchmark_args, profile_name, True
+
+    if (
+        requested_profile is not None
+        and saved_state is not None
+        and not cli_args.new_run
+        and not cli_args.restart
+        and requested_profile == saved_profile
+        and saved_profile_bundle == current_profile_bundle
+    ):
+        benchmark_args = _state_to_args(saved_state)
+        expected_args = _build_new_run_args(cli_args, requested_profile)
+        if not _plans_match(benchmark_args, expected_args):
+            profile_name = requested_profile
+            benchmark_args = _build_new_run_args(cli_args, profile_name)
+            return benchmark_args, profile_name, False
+        benchmark_args = _override_resumed_args(
+            benchmark_args,
+            cli_args,
+            requested_profile,
+        )
+        benchmark_args.profile_name = requested_profile
+        return benchmark_args, requested_profile, True
+
+    profile_name = requested_profile or DEFAULT_PROFILE_NAME
+    benchmark_args = _build_new_run_args(cli_args, profile_name)
+    return benchmark_args, profile_name, False
+
+
+def _scoring_weight_modes_for_preset(
+    preset: str,
+    requested_modes: list[str],
+) -> list[str]:
+    """Return the applicable scoring-weight sweep values for one preset."""
+    if preset == "lightgcn":
+        return ["fixed"] if "fixed" in requested_modes else []
+    return list(requested_modes)
+
+
+def build_benchmark_plan(
+    args: argparse.Namespace,
+) -> list[tuple[str, str, str, str]]:
+    """Build the ordered benchmark execution plan.
+
+    The semantic thesis matrix remains dataset × preset × graph_method, but the
+    execution order intentionally keeps datasets as the innermost loop so a
+    dataset-specific failure surfaces during the first method sweep instead of
+    after one dataset has already exhausted every method combination.
+    """
+    datasets = TIERS[args.tier]
+    experiments: list[tuple[str, str, str, str]] = []
+    presets = canonicalize_preset_names(args.presets)
+    for preset, graph_method in product(presets, args.graph_methods):
+        for scoring_weight_mode in _scoring_weight_modes_for_preset(
+            preset,
+            args.scoring_weight_modes,
+        ):
+            for dataset in datasets:
+                experiments.append(
+                    (
+                        dataset,
+                        preset,
+                        graph_method,
+                        scoring_weight_mode,
+                    )
+                )
+    return experiments
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -73,14 +410,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--tier", choices=list(TIERS.keys()), default="small", help="Dataset tier"
     )
     parser.add_argument(
-        "--presets", nargs="*", default=list(PRESETS.keys()), help="Presets to run"
-    )
-    parser.add_argument(
-        "--training-modes",
+        "--presets",
         nargs="*",
-        default=DEFAULT_TRAINING_MODES,
-        choices=DEFAULT_TRAINING_MODES,
-        help="Training modes to run across the matrix",
+        default=list(DEFAULT_PRESET_ORDER),
+        choices=list(PRESETS.keys()),
+        help="Presets to run (canonical defaults: ucagnn, lightgcn, dice_like).",
     )
     parser.add_argument(
         "--graph-methods",
@@ -90,11 +424,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Graph construction methods to run across the matrix",
     )
     parser.add_argument(
-        "--seeds", nargs="*", type=int, default=DEFAULT_SEEDS, help="Random seeds"
+        "--scoring-weight-modes",
+        nargs="*",
+        default=DEFAULT_SCORING_WEIGHT_MODES,
+        choices=SCORING_WEIGHT_MODE_CHOICES,
+        help="Score-mixture modes to run. LightGCN stays fixed-only because learned weights are inapplicable without dual branches.",
     )
     parser.add_argument(
         "--epochs", type=int, default=None, help="Override epochs for all"
     )
+    early_stopping_group = parser.add_mutually_exclusive_group()
+    early_stopping_group.add_argument(
+        "--early-stopping",
+        dest="use_early_stopping",
+        action="store_true",
+        help="Enable early stopping for all benchmark runs.",
+    )
+    early_stopping_group.add_argument(
+        "--no-early-stopping",
+        dest="use_early_stopping",
+        action="store_false",
+        help="Disable early stopping for all benchmark runs.",
+    )
+    parser.set_defaults(use_early_stopping=None)
     parser.add_argument(
         "--batch-size",
         type=int,
@@ -159,12 +511,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Skip benchmark items already recorded with a terminal status for this batch id.",
     )
     parser.add_argument(
-        "--fallback-on-oom",
-        choices=["none", "cached_propagation", "mini_batch"],
-        default="none",
-        help="Optional fallback training mode to retry after a CUDA OOM. The fallback is logged as a separate explicit run.",
-    )
-    parser.add_argument(
         "--dry-run", action="store_true", help="Print plan without running"
     )
     return parser
@@ -180,39 +526,36 @@ def run_benchmark(args: argparse.Namespace) -> int:
     )
 
     datasets = TIERS[args.tier]
-    batch_id = _resolve_batch_id(args.batch_id, prefix="benchmark")
+    args.presets = canonicalize_preset_names(args.presets)
+    batch_id = resolve_batch_id(args.batch_id, prefix="benchmark")
     profile_name = getattr(args, "profile_name", None)
-    experiments = []
-    for dataset in datasets:
-        for preset in args.presets:
-            for training_mode in args.training_modes:
-                for graph_method in args.graph_methods:
-                    for seed in args.seeds:
-                        experiments.append(
-                            (dataset, preset, training_mode, graph_method, seed)
-                        )
+    experiments = build_benchmark_plan(args)
+
+    if not experiments:
+        logger.error(
+            "No benchmark experiments remain after applying the matrix filters."
+        )
+        return 1
 
     print("=" * 70)
     print(f"BENCHMARK PLAN: {len(experiments)} experiments")
     print(f"  Tier: {args.tier} ({len(datasets)} datasets: {', '.join(datasets)})")
     print(f"  Presets: {', '.join(args.presets)}")
-    print(f"  Training modes: {', '.join(args.training_modes)}")
     print(f"  Graph methods: {', '.join(args.graph_methods)}")
-    print(f"  Seeds: {args.seeds}")
+    print(f"  Score-mix modes: {', '.join(args.scoring_weight_modes)}")
     print(f"  Batch ID: {batch_id}")
     if profile_name:
         print(f"  Profile: {profile_name}")
     print(f"  Resume batch: {args.resume_batch}")
-    print(f"  Fallback on OOM: {args.fallback_on_oom}")
     print("=" * 70)
 
     if args.dry_run:
         print(
-            f"\n{'#':>4} | {'Dataset':<15} | {'Preset':<12} | {'Mode':<18} | {'Graph':<5} | Seed"
+            f"\n{'#':>4} | {'Dataset':<15} | {'Preset':<12} | {'Graph':<5} | {'ScoreMix':<8}"
         )
-        print("-" * 86)
-        for i, (ds, pr, tm, gm, sd) in enumerate(experiments, 1):
-            print(f"{i:>4} | {ds:<15} | {pr:<12} | {tm:<18} | {gm:<5} | {sd}")
+        print("-" * 81)
+        for i, (ds, pr, gm, swm) in enumerate(experiments, 1):
+            print(f"{i:>4} | {ds:<15} | {pr:<12} | {gm:<5} | {swm:<8}")
         print(f"\nTotal: {len(experiments)} experiments (dry run, nothing executed)")
         return 0
 
@@ -221,15 +564,17 @@ def run_benchmark(args: argparse.Namespace) -> int:
     completed = 0
     failed = 0
     skipped = 0
-    fallback_completed = 0
     results = []
 
-    for i, (dataset, preset, training_mode, graph_method, seed) in enumerate(
-        experiments, 1
-    ):
+    for i, (
+        dataset,
+        preset,
+        graph_method,
+        scoring_weight_mode,
+    ) in enumerate(experiments, 1):
         print(f"\n{'=' * 70}")
         print(
-            f"[{i}/{len(experiments)}] {dataset} / {preset} / {training_mode} / {graph_method} / seed={seed}"
+            f"[{i}/{len(experiments)}] {dataset} / {preset} / {graph_method} / {scoring_weight_mode}"
         )
         print("=" * 70)
 
@@ -238,9 +583,10 @@ def run_benchmark(args: argparse.Namespace) -> int:
             dataset=dataset,
             preset=preset,
             intervention=None,
-            seed=seed,
-            training_mode=training_mode,
+            seed=DEFAULT_SEED,
+            training_mode="mini_batch",
             graph_method=graph_method,
+            config_filters={"scoring_weight_mode": scoring_weight_mode},
         )
         if (
             args.resume_batch
@@ -258,9 +604,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
                     {
                         "dataset": dataset,
                         "preset": preset,
-                        "training_mode": training_mode,
                         "graph_method": graph_method,
-                        "seed": seed,
                         "exp_id": existing["id"],
                         "metrics": tracker.get_metrics_for_split(
                             int(existing["id"]),
@@ -277,16 +621,33 @@ def run_benchmark(args: argparse.Namespace) -> int:
                 dataset=dataset,
                 recipe=None,
                 preset=preset,
-                seed=seed,
+                seed=DEFAULT_SEED,
                 epochs=args.epochs,
                 batch_size=args.batch_size,
                 embed_dim=None,
+                n_gnn_layers=getattr(args, "n_gnn_layers", None),
+                interest_gnn_layers=getattr(args, "interest_gnn_layers", None),
+                conformity_gnn_layers=getattr(args, "conformity_gnn_layers", None),
+                dropout=getattr(args, "dropout", None),
                 lr=args.lr,
+                use_early_stopping=args.use_early_stopping,
+                scoring_weight_mode=scoring_weight_mode,
                 graph_method=graph_method,
-                training_mode=training_mode,
                 num_neighbors=args.num_neighbors,
+                hard_negative_ratio=getattr(args, "hard_negative_ratio", None),
+                curriculum_phase1_end=getattr(
+                    args,
+                    "curriculum_phase1_end",
+                    None,
+                ),
+                curriculum_phase2_end=getattr(
+                    args,
+                    "curriculum_phase2_end",
+                    None,
+                ),
                 sample_interactions=args.sample_interactions,
                 loader_max_rows=args.loader_max_rows,
+                loss_schedule=getattr(args, "loss_schedule", None),
                 device=args.device,
                 data_dir=args.data_dir,
                 intervention=None,
@@ -309,9 +670,8 @@ def run_benchmark(args: argparse.Namespace) -> int:
                 {
                     "dataset": dataset,
                     "preset": preset,
-                    "training_mode": training_mode,
                     "graph_method": graph_method,
-                    "seed": seed,
+                    "scoring_weight_mode": scoring_weight_mode,
                     "exp_id": result["exp_id"],
                     "metrics": result["test_metrics"],
                     "elapsed_s": elapsed,
@@ -324,80 +684,6 @@ def run_benchmark(args: argparse.Namespace) -> int:
             failed += 1
             logger.error(f"FAILED: {e}")
             traceback.print_exc()
-
-            if (
-                _is_cuda_oom(e)
-                and args.fallback_on_oom != "none"
-                and training_mode != args.fallback_on_oom
-            ):
-                logger.info(
-                    "Retrying batch item with fallback training_mode=%s",
-                    args.fallback_on_oom,
-                )
-                fallback_args = argparse.Namespace(
-                    dataset=dataset,
-                    recipe=None,
-                    preset=preset,
-                    seed=seed,
-                    epochs=args.epochs,
-                    batch_size=args.batch_size,
-                    embed_dim=None,
-                    n_gnn_layers=None,
-                    interest_gnn_layers=None,
-                    conformity_gnn_layers=None,
-                    lr=args.lr,
-                    eval_scoring_mode=None,
-                    scoring_weight_mode=None,
-                    use_features=None,
-                    feature_policy=None,
-                    graph_method=graph_method,
-                    training_mode=args.fallback_on_oom,
-                    num_neighbors=args.num_neighbors,
-                    sample_interactions=args.sample_interactions,
-                    loader_max_rows=args.loader_max_rows,
-                    device=args.device,
-                    data_dir=args.data_dir,
-                    intervention=None,
-                )
-
-                try:
-                    gc.collect()
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-
-                    fallback_config = build_config(fallback_args)
-                    t0 = time.time()
-                    fallback_result = run_experiment(
-                        fallback_config,
-                        preset=preset,
-                        enable_mlflow=not args.no_mlflow,
-                        mlflow_tracking_uri=args.mlflow_tracking_uri,
-                        mlflow_experiment_name=args.mlflow_experiment_name,
-                        batch_id=batch_id,
-                        profile_name=profile_name,
-                    )
-                    elapsed = time.time() - t0
-                    results.append(
-                        {
-                            "dataset": dataset,
-                            "preset": preset,
-                            "training_mode": args.fallback_on_oom,
-                            "graph_method": graph_method,
-                            "seed": seed,
-                            "exp_id": fallback_result["exp_id"],
-                            "metrics": fallback_result["test_metrics"],
-                            "elapsed_s": elapsed,
-                        }
-                    )
-                    fallback_completed += 1
-                    logger.info(
-                        "Fallback completed in %.1fs (exp_id=%s)",
-                        elapsed,
-                        fallback_result["exp_id"],
-                    )
-                except Exception as fallback_exc:
-                    logger.error("Fallback FAILED: %s", fallback_exc)
-                    traceback.print_exc()
             continue
 
     # Summary
@@ -405,26 +691,25 @@ def run_benchmark(args: argparse.Namespace) -> int:
     print("BENCHMARK SUMMARY")
     print("=" * 70)
     print(f"Completed: {completed}/{len(experiments)}")
-    print(f"Fallback completed: {fallback_completed}")
     print(f"Failed: {failed}/{len(experiments)}")
     print(f"Skipped via resume: {skipped}")
 
     if results:
-        print("Note: AvgPop@20 and AvgPop@50 are lower-is-better.")
+        print("Note: AvgPop@20 and AvgPop@40 are lower-is-better.")
         print(
-            f"\n{'Dataset':<15} | {'Preset':<12} | {'Mode':<18} | {'Graph':<5} | Seed | {'NDCG@20':>8} | {'Recall@20':>10} | {'AvgPop@20':>10} | {'NDCG@50':>8} | {'Recall@50':>10} | {'AvgPop@50':>10} | Time"
+            f"\n{'Dataset':<15} | {'Preset':<12} | {'Graph':<5} | {'ScoreMix':<8} | {'NDCG@20':>8} | {'Recall@20':>10} | {'AvgPop@20':>10} | {'NDCG@40':>8} | {'Recall@40':>10} | {'AvgPop@40':>10} | Time"
         )
-        print("-" * 169)
+        print("-" * 162)
         for r in results:
-            ndcg_20 = _metric_value(r["metrics"], "NDCG@20")
-            recall_20 = _metric_value(r["metrics"], "Recall@20")
-            avg_pop_20 = _metric_value(r["metrics"], "AveragePopularity@20")
-            ndcg_50 = _metric_value(r["metrics"], "NDCG@50")
-            recall_50 = _metric_value(r["metrics"], "Recall@50")
-            avg_pop_50 = _metric_value(r["metrics"], "AveragePopularity@50")
+            ndcg_20 = metric_value(r["metrics"], "NDCG@20")
+            recall_20 = metric_value(r["metrics"], "Recall@20")
+            avg_pop_20 = metric_value(r["metrics"], "AveragePopularity@20")
+            ndcg_40 = metric_value(r["metrics"], "NDCG@40")
+            recall_40 = metric_value(r["metrics"], "Recall@40")
+            avg_pop_40 = metric_value(r["metrics"], "AveragePopularity@40")
             print(
-                f"{r['dataset']:<15} | {r['preset']:<12} | {r['training_mode']:<18} | {r['graph_method']:<5} | {r['seed']:>4} | "
-                f"{ndcg_20:>8.4f} | {recall_20:>10.4f} | {avg_pop_20:>10.4f} | {ndcg_50:>8.4f} | {recall_50:>10.4f} | {avg_pop_50:>10.4f} | {r['elapsed_s']:.0f}s"
+                f"{r['dataset']:<15} | {r['preset']:<12} | {r['graph_method']:<5} | {r['scoring_weight_mode']:<8} | "
+                f"{ndcg_20:>8.4f} | {recall_20:>10.4f} | {avg_pop_20:>10.4f} | {ndcg_40:>8.4f} | {recall_40:>10.4f} | {avg_pop_40:>10.4f} | {r['elapsed_s']:.0f}s"
             )
 
     tracker.close()
@@ -436,6 +721,116 @@ def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
     return run_benchmark(args)
+
+
+def _build_formal_run_parser() -> argparse.ArgumentParser:
+    """Build the simple formal-run CLI parser."""
+    parser = argparse.ArgumentParser(
+        description="Run the formal U-CaGNN experiment matrix with semantic profile-based resume."
+    )
+    parser.add_argument(
+        "--profile",
+        "--version",
+        dest="profile",
+        default=None,
+        help=(
+            "Optional semantic formal profile slug. "
+            f"Supported profiles: {', '.join(formal_profile_names())}."
+        ),
+    )
+    parser.add_argument(
+        "--list-profiles",
+        action="store_true",
+        help="Print the predefined formal profiles from experiments/experiment_catalog.json and exit.",
+    )
+    parser.add_argument(
+        "--resume-latest",
+        action="store_true",
+        help="Resume the latest saved formal run state instead of creating a new one.",
+    )
+    parser.add_argument(
+        "--new-run",
+        action="store_true",
+        help="Force a fresh run even if a saved formal-run state exists.",
+    )
+    parser.add_argument(
+        "--restart",
+        action="store_true",
+        help="Start the selected profile from the beginning under a fresh batch id.",
+    )
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Device override. Defaults to cuda for new runs.",
+    )
+    parser.add_argument("--data-dir", default=None, help="Data directory override.")
+    parser.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Disable MLflow logging for this formal run.",
+    )
+    parser.add_argument(
+        "--mlflow-tracking-uri",
+        default=None,
+        help="Optional MLflow tracking URI override.",
+    )
+    parser.add_argument(
+        "--mlflow-experiment-name",
+        default=None,
+        help="Optional MLflow experiment name override. Defaults to ucagnn-formal.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the formal run plan without executing it.",
+    )
+    return parser
+
+
+def formal_main() -> int:
+    """Run the formal experiment workflow through one simple entry point."""
+    parser = _build_formal_run_parser()
+    cli_args = parser.parse_args()
+
+    if cli_args.list_profiles:
+        print("Available formal profiles:")
+        for profile_name in formal_profile_names():
+            profile = _resolve_profile_bundle(profile_name)
+            print(f"  {profile_name}: {profile['description']}")
+        return 0
+
+    try:
+        benchmark_args, profile_name, resumed = _resolve_benchmark_args(cli_args)
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    state = {
+        "profile_name": profile_name,
+        "batch_id": benchmark_args.batch_id,
+        "resumed": resumed,
+        "last_started_at_utc": datetime.now(timezone.utc).isoformat(),
+        "last_finished_at_utc": None,
+        "last_exit_code": None,
+        "benchmark_args": _args_to_state(benchmark_args),
+    }
+    if not cli_args.dry_run:
+        _write_state(state)
+
+    print("=" * 70)
+    print("FORMAL RUN")
+    print(f"  Profile: {profile_name}")
+    print(f"  Batch ID: {benchmark_args.batch_id}")
+    print(f"  Resuming: {benchmark_args.resume_batch}")
+    print("  Full datasets: True")
+    print("  OOM fallback: log-and-continue")
+    print("=" * 70)
+
+    exit_code = run_benchmark(benchmark_args)
+    state["last_finished_at_utc"] = datetime.now(timezone.utc).isoformat()
+    state["last_exit_code"] = exit_code
+    if not cli_args.dry_run:
+        _write_state(state)
+    return exit_code
 
 
 if __name__ == "__main__":

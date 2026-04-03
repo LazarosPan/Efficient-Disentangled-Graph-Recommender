@@ -3,7 +3,7 @@
 
 Usage:
     python experiments/run_experiment.py --dataset movielens1m --preset lightgcn --epochs 3
-    python experiments/run_experiment.py --dataset kuairec_v2 --preset full --seed 123 --device cuda
+    python experiments/run_experiment.py --dataset kuairec_v2 --preset ucagnn
 """
 
 from __future__ import annotations
@@ -18,8 +18,11 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
 import torch
 import numpy as np
@@ -29,13 +32,13 @@ from experiments.recipes import (
     recipe_names,
     recipe_summary_lines,
 )
-from src.utils.config import UCaGNNConfig
+from src.utils.config import DEFAULT_SEED, UCaGNNConfig
 from src.utils.experiment_logger import ExperimentLogger
 from src.data.loaders import load_dataset
 from src.data.graph_builder import build_graph
 from src.models.ucagnn import UCaGNN
 from src.losses.loss_suite import LossSuite
-from src.training.trainer import Trainer
+from src.training.mini_batch_trainer import MiniBatchTrainer
 from src.profiling.gpu_profiler import GPUProfiler
 
 logger = logging.getLogger("ucagnn")
@@ -43,12 +46,37 @@ logger = logging.getLogger("ucagnn")
 DB_PATH = Path(__file__).parent.parent / "results" / "thesis_experiments.db"
 MLFLOW_DB_PATH = Path(__file__).parent.parent / "results" / "mlflow.db"
 CHECKPOINT_DIR = Path(__file__).parent.parent / "results" / "checkpoints"
+REQUIRED_CHECKPOINT_KEYS = frozenset(
+    {
+        "model_state",
+        "optimizer_state",
+        "loss_suite_state",
+        "config",
+    }
+)
 
 PRESETS = {
+    "ucagnn": "preset_full",
     "lightgcn": "preset_lightgcn",
     "dice_like": "preset_dice_like",
-    "full": "preset_full",
 }
+DEFAULT_PRESET_ORDER = ["ucagnn", "lightgcn", "dice_like"]
+
+
+def canonical_preset_name(preset: str | None) -> str | None:
+    """Return the canonical public preset name."""
+    return preset
+
+
+def canonicalize_preset_names(presets: list[str]) -> list[str]:
+    """Normalize and deduplicate preset names while preserving order."""
+    normalized: list[str] = []
+    for preset in presets:
+        canonical = canonical_preset_name(preset)
+        if canonical is None or canonical in normalized:
+            continue
+        normalized.append(canonical)
+    return normalized
 
 
 def _config_as_dict(config: UCaGNNConfig) -> dict:
@@ -62,10 +90,10 @@ def _build_canonical_name(
     intervention: str | None,
 ) -> str:
     """Build a descriptive canonical experiment name from the effective config."""
+    preset = canonical_preset_name(preset)
     parts = [
         config.dataset,
         preset or "custom",
-        config.training_mode,
         config.graph_method,
         f"ep{config.epochs}",
         f"bs{config.batch_size}",
@@ -79,19 +107,26 @@ def _build_canonical_name(
         parts.append(
             f"branchL{config.resolved_interest_gnn_layers}-{config.resolved_conformity_gnn_layers}"
         )
-    if config.training_mode == "mini_batch":
-        neighbor_str = "-".join(str(value) for value in config.num_neighbors)
-        parts.append(f"nbr{neighbor_str}")
+    neighbor_str = "-".join(str(value) for value in config.num_neighbors)
+    parts.append(f"nbr{neighbor_str}")
     if config.sample_interactions is not None:
         parts.append(f"sample{config.sample_interactions}")
     if config.loader_max_rows is not None:
         parts.append(f"loadrows{config.loader_max_rows}")
+    if config.preprocessing_preset is not None:
+        parts.append(f"ppreset{config.preprocessing_preset}")
+    if config.derived_split_mode != "per_user_temporal":
+        parts.append(f"split{config.derived_split_mode}")
+    if config.popularity_window_seconds is not None:
+        parts.append(f"popwin{config.popularity_window_seconds}")
     if config.use_features:
         parts.append("feat")
     if config.feature_policy != "thesis_default":
         parts.append(f"fpolicy{config.feature_policy}")
     if config.scoring_weight_mode != "fixed":
         parts.append(f"scoremix{config.scoring_weight_mode}")
+    if getattr(config, "train_scoring_mode", "default") != "default":
+        parts.append(f"trainscore{config.train_scoring_mode}")
     if config.eval_scoring_mode != "default":
         parts.append(f"score{config.eval_scoring_mode}")
     if intervention:
@@ -109,7 +144,41 @@ def _resolve_checkpoint_path(
     """Resolve the checkpoint path for a run."""
     if checkpoint_path is not None:
         return Path(checkpoint_path)
+    preset = canonical_preset_name(preset)
     return CHECKPOINT_DIR / f"{_build_canonical_name(config, preset, intervention)}.pt"
+
+
+def checkpoint_payload_has_required_keys(payload: object) -> bool:
+    """Return whether a checkpoint payload contains the required runtime keys."""
+    return isinstance(payload, dict) and REQUIRED_CHECKPOINT_KEYS.issubset(payload)
+
+
+def load_checkpoint_payload(
+    path: str | Path,
+    device: str,
+    *,
+    require_runtime_keys: bool = False,
+    require_config: bool = False,
+) -> dict[str, Any]:
+    """Load a checkpoint payload and optionally validate the shared schema."""
+    payload = torch.load(Path(path), map_location=device, weights_only=False)
+    if not isinstance(payload, dict):
+        raise TypeError("Checkpoint payload must be a dictionary.")
+
+    if require_runtime_keys and not checkpoint_payload_has_required_keys(payload):
+        missing_keys = sorted(REQUIRED_CHECKPOINT_KEYS.difference(payload))
+        raise ValueError(
+            "checkpoint is missing required runtime keys: " + ", ".join(missing_keys)
+        )
+
+    if require_config:
+        config = payload.get("config")
+        if not isinstance(config, UCaGNNConfig):
+            raise TypeError(
+                "checkpoint does not contain a UCaGNNConfig under the 'config' field"
+            )
+
+    return payload
 
 
 def _select_sample_counts(total: int, split_sizes: list[int]) -> list[int]:
@@ -163,13 +232,18 @@ def _sample_canonical_interactions(
     seed: int,
     train_ratio: float,
     val_ratio: float,
+    derived_split_mode: str = "per_user_temporal",
 ):
     """Return a sampled CanonicalInteractions subset for fast preflight runs."""
     if sample_interactions is None or sample_interactions >= len(canonical):
         return canonical
 
     rng = np.random.default_rng(seed)
-    train_mask, val_mask, test_mask = canonical.get_splits(train_ratio, val_ratio)
+    train_mask, val_mask, test_mask = canonical.get_splits(
+        train_ratio,
+        val_ratio,
+        derived_split_mode=derived_split_mode,
+    )
     split_indices = [
         np.flatnonzero(train_mask),
         np.flatnonzero(val_mask),
@@ -237,6 +311,24 @@ def _sample_canonical_interactions(
         label=canonical.label[selected],
         timestamp=canonical.timestamp[selected],
         sign=canonical.sign[selected],
+        raw_target=(
+            None if canonical.raw_target is None else canonical.raw_target[selected]
+        ),
+        behavior_type=(
+            None
+            if canonical.behavior_type is None
+            else canonical.behavior_type[selected]
+        ),
+        exposure_flag=(
+            None
+            if canonical.exposure_flag is None
+            else canonical.exposure_flag[selected]
+        ),
+        source_domain=(
+            None
+            if canonical.source_domain is None
+            else canonical.source_domain[selected]
+        ),
         popularity=canonical.popularity[selected_items],
         n_users=int(len(selected_users)),
         n_items=int(len(selected_items)),
@@ -257,11 +349,60 @@ def _sample_canonical_interactions(
     )
 
 
+def load_runtime_data(config: UCaGNNConfig) -> tuple[Any, Any]:
+    """Load canonical interactions and build the matching runtime graph."""
+    canonical = load_dataset(
+        config.dataset,
+        config.data_dir,
+        max_rows=config.loader_max_rows,
+        include_optional_features=config.use_features,
+        feature_policy=config.feature_policy,
+        preprocessing_preset=config.preprocessing_preset,
+    )
+    canonical = _sample_canonical_interactions(
+        canonical,
+        config.sample_interactions,
+        config.seed,
+        config.train_ratio,
+        config.val_ratio,
+        config.derived_split_mode,
+    )
+    data = build_graph(canonical, config, embeddings=None)
+    return canonical, data
+
+
+def build_runtime_model(config: UCaGNNConfig, canonical: Any, data: Any) -> UCaGNN:
+    """Instantiate the runtime model for a loaded canonical dataset and graph."""
+    train_mask, _, _ = canonical.get_splits(
+        config.train_ratio,
+        config.val_ratio,
+        derived_split_mode=config.derived_split_mode,
+    )
+    item_recency = torch.from_numpy(canonical.compute_item_recency(train_mask))
+    return UCaGNN(
+        canonical.n_users,
+        canonical.n_items,
+        config,
+        item_features=getattr(data, "item_features", None),
+        item_popularity=data.popularity,
+        item_recency=item_recency,
+    )
+
+
 def _load_checkpoint_metadata(path: Path, device: str) -> dict | None:
     """Load a checkpoint payload if it exists."""
     if not path.exists():
         return None
-    return torch.load(path, map_location=device, weights_only=False)
+    try:
+        return load_checkpoint_payload(
+            path,
+            device,
+            require_runtime_keys=True,
+            require_config=True,
+        )
+    except (TypeError, ValueError) as exc:
+        logger.warning("Ignoring checkpoint at %s because %s", path, exc)
+        return None
 
 
 def _log_mlflow_resume_tags(mlflow_module, checkpoint_state: dict | None) -> None:
@@ -287,8 +428,8 @@ def _build_trainer(
     experiment_logger: ExperimentLogger,
     exp_id: int,
 ):
-    """Construct the trainer matching the configured training mode."""
-    trainer_kwargs = dict(
+    """Construct the mini-batch trainer for the configured experiment."""
+    return MiniBatchTrainer(
         model=model,
         loss_suite=loss_suite,
         data=data,
@@ -297,15 +438,6 @@ def _build_trainer(
         experiment_logger=experiment_logger,
         exp_id=exp_id,
     )
-    if config.training_mode == "mini_batch":
-        from src.training.mini_batch_trainer import MiniBatchTrainer
-
-        return MiniBatchTrainer(**trainer_kwargs)
-    if config.training_mode == "cached_propagation":
-        from src.training.cached_trainer import CachedPropagationTrainer
-
-        return CachedPropagationTrainer(**trainer_kwargs)
-    return Trainer(**trainer_kwargs)
 
 
 def _default_mlflow_tracking_uri() -> str:
@@ -426,10 +558,11 @@ def _build_mlflow_params(
     profile_name: str | None,
 ) -> dict[str, str | int | float | bool]:
     """Select compact config fields to expose as searchable MLflow params."""
+    preset = canonical_preset_name(preset)
     params: dict[str, str | int | float | bool] = {
         "dataset": config.dataset,
         "preset": preset or "custom",
-        "training_mode": config.training_mode,
+        "training_mode": "mini_batch",
         "graph_method": config.graph_method,
         "seed": config.seed,
         "epochs": config.epochs,
@@ -438,6 +571,7 @@ def _build_mlflow_params(
         "n_gnn_layers": config.n_gnn_layers,
         "interest_gnn_layers": config.resolved_interest_gnn_layers,
         "conformity_gnn_layers": config.resolved_conformity_gnn_layers,
+        "train_scoring_mode": getattr(config, "train_scoring_mode", "default"),
         "eval_scoring_mode": config.eval_scoring_mode,
         "scoring_weight_mode": config.scoring_weight_mode,
         "sample_interactions": config.sample_interactions or 0,
@@ -445,11 +579,13 @@ def _build_mlflow_params(
         "lr": config.lr,
         "use_features": config.use_features,
         "feature_policy": config.feature_policy,
+        "preprocessing_preset": config.preprocessing_preset or "default",
+        "derived_split_mode": config.derived_split_mode,
+        "popularity_window_seconds": config.popularity_window_seconds or 0,
         "use_dual_branch": config.use_dual_branch,
         "use_sign_aware": config.use_sign_aware,
         "use_counterfactual": config.use_counterfactual,
         "use_ipw": config.use_ipw,
-        "use_popularity_emb": config.use_popularity_emb,
         "enable_profiling": config.enable_profiling,
         "canonical_name": _build_canonical_name(config, preset, intervention),
         "run_started_at_utc": run_started_at_utc,
@@ -464,8 +600,7 @@ def _build_mlflow_params(
         params["batch_id"] = batch_id
     if profile_name:
         params["profile_name"] = profile_name
-    if config.training_mode == "mini_batch":
-        params["num_neighbors"] = "-".join(str(value) for value in config.num_neighbors)
+    params["num_neighbors"] = "-".join(str(value) for value in config.num_neighbors)
     return params
 
 
@@ -553,17 +688,23 @@ def build_config(args: argparse.Namespace) -> UCaGNNConfig:
     kwargs: dict = {}
 
     recipe = get_recipe(args.recipe) if getattr(args, "recipe", None) else None
-    effective_preset = getattr(args, "preset", None)
+    effective_preset = canonical_preset_name(getattr(args, "preset", None))
     if recipe is not None:
         _validate_recipe_cli_conflicts(args, recipe)
         kwargs.update(recipe.get("overrides", {}))
         if effective_preset is None:
-            effective_preset = recipe.get("preset")
+            effective_preset = canonical_preset_name(recipe.get("preset"))
+
+    if effective_preset is not None and effective_preset not in PRESETS:
+        available = ", ".join(sorted(PRESETS))
+        raise ValueError(
+            f"Unknown preset '{effective_preset}'. Available presets: {available}"
+        )
 
     # Core args
     kwargs["dataset"] = args.dataset
     kwargs["data_dir"] = args.data_dir
-    kwargs["seed"] = args.seed
+    kwargs["seed"] = getattr(args, "seed", DEFAULT_SEED)
     kwargs["device"] = args.device
 
     if getattr(args, "epochs", None) is not None:
@@ -578,8 +719,12 @@ def build_config(args: argparse.Namespace) -> UCaGNNConfig:
         kwargs["interest_gnn_layers"] = args.interest_gnn_layers
     if getattr(args, "conformity_gnn_layers", None) is not None:
         kwargs["conformity_gnn_layers"] = args.conformity_gnn_layers
+    if getattr(args, "dropout", None) is not None:
+        kwargs["dropout"] = args.dropout
     if getattr(args, "lr", None) is not None:
         kwargs["lr"] = args.lr
+    if getattr(args, "use_early_stopping", None) is not None:
+        kwargs["use_early_stopping"] = args.use_early_stopping
     if getattr(args, "eval_scoring_mode", None) is not None:
         kwargs["eval_scoring_mode"] = args.eval_scoring_mode
     if getattr(args, "scoring_weight_mode", None) is not None:
@@ -588,16 +733,35 @@ def build_config(args: argparse.Namespace) -> UCaGNNConfig:
         kwargs["use_features"] = args.use_features
     if getattr(args, "feature_policy", None) is not None:
         kwargs["feature_policy"] = args.feature_policy
+    if getattr(args, "preprocessing_preset", None) is not None:
+        kwargs["preprocessing_preset"] = args.preprocessing_preset
     if getattr(args, "graph_method", None) is not None:
         kwargs["graph_method"] = args.graph_method
-    if getattr(args, "training_mode", None) is not None:
-        kwargs["training_mode"] = args.training_mode
+    if getattr(args, "derived_split_mode", None) is not None:
+        kwargs["derived_split_mode"] = args.derived_split_mode
+    if getattr(args, "popularity_window_seconds", None) is not None:
+        kwargs["popularity_window_seconds"] = args.popularity_window_seconds
     if getattr(args, "num_neighbors", None) is not None:
         kwargs["num_neighbors"] = args.num_neighbors
+    if getattr(args, "hard_negative_ratio", None) is not None:
+        kwargs["hard_negative_ratio"] = args.hard_negative_ratio
+    if getattr(args, "curriculum_phase1_end", None) is not None:
+        kwargs["curriculum_phase1_end"] = args.curriculum_phase1_end
+    if getattr(args, "curriculum_phase2_end", None) is not None:
+        kwargs["curriculum_phase2_end"] = args.curriculum_phase2_end
+    if getattr(args, "loss_schedule", None) is not None:
+        kwargs["loss_schedule"] = args.loss_schedule
     if getattr(args, "sample_interactions", None) is not None:
         kwargs["sample_interactions"] = args.sample_interactions
     if getattr(args, "loader_max_rows", None) is not None:
         kwargs["loader_max_rows"] = args.loader_max_rows
+
+    requested_loss_schedule = kwargs.get("loss_schedule")
+    if requested_loss_schedule not in (None, "baseline"):
+        raise ValueError(
+            "loss_schedule no longer supports legacy staged BPR modes; "
+            "fused BPR stays active from epoch 0."
+        )
 
     config = UCaGNNConfig(**kwargs)
 
@@ -628,9 +792,13 @@ def _validate_recipe_cli_conflicts(
     """
     conflicts: list[str] = []
 
-    recipe_preset = recipe.get("preset")
-    cli_preset = getattr(args, "preset", None)
-    if cli_preset is not None and recipe_preset is not None and cli_preset != recipe_preset:
+    recipe_preset = canonical_preset_name(recipe.get("preset"))
+    cli_preset = canonical_preset_name(getattr(args, "preset", None))
+    if (
+        cli_preset is not None
+        and recipe_preset is not None
+        and cli_preset != recipe_preset
+    ):
         conflicts.append(
             f"preset={cli_preset!r} conflicts with recipe preset={recipe_preset!r}"
         )
@@ -638,10 +806,14 @@ def _validate_recipe_cli_conflicts(
     overrides = recipe.get("overrides", {})
     assert isinstance(overrides, dict)
 
-    for field_name in ("training_mode", "graph_method"):
+    for field_name in ("graph_method",):
         cli_value = getattr(args, field_name, None)
         recipe_value = overrides.get(field_name)
-        if cli_value is not None and recipe_value is not None and cli_value != recipe_value:
+        if (
+            cli_value is not None
+            and recipe_value is not None
+            and cli_value != recipe_value
+        ):
             cli_flag = field_name.replace("_", "-")
             conflicts.append(
                 f"--{cli_flag}={cli_value!r} conflicts with recipe {field_name}={recipe_value!r}"
@@ -673,6 +845,8 @@ def run_experiment(
     auto_resume: bool = True,
 ) -> dict:
     """Run a single experiment end-to-end. Returns test metrics dict."""
+    preset = canonical_preset_name(preset)
+
     # Seed
     torch.manual_seed(config.seed)
     if torch.cuda.is_available():
@@ -710,40 +884,15 @@ def run_experiment(
         canonical_name,
     )
 
-    # Load data
-    logger.info("Loading dataset...")
-    canonical = load_dataset(
-        config.dataset,
-        config.data_dir,
-        max_rows=config.loader_max_rows,
-        include_optional_features=config.use_features,
-        feature_policy=config.feature_policy,
-    )
-    canonical = _sample_canonical_interactions(
-        canonical,
-        config.sample_interactions,
-        config.seed,
-        config.train_ratio,
-        config.val_ratio,
-    )
+    logger.info("Loading dataset and building graph...")
+    canonical, data = load_runtime_data(config)
     logger.info(f"  {repr(canonical)}")
-
-    # Build graph
-    logger.info("Building graph...")
-    data = build_graph(canonical, config, embeddings=None)
     logger.info(f"  Nodes: {data.num_nodes:,}, Edges: {data.edge_index.size(1):,}")
     logger.info(
         f"  Train: {data.train_mask.sum():,}, Val: {data.val_mask.sum():,}, Test: {data.test_mask.sum():,}"
     )
 
-    # Model
-    model = UCaGNN(
-        canonical.n_users,
-        canonical.n_items,
-        config,
-        item_features=getattr(data, "item_features", None),
-        item_popularity=data.popularity,
-    )
+    model = build_runtime_model(config, canonical, data)
     n_params = sum(p.numel() for p in model.parameters())
     logger.info(f"Model parameters: {n_params:,}")
 
@@ -912,9 +1061,6 @@ def run_experiment(
             failure_reason=f"{type(exc).__name__}: {exc}",
             oom_flag=is_oom,
         )
-        if is_oom and torch.cuda.is_available():
-            gc.collect()
-            torch.cuda.empty_cache()
         if mlflow_module is not None:
             try:
                 _set_mlflow_status_tags(
@@ -933,6 +1079,9 @@ def run_experiment(
                 mlflow_module.end_run(status=mlflow_status)
             except Exception as exc:
                 logger.warning("Failed to close MLflow run cleanly: %s", exc)
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def main():
@@ -942,7 +1091,6 @@ def main():
         "--recipe", choices=recipe_names(), help="Named experiment recipe"
     )
     parser.add_argument("--preset", choices=list(PRESETS.keys()), help="Config preset")
-    parser.add_argument("--seed", type=int, default=13, help="Random seed")
     parser.add_argument("--epochs", type=int, default=None, help="Override epochs")
     parser.add_argument(
         "--batch-size", type=int, default=None, help="Override batch size"
@@ -971,8 +1119,6 @@ def main():
         choices=[
             "default",
             "interest_only",
-            "conformity_only",
-            "counterfactual_only",
             "conformity_suppressed",
         ],
         default=None,
@@ -1002,15 +1148,7 @@ def main():
         default=None,
         help="Feature-loading policy: thesis_default enforces the safe thesis allowlist; all_optional restores the full optional side-feature scans.",
     )
-    parser.add_argument(
-        "--graph-method", choices=["dense", "knn", "cagra"], default=None
-    )
-    parser.add_argument(
-        "--training-mode",
-        choices=["full_graph", "cached_propagation", "mini_batch"],
-        default=None,
-        help="Training mode: full_graph (default), cached_propagation, or mini_batch",
-    )
+    parser.add_argument("--graph-method", choices=["knn", "cagra"], default=None)
     parser.add_argument(
         "--num-neighbors",
         type=int,
@@ -1109,9 +1247,12 @@ def main():
 
     config = build_config(args)
     recipe = get_recipe(args.recipe) if args.recipe else None
+    resolved_preset = canonical_preset_name(
+        args.preset or (recipe.get("preset") if recipe else None)
+    )
     result = run_experiment(
         config,
-        preset=args.preset or (recipe.get("preset") if recipe else None),
+        preset=resolved_preset,
         intervention=args.intervention,
         save_checkpoint=not args.no_checkpoint,
         enable_mlflow=args.enable_mlflow,
