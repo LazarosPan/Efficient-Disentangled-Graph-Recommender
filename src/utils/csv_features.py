@@ -6,6 +6,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .dataset_loader_utils import downcast_numeric_array
+
 
 def load_csv_features(
     path: Path,
@@ -24,7 +26,8 @@ def load_csv_features(
         include_columns: Optional feature-column allowlist.
 
     Returns:
-        A float32 feature matrix of shape ``(n_entities, n_features)`` or ``None``.
+        A numeric feature matrix of shape ``(n_entities, n_features)`` or ``None``.
+        The matrix is narrowed to a compact storage dtype after loading.
     """
     if not path.exists():
         return None
@@ -67,4 +70,4 @@ def load_csv_features(
     for mapped_id, values in rows.items():
         features[mapped_id] = values
 
-    return features
+    return downcast_numeric_array(features, allow_float16=True)

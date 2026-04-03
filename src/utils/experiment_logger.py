@@ -15,6 +15,18 @@ class ExperimentLogger:
     """Persist experiment configs, per-epoch metrics, and profiling data to SQLite."""
 
     TERMINAL_STATUSES = ("completed", "failed", "oom")
+    SUMMARY_VIEWS = (
+        "experiment_summary",
+        "experiment_completed_summary",
+        "experiment_attention_summary",
+        "experiment_error_summary",
+    )
+    VIEW_TABLES = {
+        "all": "experiments",
+        "completed": "experiment_completed_summary",
+        "attention": "experiment_attention_summary",
+        "errors": "experiment_error_summary",
+    }
 
     _SQLITE_NOW_UTC = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
     _EXPECTED_EXPERIMENT_COLUMNS = [
@@ -77,10 +89,8 @@ class ExperimentLogger:
     def _ensure_current_schema(self) -> None:
         self.conn.execute("PRAGMA foreign_keys=OFF")
         try:
-            self.conn.execute("DROP VIEW IF EXISTS experiment_summary")
-            self.conn.execute("DROP VIEW IF EXISTS experiment_completed_summary")
-            self.conn.execute("DROP VIEW IF EXISTS experiment_attention_summary")
-            self.conn.execute("DROP VIEW IF EXISTS experiment_error_summary")
+            for view_name in self.SUMMARY_VIEWS:
+                self.conn.execute(f"DROP VIEW IF EXISTS {view_name}")
             self._ensure_experiments_table()
             self._ensure_profiling_table()
             self._ensure_metrics_table()
@@ -258,10 +268,9 @@ class ExperimentLogger:
 
         current_columns = self._table_columns("profiling")
         fk_targets = self._foreign_key_targets("profiling")
-        if (
-            current_columns == self._EXPECTED_PROFILING_COLUMNS
-            and fk_targets == {"experiments"}
-        ):
+        if current_columns == self._EXPECTED_PROFILING_COLUMNS and fk_targets == {
+            "experiments"
+        }:
             return
 
         legacy_table = self._next_legacy_name("profiling")
@@ -312,7 +321,9 @@ class ExperimentLogger:
 
         current_columns = self._table_columns("metrics")
         fk_targets = self._foreign_key_targets("metrics")
-        if current_columns == self._EXPECTED_METRIC_COLUMNS and fk_targets == {"experiments"}:
+        if current_columns == self._EXPECTED_METRIC_COLUMNS and fk_targets == {
+            "experiments"
+        }:
             return
 
         legacy_table = self._next_legacy_name("metrics")
@@ -414,17 +425,17 @@ class ExperimentLogger:
                     THEN m.metric_value
                 END) AS best_average_popularity_20,
                 MAX(CASE
-                    WHEN m.metric_name = 'NDCG@50' AND m.split = 'val'
+                    WHEN m.metric_name = 'NDCG@40' AND m.split = 'val'
                     THEN m.metric_value
-                END) AS best_ndcg_50,
+                END) AS best_ndcg_40,
                 MAX(CASE
-                    WHEN m.metric_name = 'Recall@50' AND m.split = 'val'
+                    WHEN m.metric_name = 'Recall@40' AND m.split = 'val'
                     THEN m.metric_value
-                END) AS best_recall_50,
+                END) AS best_recall_40,
                 MIN(CASE
-                    WHEN m.metric_name = 'AveragePopularity@50' AND m.split = 'val'
+                    WHEN m.metric_name = 'AveragePopularity@40' AND m.split = 'val'
                     THEN m.metric_value
-                END) AS best_average_popularity_50,
+                END) AS best_average_popularity_40,
                 AVG(CASE
                     WHEN p.stage = 'forward'
                     THEN p.duration_ms / NULLIF(p.stage_call_count, 0)
@@ -633,6 +644,7 @@ class ExperimentLogger:
         seed: int | None,
         training_mode: str | None,
         graph_method: str | None,
+        config_filters: dict[str, object] | None = None,
     ) -> sqlite3.Row | None:
         """Return the most recent experiment row for a batch-scoped matrix item."""
         filters = {
@@ -650,6 +662,11 @@ class ExperimentLogger:
                 continue
             where_clauses.append(f"{column_name} = ?")
             params.append(value)
+
+        if config_filters is not None:
+            for field_name, value in config_filters.items():
+                where_clauses.append("config_json LIKE ?")
+                params.append(f'%"{field_name}": {json.dumps(value)}%')
 
         sql = (
             "SELECT * FROM experiments WHERE "

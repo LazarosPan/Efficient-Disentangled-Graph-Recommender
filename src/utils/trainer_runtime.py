@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
 import torch
 import torch.optim as optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-
 from ..data.negative_sampler import NegativeSampler
 from ..losses.loss_suite import LossSuite
 from ..models.ucagnn import UCaGNN
@@ -47,17 +47,47 @@ class TrainerRuntime:
         self.device = torch.device(
             config.device if torch.cuda.is_available() else "cpu"
         )
+        self.use_amp = self.device.type == "cuda" and self.config.use_amp
+        self.amp_dtype = torch.bfloat16
         if self.device.type == "cuda":
             torch.backends.cudnn.benchmark = True
-            torch.set_float32_matmul_precision("high")
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+            torch.set_float32_matmul_precision("medium")
         self.model.to(self.device)
         self.loss_suite.to(self.device)
+        self.popularity = data.popularity.to(self.device)
+        self.trainable_parameters = list(model.parameters()) + list(
+            loss_suite.parameters()
+        )
+
+        # Separate sign-aware scalar parameters (alpha_pos / alpha_neg) from the
+        # main parameter group.  On datasets with no signed interactions those
+        # parameters receive zero task gradient, so Adam's epsilon denominator
+        # amplifies the L2 weight-decay term enough to drive them to zero.  Keeping
+        # them in a zero-decay group makes their values stable.
+        gcn = getattr(model, "gcn", None)
+        sign_params = [
+            p
+            for attr in ("alpha_pos", "alpha_neg")
+            for p in (
+                [getattr(gcn, attr)] if gcn is not None and hasattr(gcn, attr) else []
+            )
+        ]
+        sign_param_ids = {id(p) for p in sign_params}
+        main_params = [
+            p for p in self.trainable_parameters if id(p) not in sign_param_ids
+        ]
 
         use_fused = self.device.type == "cuda"
-        self.optimizer = optim.Adam(
-            list(model.parameters()) + list(loss_suite.parameters()),
+        param_groups: list[dict] = [
+            {"params": main_params, "weight_decay": config.weight_decay}
+        ]
+        if sign_params:
+            param_groups.append({"params": sign_params, "weight_decay": 0.0})
+        self.optimizer = optim.AdamW(
+            param_groups,
             lr=config.lr,
-            weight_decay=config.weight_decay,
             fused=use_fused,
         )
 
@@ -77,6 +107,14 @@ class TrainerRuntime:
             hard_negative_ratio=config.hard_negative_ratio,
         )
 
+        # Optional EMA model for smoother generalization
+        self.ema_model: torch.optim.swa_utils.AveragedModel | None = None
+        if config.use_ema:
+            ema_fn = torch.optim.swa_utils.get_ema_multi_avg_fn(config.ema_decay)
+            self.ema_model = torch.optim.swa_utils.AveragedModel(
+                model, multi_avg_fn=ema_fn
+            )
+
         self.best_ndcg = 0.0
         self.patience_counter = 0
         self.best_state = None
@@ -89,20 +127,9 @@ class TrainerRuntime:
     def _get_train_interactions(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Return training user/item tensors in the shared index space."""
         train_mask = self.data.train_mask
-        train_users = self.data.user_nodes[train_mask].to(self.device)
-        train_items = (self.data.item_nodes[train_mask] - self.data.n_users).to(
-            self.device
-        )
+        train_users = self.data.user_nodes[train_mask]
+        train_items = self.data.item_nodes[train_mask] - self.data.n_users
         return train_users, train_items
-
-    def _shuffle_train_interactions(
-        self,
-        train_users: torch.Tensor,
-        train_items: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return shuffled training users and items for the current epoch."""
-        perm = torch.randperm(train_users.size(0), device=self.device)
-        return train_users[perm], train_items[perm]
 
     def _apply_optimization_step(
         self,
@@ -113,18 +140,22 @@ class TrainerRuntime:
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward(retain_graph=retain_graph)
         torch.nn.utils.clip_grad_norm_(
-            list(self.model.parameters()) + list(self.loss_suite.parameters()),
+            self.trainable_parameters,
             max_norm=self.config.grad_clip_norm,
         )
         self.optimizer.step()
+        if self.ema_model is not None:
+            self.ema_model.update_parameters(self.model)
 
     def _evaluate_validation_metrics(self) -> dict[str, float]:
-        """Run the shared validation pass on the current model state."""
-        return self.evaluator.evaluate(
-            self.model,
-            self.data,
-            self.data.val_mask,
-        )
+        """Run the shared validation pass, using EMA weights when available."""
+        eval_model = self.ema_model if self.ema_model is not None else self.model
+        with self._autocast_context():
+            return self.evaluator.evaluate(
+                eval_model,
+                self.data,
+                self.data.val_mask,
+            )
 
     def _log_epoch_summary(
         self,
@@ -132,19 +163,16 @@ class TrainerRuntime:
         avg_loss: float,
         current_ndcg: float,
         primary_metric: str,
-        mode_suffix: str = "",
         skipped_batches: int = 0,
     ) -> None:
-        """Emit the per-epoch training summary for the current trainer mode."""
-        suffix = f" {mode_suffix}" if mode_suffix else ""
+        """Emit the per-epoch training summary."""
         logger.info(
-            "Epoch %3d/%d | Loss: %.4f | %s: %.4f%s",
+            "Epoch %3d/%d | Loss: %.4f | %s: %.4f",
             epoch + 1,
             self.config.epochs,
             avg_loss,
             primary_metric,
             current_ndcg,
-            suffix,
         )
         if skipped_batches > 0:
             logger.warning(
@@ -153,15 +181,11 @@ class TrainerRuntime:
                 skipped_batches,
             )
 
-    def _prepare_history(self, history: dict[str, list] | None) -> dict[str, list]:
-        """Normalize the training history structure used across trainer modes."""
-        prepared_history = history or {
-            "train_loss": [],
-            "val_metrics": [],
-        }
-        prepared_history.setdefault("train_loss", [])
-        prepared_history.setdefault("val_metrics", [])
-        return prepared_history
+    def _autocast_context(self):
+        """Return the CUDA bf16 autocast context when AMP is enabled."""
+        if self.use_amp:
+            return torch.autocast("cuda", dtype=self.amp_dtype)
+        return nullcontext()
 
     def _set_epoch_profiling(self, epoch: int) -> bool:
         """Enable or disable profiling for the current epoch based on config."""
@@ -175,19 +199,25 @@ class TrainerRuntime:
             self.profiler.reset()
         return should_profile
 
-    def _step_scheduler(self, metric_value: float) -> None:
-        """Step the LR scheduler if one is configured."""
-        if self.scheduler is not None:
-            self.scheduler.step(metric_value)
+    def _step_scheduler(self, metric_value: float, epoch: int) -> None:
+        """Step the LR scheduler after the curriculum warmup has completed."""
+        if self.scheduler is None:
+            return
+
+        warmup_end = max(
+            self.config.curriculum_phase1_end,
+            self.config.curriculum_phase2_end,
+        )
+        if epoch < warmup_end:
+            return
+
+        self.scheduler.step(metric_value)
 
     def _primary_metric_name(self) -> str:
         """Return the validation metric used for early stopping."""
-        return f"NDCG@{self.config.eval_ks[-1]}"
+        from ..training.evaluator import THESIS_EVAL_KS
 
-    def _log_profiler_summary(self, should_profile: bool) -> None:
-        """Emit the profiler summary when profiling is active and has samples."""
-        if should_profile and self.profiler and self.profiler.stages:
-            logger.info(self.profiler.summary())
+        return f"NDCG@{THESIS_EVAL_KS[-1]}"
 
     def _log_epoch_to_sqlite(
         self,
@@ -209,15 +239,6 @@ class TrainerRuntime:
                 self.model,
             )
 
-    def _update_shared_training_state(
-        self,
-        epoch: int,
-        history: dict[str, list],
-    ) -> None:
-        """Store the latest completed epoch and resume history."""
-        self.completed_epoch = epoch
-        self.resume_history = history
-
     def _update_early_stopping(
         self,
         current_ndcg: float,
@@ -227,14 +248,41 @@ class TrainerRuntime:
         checkpoint_path: str | Path | None,
         checkpoint_every: int | None,
     ) -> bool:
-        """Update early-stopping state and return whether training should stop."""
+        """Update early-stopping state and return whether training should stop.
+
+        Patience counting is deferred until all curriculum phases are active
+        so that auxiliary losses have time to contribute before early stopping
+        can fire.
+        """
         if current_ndcg > self.best_ndcg:
             self.best_ndcg = current_ndcg
             self.patience_counter = 0
-            self.best_state = {
-                key: value.cpu().clone()
-                for key, value in self.model.state_dict().items()
-            }
+            # Capture EMA weights as best state when available.
+            # AveragedModel prefixes keys with "module." — strip it so
+            # load_state_dict() into the base model works directly.
+            if self.ema_model is not None:
+                prefix = "module."
+                self.best_state = {
+                    (k[len(prefix) :] if k.startswith(prefix) else k): v.cpu().clone()
+                    for k, v in self.ema_model.state_dict().items()
+                }
+            else:
+                self.best_state = {
+                    key: value.cpu().clone()
+                    for key, value in self.model.state_dict().items()
+                }
+            return False
+
+        if not self.config.use_early_stopping:
+            self.patience_counter = 0
+            return False
+
+        # Defer patience counting until all curriculum phases are active
+        warmup_end = max(
+            self.config.curriculum_phase1_end,
+            self.config.curriculum_phase2_end,
+        )
+        if epoch < warmup_end:
             return False
 
         self.patience_counter += 1
@@ -271,11 +319,6 @@ class TrainerRuntime:
         ):
             self.save_checkpoint(checkpoint_path, history=history)
 
-    def _restore_best_model(self) -> None:
-        """Restore the best model parameters captured during training."""
-        if self.best_state is not None:
-            self.model.load_state_dict(self.best_state)
-
     def save_checkpoint(
         self,
         path: str | Path,
@@ -294,6 +337,9 @@ class TrainerRuntime:
             "optimizer_state": self.optimizer.state_dict(),
             "scheduler_state": (
                 self.scheduler.state_dict() if self.scheduler is not None else None
+            ),
+            "ema_state": (
+                self.ema_model.state_dict() if self.ema_model is not None else None
             ),
             "config": self.config,
             "best_ndcg": self.best_ndcg,
@@ -321,6 +367,9 @@ class TrainerRuntime:
         scheduler_state = ckpt.get("scheduler_state")
         if scheduler_state is not None and self.scheduler is not None:
             self.scheduler.load_state_dict(scheduler_state)
+        ema_state = ckpt.get("ema_state")
+        if ema_state is not None and self.ema_model is not None:
+            self.ema_model.load_state_dict(ema_state)
         self.best_ndcg = ckpt.get("best_ndcg", 0.0)
         self.patience_counter = ckpt.get("patience_counter", 0)
         self.best_state = ckpt.get("best_state")
@@ -331,11 +380,11 @@ class TrainerRuntime:
         )
         rng_state = ckpt.get("rng_state")
         if rng_state is not None:
-            torch.set_rng_state(rng_state)
+            torch.set_rng_state(rng_state.cpu())
         cuda_rng_state_all = ckpt.get("cuda_rng_state_all")
         if cuda_rng_state_all is not None and torch.cuda.is_available():
             try:
-                torch.cuda.set_rng_state_all(cuda_rng_state_all)
+                torch.cuda.set_rng_state_all([s.cpu() for s in cuda_rng_state_all])
             except RuntimeError:
                 logger.warning(
                     "Failed to restore CUDA RNG state from checkpoint %s", path

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .dataset_loader_utils import downcast_numeric_array
+
 
 @dataclass(frozen=True, slots=True)
 class InteractionIndex:
@@ -43,6 +45,7 @@ def remap_interaction_ids(
 
     Returns:
         InteractionIndex: Contiguous IDs, counts, and raw-to-contiguous maps.
+        The returned ID arrays are narrowed to the smallest safe integer dtype.
     """
 
     unique_users, user_inverse = np.unique(raw_user_ids, return_inverse=True)
@@ -52,8 +55,8 @@ def remap_interaction_ids(
     item_map = {int(item_id): index for index, item_id in enumerate(unique_items)}
 
     return InteractionIndex(
-        user_id=user_inverse.astype(np.int64, copy=False),
-        item_id=item_inverse.astype(np.int64, copy=False),
+        user_id=downcast_numeric_array(user_inverse),
+        item_id=downcast_numeric_array(item_inverse),
         n_users=int(unique_users.size),
         n_items=int(unique_items.size),
         user_map=user_map,
@@ -80,3 +83,36 @@ def compute_normalized_popularity(item_id: np.ndarray, n_items: int) -> np.ndarr
     if max_count <= 0.0:
         return pop_counts
     return pop_counts / max_count
+
+
+def compute_time_windowed_popularity(
+    item_id: np.ndarray,
+    n_items: int,
+    timestamp: np.ndarray,
+    window_seconds: int,
+) -> np.ndarray:
+    """Compute popularity using only interactions inside a trailing time window.
+
+    Args:
+        item_id: Contiguous item IDs aligned to interactions.
+        n_items: Number of unique items represented in item_id.
+        timestamp: Timestamps aligned to interactions.
+        window_seconds: Width of the trailing window in seconds.
+
+    Returns:
+        np.ndarray: Max-normalized popularity restricted to the selected window.
+        Falls back to all valid timestamps when the requested window is empty.
+    """
+    if item_id.size == 0:
+        return np.zeros(n_items, dtype=np.float32)
+
+    valid_timestamp_mask = timestamp > 0
+    if not np.any(valid_timestamp_mask):
+        return compute_normalized_popularity(item_id, n_items)
+
+    latest_timestamp = int(timestamp[valid_timestamp_mask].max())
+    earliest_allowed = latest_timestamp - window_seconds
+    window_mask = valid_timestamp_mask & (timestamp >= earliest_allowed)
+    if not np.any(window_mask):
+        return compute_normalized_popularity(item_id[valid_timestamp_mask], n_items)
+    return compute_normalized_popularity(item_id[window_mask], n_items)
