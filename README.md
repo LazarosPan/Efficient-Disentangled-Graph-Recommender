@@ -8,9 +8,9 @@ U-CaGNN synthesizes techniques from multiple causal recommendation papers (CausE
 
 Key features:
 - Config-driven architecture with presets for LightGCN, DICE-like, and full U-CaGNN variants
-- Three training modes: full-graph, cached propagation, and mini-batch
-- Graph construction methods: dense, kNN, and CAGRA ANN
-- Formal experiment matrix across datasets, presets, training modes, and graph methods
+- Mini-batch training only, with k-hop subgraph extraction per batch
+- Graph construction methods: kNN and CAGRA ANN (CAGRA default)
+- Formal experiment matrix across datasets, presets, and graph methods, with a score-mix sweep for dual-branch presets
 - SQLite primary logging with MLflow secondary tracking
 - Automatic checkpointing and resume from crashes
 

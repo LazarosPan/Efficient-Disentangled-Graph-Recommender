@@ -36,3 +36,4 @@ wheels/
 # Github
 .github/prompts/
 .github/agents/
+.github/issues/

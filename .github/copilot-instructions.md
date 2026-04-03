@@ -9,13 +9,13 @@ Before each implementation iteration:
 1. Read `.github/skills/ucagnn-implementation/`  
    – Fast routing layer for implementation work; use it to decide what parts of the system matter.
 
-2. Read `docs/ucagnn_implementation/`  
+2. Read `docs/ucagnn_implementation/ucagnn_full.md`  
    – Authoritative implementation reference; follow it to keep behavior, defaults, and workflow aligned.
 
 After each iteration, update both so they match the code:
 
 - `.github/skills/ucagnn-implementation/`
-- `docs/ucagnn_implementation/`
+- `docs/ucagnn_implementation/ucagnn_full.md`
 
 Keep changes minimal and concise.
 
@@ -27,7 +27,7 @@ Use this structure to place and find instructions:
 - `.github/instructions/` – File- or topic-scoped guidance.
 - `.github/prompts/` – Reusable prompt templates.
 - `.github/agents/` – Custom agents for specialized workflows.
-- `.github/skills/<skill-name>/SKILL.md` – Entry point for a skill and its supporting files.
+- `.github/skills/` – Folder for skill files that route to specific docs based on task.
 
 Core project folders for code:
 
@@ -41,9 +41,10 @@ Core project folders for code:
 ## Project Rules
 
 - SQLite is the primary experiment record; MLflow is a secondary UI and artifact tracker.
-- The formal experiment grid is `dataset × preset × training_mode × graph_method`.
-- Treat `batch_size`, `num_neighbors`, etc. as support parameters to validate via preflight, not as thesis axes.
+- The formal experiment grid is `dataset × preset × graph_method`, with score-mix sweeps for dual-branch presets handled inside that protocol.
+- Treat `batch_size`, `num_neighbors`, etc. as support parameters to validate via quick validation, not as thesis axes.
 - One experiment = one training run = one checkpoint; evaluation should reuse checkpoints, not retrain.
+- Keep the codebase readable and maintainable; do not add thin wrappers or helper layers when the existing function or code path is already clear.
 
 - Prefer editing existing files over adding new ones; avoid new scripts/CLIs unless clearly justified.
 - Keep diffs small and auditable, especially for policy, reporting, config, and wiring changes.
@@ -59,10 +60,12 @@ Core project folders for code:
 - Prefer test-driven development: write a failing test, then the minimal implementation.
 - Maintain consistent abstraction levels within a file/function; do not mix very high- and low-level concerns.
 - Reuse existing code whenever possible; do not reimplement utilities elsewhere.
+- Keep the codebase small, clean, and organized; remove unused code and files promptly.
+- Use mermaid diagrams in docs to clarify complex workflows and data flows.
 
 ## Coding Standards
 
 - Every function must be type-annotated and have a short docstring describing purpose, arguments, and return values.
 - Prefer vectorized operations and efficient data structures over explicit Python loops where feasible.
-- Follow PEP 8. Run `ruff format` to format code.
+- Follow PEP 8. Run `ruff format` at the root of the repo to format all code files. Use `ruff check` to find and fix linting issues.
 - After any change, run `uv run scripts/quick_validate.py` to validate the project.

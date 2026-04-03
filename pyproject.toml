@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "causal-embeddings-for-recommendations"
-version = "0.1.0"
+version = "0.2.0"
 description = "GPU-Efficient Causal Disentanglement: A Unified Embedding Pipeline with ANN-Accelerated Graph Construction and Memory-Aware Optimization"
 readme = "README.md"
 # PyG only supports Python 3.10–3.13, so constrain the interpreter accordingly.
@@ -44,26 +44,22 @@ dependencies = [
 url = "https://download.pytorch.org/whl/cu131"
 
 [project.scripts]
-formal-run = "main:main"
+formal-run = "experiments.run_benchmark:formal_main"
 experiment = "experiments.run_experiment:main"
-benchmark = "experiments.run_benchmark:main"
 ablation = "experiments.run_ablation:main"
 quick-validate = "scripts.quick_validate:main"
-preflight = "scripts.preflight_experiments:main"
-feature-probes = "scripts.feature_policy_probes:main"
 download-datasets = "scripts.download_pyg_datasets:main"
 cleanup-experiment-artifacts = "scripts.cleanup_experiment_artifacts:main"
-list-commands = "scripts.list_commands:main"
 query-results = "scripts.query_results:main"
 reset-experiment-db = "scripts.reset_experiment_db:main"
-verify-setup = "scripts.verify_setup:main"
-verify-pipeline = "scripts.verify_pipeline:main"
-verify-sqlite = "scripts.verify_sqlite:main"
-audit-metrics = "scripts.audit_metrics:main"
 
 [tool.setuptools]
 include-package-data = false
-py-modules = ["main"]
 
 [tool.setuptools.packages.find]
 include = ["experiments*", "scripts*", "src*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
