@@ -36,11 +36,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
-from src.data.feature_policy import (
-    normalize_dataset_name,
-    thesis_default_column_enabled,
-)
-
 
 def load_exploration_api() -> tuple[Any, Any, Any]:
     """Load exploration helpers lazily so this script still runs directly."""
@@ -48,7 +43,22 @@ def load_exploration_api() -> tuple[Any, Any, Any]:
     return module.inspect_dataset_file, module.schema_overview, module.summarize_dataset
 
 
+def load_feature_policy_api() -> tuple[Any, Any, Any]:
+    """Load feature-policy helpers lazily after the repo-root path bootstrap."""
+    module = importlib.import_module("src.data.feature_policy")
+    return (
+        module.feature_role_for_column,
+        module.normalize_dataset_name,
+        module.thesis_default_columns,
+    )
+
+
 INSPECT_DATASET_FILE, SCHEMA_OVERVIEW, SUMMARIZE_DATASET = load_exploration_api()
+(
+    FEATURE_ROLE_FOR_COLUMN,
+    NORMALIZE_DATASET_NAME,
+    THESIS_DEFAULT_COLUMNS,
+) = load_feature_policy_api()
 
 
 TEXT_EXTENSIONS = {
@@ -620,7 +630,7 @@ def attach_exploration_summary(record: DatasetRecord) -> DatasetRecord:
 
 def normalize_dataset_key(name: str) -> str:
     """Normalize dataset names so report folders map to loader registry entries."""
-    return normalize_dataset_name(name)
+    return NORMALIZE_DATASET_NAME(name)
 
 
 def get_loader_coverage(record: DatasetRecord) -> dict[str, Any]:
@@ -1088,15 +1098,25 @@ def infer_pipeline_stage(
     if aspect == "interactions":
         return "model_consumed"
     if aspect == "item_features":
-        if thesis_default_column_enabled(
-            record.name, aspect, file_record.relative_path, column
-        ):
+        default_columns = THESIS_DEFAULT_COLUMNS(
+            record.name,
+            aspect,
+            file_record.relative_path,
+        )
+        if default_columns and column.lower() in {
+            value.lower() for value in default_columns
+        }:
             return "model_consumed"
         return "raw_only"
     if aspect == "user_features":
-        if thesis_default_column_enabled(
-            record.name, aspect, file_record.relative_path, column
-        ):
+        default_columns = THESIS_DEFAULT_COLUMNS(
+            record.name,
+            aspect,
+            file_record.relative_path,
+        )
+        if default_columns and column.lower() in {
+            value.lower() for value in default_columns
+        }:
             return "graph_retained"
         return "raw_only"
     metadata_keys = coverage.get("metadata", [])
@@ -1105,10 +1125,23 @@ def infer_pipeline_stage(
     return "raw_only"
 
 
-def infer_causal_role(file_record: FileRecord, column: str) -> str:
+def infer_causal_role(
+    record: DatasetRecord, file_record: FileRecord, column: str
+) -> str:
     """Heuristically classify a candidate column by causal role."""
     relative_path = file_record.relative_path.lower()
     normalized = column.lower()
+    aspect = infer_column_aspect(file_record)
+
+    if aspect in {"user_features", "item_features"}:
+        registered_role = FEATURE_ROLE_FOR_COLUMN(
+            record.name,
+            aspect,
+            file_record.relative_path,
+            column,
+        )
+        if registered_role is not None:
+            return registered_role
 
     if normalized in NON_CAUSAL_MARKERS:
         return "non_causal"
@@ -1202,12 +1235,12 @@ def quick_safe_use_check(
 
     if causal_role == "non_causal":
         return "exclude", "identifier or bookkeeping field"
-    if causal_role == "post_treatment":
+    if causal_role in {"post_treatment", "post_treatment_excluded"}:
         return (
             "defer",
             "likely downstream of exposure or outcome; keep out of default causal features",
         )
-    if causal_role == "proxy":
+    if causal_role in {"proxy", "proxy_only"}:
         return (
             "ablation_only",
             "potentially useful but entangled with exposure, search, or social context",
@@ -1249,7 +1282,7 @@ def collect_candidate_feature_rows(record: DatasetRecord) -> list[dict[str, str]
         aspect = infer_column_aspect(file_record)
         for column in columns:
             pipeline_stage = infer_pipeline_stage(record, file_record, column)
-            causal_role = infer_causal_role(file_record, column)
+            causal_role = infer_causal_role(record, file_record, column)
             safe_use, rationale = quick_safe_use_check(
                 file_record, column, causal_role, pipeline_stage
             )

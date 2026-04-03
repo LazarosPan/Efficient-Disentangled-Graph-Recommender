@@ -8,12 +8,17 @@ from pathlib import Path
 import numpy as np
 
 from ...utils.dataset_loader_utils import (
+    downcast_numeric_array,
     get_optional_csv_field,
     try_parse_float,
     try_parse_int,
 )
 from ..canonical import CanonicalInteractions
-from ..feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
+from ..feature_policy import (
+    DEFAULT_FEATURE_POLICY,
+    FeaturePolicyName,
+    resolve_feature_source,
+)
 from ...utils.csv_features import load_csv_features
 from ...utils.interaction_indexing import (
     compute_normalized_popularity,
@@ -28,6 +33,7 @@ def load_kuairand1k(
     max_rows: int | None = None,
     include_optional_features: bool = True,
     feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY,
+    preprocessing_preset: str | None = None,
 ) -> CanonicalInteractions:
     """Load KuaiRand-1K from ``data_dir/KuaiRand-1K/data/``.
 
@@ -180,16 +186,18 @@ def load_kuairand1k(
             malformed_counts,
         )
 
-    raw_users_arr = np.array(raw_users, dtype=np.int64)
-    raw_items_arr = np.array(raw_items, dtype=np.int64)
-    clicks_arr = np.array(clicks, dtype=np.int32)
-    likes_arr = np.array(likes, dtype=np.int32)
-    hates_arr = np.array(hates, dtype=np.int32)
-    follows_arr = np.array(follows, dtype=np.int32)
-    comments_arr = np.array(comments, dtype=np.int32)
-    long_views_arr = np.array(long_views, dtype=np.int32)
-    is_rand_arr = np.array(is_rands, dtype=np.int32)
-    timestamps_arr = np.array(timestamps, dtype=np.int64)
+    raw_users_arr = downcast_numeric_array(np.array(raw_users, dtype=np.int64))
+    raw_items_arr = downcast_numeric_array(np.array(raw_items, dtype=np.int64))
+    clicks_arr = np.array(clicks, dtype=np.uint8)
+    likes_arr = np.array(likes, dtype=np.uint8)
+    hates_arr = np.array(hates, dtype=np.uint8)
+    follows_arr = np.array(follows, dtype=np.uint8)
+    comments_arr = np.array(comments, dtype=np.uint8)
+    long_views_arr = np.array(long_views, dtype=np.uint8)
+    play_times_arr = downcast_numeric_array(np.array(play_times, dtype=np.float32))
+    durations_arr = downcast_numeric_array(np.array(durations, dtype=np.float32))
+    is_rand_arr = np.array(is_rands, dtype=np.uint8)
+    timestamps_arr = downcast_numeric_array(np.array(timestamps, dtype=np.int64))
 
     indexed = remap_interaction_ids(raw_users_arr, raw_items_arr)
     user_id = indexed.user_id
@@ -210,52 +218,85 @@ def load_kuairand1k(
     sign[follows_arr > 0] = 0.7
     sign[likes_arr > 0] = 1.0  # highest priority: last assignment wins
 
+    behavior_type = np.full(len(user_id), "neutral", dtype="<U10")
+    behavior_type[hates_arr > 0] = "hate"
+    behavior_type[clicks_arr > 0] = "click"
+    behavior_type[(clicks_arr > 0) & (long_views_arr > 0)] = "long_view"
+    behavior_type[comments_arr > 0] = "comment"
+    behavior_type[follows_arr > 0] = "follow"
+    behavior_type[likes_arr > 0] = "like"
+
+    raw_target = np.zeros(len(user_id), dtype=np.float32)
+    valid_duration = durations_arr > 0
+    raw_target[valid_duration] = np.clip(
+        play_times_arr[valid_duration] / durations_arr[valid_duration],
+        0.0,
+        5.0,
+    ).astype(np.float32)
+
     popularity = compute_normalized_popularity(item_id, n_items)
 
     user_features = None
     item_features = None
     if include_optional_features:
         feat_base = Path(data_dir) / "KuaiRand-1K" / "data"
-        if feature_policy == "all_optional":
+        load_user_features, user_feature_columns = resolve_feature_source(
+            feature_policy,
+            "kuairand1k",
+            "user_features",
+            "data/user_features_1k.csv",
+        )
+        if load_user_features:
             user_features = load_csv_features(
-                feat_base / "user_features_1k.csv", "user_id", user_map, n_users
+                feat_base / "user_features_1k.csv",
+                "user_id",
+                user_map,
+                n_users,
+                include_columns=user_feature_columns,
             )
-            item_features_basic = load_csv_features(
-                feat_base / "video_features_basic_1k.csv", "video_id", item_map, n_items
-            )
-            item_features_stat = load_csv_features(
-                feat_base / "video_features_statistic_1k.csv",
-                "video_id",
-                item_map,
-                n_items,
-            )
-            if item_features_basic is not None and item_features_stat is not None:
-                item_features = np.hstack([item_features_basic, item_features_stat])
-            elif item_features_basic is not None:
-                item_features = item_features_basic
-            elif item_features_stat is not None:
-                item_features = item_features_stat
-        else:
+
+        item_features_basic = None
+        item_features_stat = None
+        load_basic_item_features, basic_item_columns = resolve_feature_source(
+            feature_policy,
+            "kuairand1k",
+            "item_features",
+            "data/video_features_basic_1k.csv",
+        )
+        if load_basic_item_features:
             item_features = load_csv_features(
                 feat_base / "video_features_basic_1k.csv",
                 "video_id",
                 item_map,
                 n_items,
-                include_columns=(
-                    "author_id",
-                    "video_type",
-                    "upload_dt",
-                    "upload_type",
-                    "visible_status",
-                    "server_width",
-                    "server_height",
-                    "music_id",
-                    "music_type",
-                ),
+                include_columns=basic_item_columns,
             )
+            item_features_basic = item_features
+        load_stat_item_features, stat_item_columns = resolve_feature_source(
+            feature_policy,
+            "kuairand1k",
+            "item_features",
+            "data/video_features_statistic_1k.csv",
+        )
+        if load_stat_item_features:
+            item_features_stat = load_csv_features(
+                feat_base / "video_features_statistic_1k.csv",
+                "video_id",
+                item_map,
+                n_items,
+                include_columns=stat_item_columns,
+            )
+        if item_features_basic is not None and item_features_stat is not None:
+            item_features = np.hstack([item_features_basic, item_features_stat])
+        elif item_features_basic is not None:
+            item_features = item_features_basic
+        elif item_features_stat is not None:
+            item_features = item_features_stat
 
     # Store is_rand as metadata for causal analysis
-    metadata = {"is_rand": is_rand_arr}
+    metadata = {"is_rand": is_rand_arr.astype(bool, copy=False)}
+    source_domain = np.where(is_rand_arr > 0, "random", "standard").astype("<U8")
+    effective_preset = preprocessing_preset or "kuairand_causal"
 
     return CanonicalInteractions(
         user_id=user_id,
@@ -263,6 +304,10 @@ def load_kuairand1k(
         label=label,
         timestamp=timestamps_arr,
         sign=sign,
+        raw_target=raw_target,
+        behavior_type=behavior_type,
+        exposure_flag=is_rand_arr.astype(bool),
+        source_domain=source_domain,
         popularity=popularity,
         n_users=n_users,
         n_items=n_items,
@@ -271,4 +316,6 @@ def load_kuairand1k(
         user_features=user_features,
         item_features=item_features,
         metadata=metadata,
+        feedback_type="randomized-exposure",
+        preprocessing_preset=effective_preset,
     )

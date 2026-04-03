@@ -34,7 +34,8 @@ class NegativeSampler:
         self,
         batch_size: int,
         positive_items: torch.Tensor | None = None,
-        device: torch.device | str = "cpu",
+        device: torch.device | str | None = None,
+        generator: torch.Generator | None = None,
     ) -> torch.Tensor:
         """Sample negative item IDs.
 
@@ -42,10 +43,18 @@ class NegativeSampler:
             batch_size: Number of users in the batch.
             positive_items: (B,) tensor of positive items to avoid (best-effort).
             device: Target device.
+            generator: Optional deterministic RNG for reproducible sampling.
 
         Returns:
             (B, n_negatives) tensor of negative item IDs.
         """
+        if device is None:
+            device = (
+                positive_items.device
+                if positive_items is not None
+                else ("cuda" if torch.cuda.is_available() else "cpu")
+            )
+
         total = batch_size * self.n_negatives
         n_hard = int(total * self.hard_negative_ratio)
         n_uniform = total - n_hard
@@ -53,12 +62,23 @@ class NegativeSampler:
         parts = []
 
         if n_uniform > 0:
-            uniform_neg = torch.randint(0, self.n_items, (n_uniform,), device=device)
+            uniform_neg = torch.randint(
+                0,
+                self.n_items,
+                (n_uniform,),
+                device=device,
+                generator=generator,
+            )
             parts.append(uniform_neg)
 
         if n_hard > 0:
             weights = self._pop_weights.to(device)
-            hard_neg = torch.multinomial(weights, n_hard, replacement=True)
+            hard_neg = torch.multinomial(
+                weights,
+                n_hard,
+                replacement=True,
+                generator=generator,
+            )
             parts.append(hard_neg)
 
         neg_items = torch.cat(parts, dim=0) if len(parts) > 1 else parts[0]
@@ -73,6 +93,7 @@ class NegativeSampler:
                     self.n_items,
                     (collision_mask.sum().item(),),
                     device=device,
+                    generator=generator,
                 )
                 neg_items[collision_mask] = replacements
 

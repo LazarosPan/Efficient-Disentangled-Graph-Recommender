@@ -7,9 +7,16 @@ from pathlib import Path
 
 import numpy as np
 
-from ...utils.dataset_loader_utils import try_parse_timestamp_seconds
+from ...utils.dataset_loader_utils import (
+    downcast_numeric_array,
+    try_parse_timestamp_seconds,
+)
 from ..canonical import CanonicalInteractions
-from ..feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
+from ..feature_policy import (
+    DEFAULT_FEATURE_POLICY,
+    FeaturePolicyName,
+    resolve_feature_source,
+)
 from ...utils.csv_features import load_csv_features
 from ...utils.interaction_indexing import (
     compute_normalized_popularity,
@@ -60,7 +67,7 @@ def _load_item_categories(
 
     cat_to_idx = {c: i for i, c in enumerate(sorted(all_cat_ids))}
     n_cats = len(cat_to_idx)
-    features = np.zeros((n_items, n_cats), dtype=np.float32)
+    features = np.zeros((n_items, n_cats), dtype=np.uint8)
     for mapped_id, cats in raw_categories.items():
         for c in cats:
             features[mapped_id, cat_to_idx[c]] = 1.0
@@ -104,7 +111,7 @@ def _load_caption_categories(
         if all(ci < 0 for ci in col_indices):
             return None
 
-        features = np.zeros((n_items, len(target_cols)), dtype=np.float32)
+        features = np.zeros((n_items, len(target_cols)), dtype=np.int32)
         for line in f:
             parts = line.strip().split(",")
             if len(parts) <= vid_idx:
@@ -119,10 +126,10 @@ def _load_caption_categories(
             for j, ci in enumerate(col_indices):
                 if ci >= 0 and ci < len(parts):
                     try:
-                        features[mapped, j] = float(parts[ci])
+                        features[mapped, j] = int(float(parts[ci]))
                     except ValueError:
                         pass
-    return features
+    return downcast_numeric_array(features)
 
 
 def load_kuairec_v2(
@@ -130,15 +137,19 @@ def load_kuairec_v2(
     max_rows: int | None = None,
     include_optional_features: bool = True,
     feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY,
+    preprocessing_preset: str | None = None,
+    matrix_variant: str = "big_matrix",
 ) -> CanonicalInteractions:
-    """Load KuaiRec v2 from ``data_dir/KuaiRec_v2/data/big_matrix.csv``.
+    """Load KuaiRec v2 from ``data_dir/KuaiRec_v2/data/<matrix_variant>.csv``.
 
     Expected columns: user_id, video_id, watch_ratio, timestamp
     Label: watch_ratio >= 0.5 -> positive
     Sign:  (watch_ratio clipped to [0,2] - 1) -> [-1, 1]
     """
     base = Path(data_dir) / "KuaiRec_v2" / "data"
-    path = base / "big_matrix.csv"
+    if matrix_variant not in {"big_matrix", "small_matrix"}:
+        raise ValueError("matrix_variant must be 'big_matrix' or 'small_matrix'")
+    path = base / f"{matrix_variant}.csv"
     if not path.exists():
         raise FileNotFoundError(
             f"KuaiRec v2 not found at {path}. Download from https://kuairec.com/"
@@ -176,10 +187,10 @@ def load_kuairec_v2(
             malformed_timestamp_count,
         )
 
-    raw_users_arr = np.array(raw_users, dtype=np.int64)
-    raw_items_arr = np.array(raw_items, dtype=np.int64)
-    wr_arr = np.array(watch_ratios, dtype=np.float32)
-    timestamps_arr = np.array(timestamps, dtype=np.int64)
+    raw_users_arr = downcast_numeric_array(np.array(raw_users, dtype=np.int64))
+    raw_items_arr = downcast_numeric_array(np.array(raw_items, dtype=np.int64))
+    raw_watch_ratio = np.array(watch_ratios, dtype=np.float32)
+    timestamps_arr = downcast_numeric_array(np.array(timestamps, dtype=np.int64))
 
     indexed = remap_interaction_ids(raw_users_arr, raw_items_arr)
     user_id = indexed.user_id
@@ -190,7 +201,7 @@ def load_kuairec_v2(
     item_map = indexed.item_map
 
     # Clamp outliers before computing sign (watch_ratio can exceed 100)
-    wr_arr = np.clip(wr_arr, 0.0, 5.0)
+    wr_arr = np.clip(raw_watch_ratio, 0.0, 5.0)
 
     label = (wr_arr >= 0.5).astype(np.float32)
     sign = (np.clip(wr_arr, 0.0, 2.0) - 1.0).astype(np.float32)
@@ -200,53 +211,81 @@ def load_kuairec_v2(
     user_features = None
     item_features = None
     if include_optional_features:
-        if feature_policy == "all_optional":
+        load_user_features, user_feature_columns = resolve_feature_source(
+            feature_policy,
+            "kuairec_v2",
+            "user_features",
+            "data/user_features.csv",
+        )
+        if load_user_features:
             user_features = load_csv_features(
-                base / "user_features.csv", "user_id", user_map, n_users
+                base / "user_features.csv",
+                "user_id",
+                user_map,
+                n_users,
+                include_columns=user_feature_columns,
             )
+        load_user_features_raw, user_feature_raw_columns = resolve_feature_source(
+            feature_policy,
+            "kuairec_v2",
+            "user_features",
+            "data/user_features_raw.csv",
+        )
+        if load_user_features_raw:
             user_features_raw = load_csv_features(
-                base / "user_features_raw.csv", "user_id", user_map, n_users
+                base / "user_features_raw.csv",
+                "user_id",
+                user_map,
+                n_users,
+                include_columns=user_feature_raw_columns,
             )
             if user_features is not None and user_features_raw is not None:
                 user_features = np.hstack([user_features, user_features_raw])
             elif user_features_raw is not None:
                 user_features = user_features_raw
 
-            item_features_daily = load_csv_features(
-                base / "item_daily_features.csv", "video_id", item_map, n_items
-            )
-            item_caption_cats = _load_caption_categories(
-                base / "kuairec_caption_category.csv", item_map, n_items
-            )
-        else:
+        item_features_daily = None
+        item_caption_cats = None
+        item_cat_feats = None
+        load_item_daily_features, item_daily_columns = resolve_feature_source(
+            feature_policy,
+            "kuairec_v2",
+            "item_features",
+            "data/item_daily_features.csv",
+        )
+        if load_item_daily_features:
             item_features_daily = load_csv_features(
                 base / "item_daily_features.csv",
                 "video_id",
                 item_map,
                 n_items,
-                include_columns=(
-                    "author_id",
-                    "video_type",
-                    "upload_dt",
-                    "upload_type",
-                    "visible_status",
-                    "music_id",
-                ),
+                include_columns=item_daily_columns,
             )
+        load_caption_categories, caption_columns = resolve_feature_source(
+            feature_policy,
+            "kuairec_v2",
+            "item_features",
+            "data/kuairec_caption_category.csv",
+        )
+        if load_caption_categories:
             item_caption_cats = _load_caption_categories(
                 base / "kuairec_caption_category.csv",
                 item_map,
                 n_items,
-                include_columns=(
-                    "first_level_category_id",
-                    "second_level_category_id",
-                    "third_level_category_id",
-                ),
+                include_columns=caption_columns,
             )
-
-        item_cat_feats = _load_item_categories(
-            base / "item_categories.csv", item_map, n_items
+        load_item_categories, _ = resolve_feature_source(
+            feature_policy,
+            "kuairec_v2",
+            "item_features",
+            "data/item_categories.csv",
         )
+        if load_item_categories:
+            item_cat_feats = _load_item_categories(
+                base / "item_categories.csv",
+                item_map,
+                n_items,
+            )
         item_parts = [
             f
             for f in [item_features_daily, item_cat_feats, item_caption_cats]
@@ -254,12 +293,20 @@ def load_kuairec_v2(
         ]
         item_features = np.hstack(item_parts) if item_parts else None
 
+    effective_preset = preprocessing_preset or (
+        "kuairec_fullobs" if matrix_variant == "small_matrix" else "kuairec_watchratio"
+    )
+    source_domain = np.full(len(user_id), matrix_variant, dtype="<U16")
+    metadata = {"matrix_variant": matrix_variant}
+
     return CanonicalInteractions(
         user_id=user_id,
         item_id=item_id,
         label=label,
         timestamp=timestamps_arr,
         sign=sign,
+        raw_target=raw_watch_ratio,
+        source_domain=source_domain,
         popularity=popularity,
         n_users=n_users,
         n_items=n_items,
@@ -267,4 +314,7 @@ def load_kuairec_v2(
         item_map=item_map,
         user_features=user_features,
         item_features=item_features,
+        metadata=metadata,
+        feedback_type="implicit",
+        preprocessing_preset=effective_preset,
     )

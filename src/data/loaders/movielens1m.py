@@ -6,9 +6,16 @@ from pathlib import Path
 
 import numpy as np
 
-from ...utils.dataset_loader_utils import resolve_local_dataset_dir
+from ...utils.dataset_loader_utils import (
+    downcast_numeric_array,
+    resolve_local_dataset_dir,
+)
 from ..canonical import CanonicalInteractions
-from ..feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
+from ..feature_policy import (
+    DEFAULT_FEATURE_POLICY,
+    FeaturePolicyName,
+    resolve_feature_source,
+)
 from ...utils.interaction_indexing import (
     compute_normalized_popularity,
     remap_interaction_ids,
@@ -50,7 +57,7 @@ def _parse_users_dat(
     if not path.exists():
         return None
 
-    features = np.zeros((n_users, 3), dtype=np.float32)
+    features = np.zeros((n_users, 3), dtype=np.uint8)
     with open(path, encoding="latin-1") as f:
         for line in f:
             parts = line.strip().split("::")
@@ -60,9 +67,9 @@ def _parse_users_dat(
             if uid not in user_map:
                 continue
             idx = user_map[uid]
-            features[idx, 0] = 0.0 if parts[1] == "F" else 1.0  # gender
-            features[idx, 1] = float(_AGE_MAP.get(int(parts[2]), 3))  # age ordinal
-            features[idx, 2] = float(parts[3])  # occupation (0-20)
+            features[idx, 0] = 0 if parts[1] == "F" else 1  # gender
+            features[idx, 1] = _AGE_MAP.get(int(parts[2]), 3)  # age ordinal
+            features[idx, 2] = int(parts[3])  # occupation (0-20)
     return features
 
 
@@ -74,7 +81,7 @@ def _parse_movies_dat(
     if not path.exists():
         return None
 
-    features = np.zeros((n_items, len(_GENRES)), dtype=np.float32)
+    features = np.zeros((n_items, len(_GENRES)), dtype=np.uint8)
     with open(path, encoding="latin-1") as f:
         for line in f:
             parts = line.strip().split("::")
@@ -134,10 +141,10 @@ def _parse_ratings_dat(
                 break
 
     return (
-        np.asarray(user_ids, dtype=np.int64),
-        np.asarray(item_ids, dtype=np.int64),
+        downcast_numeric_array(np.asarray(user_ids, dtype=np.int64)),
+        downcast_numeric_array(np.asarray(item_ids, dtype=np.int64)),
         np.asarray(ratings, dtype=np.float32),
-        np.asarray(timestamps, dtype=np.int64),
+        downcast_numeric_array(np.asarray(timestamps, dtype=np.int64)),
     )
 
 
@@ -146,6 +153,7 @@ def load_movielens1m(
     max_rows: int | None = None,
     include_optional_features: bool = True,
     feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY,
+    preprocessing_preset: str | None = None,
 ) -> CanonicalInteractions:
     """Load ML-1M from local raw files.
 
@@ -179,8 +187,24 @@ def load_movielens1m(
     user_features = None
     item_features = None
     if include_optional_features:
-        user_features = _parse_users_dat(raw_dir, user_map, n_users)
-        item_features = _parse_movies_dat(raw_dir, item_map, n_items)
+        load_user_features, _ = resolve_feature_source(
+            feature_policy,
+            "movielens1m",
+            "user_features",
+            "raw/users.dat",
+        )
+        if load_user_features:
+            user_features = _parse_users_dat(raw_dir, user_map, n_users)
+        load_item_features, _ = resolve_feature_source(
+            feature_policy,
+            "movielens1m",
+            "item_features",
+            "raw/movies.dat",
+        )
+        if load_item_features:
+            item_features = _parse_movies_dat(raw_dir, item_map, n_items)
+
+    effective_preset = preprocessing_preset or "movielens_explicit"
 
     return CanonicalInteractions(
         user_id=user_id,
@@ -188,6 +212,7 @@ def load_movielens1m(
         label=label,
         timestamp=timestamps,
         sign=sign,
+        raw_target=ratings.astype(np.float32, copy=False),
         popularity=popularity,
         n_users=n_users,
         n_items=n_items,
@@ -195,4 +220,6 @@ def load_movielens1m(
         item_map=item_map,
         user_features=user_features,
         item_features=item_features,
+        feedback_type="explicit",
+        preprocessing_preset=effective_preset,
     )

@@ -78,6 +78,7 @@ def load_amazonbook(
     max_rows: int | None = None,
     include_optional_features: bool = True,
     feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY,
+    preprocessing_preset: str | None = None,
 ) -> CanonicalInteractions:
     """Load Amazon-Book from local LightGCN-format split files.
 
@@ -110,6 +111,7 @@ def load_amazonbook(
     n_users = indexed.n_users
     n_items = indexed.n_items
     popularity = compute_normalized_popularity(item_id, n_items)
+    effective_preset = preprocessing_preset or "amazonbook_graph_only"
 
     return CanonicalInteractions(
         user_id=user_id,
@@ -124,4 +126,6 @@ def load_amazonbook(
         item_map=item_map,
         train_mask=train_mask,
         test_mask=test_mask,
+        feedback_type="implicit",
+        preprocessing_preset=effective_preset,
     )

@@ -55,25 +55,22 @@ def describe(name: str, data_dir: str = "data") -> dict | None:
         else None,
         "has_predefined_splits": c.train_mask is not None,
         "split_source": "predefined" if c.train_mask is not None else "derived",
+        "feedback_type": c.feedback_type,
+        "preprocessing_preset": c.preprocessing_preset,
     }
 
     # Split sizes
+    resolved_train, resolved_val, resolved_test = c.get_splits()
+    stats["train_size"] = int(resolved_train.sum())
+    stats["val_size"] = int(resolved_val.sum())
+    stats["test_size"] = int(resolved_test.sum())
     if c.train_mask is not None:
-        resolved_train, resolved_val, resolved_test = c.get_splits()
-        stats["train_size"] = int(resolved_train.sum())
-        stats["val_size"] = int(resolved_val.sum())
-        stats["test_size"] = int(resolved_test.sum())
         if c.val_mask is None and c.test_mask is not None:
             stats["split_source"] = "train/test"
         else:
             stats["split_source"] = "predefined"
     else:
-        n = len(c)
-        train_end = int(n * 0.8)
-        val_end = int(n * 0.9)
-        stats["train_size"] = train_end
-        stats["val_size"] = val_end - train_end
-        stats["test_size"] = n - val_end
+        stats["split_source"] = "derived:per_user"
     print(
         f"  Splits ({stats['split_source']}): "
         f"train={stats['train_size']:,} val={stats['val_size']:,} test={stats['test_size']:,}"
@@ -86,6 +83,23 @@ def describe(name: str, data_dir: str = "data") -> dict | None:
     )
     print(f"  Sign range: [{stats['sign_min']:.2f}, {stats['sign_max']:.2f}]")
     print(f"  Positive rate: {stats['pos_rate']:.2%}")
+    if stats["feedback_type"] is not None:
+        print(f"  Feedback type: {stats['feedback_type']}")
+    if stats["preprocessing_preset"] is not None:
+        print(f"  Preprocessing preset: {stats['preprocessing_preset']}")
+    if c.raw_target is not None:
+        print(
+            "  Raw target range: "
+            f"[{float(np.min(c.raw_target)):.2f}, {float(np.max(c.raw_target)):.2f}]"
+        )
+    if c.exposure_flag is not None:
+        print(f"  Random exposure rate: {float(np.mean(c.exposure_flag)):.2%}")
+    if c.behavior_type is not None:
+        preview = np.unique(c.behavior_type).tolist()[:8]
+        print(f"  Behavior types: {preview}")
+    if c.source_domain is not None:
+        preview = np.unique(c.source_domain).tolist()[:8]
+        print(f"  Source domains: {preview}")
 
     if c.metadata:
         for k, v in c.metadata.items():

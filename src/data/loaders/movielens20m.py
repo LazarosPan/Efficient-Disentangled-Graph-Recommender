@@ -7,8 +7,13 @@ from pathlib import Path
 
 import numpy as np
 
+from ...utils.dataset_loader_utils import downcast_numeric_array
 from ..canonical import CanonicalInteractions
-from ..feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
+from ..feature_policy import (
+    DEFAULT_FEATURE_POLICY,
+    FeaturePolicyName,
+    resolve_feature_source,
+)
 from ...utils.interaction_indexing import (
     compute_normalized_popularity,
     remap_interaction_ids,
@@ -52,7 +57,7 @@ def _load_movie_genres(
     if not path.exists():
         return None
 
-    features = np.zeros((n_items, len(_GENRES_20M)), dtype=np.float32)
+    features = np.zeros((n_items, len(_GENRES_20M)), dtype=np.uint8)
     matched = 0
     with open(path, encoding="utf-8") as f:
         f.readline()  # skip header
@@ -127,7 +132,7 @@ def _load_genome_scores(
         len(tag_data),
         n_tags,
     )
-    return features
+    return downcast_numeric_array(features, allow_float16=True)
 
 
 def load_movielens20m(
@@ -135,6 +140,7 @@ def load_movielens20m(
     max_rows: int | None = None,
     include_optional_features: bool = True,
     feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY,
+    preprocessing_preset: str | None = None,
 ) -> CanonicalInteractions:
     """Load ML-20M from ``data_dir/MovieLens20M/raw/ratings.csv``.
 
@@ -159,10 +165,10 @@ def load_movielens20m(
         max_rows=max_rows,
     )
 
-    raw_users = data[:, 0].astype(np.int64)
-    raw_items = data[:, 1].astype(np.int64)
+    raw_users = downcast_numeric_array(data[:, 0].astype(np.int64))
+    raw_items = downcast_numeric_array(data[:, 1].astype(np.int64))
     ratings = data[:, 2].astype(np.float32)
-    timestamps = data[:, 3].astype(np.int64)
+    timestamps = downcast_numeric_array(data[:, 3].astype(np.int64))
 
     indexed = remap_interaction_ids(raw_users, raw_items)
     user_id = indexed.user_id
@@ -180,12 +186,32 @@ def load_movielens20m(
     item_features = None
     if include_optional_features:
         raw_dir = Path(data_dir) / "MovieLens20M" / "raw"
-        genre_feats = _load_movie_genres(raw_dir / "movies.csv", item_map, n_items)
-        genome_feats = _load_genome_scores(
-            raw_dir / "genome-scores.csv", item_map, n_items
+        genre_feats = None
+        genome_feats = None
+        load_genres, _ = resolve_feature_source(
+            feature_policy,
+            "movielens20m",
+            "item_features",
+            "raw/movies.csv",
         )
+        if load_genres:
+            genre_feats = _load_movie_genres(raw_dir / "movies.csv", item_map, n_items)
+        load_genome_scores, _ = resolve_feature_source(
+            feature_policy,
+            "movielens20m",
+            "item_features",
+            "raw/genome-scores.csv",
+        )
+        if load_genome_scores:
+            genome_feats = _load_genome_scores(
+                raw_dir / "genome-scores.csv",
+                item_map,
+                n_items,
+            )
         item_parts = [f for f in [genre_feats, genome_feats] if f is not None]
         item_features = np.hstack(item_parts) if item_parts else None
+
+    effective_preset = preprocessing_preset or "movielens_explicit"
 
     return CanonicalInteractions(
         user_id=user_id,
@@ -193,10 +219,13 @@ def load_movielens20m(
         label=label,
         timestamp=timestamps,
         sign=sign,
+        raw_target=ratings.astype(np.float32, copy=False),
         popularity=popularity,
         n_users=n_users,
         n_items=n_items,
         user_map=user_map,
         item_map=item_map,
         item_features=item_features,
+        feedback_type="explicit",
+        preprocessing_preset=effective_preset,
     )
