@@ -1,6 +1,6 @@
 # Dataset Information Report
 
-- Generated at: 2026-03-22T22:31:05
+- Generated at: 2026-04-03T02:27:58
 - Scan root: `/home/lazar/Documents/MSc_Data_Science/MSc_Thesis/Causal-Embeddings-for-Recommendations/data`
 - Datasets scanned: 17
 - Files scanned: 114
@@ -144,98 +144,98 @@
 | data/log_standard_4_22_to_5_08_1k.csv | metadata | context | is_profile_enter | unknown | raw_only | review | needs manual causal review before promotion |
 | data/log_standard_4_22_to_5_08_1k.csv | metadata | context | is_rand | pre_treatment | analysis_retained | safe_candidate | eligible for quick utility probes in the current feature-aware path |
 | data/log_standard_4_22_to_5_08_1k.csv | metadata | context | tab | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | user_active_degree | unknown | raw_only | review | needs manual causal review before promotion |
-| data/user_features_1k.csv | user_features | user | is_lowactive_period | unknown | raw_only | review | needs manual causal review before promotion |
-| data/user_features_1k.csv | user_features | user | is_live_streamer | unknown | raw_only | review | needs manual causal review before promotion |
-| data/user_features_1k.csv | user_features | user | is_video_author | unknown | raw_only | review | needs manual causal review before promotion |
-| data/user_features_1k.csv | user_features | user | follow_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/user_features_1k.csv | user_features | user | follow_user_num_range | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | fans_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/user_features_1k.csv | user_features | user | fans_user_num_range | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | friend_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/user_features_1k.csv | user_features | user | friend_user_num_range | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | register_days | unknown | raw_only | review | needs manual causal review before promotion |
-| data/user_features_1k.csv | user_features | user | register_days_range | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | onehot_feat0 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | onehot_feat1 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | onehot_feat2 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | onehot_feat3 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | onehot_feat4 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | onehot_feat5 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | onehot_feat6 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | onehot_feat7 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | onehot_feat8 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | onehot_feat9 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | onehot_feat10 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | onehot_feat11 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | onehot_feat12 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | onehot_feat13 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | onehot_feat14 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | onehot_feat15 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | onehot_feat16 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features_1k.csv | user_features | user | onehot_feat17 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/video_features_basic_1k.csv | item_features | item | author_id | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
-| data/video_features_basic_1k.csv | item_features | item | video_type | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
-| data/video_features_basic_1k.csv | item_features | item | upload_dt | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
-| data/video_features_basic_1k.csv | item_features | item | upload_type | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
-| data/video_features_basic_1k.csv | item_features | item | visible_status | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
-| data/video_features_basic_1k.csv | item_features | item | video_duration | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_basic_1k.csv | item_features | item | server_width | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
-| data/video_features_basic_1k.csv | item_features | item | server_height | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
-| data/video_features_basic_1k.csv | item_features | item | music_id | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
-| data/video_features_basic_1k.csv | item_features | item | music_type | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
-| data/video_features_basic_1k.csv | item_features | item | tag | pre_treatment | raw_only | encode_then_test | pre-treatment descriptor but needs encoding and leakage review |
-| data/video_features_statistic_1k.csv | item_features | item | counts | unknown | raw_only | review | needs manual causal review before promotion |
-| data/video_features_statistic_1k.csv | item_features | item | show_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | show_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | play_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | play_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | play_duration | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | complete_play_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | complete_play_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | valid_play_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | valid_play_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | long_time_play_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | long_time_play_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | short_time_play_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | short_time_play_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | play_progress | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | comment_stay_duration | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | like_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | like_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | click_like_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | double_click_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | cancel_like_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | cancel_like_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | comment_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | comment_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | direct_comment_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | reply_comment_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | delete_comment_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | delete_comment_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | comment_like_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | comment_like_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | follow_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | follow_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | cancel_follow_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | cancel_follow_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | share_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | share_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | download_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | download_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | report_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | report_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | reduce_similar_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | reduce_similar_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | collect_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | collect_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | cancel_collect_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | cancel_collect_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | direct_comment_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | reply_comment_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | share_all_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | share_all_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/video_features_statistic_1k.csv | item_features | item | outsite_share_all_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/user_features_1k.csv | user_features | user | user_active_degree | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | is_lowactive_period | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | is_live_streamer | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | is_video_author | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | follow_user_num | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | follow_user_num_range | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | fans_user_num | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | fans_user_num_range | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | friend_user_num | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | friend_user_num_range | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | register_days | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | register_days_range | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | onehot_feat0 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | onehot_feat1 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | onehot_feat2 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | onehot_feat3 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | onehot_feat4 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | onehot_feat5 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | onehot_feat6 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | onehot_feat7 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | onehot_feat8 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | onehot_feat9 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | onehot_feat10 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | onehot_feat11 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | onehot_feat12 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | onehot_feat13 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | onehot_feat14 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | onehot_feat15 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | onehot_feat16 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features_1k.csv | user_features | user | onehot_feat17 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/video_features_basic_1k.csv | item_features | item | author_id | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| data/video_features_basic_1k.csv | item_features | item | video_type | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| data/video_features_basic_1k.csv | item_features | item | upload_dt | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| data/video_features_basic_1k.csv | item_features | item | upload_type | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| data/video_features_basic_1k.csv | item_features | item | visible_status | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| data/video_features_basic_1k.csv | item_features | item | video_duration | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_basic_1k.csv | item_features | item | server_width | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| data/video_features_basic_1k.csv | item_features | item | server_height | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| data/video_features_basic_1k.csv | item_features | item | music_id | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| data/video_features_basic_1k.csv | item_features | item | music_type | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| data/video_features_basic_1k.csv | item_features | item | tag | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | counts | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | show_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | show_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | play_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | play_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | play_duration | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | complete_play_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | complete_play_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | valid_play_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | valid_play_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | long_time_play_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | long_time_play_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | short_time_play_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | short_time_play_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | play_progress | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | comment_stay_duration | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | like_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | like_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | click_like_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | double_click_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | cancel_like_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | cancel_like_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | comment_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | comment_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | direct_comment_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | reply_comment_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | delete_comment_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | delete_comment_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | comment_like_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | comment_like_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | follow_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | follow_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | cancel_follow_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | cancel_follow_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | share_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | share_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | download_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | download_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | report_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | report_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | reduce_similar_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | reduce_similar_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | collect_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | collect_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | cancel_collect_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | cancel_collect_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | direct_comment_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | reply_comment_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | share_all_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | share_all_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/video_features_statistic_1k.csv | item_features | item | outsite_share_all_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
 
 ### Files
 
@@ -389,9 +389,9 @@
 
 | File | Aspect | Entity | Column | Causal Role | Pipeline Stage | Quick Check | Rationale |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| raw/UserBehavior.csv | item_features | item | category_id | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
-| raw/UserBehavior.csv | item_features | item | behavior_type | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| raw/UserBehavior.csv | item_features | item | timestamp | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
+| raw/UserBehavior.csv | item_features | item | category_id | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| raw/UserBehavior.csv | item_features | item | behavior_type | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| raw/UserBehavior.csv | item_features | item | timestamp | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
 
 ### Files
 
@@ -548,73 +548,73 @@
 | data/big_matrix.csv | item_features | item | date | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
 | data/big_matrix.csv | item_features | item | timestamp | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
 | data/big_matrix.csv | item_features | item | watch_ratio | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_categories.csv | item_features | item | feat | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
-| data/item_daily_features.csv | item_features | item | date | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/item_daily_features.csv | item_features | item | author_id | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
-| data/item_daily_features.csv | item_features | item | video_type | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
-| data/item_daily_features.csv | item_features | item | upload_dt | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
-| data/item_daily_features.csv | item_features | item | upload_type | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
-| data/item_daily_features.csv | item_features | item | visible_status | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
-| data/item_daily_features.csv | item_features | item | video_duration | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | video_width | unknown | raw_only | review | needs manual causal review before promotion |
-| data/item_daily_features.csv | item_features | item | video_height | unknown | raw_only | review | needs manual causal review before promotion |
-| data/item_daily_features.csv | item_features | item | music_id | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
-| data/item_daily_features.csv | item_features | item | video_tag_id | non_causal | raw_only | exclude | identifier or bookkeeping field |
-| data/item_daily_features.csv | item_features | item | video_tag_name | unknown | raw_only | review | needs manual causal review before promotion |
-| data/item_daily_features.csv | item_features | item | show_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | show_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | play_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | play_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | play_duration | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | complete_play_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | complete_play_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | valid_play_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | valid_play_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | long_time_play_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | long_time_play_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | short_time_play_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | short_time_play_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | play_progress | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | comment_stay_duration | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | like_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | like_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | click_like_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | double_click_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | cancel_like_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | cancel_like_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | comment_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | comment_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | direct_comment_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | reply_comment_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | delete_comment_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | delete_comment_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | comment_like_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | comment_like_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | follow_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | follow_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | cancel_follow_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | cancel_follow_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | share_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | share_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | download_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | download_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | report_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | report_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | reduce_similar_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | reduce_similar_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | collect_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | collect_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | cancel_collect_cnt | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/item_daily_features.csv | item_features | item | cancel_collect_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/kuairec_caption_category.csv | item_features | item | manual_cover_text | pre_treatment | raw_only | encode_then_test | pre-treatment descriptor but needs encoding and leakage review |
-| data/kuairec_caption_category.csv | item_features | item | caption | pre_treatment | raw_only | encode_then_test | pre-treatment descriptor but needs encoding and leakage review |
-| data/kuairec_caption_category.csv | item_features | item | topic_tag | pre_treatment | raw_only | encode_then_test | pre-treatment descriptor but needs encoding and leakage review |
-| data/kuairec_caption_category.csv | item_features | item | first_level_category_id | pre_treatment | model_consumed | encode_then_test | pre-treatment descriptor but needs encoding and leakage review |
-| data/kuairec_caption_category.csv | item_features | item | first_level_category_name | unknown | raw_only | review | needs manual causal review before promotion |
-| data/kuairec_caption_category.csv | item_features | item | second_level_category_id | pre_treatment | model_consumed | encode_then_test | pre-treatment descriptor but needs encoding and leakage review |
-| data/kuairec_caption_category.csv | item_features | item | second_level_category_name | unknown | raw_only | review | needs manual causal review before promotion |
-| data/kuairec_caption_category.csv | item_features | item | third_level_category_id | pre_treatment | model_consumed | encode_then_test | pre-treatment descriptor but needs encoding and leakage review |
-| data/kuairec_caption_category.csv | item_features | item | third_level_category_name | unknown | raw_only | review | needs manual causal review before promotion |
+| data/item_categories.csv | item_features | item | feat | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| data/item_daily_features.csv | item_features | item | date | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | author_id | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| data/item_daily_features.csv | item_features | item | video_type | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| data/item_daily_features.csv | item_features | item | upload_dt | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| data/item_daily_features.csv | item_features | item | upload_type | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| data/item_daily_features.csv | item_features | item | visible_status | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| data/item_daily_features.csv | item_features | item | video_duration | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | video_width | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | video_height | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | music_id | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| data/item_daily_features.csv | item_features | item | video_tag_id | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | video_tag_name | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | show_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | show_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | play_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | play_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | play_duration | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | complete_play_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | complete_play_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | valid_play_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | valid_play_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | long_time_play_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | long_time_play_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | short_time_play_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | short_time_play_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | play_progress | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | comment_stay_duration | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | like_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | like_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | click_like_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | double_click_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | cancel_like_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | cancel_like_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | comment_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | comment_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | direct_comment_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | reply_comment_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | delete_comment_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | delete_comment_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | comment_like_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | comment_like_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | follow_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | follow_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | cancel_follow_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | cancel_follow_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | share_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | share_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | download_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | download_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | report_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | report_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | reduce_similar_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | reduce_similar_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | collect_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | collect_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | cancel_collect_cnt | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/item_daily_features.csv | item_features | item | cancel_collect_user_num | post_treatment_excluded | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
+| data/kuairec_caption_category.csv | item_features | item | manual_cover_text | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/kuairec_caption_category.csv | item_features | item | caption | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/kuairec_caption_category.csv | item_features | item | topic_tag | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/kuairec_caption_category.csv | item_features | item | first_level_category_id | safe_pre_treatment | model_consumed | encode_then_test | pre-treatment descriptor but needs encoding and leakage review |
+| data/kuairec_caption_category.csv | item_features | item | first_level_category_name | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/kuairec_caption_category.csv | item_features | item | second_level_category_id | safe_pre_treatment | model_consumed | encode_then_test | pre-treatment descriptor but needs encoding and leakage review |
+| data/kuairec_caption_category.csv | item_features | item | second_level_category_name | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/kuairec_caption_category.csv | item_features | item | third_level_category_id | safe_pre_treatment | model_consumed | encode_then_test | pre-treatment descriptor but needs encoding and leakage review |
+| data/kuairec_caption_category.csv | item_features | item | third_level_category_name | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
 | data/small_matrix.csv | item_features | item | play_duration | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
 | data/small_matrix.csv | item_features | item | video_duration | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
 | data/small_matrix.csv | item_features | item | time | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
@@ -622,36 +622,36 @@
 | data/small_matrix.csv | item_features | item | timestamp | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
 | data/small_matrix.csv | item_features | item | watch_ratio | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
 | data/social_network.csv | metadata | context | friend_list | proxy | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
-| data/user_features.csv | user_features | user | user_active_degree | unknown | raw_only | review | needs manual causal review before promotion |
-| data/user_features.csv | user_features | user | is_lowactive_period | unknown | raw_only | review | needs manual causal review before promotion |
-| data/user_features.csv | user_features | user | is_live_streamer | unknown | raw_only | review | needs manual causal review before promotion |
-| data/user_features.csv | user_features | user | is_video_author | unknown | raw_only | review | needs manual causal review before promotion |
-| data/user_features.csv | user_features | user | follow_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/user_features.csv | user_features | user | follow_user_num_range | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | fans_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/user_features.csv | user_features | user | fans_user_num_range | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | friend_user_num | post_treatment | raw_only | defer | likely downstream of exposure or outcome; keep out of default causal features |
-| data/user_features.csv | user_features | user | friend_user_num_range | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | register_days | unknown | raw_only | review | needs manual causal review before promotion |
-| data/user_features.csv | user_features | user | register_days_range | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | onehot_feat0 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | onehot_feat1 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | onehot_feat2 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | onehot_feat3 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | onehot_feat4 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | onehot_feat5 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | onehot_feat6 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | onehot_feat7 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | onehot_feat8 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | onehot_feat9 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | onehot_feat10 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | onehot_feat11 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | onehot_feat12 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | onehot_feat13 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | onehot_feat14 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | onehot_feat15 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | onehot_feat16 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
-| data/user_features.csv | user_features | user | onehot_feat17 | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
+| data/user_features.csv | user_features | user | user_active_degree | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | is_lowactive_period | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | is_live_streamer | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | is_video_author | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | follow_user_num | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | follow_user_num_range | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | fans_user_num | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | fans_user_num_range | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | friend_user_num | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | friend_user_num_range | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | register_days | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | register_days_range | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | onehot_feat0 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | onehot_feat1 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | onehot_feat2 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | onehot_feat3 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | onehot_feat4 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | onehot_feat5 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | onehot_feat6 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | onehot_feat7 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | onehot_feat8 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | onehot_feat9 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | onehot_feat10 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | onehot_feat11 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | onehot_feat12 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | onehot_feat13 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | onehot_feat14 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | onehot_feat15 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | onehot_feat16 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
+| data/user_features.csv | user_features | user | onehot_feat17 | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
 | data/video_raw_categories_multi.csv | item_features | item | category_name | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
 | data/video_raw_categories_multi.csv | item_features | item | category_id | pre_treatment | raw_only | load_then_test | looks safe enough to prototype after adding loader support |
 | data/video_raw_categories_multi.csv | item_features | item | category_level | unknown | raw_only | review | needs manual causal review before promotion |
@@ -727,13 +727,13 @@
 | File | Aspect | Entity | Column | Causal Role | Pipeline Stage | Quick Check | Rationale |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | raw/genome-scores.csv | item_features | item | tagid | unknown | raw_only | review | needs manual causal review before promotion |
-| raw/genome-scores.csv | item_features | item | relevance | unknown | model_consumed | review | needs manual causal review before promotion |
+| raw/genome-scores.csv | item_features | item | relevance | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
 | raw/genome-tags.csv | item_features | item | tagid | unknown | raw_only | review | needs manual causal review before promotion |
 | raw/genome-tags.csv | item_features | item | tag | proxy | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
 | raw/links.csv | metadata | context | imdbid | non_causal | raw_only | exclude | identifier or bookkeeping field |
 | raw/links.csv | metadata | context | tmdbid | non_causal | raw_only | exclude | identifier or bookkeeping field |
 | raw/movies.csv | item_features | item | title | pre_treatment | raw_only | encode_then_test | pre-treatment descriptor but needs encoding and leakage review |
-| raw/movies.csv | item_features | item | genres | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| raw/movies.csv | item_features | item | genres | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
 | raw/ratings.csv | interactions | interaction | rating | post_treatment | model_consumed | defer | likely downstream of exposure or outcome; keep out of default causal features |
 | raw/ratings.csv | interactions | context | timestamp | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
 | raw/tags.csv | item_features | item | tag | proxy | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
@@ -951,13 +951,13 @@
 | File | Aspect | Entity | Column | Causal Role | Pipeline Stage | Quick Check | Rationale |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | raw/movies.dat | item_features | item | title | pre_treatment | raw_only | encode_then_test | pre-treatment descriptor but needs encoding and leakage review |
-| raw/movies.dat | item_features | item | genres | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
+| raw/movies.dat | item_features | item | genres | safe_pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
 | raw/ratings.dat | interactions | interaction | rating | post_treatment | model_consumed | defer | likely downstream of exposure or outcome; keep out of default causal features |
 | raw/ratings.dat | interactions | context | timestamp | pre_treatment | model_consumed | safe_candidate | eligible for quick utility probes in the current feature-aware path |
-| raw/users.dat | user_features | user | gender | pre_treatment | graph_retained | model_extension_needed | already loaded but not consumed by the current model |
-| raw/users.dat | user_features | user | age | pre_treatment | graph_retained | model_extension_needed | already loaded but not consumed by the current model |
-| raw/users.dat | user_features | user | occupation | pre_treatment | graph_retained | model_extension_needed | already loaded but not consumed by the current model |
-| raw/users.dat | user_features | user | zip_code | pre_treatment | graph_retained | model_extension_needed | already loaded but not consumed by the current model |
+| raw/users.dat | user_features | user | gender | safe_pre_treatment | graph_retained | model_extension_needed | already loaded but not consumed by the current model |
+| raw/users.dat | user_features | user | age | safe_pre_treatment | graph_retained | model_extension_needed | already loaded but not consumed by the current model |
+| raw/users.dat | user_features | user | occupation | safe_pre_treatment | graph_retained | model_extension_needed | already loaded but not consumed by the current model |
+| raw/users.dat | user_features | user | zip_code | proxy_only | raw_only | ablation_only | potentially useful but entangled with exposure, search, or social context |
 
 ### Files
 

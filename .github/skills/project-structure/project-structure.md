@@ -166,7 +166,9 @@
 │   │   ├── CaDSI_audit.md
 │   │   ├── CausE_audit.md
 │   │   ├── DICE_audit.md
+│   │   ├── DirectAU_audit.md
 │   │   ├── FMMRec_audit.md
+│   │   ├── LightGCNpp_audit.md
 │   │   ├── MCLN_audit.md
 │   │   ├── MGCE_audit.md
 │   │   ├── PropCare_audit.md
@@ -179,6 +181,10 @@
 │   ├── notes
 │   │   ├── manus_research_report.md
 │   │   ├── progress_ideas.md
+│   │   ├── recsys_improvements.md
+│   │   ├── ucagnn_consolidated_recommendations.md
+│   │   ├── UCaGNN_updates_implementation_focused.md
+│   │   ├── UCaGNN_updates.md
 │   │   └── useful_commands.md
 │   ├── paper_summaries
 │   │   ├── full_summary.md
@@ -199,7 +205,8 @@
 │   │   ├── models.md
 │   │   ├── README.md
 │   │   ├── theoretical_justifications.md
-│   │   └── training.md
+│   │   ├── training.md
+│   │   └── ucagnn_full.md
 │   └── usage
 │       ├── experiments.md
 │       └── scripts.md
@@ -219,20 +226,17 @@
 │   ├── run_benchmark.py
 │   └── run_experiment.py
 ├── LICENCE
-├── main.py
+├── __pycache__
+│   └── main.cpython-313.pyc
 ├── pyproject.toml
 ├── README.md
 ├── results
-│   └── feature_policy_probes.json
+│   └── thesis_experiments.db
 ├── scripts
-│   ├── audit_metrics.py
 │   ├── cleanup_experiment_artifacts.py
 │   ├── download_pyg_datasets.py
 │   ├── evaluate_scoring_modes.py
-│   ├── feature_policy_probes.py
 │   ├── __init__.py
-│   ├── list_commands.py
-│   ├── preflight_experiments.py
 │   ├── __pycache__
 │   │   ├── audit_metrics.cpython-313.pyc
 │   │   ├── cleanup_experiment_artifacts.cpython-313.pyc
@@ -247,13 +251,12 @@
 │   │   ├── verify_pipeline.cpython-313.pyc
 │   │   ├── verify_setup.cpython-313.pyc
 │   │   ├── verify_setup.cpython-314.pyc
-│   │   └── verify_sqlite.cpython-313.pyc
+│   │   ├── verify_sqlite.cpython-313.pyc
+│   │   ├── visualize_results.cpython-313.pyc
+│   │   └── _workflow_helpers.cpython-313.pyc
 │   ├── query_results.py
 │   ├── quick_validate.py
 │   ├── reset_experiment_db.py
-│   ├── verify_pipeline.py
-│   ├── verify_setup.py
-│   ├── verify_sqlite.py
 │   └── _workflow_helpers.py
 ├── src
 │   ├── data
@@ -280,19 +283,23 @@
 │   │   │   │   ├── movielens1m.cpython-313.pyc
 │   │   │   │   ├── movielens20m.cpython-310.pyc
 │   │   │   │   ├── movielens20m.cpython-313.pyc
+│   │   │   │   ├── _shared.cpython-313.pyc
 │   │   │   │   └── taobao.cpython-313.pyc
 │   │   │   └── taobao.py
 │   │   ├── negative_sampler.py
 │   │   ├── __pycache__
 │   │   │   ├── canonical.cpython-310.pyc
 │   │   │   ├── canonical.cpython-313.pyc
+│   │   │   ├── canonical.cpython-314.pyc
 │   │   │   ├── feature_policy.cpython-313.pyc
 │   │   │   ├── graph_builder.cpython-310.pyc
 │   │   │   ├── graph_builder.cpython-313.pyc
 │   │   │   ├── __init__.cpython-310.pyc
 │   │   │   ├── __init__.cpython-313.pyc
+│   │   │   ├── __init__.cpython-314.pyc
 │   │   │   ├── negative_sampler.cpython-313.pyc
-│   │   │   └── subgraph_sampler.cpython-313.pyc
+│   │   │   ├── subgraph_sampler.cpython-313.pyc
+│   │   │   └── subgraph_sampler.cpython-314.pyc
 │   │   └── subgraph_sampler.py
 │   ├── data_exploration
 │   │   ├── data_exploration.ipynb
@@ -307,13 +314,8 @@
 │   │   └── __init__.py
 │   ├── __init__.py
 │   ├── losses
-│   │   ├── bpr.py
-│   │   ├── contrastive.py
-│   │   ├── counterfactual.py
 │   │   ├── __init__.py
 │   │   ├── loss_suite.py
-│   │   ├── orthogonality.py
-│   │   ├── popularity.py
 │   │   └── __pycache__
 │   │       ├── bpr.cpython-313.pyc
 │   │       ├── contrastive.cpython-313.pyc
@@ -346,32 +348,50 @@
 │   │       └── __init__.cpython-313.pyc
 │   ├── __pycache__
 │   │   ├── feature_policy.cpython-313.pyc
-│   │   └── __init__.cpython-313.pyc
+│   │   ├── __init__.cpython-313.pyc
+│   │   └── __init__.cpython-314.pyc
 │   ├── training
-│   │   ├── cached_trainer.py
 │   │   ├── evaluator.py
 │   │   ├── __init__.py
 │   │   ├── mini_batch_trainer.py
-│   │   ├── __pycache__
-│   │   │   ├── cached_trainer.cpython-313.pyc
-│   │   │   ├── evaluator.cpython-313.pyc
-│   │   │   ├── __init__.cpython-313.pyc
-│   │   │   ├── mini_batch_trainer.cpython-313.pyc
-│   │   │   └── trainer.cpython-313.pyc
-│   │   └── trainer.py
+│   │   └── __pycache__
+│   │       ├── _base.cpython-313.pyc
+│   │       ├── cached_trainer.cpython-313.pyc
+│   │       ├── evaluator.cpython-313.pyc
+│   │       ├── __init__.cpython-313.pyc
+│   │       ├── mini_batch_trainer.cpython-313.pyc
+│   │       └── trainer.cpython-313.pyc
 │   └── utils
 │       ├── config.py
 │       ├── csv_features.py
+│       ├── dataset_loader_utils.py
 │       ├── experiment_logger.py
 │       ├── __init__.py
 │       ├── interaction_indexing.py
-│       └── __pycache__
-│           ├── config.cpython-310.pyc
-│           ├── config.cpython-313.pyc
-│           ├── csv_features.cpython-313.pyc
-│           ├── experiment_logger.cpython-313.pyc
-│           ├── __init__.cpython-310.pyc
-│           ├── __init__.cpython-313.pyc
-│           └── interaction_indexing.cpython-313.pyc
+│       ├── __pycache__
+│       │   ├── config.cpython-310.pyc
+│       │   ├── config.cpython-313.pyc
+│       │   ├── csv_features.cpython-313.pyc
+│       │   ├── dataset_loader_utils.cpython-313.pyc
+│       │   ├── experiment_logger.cpython-313.pyc
+│       │   ├── __init__.cpython-310.pyc
+│       │   ├── __init__.cpython-313.pyc
+│       │   ├── interaction_indexing.cpython-313.pyc
+│       │   └── trainer_runtime.cpython-313.pyc
+│       └── trainer_runtime.py
+├── tests
+│   ├── __pycache__
+│   │   ├── test_benchmark_plan.cpython-313.pyc
+│   │   ├── test_benchmark_plan.cpython-313-pytest-9.0.2.pyc
+│   │   ├── test_causal_training_contract.cpython-313.pyc
+│   │   ├── test_causal_training_contract.cpython-313-pytest-9.0.2.pyc
+│   │   ├── test_formal_training_policy.cpython-313.pyc
+│   │   ├── test_formal_training_policy.cpython-313-pytest-9.0.2.pyc
+│   │   ├── test_split_safety.cpython-313.pyc
+│   │   └── test_split_safety.cpython-313-pytest-9.0.2.pyc
+│   ├── sqlite_queries
+│   │   └── failure_reasons.sql
+│   ├── test_formal_training_policy.py
+│   └── test_split_safety.py
 └── uv.lock
 ```

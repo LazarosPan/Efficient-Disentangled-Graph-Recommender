@@ -250,7 +250,7 @@ from sklearn.model_selection import train_test_split
 
 # Helper function to prepare data
 def prepare_data(df):
-    X = torch.tensor(df.iloc[:, :-1].values, dtype=torch.float32)
+    X = torch.tensor(df.iloc[:, :-1].values, dtype=torch.bfloat16)
     y = torch.tensor(df.iloc[:, -1].values, dtype=torch.long)
     return X, y
 
