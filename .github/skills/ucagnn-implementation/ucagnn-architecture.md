@@ -22,7 +22,7 @@ Use this skill when working on model architecture, embeddings, GCN layers, or mo
 | Sign-aware alpha_pos/alpha_neg | SIGformer |
 
 ## Current Architecture Notes
-- `DualBranchGCN` now supports branch-specific propagation depth via `interest_gnn_layers` and `conformity_gnn_layers`; when omitted, both fall back to `n_gnn_layers`.
+- `DualBranchGCN` now uses explicit branch-specific propagation depths via `interest_gnn_layers` and `conformity_gnn_layers`, while the LightGCN single-branch path uses its own `single_branch_gnn_layers` field.
 - `ScoringModule` now supports both fixed fusion priors and a learnable user-conditioned gate via `scoring_weight_mode`, mixing interest, conformity, and popularity scores while keeping the counterfactual score diagnostic-only.
 - `EmbeddingModule` now supports optional item-feature fusion when `use_features=True` and canonical item features are available, producing branch-specific item inputs for interest and conformity propagation.
 - `EmbeddingModule` now routes branch-aware user selection, raw item popularity, train-split item recency, and optional popularity embeddings through shared private helpers so the full-graph, subgraph, and stacked-embedding paths stay aligned.

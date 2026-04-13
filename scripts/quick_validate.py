@@ -123,7 +123,7 @@ def _build_run_namespace(
         epochs=args.epochs,
         batch_size=args.batch_size,
         embed_dim=None,
-        n_gnn_layers=None,
+        single_branch_gnn_layers=None,
         interest_gnn_layers=None,
         conformity_gnn_layers=None,
         lr=None,

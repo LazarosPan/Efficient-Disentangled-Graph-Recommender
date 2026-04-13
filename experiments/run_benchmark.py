@@ -112,7 +112,7 @@ def _args_to_state(args: argparse.Namespace) -> dict[str, object]:
         "use_early_stopping": args.use_early_stopping,
         "batch_size": args.batch_size,
         "lr": args.lr,
-        "n_gnn_layers": args.n_gnn_layers,
+        "single_branch_gnn_layers": args.single_branch_gnn_layers,
         "interest_gnn_layers": args.interest_gnn_layers,
         "conformity_gnn_layers": args.conformity_gnn_layers,
         "dropout": args.dropout,
@@ -142,6 +142,7 @@ def _state_to_args(state: dict[str, object]) -> argparse.Namespace:
     scoring_weight_modes = benchmark_args.get("scoring_weight_modes")
     if not isinstance(scoring_weight_modes, list) or not scoring_weight_modes:
         scoring_weight_modes = list(DEFAULT_SCORING_WEIGHT_MODES)
+    legacy_depth = benchmark_args.get("n_gnn_layers")
     normalized_args = {
         "batch_size": None,
         "lr": None,
@@ -155,9 +156,13 @@ def _state_to_args(state: dict[str, object]) -> argparse.Namespace:
         "scoring_weight_modes": list(scoring_weight_modes),
         "use_early_stopping": benchmark_args.get("use_early_stopping", True),
         "profile_name": state.get("profile_name") or state.get("version"),
-        "n_gnn_layers": benchmark_args.get("n_gnn_layers"),
-        "interest_gnn_layers": benchmark_args.get("interest_gnn_layers"),
-        "conformity_gnn_layers": benchmark_args.get("conformity_gnn_layers"),
+        "single_branch_gnn_layers": benchmark_args.get(
+            "single_branch_gnn_layers", legacy_depth
+        ),
+        "interest_gnn_layers": benchmark_args.get("interest_gnn_layers", legacy_depth),
+        "conformity_gnn_layers": benchmark_args.get(
+            "conformity_gnn_layers", legacy_depth
+        ),
         "dropout": benchmark_args.get("dropout"),
         **benchmark_args,
     }
@@ -178,7 +183,7 @@ def _plans_match(
         "use_early_stopping",
         "batch_size",
         "lr",
-        "n_gnn_layers",
+        "single_branch_gnn_layers",
         "interest_gnn_layers",
         "conformity_gnn_layers",
         "dropout",
@@ -209,6 +214,7 @@ def _build_new_run_args(
     assert isinstance(matrix, dict)
     config_overrides = profile_bundle["config_overrides"]
     assert isinstance(config_overrides, dict)
+    legacy_depth = config_overrides.get("n_gnn_layers")
     return argparse.Namespace(
         tier=str(matrix["tier"]),
         presets=list(matrix["presets"]),
@@ -221,14 +227,20 @@ def _build_new_run_args(
         use_early_stopping=bool(config_overrides.get("use_early_stopping", True)),
         batch_size=int(config_overrides["batch_size"]),
         lr=float(config_overrides["lr"]),
-        n_gnn_layers=int(config_overrides["n_gnn_layers"])
-        if config_overrides.get("n_gnn_layers") is not None
+        single_branch_gnn_layers=int(config_overrides["single_branch_gnn_layers"])
+        if config_overrides.get("single_branch_gnn_layers") is not None
+        else int(legacy_depth)
+        if legacy_depth is not None
         else None,
         interest_gnn_layers=int(config_overrides["interest_gnn_layers"])
         if config_overrides.get("interest_gnn_layers") is not None
+        else int(legacy_depth)
+        if legacy_depth is not None
         else None,
         conformity_gnn_layers=int(config_overrides["conformity_gnn_layers"])
         if config_overrides.get("conformity_gnn_layers") is not None
+        else int(legacy_depth)
+        if legacy_depth is not None
         else None,
         dropout=float(config_overrides["dropout"])
         if config_overrides.get("dropout") is not None
@@ -625,7 +637,11 @@ def run_benchmark(args: argparse.Namespace) -> int:
                 epochs=args.epochs,
                 batch_size=args.batch_size,
                 embed_dim=None,
-                n_gnn_layers=getattr(args, "n_gnn_layers", None),
+                single_branch_gnn_layers=getattr(
+                    args,
+                    "single_branch_gnn_layers",
+                    None,
+                ),
                 interest_gnn_layers=getattr(args, "interest_gnn_layers", None),
                 conformity_gnn_layers=getattr(args, "conformity_gnn_layers", None),
                 dropout=getattr(args, "dropout", None),

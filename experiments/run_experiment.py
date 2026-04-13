@@ -91,6 +91,7 @@ def _build_canonical_name(
 ) -> str:
     """Build a descriptive canonical experiment name from the effective config."""
     preset = canonical_preset_name(preset)
+    layer_depth = config.max_gnn_layers
     parts = [
         config.dataset,
         preset or "custom",
@@ -98,14 +99,13 @@ def _build_canonical_name(
         f"ep{config.epochs}",
         f"bs{config.batch_size}",
         f"dim{config.embed_dim}",
-        f"layers{config.n_gnn_layers}",
+        f"layers{layer_depth}",
     ]
     if config.use_dual_branch and (
-        config.resolved_interest_gnn_layers != config.n_gnn_layers
-        or config.resolved_conformity_gnn_layers != config.n_gnn_layers
+        config.interest_gnn_layers != config.conformity_gnn_layers
     ):
         parts.append(
-            f"branchL{config.resolved_interest_gnn_layers}-{config.resolved_conformity_gnn_layers}"
+            f"branchL{config.interest_gnn_layers}-{config.conformity_gnn_layers}"
         )
     neighbor_str = "-".join(str(value) for value in config.num_neighbors)
     parts.append(f"nbr{neighbor_str}")
@@ -568,9 +568,7 @@ def _build_mlflow_params(
         "epochs": config.epochs,
         "batch_size": config.batch_size,
         "embed_dim": config.embed_dim,
-        "n_gnn_layers": config.n_gnn_layers,
-        "interest_gnn_layers": config.resolved_interest_gnn_layers,
-        "conformity_gnn_layers": config.resolved_conformity_gnn_layers,
+        "max_gnn_layers": config.max_gnn_layers,
         "train_scoring_mode": getattr(config, "train_scoring_mode", "default"),
         "eval_scoring_mode": config.eval_scoring_mode,
         "scoring_weight_mode": config.scoring_weight_mode,
@@ -592,6 +590,11 @@ def _build_mlflow_params(
         "project_version": _project_version(),
         "git_commit": _git_commit_short(),
     }
+    if config.use_dual_branch:
+        params["interest_gnn_layers"] = config.interest_gnn_layers
+        params["conformity_gnn_layers"] = config.conformity_gnn_layers
+    else:
+        params["single_branch_gnn_layers"] = config.single_branch_gnn_layers
     if intervention:
         params["intervention"] = intervention
     if recipe_name:
@@ -713,8 +716,8 @@ def build_config(args: argparse.Namespace) -> UCaGNNConfig:
         kwargs["batch_size"] = args.batch_size
     if getattr(args, "embed_dim", None) is not None:
         kwargs["embed_dim"] = args.embed_dim
-    if getattr(args, "n_gnn_layers", None) is not None:
-        kwargs["n_gnn_layers"] = args.n_gnn_layers
+    if getattr(args, "single_branch_gnn_layers", None) is not None:
+        kwargs["single_branch_gnn_layers"] = args.single_branch_gnn_layers
     if getattr(args, "interest_gnn_layers", None) is not None:
         kwargs["interest_gnn_layers"] = args.interest_gnn_layers
     if getattr(args, "conformity_gnn_layers", None) is not None:
@@ -763,7 +766,9 @@ def build_config(args: argparse.Namespace) -> UCaGNNConfig:
             "fused BPR stays active from epoch 0."
         )
 
-    config = UCaGNNConfig(**kwargs)
+    config = UCaGNNConfig()
+    for key, value in kwargs.items():
+        setattr(config, key, value)
 
     # Apply preset
     if effective_preset in PRESETS:
@@ -773,6 +778,7 @@ def build_config(args: argparse.Namespace) -> UCaGNNConfig:
         for key, value in recipe.get("overrides", {}).items():
             setattr(config, key, value)
 
+    config.validate()
     return config
 
 
@@ -1099,19 +1105,22 @@ def main():
         "--embed-dim", type=int, default=None, help="Override embed dim"
     )
     parser.add_argument(
-        "--n-gnn-layers", type=int, default=None, help="Override shared GNN depth"
+        "--single-branch-gnn-layers",
+        type=int,
+        default=None,
+        help="Override the LightGCN single-branch depth",
     )
     parser.add_argument(
         "--interest-gnn-layers",
         type=int,
         default=None,
-        help="Optional interest-branch GNN depth override",
+        help="Override the interest-branch GNN depth",
     )
     parser.add_argument(
         "--conformity-gnn-layers",
         type=int,
         default=None,
-        help="Optional conformity-branch GNN depth override",
+        help="Override the conformity-branch GNN depth",
     )
     parser.add_argument("--lr", type=float, default=None, help="Override learning rate")
     parser.add_argument(

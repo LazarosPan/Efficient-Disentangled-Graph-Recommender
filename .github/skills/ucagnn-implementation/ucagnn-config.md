@@ -26,9 +26,9 @@ Public experiment naming note: use `ucagnn` as the main CLI preset/recipe name. 
 | Parameter | Default | Source |
 |-----------|---------|--------|
 | embed_dim | 64 | LightGCN, DICE, MGCE, FMMRec, DDCE |
-| n_gnn_layers | 3 | Shared fallback depth; the mainline `ucagnn` profile overrides to a 2-hop base |
-| interest_gnn_layers | None -> `n_gnn_layers` | MGCE-style asymmetric depth; mainline `ucagnn` sets this to 1 |
-| conformity_gnn_layers | None -> `n_gnn_layers` | MGCE-style asymmetric depth; mainline `ucagnn` sets this to 2 |
+| single_branch_gnn_layers | 2 | Dedicated LightGCN / non-dual-branch depth |
+| interest_gnn_layers | 1 | MGCE-style asymmetric interest-branch depth; mainline `ucagnn` sets this to 1 |
+| conformity_gnn_layers | 2 | MGCE-style asymmetric conformity-branch depth; mainline `ucagnn` sets this to 2 |
 | dropout | 0.1 | Reserved config knob; surfaced in formal profiles but not yet consumed by the model |
 | lr | 1e-3 | LightGCN |
 | weight_decay | 1e-5 | DDCE |
@@ -63,7 +63,7 @@ Public experiment naming note: use `ucagnn` as the main CLI preset/recipe name. 
 - `train_scoring_mode` defaults to `default` and controls which score view feeds the ranking loss.
 - `eval_scoring_mode` defaults to `default` and controls which score view is used for validation/test metrics.
 - The old semantic-evaluation config placeholders have been removed; the current logged evaluator uses only PyG link-prediction metrics.
-- In `mini_batch` mode, `num_neighbors` must match the effective maximum branch depth, not only `n_gnn_layers`. The base config default remains `[10, 5, 5]`, while `preset_full()` overrides to the fused-score two-hop shape `[10, 5]` with `interest_gnn_layers=1` and `conformity_gnn_layers=2`.
+- In `mini_batch` mode, `num_neighbors` must match the effective maximum active depth across `single_branch_gnn_layers`, `interest_gnn_layers`, and `conformity_gnn_layers`. The base dual-branch default is now the explicit two-hop shape `[10, 5]` because the default branch depths are `interest_gnn_layers=1` and `conformity_gnn_layers=2`.
 - `batch_size` now defaults to `4096` so the mini-batch path is less GPU-starved under the current CPU-side subgraph sampler. The trainer also uses a fixed four-worker CPU preparation pool internally. If a full-dataset formal run hits OOM, reduce batch size first rather than changing the graph/loss semantics.
 - `use_features` now defaults to `True`, so formal runs use canonical side-feature usage whenever a dataset provides item features; the current implementation consumes item features in Module A and falls back to ID-only embeddings on featureless datasets.
 - `feature_policy` now defaults to `thesis_default`, which promotes only `safe_pre_treatment` columns from the structured feature registry on datasets with risky optional scans; switch to `all_optional` only for explicit leakage-sensitive ablations.

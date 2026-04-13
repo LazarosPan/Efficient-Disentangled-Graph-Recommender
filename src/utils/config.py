@@ -39,9 +39,9 @@ class UCaGNNConfig:
     # ── Embedding / GNN hyperparameters ──────────────────────────────────
     embed_dim: int = 64
     pop_embed_dim: int = 16
-    n_gnn_layers: int = 3
-    interest_gnn_layers: int | None = None
-    conformity_gnn_layers: int | None = None
+    single_branch_gnn_layers: int = 2
+    interest_gnn_layers: int = 1
+    conformity_gnn_layers: int = 2
     dropout: float = 0.1
 
     # ── Scoring weights ──────────────────────────────────────────────────
@@ -94,7 +94,7 @@ class UCaGNNConfig:
     eval_ks: list[int] = field(default_factory=lambda: [20, 40])
     eval_scoring_mode: ScoringMode = "default"
     # ── Training ─────────────────────────────────────────────────────────
-    num_neighbors: list[int] = field(default_factory=lambda: [10, 5, 5])
+    num_neighbors: list[int] = field(default_factory=lambda: [10, 5])
     sample_interactions: int | None = None
     loader_max_rows: int | None = None
 
@@ -131,12 +131,16 @@ class UCaGNNConfig:
     profiling_cadence: int = 10
 
     def __post_init__(self) -> None:
-        if self.n_gnn_layers < 1:
-            raise ValueError("n_gnn_layers must be >= 1")
-        if self.interest_gnn_layers is not None and self.interest_gnn_layers < 1:
-            raise ValueError("interest_gnn_layers must be >= 1 when provided")
-        if self.conformity_gnn_layers is not None and self.conformity_gnn_layers < 1:
-            raise ValueError("conformity_gnn_layers must be >= 1 when provided")
+        self.validate()
+
+    def validate(self) -> None:
+        """Validate the active config contract after init or preset mutation."""
+        if self.single_branch_gnn_layers < 1:
+            raise ValueError("single_branch_gnn_layers must be >= 1")
+        if self.interest_gnn_layers < 1:
+            raise ValueError("interest_gnn_layers must be >= 1")
+        if self.conformity_gnn_layers < 1:
+            raise ValueError("conformity_gnn_layers must be >= 1")
         if len(self.num_neighbors) != self.max_gnn_layers:
             raise ValueError(
                 f"num_neighbors length ({len(self.num_neighbors)}) must equal "
@@ -186,20 +190,10 @@ class UCaGNNConfig:
         return self.graph_method == "cagra"
 
     @property
-    def resolved_interest_gnn_layers(self) -> int:
-        return self.interest_gnn_layers or self.n_gnn_layers
-
-    @property
-    def resolved_conformity_gnn_layers(self) -> int:
-        return self.conformity_gnn_layers or self.n_gnn_layers
-
-    @property
     def max_gnn_layers(self) -> int:
         if not self.use_dual_branch:
-            return self.n_gnn_layers
-        return max(
-            self.resolved_interest_gnn_layers, self.resolved_conformity_gnn_layers
-        )
+            return self.single_branch_gnn_layers
+        return max(self.interest_gnn_layers, self.conformity_gnn_layers)
 
     def preset_lightgcn(self) -> UCaGNNConfig:
         """Non-causal LightGCN baseline."""
@@ -223,8 +217,6 @@ class UCaGNNConfig:
         self.train_scoring_mode = "default"
         self.eval_scoring_mode = "default"
         self.graph_method = "cagra"
-        self.interest_gnn_layers = None
-        self.conformity_gnn_layers = None
         self.feature_policy = DEFAULT_FEATURE_POLICY
         return self
 
@@ -251,8 +243,6 @@ class UCaGNNConfig:
         # recommendation score would undermine the causal measurement.
         self.train_scoring_mode = "interest_only"
         self.eval_scoring_mode = "interest_only"
-        self.interest_gnn_layers = None
-        self.conformity_gnn_layers = None
         return self
 
     def preset_full(self) -> UCaGNNConfig:
@@ -268,7 +258,6 @@ class UCaGNNConfig:
         self.eval_scoring_mode = "default"
         self.loss_schedule = "baseline"
         self.auxiliary_loss_schedule = "linear_ramp"
-        self.n_gnn_layers = 2
         self.interest_gnn_layers = 1
         self.conformity_gnn_layers = 2
         self.num_neighbors = [10, 5]

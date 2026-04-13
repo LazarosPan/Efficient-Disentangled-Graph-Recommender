@@ -52,12 +52,10 @@ class DualBranchGCN(nn.Module):
         self.config = config
 
         if config.use_dual_branch:
-            self.interest_branch = LightGCNBranch(config.resolved_interest_gnn_layers)
-            self.conformity_branch = LightGCNBranch(
-                config.resolved_conformity_gnn_layers
-            )
+            self.interest_branch = LightGCNBranch(config.interest_gnn_layers)
+            self.conformity_branch = LightGCNBranch(config.conformity_gnn_layers)
         else:
-            self.single_branch = LightGCNBranch(config.n_gnn_layers)
+            self.single_branch = LightGCNBranch(config.single_branch_gnn_layers)
 
         if config.use_sign_aware:
             self.alpha_pos = nn.Parameter(torch.tensor(0.7))

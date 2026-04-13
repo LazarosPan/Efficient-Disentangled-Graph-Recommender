@@ -36,7 +36,7 @@ def _experiment_args(**overrides: object) -> SimpleNamespace:
         "epochs": None,
         "batch_size": None,
         "embed_dim": None,
-        "n_gnn_layers": None,
+        "single_branch_gnn_layers": None,
         "interest_gnn_layers": None,
         "conformity_gnn_layers": None,
         "dropout": None,
@@ -77,13 +77,16 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertFalse(config.use_torch_compile)
 
-    def test_mini_batch_runtime_defaults_keep_the_three_layer_shape_valid(self) -> None:
-        """Default mini-batch settings should keep the 3-layer fan-out shape valid."""
+    def test_mini_batch_runtime_defaults_keep_the_two_hop_shape_valid(self) -> None:
+        """Default mini-batch settings should keep the 1/2-hop fan-out valid."""
         config = UCaGNNConfig(device="cuda")
 
         self.assertEqual(config.batch_size, 4096)
-        self.assertEqual(config.n_gnn_layers, 3)
-        self.assertEqual(config.num_neighbors, [10, 5, 5])
+        self.assertEqual(config.single_branch_gnn_layers, 2)
+        self.assertEqual(config.interest_gnn_layers, 1)
+        self.assertEqual(config.conformity_gnn_layers, 2)
+        self.assertEqual(config.num_neighbors, [10, 5])
+        self.assertEqual(config.max_gnn_layers, 2)
         self.assertEqual(len(config.num_neighbors), config.max_gnn_layers)
         self.assertEqual(config.dropout, 0.1)
 
@@ -101,7 +104,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.train_scoring_mode, "default")
         self.assertEqual(config.eval_scoring_mode, "default")
         self.assertTrue(config.use_popularity_head)
-        self.assertEqual(config.n_gnn_layers, 2)
         self.assertEqual(config.interest_gnn_layers, 1)
         self.assertEqual(config.conformity_gnn_layers, 2)
         self.assertEqual(config.max_gnn_layers, 2)
@@ -131,6 +133,36 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertFalse(config.use_early_stopping)
 
+    def test_lightgcn_preset_keeps_single_branch_depth_override(self) -> None:
+        """LightGCN should use its dedicated single-branch depth field."""
+        config = build_config(
+            _experiment_args(
+                preset="lightgcn",
+                single_branch_gnn_layers=2,
+                num_neighbors=[10, 5],
+            )
+        )
+
+        self.assertFalse(config.use_dual_branch)
+        self.assertEqual(config.single_branch_gnn_layers, 2)
+        self.assertEqual(config.max_gnn_layers, 2)
+
+    def test_dice_like_preset_keeps_explicit_branch_depth_overrides(self) -> None:
+        """DICE-like should preserve explicit branch depths without a shared fallback."""
+        config = build_config(
+            _experiment_args(
+                preset="dice_like",
+                interest_gnn_layers=2,
+                conformity_gnn_layers=2,
+                num_neighbors=[10, 5],
+            )
+        )
+
+        self.assertTrue(config.use_dual_branch)
+        self.assertEqual(config.interest_gnn_layers, 2)
+        self.assertEqual(config.conformity_gnn_layers, 2)
+        self.assertEqual(config.max_gnn_layers, 2)
+
     def test_formal_profile_defaults_disable_early_stopping(self) -> None:
         """The default formal profile should own the formal support-parameter bundle."""
         profile_name = default_formal_profile_name()
@@ -152,7 +184,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(profile["matrix"]["graph_methods"], ["cagra", "knn"])
         self.assertEqual(profile["matrix"]["scoring_weight_modes"], ["learned"])
         self.assertEqual(profile["config_overrides"]["batch_size"], 4096)
-        self.assertEqual(profile["config_overrides"]["n_gnn_layers"], 2)
         self.assertEqual(profile["config_overrides"]["interest_gnn_layers"], 1)
         self.assertEqual(profile["config_overrides"]["conformity_gnn_layers"], 2)
         self.assertEqual(profile["config_overrides"]["dropout"], 0.1)
@@ -164,7 +195,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(benchmark_args.graph_methods, ["cagra", "knn"])
         self.assertEqual(benchmark_args.scoring_weight_modes, ["learned"])
         self.assertEqual(benchmark_args.batch_size, 4096)
-        self.assertEqual(benchmark_args.n_gnn_layers, 2)
+        self.assertIsNone(benchmark_args.single_branch_gnn_layers)
         self.assertEqual(benchmark_args.interest_gnn_layers, 1)
         self.assertEqual(benchmark_args.conformity_gnn_layers, 2)
         self.assertEqual(benchmark_args.dropout, 0.1)
@@ -178,12 +209,29 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         """The non-default profile should keep baselines out of day-to-day runs."""
         profile_name = formal_profile_names()[1]
         profile = get_formal_profile(profile_name)
+        benchmark_args = formal_main._build_new_run_args(
+            SimpleNamespace(
+                device=None,
+                data_dir=None,
+                no_mlflow=False,
+                mlflow_tracking_uri=None,
+                mlflow_experiment_name=None,
+                dry_run=True,
+            ),
+            profile_name,
+        )
 
         self.assertEqual(
             profile["matrix"]["presets"], ["ucagnn", "lightgcn", "dice_like"]
         )
         self.assertEqual(profile["matrix"]["graph_methods"], ["cagra"])
         self.assertEqual(profile["matrix"]["scoring_weight_modes"], ["fixed"])
+        self.assertEqual(profile["config_overrides"]["single_branch_gnn_layers"], 2)
+        self.assertEqual(profile["config_overrides"]["interest_gnn_layers"], 2)
+        self.assertEqual(profile["config_overrides"]["conformity_gnn_layers"], 2)
+        self.assertEqual(benchmark_args.single_branch_gnn_layers, 2)
+        self.assertEqual(benchmark_args.interest_gnn_layers, 2)
+        self.assertEqual(benchmark_args.conformity_gnn_layers, 2)
 
     def test_stale_saved_profile_falls_back_to_default_bundle(self) -> None:
         """Plain formal-run should survive a removed profile in saved state."""
