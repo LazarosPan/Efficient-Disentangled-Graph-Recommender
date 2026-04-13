@@ -14,7 +14,7 @@ from experiments.run_experiment import run_experiment
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
-_TINY_SAMPLE_INTERACTIONS = {
+_TINY_DATASET_LIMITS = {
     "amazonbook": 100,
     "movielens1m": 100,
     "movielens20m": 100,
@@ -22,43 +22,16 @@ _TINY_SAMPLE_INTERACTIONS = {
     "taobao": 100,
     "kuairand1k": 100,
 }
-_TINY_LOADER_MAX_ROWS = {
-    "amazonbook": 100,
-    "movielens1m": 100,
-    "movielens20m": 100,
-    "kuairec_v2": 100,
-    "taobao": 100,
-    "kuairand1k": 100,
-}
-
-
-def dataset_limit(
-    dataset: str,
-    overrides: dict[str, int],
-    *,
-    default: int,
-) -> int:
-    """Resolve a dataset-specific limit with a fallback default.
-
-    Args:
-        dataset: Dataset name used as the lookup key.
-        overrides: Dataset-specific numeric overrides.
-        default: Fallback value when the dataset is not present.
-
-    Returns:
-        The dataset-specific override when present, otherwise the fallback.
-    """
-    return int(overrides.get(dataset, default))
 
 
 def tiny_sample_interactions(dataset: str, *, default: int = 100) -> int:
     """Return the shared tiny-run interaction budget for a dataset."""
-    return dataset_limit(dataset, _TINY_SAMPLE_INTERACTIONS, default=default)
+    return int(_TINY_DATASET_LIMITS.get(dataset, default))
 
 
 def tiny_loader_max_rows(dataset: str, *, default: int = 100) -> int:
     """Return the shared tiny-run loader row cap for a dataset."""
-    return dataset_limit(dataset, _TINY_LOADER_MAX_ROWS, default=default)
+    return int(_TINY_DATASET_LIMITS.get(dataset, default))
 
 
 def default_runtime_device() -> str:
@@ -72,14 +45,6 @@ def resolve_batch_id(provided: str | None, prefix: str) -> str:
         return provided
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"{prefix}-{stamp}"
-
-
-def is_cuda_oom(exc: BaseException) -> bool:
-    """Return whether an exception represents a CUDA OOM failure."""
-    if isinstance(exc, torch.OutOfMemoryError):
-        return True
-    message = str(exc).lower()
-    return "out of memory" in message and "cuda" in message
 
 
 def metric_value(metrics: dict[str, float], metric_name: str) -> float:

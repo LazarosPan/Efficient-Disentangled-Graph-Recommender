@@ -79,7 +79,8 @@ trainer.save_checkpoint("results/checkpoints/ucagnn_best.pt")
 - The supported query view registry now lives in `ExperimentLogger.VIEW_TABLES`; keep `scripts/query_results.py` as a thin CLI over that logger-owned mapping instead of re-declaring view names.
 - Formal runs now persist `profile_name` alongside status, batch id, and hardware metadata, so query and MLflow inspection can distinguish the scientific profile from the operational batch.
 - Checkpoint payload loading is shared between runtime auto-resume, quick validation observability probes, and same-checkpoint scoring-mode evaluation through `experiments/run_experiment.py::load_checkpoint_payload()`. Invalid checkpoint payloads should not be treated as resumable state.
-- Runtime dataset/graph/model reconstruction helpers now live in `experiments/run_experiment.py`, so `scripts/evaluate_scoring_modes.py` should reuse them instead of carrying a parallel reconstruction path.
+- Runtime dataset/graph/model reconstruction helpers now live in `experiments/run_experiment.py`, so `evaluate-scoring-modes` / `scripts/evaluate_scoring_modes.py` should reuse them instead of carrying a parallel reconstruction path.
+- `experiments/run_experiment.py` keeps the single-run CLI surface in `build_parser()` and constructs `MiniBatchTrainer` directly inside `run_experiment()`; keep thin wrappers out of that path unless they remove real duplication.
 
 ## What Gets Logged Automatically
 | Data | SQLite Table | Split |
@@ -100,7 +101,7 @@ trainer.save_checkpoint("results/checkpoints/ucagnn_best.pt")
 - `src/training/evaluator.py` is also the source of truth for the thesis-primary metric subset and lower-is-better metric polarity, so downstream benchmark, ablation, reporting, and scoring-mode scripts should import those constants instead of re-declaring them.
 - Treat `AveragePopularity@20` and `AveragePopularity@40` as debiasing readouts where lower values are better. Summary aggregation, delta interpretation, and heatmap colors should reflect that polarity.
 - The preferred mechanism comparison is same-checkpoint evaluation under `default`, `interest_only`, and `conformity_suppressed`. Leave `conformity_only` and `counterfactual_only` available for debugging rather than thesis headline tables.
-- Use `scripts/evaluate_scoring_modes.py` to run the thesis mechanism table from one saved checkpoint without retraining separate runs.
+- Use `uv run evaluate-scoring-modes --checkpoint-path ...` to run the thesis mechanism table from one saved checkpoint without retraining separate runs.
 - PyG 2.7 also exposes Diversity and Personalization. They are allowed by the repo's metric audit, but the current evaluator does not log them because they require extra category inputs or additional pairwise recommendation computation.
 - External implementation audits may discuss non-PyG causal-uplift evaluators such as PropCare's semi-simulated `CPrec` or `CDCG` pipeline, but those remain reference analyses unless the runtime data contract is extended with treatment, propensity, and causal-effect labels.
 
@@ -124,6 +125,6 @@ trainer.save_checkpoint("results/checkpoints/ucagnn_best.pt")
 - Quick validation keeps MLflow disabled by default, so `uv run quick-validate` does not create MLflow tables or artifact files unless `--mlflow` is passed explicitly.
 - Use `query-results` as the supported SQLite inspection path after runs. The repository currently does not expose a supported plotting command in the main workflow.
 - `query-results` now supports `--view`, `--batch-id`, and `--status` filters for resumable benchmark and ablation inspection.
-- Keep the tiny validation CLIs locally explicit. Shared helpers should stay limited to low-level utilities such as dataset-limit lookup, timed `run_experiment()` execution, and JSON report writing; config and namespace wiring belongs in each script.
+- Keep the tiny validation CLIs locally explicit. Shared helpers should stay limited to low-level utilities such as dataset-limit lookup, timed `run_experiment()` execution, and JSON report writing; config wiring belongs in each script and should call `build_config()` directly with plain mappings instead of manufacturing fake CLI namespaces.
 
 

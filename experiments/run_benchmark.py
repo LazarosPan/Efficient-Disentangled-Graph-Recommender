@@ -625,48 +625,45 @@ def run_benchmark(args: argparse.Namespace) -> int:
             continue
 
         try:
-            # Build a namespace matching run_experiment.build_config expectations
-            exp_args = argparse.Namespace(
-                dataset=dataset,
-                recipe=None,
-                preset=preset,
-                seed=DEFAULT_SEED,
-                epochs=args.epochs,
-                batch_size=args.batch_size,
-                embed_dim=None,
-                single_branch_gnn_layers=getattr(
+            config_inputs: dict[str, object] = {
+                "dataset": dataset,
+                "recipe": None,
+                "preset": preset,
+                "seed": DEFAULT_SEED,
+                "epochs": args.epochs,
+                "batch_size": args.batch_size,
+                "single_branch_gnn_layers": getattr(
                     args,
                     "single_branch_gnn_layers",
                     None,
                 ),
-                interest_gnn_layers=getattr(args, "interest_gnn_layers", None),
-                conformity_gnn_layers=getattr(args, "conformity_gnn_layers", None),
-                dropout=getattr(args, "dropout", None),
-                lr=args.lr,
-                use_early_stopping=args.use_early_stopping,
-                scoring_weight_mode=scoring_weight_mode,
-                graph_method=graph_method,
-                num_neighbors=args.num_neighbors,
-                hard_negative_ratio=getattr(args, "hard_negative_ratio", None),
-                curriculum_phase1_end=getattr(
+                "interest_gnn_layers": getattr(args, "interest_gnn_layers", None),
+                "conformity_gnn_layers": getattr(args, "conformity_gnn_layers", None),
+                "dropout": getattr(args, "dropout", None),
+                "lr": args.lr,
+                "use_early_stopping": args.use_early_stopping,
+                "scoring_weight_mode": scoring_weight_mode,
+                "graph_method": graph_method,
+                "num_neighbors": args.num_neighbors,
+                "hard_negative_ratio": getattr(args, "hard_negative_ratio", None),
+                "curriculum_phase1_end": getattr(
                     args,
                     "curriculum_phase1_end",
                     None,
                 ),
-                curriculum_phase2_end=getattr(
+                "curriculum_phase2_end": getattr(
                     args,
                     "curriculum_phase2_end",
                     None,
                 ),
-                sample_interactions=args.sample_interactions,
-                loader_max_rows=args.loader_max_rows,
-                loss_schedule=getattr(args, "loss_schedule", None),
-                device=args.device,
-                data_dir=args.data_dir,
-                intervention=None,
-            )
+                "sample_interactions": args.sample_interactions,
+                "loader_max_rows": args.loader_max_rows,
+                "loss_schedule": getattr(args, "loss_schedule", None),
+                "device": args.device,
+                "data_dir": args.data_dir,
+            }
 
-            config = build_config(exp_args)
+            config = build_config(config_inputs)
             t0 = time.time()
             result = run_experiment(
                 config,

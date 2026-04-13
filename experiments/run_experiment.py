@@ -8,6 +8,7 @@ Usage:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import argparse
 import gc
 import dataclasses
@@ -133,11 +134,6 @@ def _resolve_checkpoint_path(
     return CHECKPOINT_DIR / f"{_build_canonical_name(config, preset, intervention)}.pt"
 
 
-def checkpoint_payload_has_required_keys(payload: object) -> bool:
-    """Return whether a checkpoint payload contains the required runtime keys."""
-    return isinstance(payload, dict) and REQUIRED_CHECKPOINT_KEYS.issubset(payload)
-
-
 def load_checkpoint_payload(
     path: str | Path,
     device: str,
@@ -150,11 +146,13 @@ def load_checkpoint_payload(
     if not isinstance(payload, dict):
         raise TypeError("Checkpoint payload must be a dictionary.")
 
-    if require_runtime_keys and not checkpoint_payload_has_required_keys(payload):
+    if require_runtime_keys:
         missing_keys = sorted(REQUIRED_CHECKPOINT_KEYS.difference(payload))
-        raise ValueError(
-            "checkpoint is missing required runtime keys: " + ", ".join(missing_keys)
-        )
+        if missing_keys:
+            raise ValueError(
+                "checkpoint is missing required runtime keys: "
+                + ", ".join(missing_keys)
+            )
 
     if require_config:
         config = payload.get("config")
@@ -404,27 +402,6 @@ def _log_mlflow_resume_tags(mlflow_module, checkpoint_state: dict | None) -> Non
         logger.warning("Failed to add MLflow resume tags: %s", exc)
 
 
-def _build_trainer(
-    config: UCaGNNConfig,
-    model: UCaGNN,
-    loss_suite: LossSuite,
-    data,
-    profiler: GPUProfiler | None,
-    experiment_logger: ExperimentLogger,
-    exp_id: int,
-):
-    """Construct the mini-batch trainer for the configured experiment."""
-    return MiniBatchTrainer(
-        model=model,
-        loss_suite=loss_suite,
-        data=data,
-        config=config,
-        profiler=profiler,
-        experiment_logger=experiment_logger,
-        exp_id=exp_id,
-    )
-
-
 def _default_mlflow_tracking_uri() -> str:
     """Return the MLflow tracking URI, preferring an explicit environment override."""
     if tracking_uri := os.environ.get("MLFLOW_TRACKING_URI"):
@@ -657,16 +634,42 @@ def _start_mlflow_run(
         return None
 
 
-def build_config(args: argparse.Namespace) -> UCaGNNConfig:
-    """Build UCaGNNConfig from CLI args with explicit precedence.
+def _config_input_value(
+    args: argparse.Namespace | Mapping[str, object],
+    field_name: str,
+    default: Any = None,
+) -> Any:
+    """Return one build-config field from a namespace-like input.
+
+    Args:
+        args: Parsed CLI namespace or mapping-style config input.
+        field_name: Field name to read.
+        default: Value returned when the field is absent.
+
+    Returns:
+        The resolved field value.
+    """
+    if isinstance(args, Mapping):
+        return args.get(field_name, default)
+    return getattr(args, field_name, default)
+
+
+def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfig:
+    """Build UCaGNNConfig from CLI args or mapping-style overrides.
 
     Precedence is: defaults -> recipe overrides -> explicit CLI flags -> preset -> recipe overrides.
     The final recipe-override pass ensures matrix-defining recipe values win over preset defaults.
     """
-    kwargs: dict = {}
 
-    recipe = get_recipe(args.recipe) if getattr(args, "recipe", None) else None
-    effective_preset = getattr(args, "preset", None)
+    def value(field_name: str, default: Any = None) -> Any:
+        """Read one field from the supported build-config inputs."""
+        return _config_input_value(args, field_name, default)
+
+    kwargs: dict[str, object] = {}
+
+    recipe_name = value("recipe")
+    recipe = get_recipe(recipe_name) if recipe_name else None
+    effective_preset = value("preset")
     if recipe is not None:
         _validate_recipe_cli_conflicts(args, recipe)
         kwargs.update(recipe.get("overrides", {}))
@@ -680,59 +683,40 @@ def build_config(args: argparse.Namespace) -> UCaGNNConfig:
         )
 
     # Core args
-    kwargs["dataset"] = args.dataset
-    kwargs["data_dir"] = args.data_dir
-    kwargs["seed"] = getattr(args, "seed", DEFAULT_SEED)
-    kwargs["device"] = args.device
+    kwargs["dataset"] = value("dataset")
+    kwargs["data_dir"] = value("data_dir")
+    kwargs["seed"] = value("seed", DEFAULT_SEED)
+    kwargs["device"] = value("device")
 
-    if getattr(args, "epochs", None) is not None:
-        kwargs["epochs"] = args.epochs
-    if getattr(args, "batch_size", None) is not None:
-        kwargs["batch_size"] = args.batch_size
-    if getattr(args, "embed_dim", None) is not None:
-        kwargs["embed_dim"] = args.embed_dim
-    if getattr(args, "single_branch_gnn_layers", None) is not None:
-        kwargs["single_branch_gnn_layers"] = args.single_branch_gnn_layers
-    if getattr(args, "interest_gnn_layers", None) is not None:
-        kwargs["interest_gnn_layers"] = args.interest_gnn_layers
-    if getattr(args, "conformity_gnn_layers", None) is not None:
-        kwargs["conformity_gnn_layers"] = args.conformity_gnn_layers
-    if getattr(args, "dropout", None) is not None:
-        kwargs["dropout"] = args.dropout
-    if getattr(args, "lr", None) is not None:
-        kwargs["lr"] = args.lr
-    if getattr(args, "use_early_stopping", None) is not None:
-        kwargs["use_early_stopping"] = args.use_early_stopping
-    if getattr(args, "eval_scoring_mode", None) is not None:
-        kwargs["eval_scoring_mode"] = args.eval_scoring_mode
-    if getattr(args, "scoring_weight_mode", None) is not None:
-        kwargs["scoring_weight_mode"] = args.scoring_weight_mode
-    if getattr(args, "use_features", None) is not None:
-        kwargs["use_features"] = args.use_features
-    if getattr(args, "feature_policy", None) is not None:
-        kwargs["feature_policy"] = args.feature_policy
-    if getattr(args, "preprocessing_preset", None) is not None:
-        kwargs["preprocessing_preset"] = args.preprocessing_preset
-    if getattr(args, "graph_method", None) is not None:
-        kwargs["graph_method"] = args.graph_method
-    if getattr(args, "derived_split_mode", None) is not None:
-        kwargs["derived_split_mode"] = args.derived_split_mode
-    if getattr(args, "popularity_window_seconds", None) is not None:
-        kwargs["popularity_window_seconds"] = args.popularity_window_seconds
-    if getattr(args, "num_neighbors", None) is not None:
-        kwargs["num_neighbors"] = args.num_neighbors
-    if getattr(args, "hard_negative_ratio", None) is not None:
-        kwargs["hard_negative_ratio"] = args.hard_negative_ratio
-    if getattr(args, "curriculum_phase1_end", None) is not None:
-        kwargs["curriculum_phase1_end"] = args.curriculum_phase1_end
-    if getattr(args, "curriculum_phase2_end", None) is not None:
-        kwargs["curriculum_phase2_end"] = args.curriculum_phase2_end
-    if getattr(args, "loss_schedule", None) is not None:
-        kwargs["loss_schedule"] = args.loss_schedule
-    if getattr(args, "sample_interactions", None) is not None:
-        kwargs["sample_interactions"] = args.sample_interactions
-    if getattr(args, "loader_max_rows", None) is not None:
-        kwargs["loader_max_rows"] = args.loader_max_rows
+    for field_name in (
+        "epochs",
+        "batch_size",
+        "embed_dim",
+        "single_branch_gnn_layers",
+        "interest_gnn_layers",
+        "conformity_gnn_layers",
+        "dropout",
+        "lr",
+        "use_early_stopping",
+        "eval_scoring_mode",
+        "scoring_weight_mode",
+        "use_features",
+        "feature_policy",
+        "preprocessing_preset",
+        "graph_method",
+        "derived_split_mode",
+        "popularity_window_seconds",
+        "num_neighbors",
+        "hard_negative_ratio",
+        "curriculum_phase1_end",
+        "curriculum_phase2_end",
+        "loss_schedule",
+        "sample_interactions",
+        "loader_max_rows",
+    ):
+        field_value = value(field_name)
+        if field_value is not None:
+            kwargs[field_name] = field_value
 
     requested_loss_schedule = kwargs.get("loss_schedule")
     if requested_loss_schedule not in (None, "baseline"):
@@ -758,7 +742,7 @@ def build_config(args: argparse.Namespace) -> UCaGNNConfig:
 
 
 def _validate_recipe_cli_conflicts(
-    args: argparse.Namespace,
+    args: argparse.Namespace | Mapping[str, object],
     recipe: dict[str, object],
 ) -> None:
     """Reject CLI overrides that conflict with an explicitly selected recipe.
@@ -774,7 +758,7 @@ def _validate_recipe_cli_conflicts(
     conflicts: list[str] = []
 
     recipe_preset = recipe.get("preset")
-    cli_preset = getattr(args, "preset", None)
+    cli_preset = _config_input_value(args, "preset")
     if (
         cli_preset is not None
         and recipe_preset is not None
@@ -788,7 +772,7 @@ def _validate_recipe_cli_conflicts(
     assert isinstance(overrides, dict)
 
     for field_name in ("graph_method",):
-        cli_value = getattr(args, field_name, None)
+        cli_value = _config_input_value(args, field_name)
         recipe_value = overrides.get(field_name)
         if (
             cli_value is not None
@@ -936,16 +920,15 @@ def run_experiment(
         )
         _log_mlflow_resume_tags(mlflow_module, checkpoint_state)
 
-    # Trainer (routed by training_mode)
     try:
-        trainer = _build_trainer(
-            config,
-            model,
-            loss_suite,
-            data,
-            profiler,
-            experiment_logger,
-            exp_id,
+        trainer = MiniBatchTrainer(
+            model=model,
+            loss_suite=loss_suite,
+            data=data,
+            config=config,
+            profiler=profiler,
+            experiment_logger=experiment_logger,
+            exp_id=exp_id,
         )
 
         start_epoch = 0
@@ -1063,7 +1046,8 @@ def run_experiment(
             torch.cuda.empty_cache()
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
+    """Build the single-run experiment CLI parser."""
     parser = argparse.ArgumentParser(description="Run a U-CaGNN experiment")
     parser.add_argument("--dataset", default="movielens1m", help="Dataset name")
     parser.add_argument(
@@ -1214,6 +1198,12 @@ def main():
     parser.set_defaults(enable_mlflow=True)
     parser.set_defaults(auto_resume=True)
     parser.set_defaults(use_features=None)
+    return parser
+
+
+def main() -> int:
+    """Parse CLI arguments and run one experiment."""
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.list_recipes:

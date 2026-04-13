@@ -43,6 +43,7 @@ uv run query-results
 uv run query-results --view completed
 uv run query-results --view attention
 uv run query-results --view errors
+uv run evaluate-scoring-modes --checkpoint-path results/checkpoints/<checkpoint>.pt
 uv run query-results --batch-id smoke-bench
 uv run query-results --status completed
 uv run query-results --exp 12
@@ -56,6 +57,7 @@ uv run query-results --bottleneck 12
 - `query-results --view completed`: show only finished runs via the SQLite completed-run view.
 - `query-results --view attention`: show anything not yet cleanly completed, including running, unknown, OOM, and failed rows.
 - `query-results --view errors`: show only the failed and OOM rows.
+- `evaluate-scoring-modes --checkpoint-path ...`: reload one saved checkpoint and compare the thesis metrics under multiple evaluation-time scoring modes without retraining.
 - `query-results --batch-id smoke-bench`: list only the runs that belong to one benchmark or ablation batch.
 - `query-results --status completed`: filter the list to one terminal status such as `completed`, `oom`, or `failed`.
 - `query-results --exp 12`: show the stored config and metadata for experiment 12.
@@ -64,7 +66,7 @@ uv run query-results --bottleneck 12
 - `query-results --alpha 12`: inspect alpha drift for sign-aware runs.
 - `query-results --bottleneck 12`: rank the slowest profiling stages for experiment 12.
 
-There is currently no supported plotting command in the main workflow. Use `query-results` and its convenience views for result inspection.
+There is currently no supported plotting command in the main workflow. Use `query-results`, `evaluate-scoring-modes`, and the convenience SQLite views for inspection.
 
 ## Data
 

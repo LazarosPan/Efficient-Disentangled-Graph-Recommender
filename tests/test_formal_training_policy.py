@@ -96,6 +96,13 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertEqual(config.dropout, 0.25)
 
+    def test_build_config_accepts_mapping_inputs(self) -> None:
+        """Non-CLI callers should be able to pass plain mappings into build_config."""
+        config = build_config(vars(_experiment_args(dropout=0.25, preset="ucagnn")))
+
+        self.assertEqual(config.dropout, 0.25)
+        self.assertEqual(config.scoring_weight_mode, "learned")
+
     def test_ucagnn_preset_applies_wave1_fused_scoring_defaults(self) -> None:
         """The ucagnn preset should target the fused-score wave-1 contract."""
         config = build_config(_experiment_args(preset="ucagnn"))

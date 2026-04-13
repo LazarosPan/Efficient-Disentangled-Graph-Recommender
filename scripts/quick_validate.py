@@ -98,7 +98,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _build_run_namespace(
+def _build_runtime_config(
     args: argparse.Namespace,
     dataset: str,
     *,
@@ -109,47 +109,54 @@ def _build_run_namespace(
     use_features: bool | None = None,
     feature_policy: str | None = None,
     graph_method: str | None = None,
-    training_mode: str | None = None,
     num_neighbors: list[int] | None = None,
     sample_interactions: int | None = None,
     loader_max_rows: int | None = None,
-    intervention: str | None = None,
-) -> argparse.Namespace:
-    return argparse.Namespace(
-        dataset=dataset,
-        recipe=recipe,
-        preset=preset,
-        seed=DEFAULT_SEED,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        embed_dim=None,
-        single_branch_gnn_layers=None,
-        interest_gnn_layers=None,
-        conformity_gnn_layers=None,
-        lr=None,
-        eval_scoring_mode=eval_scoring_mode,
-        scoring_weight_mode=scoring_weight_mode,
-        use_features=use_features,
-        feature_policy=feature_policy,
-        graph_method=graph_method,
-        training_mode=training_mode,
-        num_neighbors=num_neighbors,
-        sample_interactions=sample_interactions,
-        loader_max_rows=loader_max_rows,
-        device=default_runtime_device(),
-        data_dir=args.data_dir,
-        intervention=intervention,
-    )
-
-
-def _build_runtime_config(
-    namespace: argparse.Namespace,
-    *,
     patience: int | None = None,
     enable_profiling: bool | None = None,
     profiling_cadence: int | None = None,
 ) -> UCaGNNConfig:
-    config = build_config(namespace)
+    """Build a quick-validate config without emulating a full CLI namespace.
+
+    Args:
+        args: Parsed quick-validate CLI arguments.
+        dataset: Dataset name for the run.
+        recipe: Optional named recipe.
+        preset: Optional preset override.
+        eval_scoring_mode: Optional evaluation-time scoring mode.
+        scoring_weight_mode: Optional score-mixture mode.
+        use_features: Optional feature toggle override.
+        feature_policy: Optional feature policy override.
+        graph_method: Optional graph method override.
+        num_neighbors: Optional fan-out override.
+        sample_interactions: Optional tiny-run interaction budget.
+        loader_max_rows: Optional loader row cap.
+        patience: Optional early-stopping patience override.
+        enable_profiling: Optional profiling toggle.
+        profiling_cadence: Optional profiling cadence override.
+
+    Returns:
+        A validated runtime config tailored for quick validation.
+    """
+    config_inputs: dict[str, object] = {
+        "dataset": dataset,
+        "recipe": recipe,
+        "preset": preset,
+        "seed": DEFAULT_SEED,
+        "epochs": args.epochs,
+        "batch_size": args.batch_size,
+        "eval_scoring_mode": eval_scoring_mode,
+        "scoring_weight_mode": scoring_weight_mode,
+        "use_features": use_features,
+        "feature_policy": feature_policy,
+        "graph_method": graph_method,
+        "num_neighbors": num_neighbors,
+        "sample_interactions": sample_interactions,
+        "loader_max_rows": loader_max_rows,
+        "device": default_runtime_device(),
+        "data_dir": args.data_dir,
+    }
+    config = build_config(config_inputs)
     # Disable torch.compile for smoke tests: 1-epoch runs don't benefit
     # and running many configs in one process hits the recompile limit.
     config.use_torch_compile = False
@@ -172,7 +179,7 @@ def _build_tiny_recipe_config(
     enable_profiling: bool = False,
 ) -> UCaGNNConfig:
     """Build a tiny validation config for a catalog recipe on one dataset."""
-    namespace = _build_run_namespace(
+    return _build_runtime_config(
         args,
         dataset,
         recipe=recipe,
@@ -180,9 +187,6 @@ def _build_tiny_recipe_config(
         use_features=use_features,
         sample_interactions=tiny_sample_interactions(dataset),
         loader_max_rows=tiny_loader_max_rows(dataset),
-    )
-    return _build_runtime_config(
-        namespace,
         patience=1,
         enable_profiling=enable_profiling,
         profiling_cadence=1,
