@@ -29,7 +29,7 @@ from scripts._workflow_helpers import (
     tiny_sample_interactions,
 )
 from src.data.feature_policy import supports_feature_utility
-from src.utils.config import DEFAULT_SEED
+from src.utils.config import DEFAULT_SEED, UCaGNNConfig
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -148,7 +148,7 @@ def _build_runtime_config(
     patience: int | None = None,
     enable_profiling: bool | None = None,
     profiling_cadence: int | None = None,
-):
+) -> UCaGNNConfig:
     config = build_config(namespace)
     # Disable torch.compile for smoke tests: 1-epoch runs don't benefit
     # and running many configs in one process hits the recompile limit.
@@ -160,6 +160,33 @@ def _build_runtime_config(
     if profiling_cadence is not None:
         config.profiling_cadence = profiling_cadence
     return config
+
+
+def _build_tiny_recipe_config(
+    args: argparse.Namespace,
+    dataset: str,
+    *,
+    recipe: str,
+    eval_scoring_mode: str | None = None,
+    use_features: bool | None = None,
+    enable_profiling: bool = False,
+) -> UCaGNNConfig:
+    """Build a tiny validation config for a catalog recipe on one dataset."""
+    namespace = _build_run_namespace(
+        args,
+        dataset,
+        recipe=recipe,
+        eval_scoring_mode=eval_scoring_mode,
+        use_features=use_features,
+        sample_interactions=tiny_sample_interactions(dataset),
+        loader_max_rows=tiny_loader_max_rows(dataset),
+    )
+    return _build_runtime_config(
+        namespace,
+        patience=1,
+        enable_profiling=enable_profiling,
+        profiling_cadence=1,
+    )
 
 
 def _canonical_recipe_names() -> list[str]:
@@ -247,7 +274,7 @@ def _run_single_case(
     category: str,
     dataset: str,
     label: str,
-    config,
+    config: UCaGNNConfig,
     preset: str | None,
     intervention: str,
     recipe_name: str | None = None,
@@ -305,19 +332,7 @@ def _run_recipe_category(args: argparse.Namespace, results: list[dict]) -> None:
     for dataset in args.datasets:
         for recipe_name in recipe_names:
             recipe = get_recipe(recipe_name)
-            namespace = _build_run_namespace(
-                args,
-                dataset,
-                recipe=recipe_name,
-                sample_interactions=tiny_sample_interactions(dataset),
-                loader_max_rows=tiny_loader_max_rows(dataset),
-            )
-            config = _build_runtime_config(
-                namespace,
-                patience=1,
-                enable_profiling=False,
-                profiling_cadence=1,
-            )
+            config = _build_tiny_recipe_config(args, dataset, recipe=recipe_name)
             label = f"recipe:{recipe_name}"
             try:
                 _, elapsed = _run_single_case(
@@ -451,18 +466,11 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
         for dataset in args.datasets:
             for recipe_name in profiling_recipes:
                 recipe = get_recipe(recipe_name)
-                namespace = _build_run_namespace(
+                config = _build_tiny_recipe_config(
                     args,
                     dataset,
                     recipe=recipe_name,
-                    sample_interactions=tiny_sample_interactions(dataset),
-                    loader_max_rows=tiny_loader_max_rows(dataset),
-                )
-                config = _build_runtime_config(
-                    namespace,
-                    patience=1,
                     enable_profiling=True,
-                    profiling_cadence=1,
                 )
                 label = f"profiling:{recipe_name}"
                 try:
@@ -505,19 +513,11 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
     feature_recipe = "ucagnn"
     feature_label = "features:ucagnn"
     for dataset in feature_datasets:
-        feature_namespace = _build_run_namespace(
+        feature_config = _build_tiny_recipe_config(
             args,
             dataset,
             recipe=feature_recipe,
             use_features=True,
-            sample_interactions=tiny_sample_interactions(dataset),
-            loader_max_rows=tiny_loader_max_rows(dataset),
-        )
-        feature_config = _build_runtime_config(
-            feature_namespace,
-            patience=1,
-            enable_profiling=False,
-            profiling_cadence=1,
         )
         try:
             _, elapsed = _run_single_case(
@@ -565,19 +565,7 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
             / f"quick_validate_resume_probe_{dataset}.pt"
         )
         checkpoint_path.unlink(missing_ok=True)
-        resume_namespace = _build_run_namespace(
-            args,
-            dataset,
-            recipe="ucagnn",
-            sample_interactions=tiny_sample_interactions(dataset),
-            loader_max_rows=tiny_loader_max_rows(dataset),
-        )
-        resume_config = _build_runtime_config(
-            resume_namespace,
-            patience=1,
-            enable_profiling=False,
-            profiling_cadence=1,
-        )
+        resume_config = _build_tiny_recipe_config(args, dataset, recipe="ucagnn")
         try:
             _, first_elapsed = _run_single_case(
                 category="observability",
@@ -650,19 +638,11 @@ def _run_evaluation_category(args: argparse.Namespace, results: list[dict]) -> N
         args.datasets, ["movielens1m", "kuairec_v2", "taobao"]
     )
     for mode in DEFAULT_EVAL_MODES:
-        namespace = _build_run_namespace(
+        config = _build_tiny_recipe_config(
             args,
             eval_dataset,
             recipe="ucagnn_knn",
             eval_scoring_mode=mode,
-            sample_interactions=tiny_sample_interactions(eval_dataset),
-            loader_max_rows=tiny_loader_max_rows(eval_dataset),
-        )
-        config = _build_runtime_config(
-            namespace,
-            patience=1,
-            enable_profiling=False,
-            profiling_cadence=1,
         )
         label = f"eval:{mode}"
         try:
@@ -748,6 +728,12 @@ def main() -> int:
     args = parse_args()
     start_time = time.perf_counter()
     results: list[dict] = []
+    category_runners = {
+        "recipes": _run_recipe_category,
+        "ablations": _run_ablation_category,
+        "observability": _run_observability_category,
+        "evaluation": _run_evaluation_category,
+    }
 
     print("=" * 78)
     print("QUICK VALIDATION")
@@ -757,23 +743,11 @@ def main() -> int:
     print(f"Epochs: {args.epochs} | Batch size: {args.batch_size}")
     print(f"MLflow probe: {'enabled' if args.mlflow else 'disabled'}")
 
-    if "recipes" in args.categories:
-        _run_recipe_category(args, results)
+    for category in args.categories:
+        category_runners[category](args, results)
         if args.fail_fast and any(row["status"] == "fail" for row in results):
             _print_summary(results, time.perf_counter() - start_time)
             return 1
-    if "ablations" in args.categories:
-        _run_ablation_category(args, results)
-        if args.fail_fast and any(row["status"] == "fail" for row in results):
-            _print_summary(results, time.perf_counter() - start_time)
-            return 1
-    if "observability" in args.categories:
-        _run_observability_category(args, results)
-        if args.fail_fast and any(row["status"] == "fail" for row in results):
-            _print_summary(results, time.perf_counter() - start_time)
-            return 1
-    if "evaluation" in args.categories:
-        _run_evaluation_category(args, results)
 
     total_elapsed = time.perf_counter() - start_time
     _print_summary(results, total_elapsed)

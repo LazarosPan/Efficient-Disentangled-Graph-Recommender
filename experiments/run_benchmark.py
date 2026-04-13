@@ -54,11 +54,6 @@ DEFAULT_SCORING_WEIGHT_MODES = ["learned"]
 SCORING_WEIGHT_MODE_CHOICES = ["learned", "fixed"]
 
 
-def _timestamp_slug() -> str:
-    """Return a compact UTC timestamp slug."""
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
 def _normalize_profile_name(raw_profile: str) -> str:
     """Normalize a user-facing formal profile label into a filesystem-safe slug."""
     normalized = "".join(
@@ -84,7 +79,8 @@ def _resolve_profile_bundle(profile_name: str) -> dict[str, object]:
 
 def _build_batch_id(profile_name: str) -> str:
     """Build a fresh execution batch identifier for a formal profile run."""
-    return f"formal-{profile_name}-{_timestamp_slug()}"
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return f"formal-{profile_name}-{timestamp}"
 
 
 def _load_state() -> dict[str, object] | None:
@@ -271,14 +267,15 @@ def _override_resumed_args(
     profile_name: str,
 ) -> argparse.Namespace:
     """Apply a small set of runtime overrides when resuming a saved run."""
-    if cli_args.device is not None:
-        benchmark_args.device = cli_args.device
-    if cli_args.data_dir is not None:
-        benchmark_args.data_dir = cli_args.data_dir
-    if cli_args.mlflow_tracking_uri is not None:
-        benchmark_args.mlflow_tracking_uri = cli_args.mlflow_tracking_uri
-    if cli_args.mlflow_experiment_name is not None:
-        benchmark_args.mlflow_experiment_name = cli_args.mlflow_experiment_name
+    for attribute in (
+        "device",
+        "data_dir",
+        "mlflow_tracking_uri",
+        "mlflow_experiment_name",
+    ):
+        value = getattr(cli_args, attribute)
+        if value is not None:
+            setattr(benchmark_args, attribute, value)
     if cli_args.no_mlflow:
         benchmark_args.no_mlflow = True
     benchmark_args.dry_run = cli_args.dry_run

@@ -18,6 +18,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import json
 import sqlite3
 import sys
@@ -28,14 +29,14 @@ REPO_ROOT = Path(__file__).parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.utils.experiment_logger import ExperimentLogger
+from src.utils.experiment_logger import ExperimentLogger  # noqa: E402
 
 
 DB_PATH = REPO_ROOT / "results" / "thesis_experiments.db"
 VIEW_TABLES = ExperimentLogger.VIEW_TABLES
 
 
-def connect():
+def connect() -> sqlite3.Connection:
     """Connect to experiment database."""
     if not DB_PATH.exists():
         print(f"Database not found: {DB_PATH.resolve()}")
@@ -132,32 +133,34 @@ def show_experiment(conn: sqlite3.Connection, exp_id: int) -> None:
     print(f"EXPERIMENT {exp_id}")
     print("=" * 80)
     print(f"Database:     {DB_PATH.resolve()}")
-    print(f"Timestamp:    {row[1]}")
-    print(f"Dataset:      {row[2]}")
-    print(f"Preset:       {row[3] or '-'}")
-    print(f"Intervention: {row[4] or '-'}")
-    print(f"Seed:         {row[6] or '-'}")
-    print(f"Status:       {row[7] or '-'}")
-    print(f"Training:     {row[13] or '-'}")
-    print(f"Graph:        {row[14] or '-'}")
-    print(f"Batch ID:     {row[10] or '-'}")
-    print(f"Profile:      {row[11] or '-'}")
-    print(f"GPU:          {row[12] or '-'}")
-    print(f"VRAM (GiB):   {row[13] if row[13] is not None else '-'}")
-    print(f"Updated:      {row[16] or '-'}")
-    if row[9]:
-        print(f"OOM Flag:     {bool(row[9])}")
-    if row[8]:
-        print(f"Failure:      {row[8]}")
+    print(f"Timestamp:    {row['timestamp']}")
+    print(f"Dataset:      {row['dataset']}")
+    print(f"Preset:       {row['preset'] or '-'}")
+    print(f"Intervention: {row['intervention'] or '-'}")
+    print(f"Seed:         {row['seed'] or '-'}")
+    print(f"Status:       {row['status'] or '-'}")
+    print(f"Training:     {row['training_mode'] or '-'}")
+    print(f"Graph:        {row['graph_method'] or '-'}")
+    print(f"Batch ID:     {row['batch_id'] or '-'}")
+    print(f"Profile:      {row['profile_name'] or '-'}")
+    print(f"GPU:          {row['gpu_name'] or '-'}")
+    print(
+        f"VRAM (GiB):   {row['gpu_vram_gb'] if row['gpu_vram_gb'] is not None else '-'}"
+    )
+    print(f"Updated:      {row['updated_at'] or '-'}")
+    if row["oom_flag"]:
+        print(f"OOM Flag:     {bool(row['oom_flag'])}")
+    if row["failure_reason"]:
+        print(f"Failure:      {row['failure_reason']}")
     print("\nConfig:")
 
-    if row[5]:
-        config = json.loads(row[5])
+    if row["config_json"]:
+        config = json.loads(row["config_json"])
         for k, v in sorted(config.items()):
             print(f"  {k}: {v}")
 
 
-def show_metrics(conn, exp_id):
+def show_metrics(conn: sqlite3.Connection, exp_id: int) -> None:
     """Show metrics for an experiment."""
     print("=" * 80)
     print(f"METRICS (Experiment {exp_id})")
@@ -184,7 +187,7 @@ def show_metrics(conn, exp_id):
                 print(f"  {epoch_str:>5} | {row[1]:<20} | {row[2]:>10.4f} | {row[3]}")
 
 
-def show_profiling(conn, exp_id):
+def show_profiling(conn: sqlite3.Connection, exp_id: int) -> None:
     """Show profiling breakdown for an experiment."""
     print("=" * 80)
     print(f"PROFILING (Experiment {exp_id})")
@@ -233,7 +236,7 @@ def show_profiling(conn, exp_id):
     print(f"{'TOTAL':<15} | {total_ms:>11.1f}")
 
 
-def show_alpha_drift(conn, exp_id):
+def show_alpha_drift(conn: sqlite3.Connection, exp_id: int) -> None:
     """Show alpha_pos/alpha_neg values over epochs."""
     print("=" * 80)
     print(f"ALPHA DRIFT (Experiment {exp_id})")
@@ -256,10 +259,7 @@ def show_alpha_drift(conn, exp_id):
     print(f"\n{'Epoch':>5} | {'alpha_pos':>10} | {'alpha_neg':>10}")
     print("-" * 30)
 
-    # Group by epoch
-    from collections import defaultdict
-
-    epochs = defaultdict(dict)
+    epochs: dict[int, dict[str, float]] = defaultdict(dict)
     for row in rows:
         epochs[row[0]][row[1]] = row[2]
 
@@ -269,7 +269,7 @@ def show_alpha_drift(conn, exp_id):
         print(f"{epoch:>5} | {alpha_pos:>10.4f} | {alpha_neg:>10.4f}")
 
 
-def show_bottleneck(conn, exp_id):
+def show_bottleneck(conn: sqlite3.Connection, exp_id: int) -> None:
     """Show bottleneck analysis (which stage takes most time)."""
     print("=" * 80)
     print(f"BOTTLENECK ANALYSIS (Experiment {exp_id})")
@@ -308,7 +308,8 @@ def show_bottleneck(conn, exp_id):
     )
 
 
-def main():
+def main() -> int:
+    """Parse arguments and print the requested experiment view."""
     parser = argparse.ArgumentParser(description="Query experiment results")
     parser.add_argument(
         "--view",
@@ -332,27 +333,29 @@ def main():
     args = parser.parse_args()
 
     conn = connect()
+    try:
+        if args.exp is not None:
+            show_experiment(conn, args.exp)
+        elif args.metrics is not None:
+            show_metrics(conn, args.metrics)
+        elif args.profiling is not None:
+            show_profiling(conn, args.profiling)
+        elif args.alpha is not None:
+            show_alpha_drift(conn, args.alpha)
+        elif args.bottleneck is not None:
+            show_bottleneck(conn, args.bottleneck)
+        else:
+            list_experiments(
+                conn,
+                batch_id=args.batch_id,
+                status=args.status,
+                view_name=args.view,
+            )
+    finally:
+        conn.close()
 
-    if args.exp:
-        show_experiment(conn, args.exp)
-    elif args.metrics:
-        show_metrics(conn, args.metrics)
-    elif args.profiling:
-        show_profiling(conn, args.profiling)
-    elif args.alpha:
-        show_alpha_drift(conn, args.alpha)
-    elif args.bottleneck:
-        show_bottleneck(conn, args.bottleneck)
-    else:
-        list_experiments(
-            conn,
-            batch_id=args.batch_id,
-            status=args.status,
-            view_name=args.view,
-        )
-
-    conn.close()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

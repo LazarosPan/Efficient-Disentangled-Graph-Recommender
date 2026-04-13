@@ -63,25 +63,14 @@ PRESETS = {
 DEFAULT_PRESET_ORDER = ["ucagnn", "lightgcn", "dice_like"]
 
 
-def canonical_preset_name(preset: str | None) -> str | None:
-    """Return the canonical public preset name."""
-    return preset
-
-
 def canonicalize_preset_names(presets: list[str]) -> list[str]:
     """Normalize and deduplicate preset names while preserving order."""
     normalized: list[str] = []
     for preset in presets:
-        canonical = canonical_preset_name(preset)
-        if canonical is None or canonical in normalized:
+        if preset in normalized:
             continue
-        normalized.append(canonical)
+        normalized.append(preset)
     return normalized
-
-
-def _config_as_dict(config: UCaGNNConfig) -> dict:
-    """Convert config dataclass to a comparable dictionary."""
-    return dataclasses.asdict(config)
 
 
 def _build_canonical_name(
@@ -90,8 +79,6 @@ def _build_canonical_name(
     intervention: str | None,
 ) -> str:
     """Build a descriptive canonical experiment name from the effective config."""
-    preset = canonical_preset_name(preset)
-    layer_depth = config.max_gnn_layers
     parts = [
         config.dataset,
         preset or "custom",
@@ -99,7 +86,7 @@ def _build_canonical_name(
         f"ep{config.epochs}",
         f"bs{config.batch_size}",
         f"dim{config.embed_dim}",
-        f"layers{layer_depth}",
+        f"layers{config.max_gnn_layers}",
     ]
     if config.use_dual_branch and (
         config.interest_gnn_layers != config.conformity_gnn_layers
@@ -107,8 +94,7 @@ def _build_canonical_name(
         parts.append(
             f"branchL{config.interest_gnn_layers}-{config.conformity_gnn_layers}"
         )
-    neighbor_str = "-".join(str(value) for value in config.num_neighbors)
-    parts.append(f"nbr{neighbor_str}")
+    parts.append(f"nbr{'-'.join(str(value) for value in config.num_neighbors)}")
     if config.sample_interactions is not None:
         parts.append(f"sample{config.sample_interactions}")
     if config.loader_max_rows is not None:
@@ -125,7 +111,7 @@ def _build_canonical_name(
         parts.append(f"fpolicy{config.feature_policy}")
     if config.scoring_weight_mode != "fixed":
         parts.append(f"scoremix{config.scoring_weight_mode}")
-    if getattr(config, "train_scoring_mode", "default") != "default":
+    if config.train_scoring_mode != "default":
         parts.append(f"trainscore{config.train_scoring_mode}")
     if config.eval_scoring_mode != "default":
         parts.append(f"score{config.eval_scoring_mode}")
@@ -144,7 +130,6 @@ def _resolve_checkpoint_path(
     """Resolve the checkpoint path for a run."""
     if checkpoint_path is not None:
         return Path(checkpoint_path)
-    preset = canonical_preset_name(preset)
     return CHECKPOINT_DIR / f"{_build_canonical_name(config, preset, intervention)}.pt"
 
 
@@ -447,15 +432,6 @@ def _default_mlflow_tracking_uri() -> str:
     return f"sqlite:///{MLFLOW_DB_PATH.resolve()}"
 
 
-def _build_mlflow_run_name(
-    config: UCaGNNConfig,
-    preset: str | None,
-    intervention: str | None,
-) -> str:
-    """Build a deterministic MLflow run name for experiment discovery."""
-    return _build_canonical_name(config, preset, intervention)
-
-
 def _build_mlflow_tags(
     config: UCaGNNConfig,
     preset: str | None,
@@ -558,7 +534,6 @@ def _build_mlflow_params(
     profile_name: str | None,
 ) -> dict[str, str | int | float | bool]:
     """Select compact config fields to expose as searchable MLflow params."""
-    preset = canonical_preset_name(preset)
     params: dict[str, str | int | float | bool] = {
         "dataset": config.dataset,
         "preset": preset or "custom",
@@ -569,7 +544,7 @@ def _build_mlflow_params(
         "batch_size": config.batch_size,
         "embed_dim": config.embed_dim,
         "max_gnn_layers": config.max_gnn_layers,
-        "train_scoring_mode": getattr(config, "train_scoring_mode", "default"),
+        "train_scoring_mode": config.train_scoring_mode,
         "eval_scoring_mode": config.eval_scoring_mode,
         "scoring_weight_mode": config.scoring_weight_mode,
         "sample_interactions": config.sample_interactions or 0,
@@ -646,7 +621,7 @@ def _start_mlflow_run(
             logger.info("MLflow system metrics logging unavailable: %s", exc)
         mlflow.set_experiment(experiment_name)
         mlflow.start_run(
-            run_name=run_name or _build_mlflow_run_name(config, preset, intervention)
+            run_name=run_name or _build_canonical_name(config, preset, intervention)
         )
         mlflow.set_tags(
             _build_mlflow_tags(
@@ -691,12 +666,12 @@ def build_config(args: argparse.Namespace) -> UCaGNNConfig:
     kwargs: dict = {}
 
     recipe = get_recipe(args.recipe) if getattr(args, "recipe", None) else None
-    effective_preset = canonical_preset_name(getattr(args, "preset", None))
+    effective_preset = getattr(args, "preset", None)
     if recipe is not None:
         _validate_recipe_cli_conflicts(args, recipe)
         kwargs.update(recipe.get("overrides", {}))
         if effective_preset is None:
-            effective_preset = canonical_preset_name(recipe.get("preset"))
+            effective_preset = recipe.get("preset")
 
     if effective_preset is not None and effective_preset not in PRESETS:
         available = ", ".join(sorted(PRESETS))
@@ -798,8 +773,8 @@ def _validate_recipe_cli_conflicts(
     """
     conflicts: list[str] = []
 
-    recipe_preset = canonical_preset_name(recipe.get("preset"))
-    cli_preset = canonical_preset_name(getattr(args, "preset", None))
+    recipe_preset = recipe.get("preset")
+    cli_preset = getattr(args, "preset", None)
     if (
         cli_preset is not None
         and recipe_preset is not None
@@ -851,8 +826,6 @@ def run_experiment(
     auto_resume: bool = True,
 ) -> dict:
     """Run a single experiment end-to-end. Returns test metrics dict."""
-    preset = canonical_preset_name(preset)
-
     # Seed
     torch.manual_seed(config.seed)
     if torch.cuda.is_available():
@@ -874,9 +847,9 @@ def run_experiment(
 
     if checkpoint_state is not None:
         saved_config = checkpoint_state.get("config")
-        if saved_config is not None and _config_as_dict(
+        if saved_config is not None and dataclasses.asdict(
             saved_config
-        ) != _config_as_dict(config):
+        ) != dataclasses.asdict(config):
             raise ValueError(
                 f"Checkpoint config mismatch for {resolved_checkpoint_path}. "
                 "Use a different checkpoint path or disable auto-resume."
@@ -1256,9 +1229,7 @@ def main():
 
     config = build_config(args)
     recipe = get_recipe(args.recipe) if args.recipe else None
-    resolved_preset = canonical_preset_name(
-        args.preset or (recipe.get("preset") if recipe else None)
-    )
+    resolved_preset = args.preset or (recipe.get("preset") if recipe else None)
     result = run_experiment(
         config,
         preset=resolved_preset,

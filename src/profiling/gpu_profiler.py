@@ -35,7 +35,7 @@ class GPUProfiler:
     """Collects per-stage timing and VRAM usage across an epoch."""
 
     stages: list[StageMetrics] = field(default_factory=list)
-    _enabled: bool = False #TODO: Change to True to profile the GPU
+    _enabled: bool = False  # TODO: Change to True to profile the GPU
 
     def set_enabled(self, enabled: bool) -> None:
         """Enable or disable stage collection for the current epoch."""

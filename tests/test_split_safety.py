@@ -54,8 +54,10 @@ class _RankingModel(torch.nn.Module):
         edge_index: torch.Tensor,
         edge_sign: torch.Tensor | None = None,
         edge_norm: torch.Tensor | None = None,
+        embedding_dtype: torch.dtype | None = None,
     ) -> dict:
         """Stub: no real propagation; return empty dict sentinel."""
+        del edge_index, edge_sign, edge_norm, embedding_dtype
         return {}
 
     def score_users_from_propagated(

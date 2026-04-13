@@ -81,13 +81,6 @@ class ScoringModule(nn.Module):
             ),
         )
 
-    def _fixed_weight_tensor(
-        self,
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> torch.Tensor:
-        return self._fixed_weights.to(device=device, dtype=dtype)
-
     def _mode_mask(
         self,
         scoring_mode: str,
@@ -218,22 +211,6 @@ class ScoringModule(nn.Module):
         pop_inputs = self._popularity_item_inputs(propagated, item_ids)
         return self.popularity_head(pop_inputs).squeeze(-1)
 
-    def _gate_inputs(
-        self,
-        propagated: dict[str, torch.Tensor],
-        user_ids: torch.Tensor,
-    ) -> torch.Tensor:
-        """Build the user-conditioned gate features for adaptive score mixing."""
-        if self.config.use_dual_branch:
-            return torch.cat(
-                [
-                    propagated["user_interest"][user_ids],
-                    propagated["user_conformity"][user_ids],
-                ],
-                dim=-1,
-            )
-        return propagated["user"][user_ids]
-
     def _resolve_gate_weights(
         self,
         propagated: dict[str, torch.Tensor],
@@ -262,7 +239,16 @@ class ScoringModule(nn.Module):
         if self.score_weight_logits is None:
             raise RuntimeError("Adaptive fusion requested without score_weight_logits")
 
-        gate_inputs = self._gate_inputs(propagated, user_ids)
+        if self.config.use_dual_branch:
+            gate_inputs = torch.cat(
+                [
+                    propagated["user_interest"][user_ids],
+                    propagated["user_conformity"][user_ids],
+                ],
+                dim=-1,
+            )
+        else:
+            gate_inputs = propagated["user"][user_ids]
         logits = self.gate_mlp(gate_inputs) + self.score_weight_logits.to(
             device=gate_inputs.device,
             dtype=gate_inputs.dtype,
@@ -282,17 +268,18 @@ class ScoringModule(nn.Module):
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
     ) -> torch.Tensor:
+        resolved_device = device or torch.device("cpu")
+        resolved_dtype = dtype or torch.bfloat16
         if not self.config.use_dual_branch:
-            resolved_device = device or torch.device("cpu")
-            resolved_dtype = dtype or torch.bfloat16
             return torch.tensor(
                 [1.0, 0.0, 0.0], device=resolved_device, dtype=resolved_dtype
             )
 
         if self.config.scoring_weight_mode == "fixed":
-            resolved_device = device or torch.device("cpu")
-            resolved_dtype = dtype or torch.bfloat16
-            base_weights = self._fixed_weight_tensor(resolved_device, resolved_dtype)
+            base_weights = self._fixed_weights.to(
+                device=resolved_device,
+                dtype=resolved_dtype,
+            )
         else:
             if self.score_weight_logits is None:
                 raise RuntimeError(

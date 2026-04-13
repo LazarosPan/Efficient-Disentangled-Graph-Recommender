@@ -13,11 +13,11 @@ import argparse
 import dataclasses
 import sys
 from pathlib import Path
-from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import torch
+from torch_geometric.data import Data
 
 from experiments.run_experiment import (
     build_runtime_model,
@@ -88,7 +88,7 @@ def _resolve_device(config: UCaGNNConfig, override: str | None) -> str:
     return requested
 
 
-def _mask_for_split(data, split: str):
+def _mask_for_split(data: Data, split: str) -> torch.Tensor:
     """Return the requested split mask from the graph data object."""
     if split == "val":
         return data.val_mask
@@ -99,7 +99,7 @@ def _mask_for_split(data, split: str):
 
 def _collect_mode_metrics(
     model: UCaGNN,
-    data,
+    data: Data,
     config: UCaGNNConfig,
     modes: list[str],
     split: str,
