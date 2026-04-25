@@ -182,6 +182,48 @@ class MiniBatchTrainer(TrainerRuntime):
 
         return losses["total"].detach(), losses
 
+    def _dispatch_batch(
+        self,
+        sub_batch: SubgraphBatch,
+        popularity: torch.Tensor,
+        epoch: int,
+        batch_idx: int,
+        n_batches: int,
+        progress_bar: tqdm | None,
+        n_skipped: int,
+    ) -> torch.Tensor | None:
+        """Run one training step; return total_loss or None if the batch was skipped.
+
+        Args:
+            sub_batch: Prepared subgraph batch.
+            popularity: Full-graph item popularity tensor.
+            epoch: Current epoch index.
+            batch_idx: Batch index within the current epoch.
+            n_batches: Total number of batches per epoch.
+            progress_bar: Optional tqdm bar.
+            n_skipped: Skipped-batch count before this call (used for display).
+
+        Returns:
+            total_loss if the batch was processed, None if skipped due to non-finite loss.
+        """
+        total_loss, losses = self._run_training_batch(sub_batch, popularity, epoch)
+        if not torch.isfinite(total_loss).all():
+            self.optimizer.zero_grad(set_to_none=True)
+            if progress_bar is not None:
+                progress_bar.update(1)
+                progress_bar.set_postfix(skipped=n_skipped + 1)
+            return None
+        with profile_stage("backward", self.profiler):
+            self._apply_optimization_step(losses["total"])
+        if progress_bar is not None:
+            progress_bar.update(1)
+            if (
+                batch_idx + 1 == n_batches
+                or batch_idx % self.config.progress_bar_loss_cadence == 0
+            ):
+                progress_bar.set_postfix(loss=f"{float(total_loss.item()):.4f}")
+        return total_loss
+
     def train(
         self,
         start_epoch: int = 0,
@@ -241,7 +283,6 @@ class MiniBatchTrainer(TrainerRuntime):
             batches_per_epoch = max(1, len(starts))
 
             sub_batch: SubgraphBatch | None = None
-            losses: dict[str, torch.Tensor] | None = None
             total_loss: torch.Tensor | None = None
             try:
                 if self.sampler_device.type == "cpu":
@@ -281,36 +322,22 @@ class MiniBatchTrainer(TrainerRuntime):
                                     ),
                                 )
 
-                            total_loss, losses = self._run_training_batch(
+                            total_loss = self._dispatch_batch(
                                 sub_batch,
                                 popularity,
                                 epoch,
+                                batch_idx,
+                                n_batches,
+                                progress_bar,
+                                skipped_batches,
                             )
-                            if not torch.isfinite(total_loss).all():
+                            if total_loss is None:
                                 skipped_batches += 1
-                                self.optimizer.zero_grad(set_to_none=True)
-                                if progress_bar is not None:
-                                    progress_bar.update(1)
-                                    progress_bar.set_postfix(skipped=skipped_batches)
                                 continue
-
-                            with profile_stage("backward", self.profiler):
-                                self._apply_optimization_step(losses["total"])
-
                             epoch_loss_total = epoch_loss_total + total_loss.to(
                                 torch.bfloat16
                             )
                             completed_batches += 1
-                            if progress_bar is not None:
-                                progress_bar.update(1)
-                                if (
-                                    batch_idx + 1 == n_batches
-                                    or batch_idx % self.config.progress_bar_loss_cadence
-                                    == 0
-                                ):
-                                    progress_bar.set_postfix(
-                                        loss=f"{float(total_loss.item()):.4f}"
-                                    )
                 else:
                     for batch_idx, start in enumerate(starts):
                         end = min(start + batch_sz, n_train)
@@ -321,36 +348,22 @@ class MiniBatchTrainer(TrainerRuntime):
                                 self.config.seed + epoch * batches_per_epoch + batch_idx
                             ),
                         )
-                        total_loss, losses = self._run_training_batch(
+                        total_loss = self._dispatch_batch(
                             sub_batch,
                             popularity,
                             epoch,
+                            batch_idx,
+                            n_batches,
+                            progress_bar,
+                            skipped_batches,
                         )
-                        if not torch.isfinite(total_loss).all():
+                        if total_loss is None:
                             skipped_batches += 1
-                            self.optimizer.zero_grad(set_to_none=True)
-                            if progress_bar is not None:
-                                progress_bar.update(1)
-                                progress_bar.set_postfix(skipped=skipped_batches)
                             continue
-
-                        with profile_stage("backward", self.profiler):
-                            self._apply_optimization_step(losses["total"])
-
                         epoch_loss_total = epoch_loss_total + total_loss.to(
                             torch.bfloat16
                         )
                         completed_batches += 1
-                        if progress_bar is not None:
-                            progress_bar.update(1)
-                            if (
-                                batch_idx + 1 == n_batches
-                                or batch_idx % self.config.progress_bar_loss_cadence
-                                == 0
-                            ):
-                                progress_bar.set_postfix(
-                                    loss=f"{float(total_loss.item()):.4f}"
-                                )
             finally:
                 if progress_bar is not None:
                     progress_bar.close()
@@ -359,7 +372,6 @@ class MiniBatchTrainer(TrainerRuntime):
             # graph/loss tensors before full-graph validation.
             del perm, train_users_shuffled, train_items_shuffled
             sub_batch = None
-            losses = None
             total_loss = None
             if self.device.type == "cuda":
                 torch.cuda.empty_cache()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -10,8 +11,8 @@ import experiments.run_benchmark as formal_main
 
 from experiments.run_benchmark import (
     build_benchmark_plan,
-    build_parser as build_benchmark_parser,
 )
+from experiments.cli_parsers import build_benchmark_parser
 from experiments.recipes import (
     default_formal_profile_name,
     formal_profile_names,
@@ -122,14 +123,14 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.lambda_uniform, 0.0)
 
     def test_removed_full_alias_is_rejected(self) -> None:
-        """The public preset surface should no longer accept the legacy full alias."""
+        """The public preset surface should no longer accept the removed full alias."""
         self.assertEqual(get_recipe("ucagnn")["preset"], "ucagnn")
         with self.assertRaises(KeyError):
             get_recipe("full")
         with self.assertRaises(ValueError):
             build_config(_experiment_args(preset="full"))
 
-    def test_build_config_rejects_legacy_loss_schedule_override(self) -> None:
+    def test_build_config_rejects_removed_loss_schedule_override(self) -> None:
         """New runs should reject the removed staged-BPR schedule override."""
         with self.assertRaises(ValueError):
             build_config(_experiment_args(loss_schedule="causal_then_bpr"))
@@ -197,20 +198,20 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(profile["config_overrides"]["num_neighbors"], [10, 5])
         self.assertEqual(profile["config_overrides"]["hard_negative_ratio"], 0.0)
         self.assertEqual(profile["config_overrides"]["loss_schedule"], "baseline")
-        self.assertFalse(benchmark_args.use_early_stopping)
-        self.assertEqual(benchmark_args.presets, ["ucagnn"])
-        self.assertEqual(benchmark_args.graph_methods, ["cagra", "knn"])
-        self.assertEqual(benchmark_args.scoring_weight_modes, ["learned"])
-        self.assertEqual(benchmark_args.batch_size, 4096)
-        self.assertIsNone(benchmark_args.single_branch_gnn_layers)
-        self.assertEqual(benchmark_args.interest_gnn_layers, 1)
-        self.assertEqual(benchmark_args.conformity_gnn_layers, 2)
-        self.assertEqual(benchmark_args.dropout, 0.1)
-        self.assertEqual(benchmark_args.num_neighbors, [10, 5])
-        self.assertEqual(benchmark_args.hard_negative_ratio, 0.0)
-        self.assertEqual(benchmark_args.loss_schedule, "baseline")
-        self.assertEqual(benchmark_args.curriculum_phase1_end, 15)
-        self.assertEqual(benchmark_args.curriculum_phase2_end, 30)
+        self.assertFalse(benchmark_args["use_early_stopping"])
+        self.assertEqual(benchmark_args["presets"], ["ucagnn"])
+        self.assertEqual(benchmark_args["graph_methods"], ["cagra", "knn"])
+        self.assertEqual(benchmark_args["scoring_weight_modes"], ["learned"])
+        self.assertEqual(benchmark_args["batch_size"], 4096)
+        self.assertIsNone(benchmark_args["single_branch_gnn_layers"])
+        self.assertEqual(benchmark_args["interest_gnn_layers"], 1)
+        self.assertEqual(benchmark_args["conformity_gnn_layers"], 2)
+        self.assertEqual(benchmark_args["dropout"], 0.1)
+        self.assertEqual(benchmark_args["num_neighbors"], [10, 5])
+        self.assertEqual(benchmark_args["hard_negative_ratio"], 0.0)
+        self.assertEqual(benchmark_args["loss_schedule"], "baseline")
+        self.assertEqual(benchmark_args["curriculum_phase1_end"], 15)
+        self.assertEqual(benchmark_args["curriculum_phase2_end"], 30)
 
     def test_second_formal_profile_is_reserved_for_final_comparison(self) -> None:
         """The non-default profile should keep baselines out of day-to-day runs."""
@@ -236,9 +237,9 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(profile["config_overrides"]["single_branch_gnn_layers"], 2)
         self.assertEqual(profile["config_overrides"]["interest_gnn_layers"], 2)
         self.assertEqual(profile["config_overrides"]["conformity_gnn_layers"], 2)
-        self.assertEqual(benchmark_args.single_branch_gnn_layers, 2)
-        self.assertEqual(benchmark_args.interest_gnn_layers, 2)
-        self.assertEqual(benchmark_args.conformity_gnn_layers, 2)
+        self.assertEqual(benchmark_args["single_branch_gnn_layers"], 2)
+        self.assertEqual(benchmark_args["interest_gnn_layers"], 2)
+        self.assertEqual(benchmark_args["conformity_gnn_layers"], 2)
 
     def test_stale_saved_profile_falls_back_to_default_bundle(self) -> None:
         """Plain formal-run should survive a removed profile in saved state."""
@@ -266,7 +267,82 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertEqual(profile_name, default_formal_profile_name())
         self.assertFalse(resumed)
-        self.assertEqual(benchmark_args.presets, ["ucagnn"])
+        self.assertEqual(benchmark_args["presets"], ["ucagnn"])
+
+    def test_normalize_benchmark_args_rejects_unexpected_saved_fields(self) -> None:
+        """Saved formal-run state should reject fields outside the current shape."""
+        with self.assertRaises(ValueError):
+            formal_main._normalize_benchmark_args(
+                {
+                    "tier": "small",
+                    "presets": ["ucagnn"],
+                    "graph_methods": ["cagra"],
+                    "epochs": 60,
+                    "batch_size": 4096,
+                    "lr": 1e-3,
+                    "unexpected_depth_field": 2,
+                    "num_neighbors": [10, 5],
+                    "device": "cuda",
+                    "data_dir": "data",
+                    "no_mlflow": False,
+                    "mlflow_tracking_uri": None,
+                    "mlflow_experiment_name": "ucagnn-formal",
+                    "batch_id": "formal-dev-batch",
+                    "resume_batch": True,
+                    "dry_run": False,
+                },
+                fallback_profile_name="development",
+            )
+
+    def test_benchmark_plan_signature_ignores_runtime_overrides(self) -> None:
+        """Resume matching should compare the semantic plan, not runtime routing flags."""
+        base_args = argparse.Namespace(
+            tier="small",
+            presets=["ucagnn"],
+            graph_methods=["cagra", "knn"],
+            scoring_weight_modes=["learned"],
+            profile_name="development",
+            epochs=60,
+            use_early_stopping=False,
+            batch_size=4096,
+            lr=1e-3,
+            single_branch_gnn_layers=None,
+            interest_gnn_layers=1,
+            conformity_gnn_layers=2,
+            dropout=0.1,
+            num_neighbors=[10, 5],
+            hard_negative_ratio=0.0,
+            curriculum_phase1_end=15,
+            curriculum_phase2_end=30,
+            loss_schedule="baseline",
+            loader_max_rows=None,
+            sample_interactions=None,
+            device="cuda",
+            data_dir="data",
+            no_mlflow=False,
+            mlflow_tracking_uri=None,
+            mlflow_experiment_name="ucagnn-formal",
+            batch_id="formal-dev-a",
+            resume_batch=True,
+            dry_run=False,
+        )
+        runtime_override_args = argparse.Namespace(
+            **{
+                **vars(base_args),
+                "device": "cpu",
+                "data_dir": "/tmp/data",
+                "no_mlflow": True,
+                "mlflow_tracking_uri": "sqlite:////tmp/mlflow.db",
+                "mlflow_experiment_name": "scratch",
+                "batch_id": "formal-dev-b",
+                "dry_run": True,
+            }
+        )
+
+        self.assertEqual(
+            formal_main._benchmark_plan_signature(base_args),
+            formal_main._benchmark_plan_signature(runtime_override_args),
+        )
 
     def test_build_config_respects_formal_support_parameter_overrides(self) -> None:
         """Formal support-parameter overrides must flow into the runtime config."""
@@ -312,7 +388,7 @@ class BenchmarkPlanTests(unittest.TestCase):
     """Pin the formal benchmark execution order and parser defaults."""
 
     def test_parser_defaults_use_canonical_preset_names(self) -> None:
-        """Benchmark defaults should not duplicate the legacy full alias."""
+        """Benchmark defaults should not duplicate the removed full alias."""
         args = build_benchmark_parser().parse_args([])
 
         self.assertEqual(args.presets, ["ucagnn", "lightgcn", "dice_like"])
