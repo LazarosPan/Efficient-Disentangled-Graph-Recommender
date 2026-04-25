@@ -1,17 +1,55 @@
 #!/usr/bin/env python
-"""Validate all 6 benchmark loaders and print per-dataset statistics."""
+"""Visualize the six benchmark datasets through the canonical loader path.
+
+The plots are intentionally built from ``CanonicalInteractions`` rather than
+raw files or learned embeddings so every dataset is shown on the same footing.
+This keeps the figures thesis-friendly: they compare scale, sparsity,
+long-tail behavior, temporal coverage, response signals, and dataset-specific
+causal context without coupling the output to a trained model checkpoint.
+Rerunning the script rewrites the same fixed PNG outputs in place.
+"""
 
 from __future__ import annotations
 
+import importlib
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
+import matplotlib
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
+from matplotlib.ticker import PercentFormatter
+from src.utils.cli_parsers import build_explore_all_datasets_parser
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-from src.data.loaders import LOADERS, load_dataset
+if TYPE_CHECKING:
+    from src.data.canonical import CanonicalInteractions
+
+
+def load_dataset_api() -> tuple[dict[str, Any], Any]:
+    """Load dataset helpers after the repo-root path bootstrap.
+
+    Args:
+        None.
+
+    Returns:
+        Loader registry and loader function used by this script.
+    """
+    module = importlib.import_module("src.data.loaders")
+    return module.LOADERS, module.load_dataset
+
+
+LOADERS, load_dataset = load_dataset_api()
 
 BENCHMARK_DATASETS = [
     "amazonbook",
@@ -22,138 +60,920 @@ BENCHMARK_DATASETS = [
     "kuairand1k",
 ]
 
+DISPLAY_NAMES = {
+    "amazonbook": "Amazon-Book",
+    "movielens1m": "MovieLens 1M",
+    "movielens20m": "MovieLens 20M",
+    "kuairec_v2": "KuaiRec v2",
+    "taobao": "Taobao",
+    "kuairand1k": "KuaiRand-1K",
+}
 
-def describe(name: str, data_dir: str = "data") -> dict | None:
-    """Load a dataset and return a stats dict, or None on failure."""
-    try:
-        c = load_dataset(name, data_dir)
-    except Exception as e:
-        print(f"  FAILED: {e}")
-        return None
+DEFAULT_OUTPUT_DIR = Path("results") / "dataset_visualizations"
+DATASET_COLORS = {
+    name: color for name, color in zip(BENCHMARK_DATASETS, plt.get_cmap("tab10").colors)
+}
+FEATURE_COLORS = ("#4C72B0", "#55A868")
 
-    print(f"  {repr(c)}")
 
-    stats = {
-        "dataset": name,
-        "n_users": c.n_users,
-        "n_items": c.n_items,
-        "n_interactions": len(c),
-        "density": len(c) / (c.n_users * c.n_items) * 100
-        if c.n_users * c.n_items > 0
-        else 0,
-        "pos_rate": float(c.label.mean()),
-        "sign_min": float(c.sign.min()),
-        "sign_q25": float(np.percentile(c.sign, 25)),
-        "sign_median": float(np.median(c.sign)),
-        "sign_q75": float(np.percentile(c.sign, 75)),
-        "sign_max": float(c.sign.max()),
-        "user_feat_shape": c.user_features.shape
-        if c.user_features is not None
-        else None,
-        "item_feat_shape": c.item_features.shape
-        if c.item_features is not None
-        else None,
-        "has_predefined_splits": c.train_mask is not None,
-        "split_source": "predefined" if c.train_mask is not None else "derived",
-        "feedback_type": c.feedback_type,
-        "preprocessing_preset": c.preprocessing_preset,
+@dataclass(frozen=True)
+class DatasetSummary:
+    """Compact dataset summary used for overview plots and console output."""
+
+    name: str
+    display_name: str
+    n_users: int
+    n_items: int
+    n_interactions: int
+    density: float
+    pos_rate: float
+    mean_sign: float
+    train_size: int
+    val_size: int
+    test_size: int
+    split_source: str
+    split_label: str
+    timestamp_coverage: float
+    user_feature_dim: int
+    item_feature_dim: int
+    feedback_type: str | None
+    feedback_description: str
+    preprocessing_preset: str | None
+    median_user_activity: float
+    median_item_popularity: float
+    modalities_label: str
+
+
+def display_name(name: str) -> str:
+    """Return a thesis-friendly dataset label.
+
+    Args:
+        name: Internal loader registry name.
+
+    Returns:
+        Human-readable dataset label.
+    """
+    return DISPLAY_NAMES.get(name, name)
+
+
+def describe_split_strategy(split_source: str) -> str:
+    """Return a thesis-facing split description.
+
+    Args:
+        split_source: Internal split-source code.
+
+    Returns:
+        Human-readable split description.
+    """
+    descriptions = {
+        "predefined": "provided train / validation / test split",
+        "train/test+derived-val": "provided train / test split with validation carved from train",
+        "derived:per_user_temporal": "per-user temporal split derived from timestamps",
     }
+    return descriptions.get(split_source, split_source.replace("_", " "))
 
-    # Split sizes
-    resolved_train, resolved_val, resolved_test = c.get_splits()
-    stats["train_size"] = int(resolved_train.sum())
-    stats["val_size"] = int(resolved_val.sum())
-    stats["test_size"] = int(resolved_test.sum())
-    if c.train_mask is not None:
-        if c.val_mask is None and c.test_mask is not None:
-            stats["split_source"] = "train/test"
-        else:
-            stats["split_source"] = "predefined"
+
+def describe_feedback_semantics(name: str) -> str:
+    """Return an audience-facing description of the dataset response semantics.
+
+    Args:
+        name: Internal loader registry name.
+
+    Returns:
+        Human-readable feedback description.
+    """
+    descriptions = {
+        "amazonbook": "implicit observed interactions only",
+        "movielens1m": "explicit 1-to-5 star ratings",
+        "movielens20m": "explicit 1-to-5 star ratings",
+        "kuairec_v2": "watch-ratio feedback from short-video viewing",
+        "taobao": "multi-behavior shopping interactions",
+        "kuairand1k": "short-video engagement logs with randomized exposure",
+    }
+    return descriptions.get(name, "observed user-item interactions")
+
+
+def describe_plotted_context(name: str) -> str:
+    """Return the extra context emphasized in the per-dataset panels.
+
+    Args:
+        name: Internal loader registry name.
+
+    Returns:
+        Human-readable description of the dataset-specific context.
+    """
+    descriptions = {
+        "amazonbook": "implicit interaction graph and split structure",
+        "movielens1m": "ratings over time plus user and item metadata",
+        "movielens20m": "ratings over time plus rich item metadata",
+        "kuairec_v2": "watch ratio plus item-side content descriptors",
+        "taobao": "interaction types from page view to purchase",
+        "kuairand1k": "watch time, engagement labels, and exposure policy",
+    }
+    return descriptions.get(name, "interaction structure and auxiliary context")
+
+
+def split_source(canonical: CanonicalInteractions) -> str:
+    """Describe where the train/val/test split came from.
+
+    Args:
+        canonical: Loaded canonical dataset.
+
+    Returns:
+        Short split-source label.
+    """
+    if (
+        canonical.train_mask is not None
+        and canonical.val_mask is not None
+        and canonical.test_mask is not None
+    ):
+        return "predefined"
+    if canonical.train_mask is not None and canonical.test_mask is not None:
+        return "train/test+derived-val"
+    return "derived:per_user_temporal"
+
+
+def compute_entity_counts(entity_ids: np.ndarray, n_entities: int) -> np.ndarray:
+    """Count interactions per user or item.
+
+    Args:
+        entity_ids: Reindexed user or item IDs for each interaction.
+        n_entities: Total number of entities for the chosen axis.
+
+    Returns:
+        Count array aligned to entity IDs.
+    """
+    return np.bincount(entity_ids, minlength=n_entities)
+
+
+def top_category_counts(
+    values: np.ndarray, top_k: int = 6
+) -> tuple[list[str], np.ndarray]:
+    """Return the most common categorical values with an optional ``other`` bin.
+
+    Args:
+        values: Categorical array to summarize.
+        top_k: Maximum number of bars to emit.
+
+    Returns:
+        Tuple of labels and aligned counts.
+    """
+    if values.size == 0:
+        return [], np.array([], dtype=np.int64)
+
+    labels, counts = np.unique(values.astype(str, copy=False), return_counts=True)
+    order = np.argsort(counts)[::-1]
+    labels = labels[order]
+    counts = counts[order]
+
+    if labels.size <= top_k:
+        return labels.tolist(), counts
+
+    head_labels = labels[: top_k - 1].tolist() + ["other"]
+    head_counts = np.concatenate(
+        [counts[: top_k - 1], np.array([counts[top_k - 1 :].sum()], dtype=counts.dtype)]
+    )
+    return head_labels, head_counts
+
+
+def summarize_dataset(name: str, canonical: CanonicalInteractions) -> DatasetSummary:
+    """Compute scalar summary statistics for one dataset.
+
+    Args:
+        name: Loader registry name.
+        canonical: Loaded canonical interactions.
+
+    Returns:
+        Scalar dataset summary used for printing and overview charts.
+    """
+    train_mask, val_mask, test_mask = canonical.get_splits()
+    user_counts = compute_entity_counts(canonical.user_id, canonical.n_users)
+    item_counts = compute_entity_counts(canonical.item_id, canonical.n_items)
+    active_user_counts = user_counts[user_counts > 0]
+    active_item_counts = item_counts[item_counts > 0]
+
+    resolved_split_source = split_source(canonical)
+    feedback_description = describe_feedback_semantics(name)
+    plotted_context = describe_plotted_context(name)
+
+    return DatasetSummary(
+        name=name,
+        display_name=display_name(name),
+        n_users=canonical.n_users,
+        n_items=canonical.n_items,
+        n_interactions=len(canonical),
+        density=(
+            len(canonical) / float(canonical.n_users * canonical.n_items)
+            if canonical.n_users > 0 and canonical.n_items > 0
+            else 0.0
+        ),
+        pos_rate=float(np.mean(canonical.label)),
+        mean_sign=float(np.mean(canonical.sign)),
+        train_size=int(train_mask.sum()),
+        val_size=int(val_mask.sum()),
+        test_size=int(test_mask.sum()),
+        split_source=resolved_split_source,
+        split_label=describe_split_strategy(resolved_split_source),
+        timestamp_coverage=float(np.mean(canonical.timestamp > 0)),
+        user_feature_dim=(
+            int(canonical.user_features.shape[1])
+            if canonical.user_features is not None
+            else 0
+        ),
+        item_feature_dim=(
+            int(canonical.item_features.shape[1])
+            if canonical.item_features is not None
+            else 0
+        ),
+        feedback_type=canonical.feedback_type,
+        feedback_description=feedback_description,
+        preprocessing_preset=canonical.preprocessing_preset,
+        median_user_activity=(
+            float(np.median(active_user_counts)) if active_user_counts.size > 0 else 0.0
+        ),
+        median_item_popularity=(
+            float(np.median(active_item_counts)) if active_item_counts.size > 0 else 0.0
+        ),
+        modalities_label=plotted_context,
+    )
+
+
+def format_scalar(value: float) -> str:
+    """Format a scalar for axis labels or dataset cards.
+
+    Args:
+        value: Numeric value to format.
+
+    Returns:
+        Compact string representation.
+    """
+    rounded = round(float(value))
+    if np.isclose(value, rounded):
+        return str(int(rounded))
+    return f"{float(value):.2f}"
+
+
+def plot_tail_ccdf(
+    ax: Axes,
+    counts: np.ndarray,
+    title: str,
+    xlabel: str,
+    population_label: str,
+    color: str,
+) -> None:
+    """Plot a log-log complementary CDF for long-tail activity.
+
+    Args:
+        ax: Matplotlib axes that receive the plot.
+        counts: Per-user or per-item interaction counts.
+        title: Axes title.
+        xlabel: X-axis label.
+        population_label: Name of the population shown on the y-axis.
+        color: Line color.
+
+    Returns:
+        None. The axes are modified in place.
+    """
+    positive_counts = counts[counts > 0]
+    if positive_counts.size == 0:
+        ax.axis("off")
+        ax.set_title(title)
+        ax.text(0.5, 0.5, "No positive counts", ha="center", va="center")
+        return
+
+    values, frequencies = np.unique(positive_counts, return_counts=True)
+    ccdf = np.cumsum(frequencies[::-1])[::-1] / positive_counts.size
+    ax.step(values, ccdf, where="post", color=color, linewidth=2.0)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(f"share of {population_label} with at least x interactions")
+    ax.grid(True, which="both", alpha=0.25)
+
+
+def plot_relative_time_histogram(ax: Axes, timestamps: np.ndarray, color: str) -> None:
+    """Plot interaction density over relative dataset time.
+
+    Args:
+        ax: Matplotlib axes that receive the plot.
+        timestamps: Interaction timestamps aligned to the canonical rows.
+        color: Histogram color.
+
+    Returns:
+        None. The axes are modified in place.
+    """
+    valid_timestamps = timestamps[timestamps > 0].astype(np.float64, copy=False)
+    ax.set_title("Interaction volume over relative time")
+
+    if valid_timestamps.size == 0:
+        ax.axis("off")
+        ax.text(0.5, 0.5, "No usable timestamps", ha="center", va="center")
+        return
+
+    start_timestamp = float(valid_timestamps.min())
+    end_timestamp = float(valid_timestamps.max())
+    if np.isclose(start_timestamp, end_timestamp):
+        ax.axis("off")
+        ax.text(
+            0.5, 0.5, "Timestamps collapse to one instant", ha="center", va="center"
+        )
+        return
+
+    relative_time = (valid_timestamps - start_timestamp) / (
+        end_timestamp - start_timestamp
+    )
+    ax.hist(
+        relative_time, bins=np.linspace(0.0, 1.0, 25), color=color, edgecolor="white"
+    )
+    ax.set_xlim(0.0, 1.0)
+    ax.set_xlabel("relative time within dataset")
+    ax.set_ylabel("number of interactions")
+    ax.grid(True, alpha=0.2)
+
+
+def plot_response_distribution(
+    ax: Axes,
+    canonical: CanonicalInteractions,
+    summary: DatasetSummary,
+    color: str,
+) -> None:
+    """Plot the richest available response signal for one dataset.
+
+    Args:
+        ax: Matplotlib axes that receive the plot.
+        canonical: Loaded canonical dataset.
+        summary: Scalar dataset summary for label selection.
+        color: Plot color.
+
+    Returns:
+        None. The axes are modified in place.
+    """
+    value_labels: dict[float, str] | None = None
+
+    if (
+        summary.name in {"movielens1m", "movielens20m"}
+        and canonical.raw_target is not None
+    ):
+        response_values = np.asarray(canonical.raw_target)
+        response_label = "Rating distribution"
+        response_axis_label = "rating"
+    elif summary.name == "kuairec_v2" and canonical.raw_target is not None:
+        response_values = np.asarray(canonical.raw_target)
+        response_label = "Watch-ratio distribution"
+        response_axis_label = "watch ratio"
+    elif summary.name == "kuairand1k" and canonical.raw_target is not None:
+        response_values = np.asarray(canonical.raw_target)
+        response_label = "Normalized watch-time distribution"
+        response_axis_label = "play time / video duration"
+    elif summary.name == "taobao" and canonical.raw_target is not None:
+        response_values = np.asarray(canonical.raw_target)
+        response_label = "Interaction-type distribution"
+        response_axis_label = "interaction type"
+        value_labels = {
+            0.0: "page view",
+            1.0: "favorite",
+            2.0: "cart",
+            3.0: "purchase",
+        }
+    elif summary.name == "amazonbook":
+        response_values = np.asarray(canonical.label)
+        response_label = "Observed interaction distribution"
+        response_axis_label = "interaction outcome"
+        value_labels = {1.0: "observed interaction"}
+    elif canonical.raw_target is not None:
+        response_values = np.asarray(canonical.raw_target)
+        response_label = "Response-value distribution"
+        response_axis_label = "response value"
+    elif np.any(canonical.sign != canonical.sign[0]):
+        response_values = np.asarray(canonical.sign)
+        response_label = "Signed-feedback distribution"
+        response_axis_label = "signed feedback score"
     else:
-        stats["split_source"] = "derived:per_user"
-    print(
-        f"  Splits ({stats['split_source']}): "
-        f"train={stats['train_size']:,} val={stats['val_size']:,} test={stats['test_size']:,}"
-    )
+        response_values = np.asarray(canonical.label)
+        response_label = "Observed interaction distribution"
+        response_axis_label = "interaction outcome"
 
-    # Popularity distribution
-    pop = c.popularity
-    print(
-        f"  Popularity: min={pop.min():.4f} median={np.median(pop):.4f} max={pop.max():.4f}"
-    )
-    print(f"  Sign range: [{stats['sign_min']:.2f}, {stats['sign_max']:.2f}]")
-    print(f"  Positive rate: {stats['pos_rate']:.2%}")
-    if stats["feedback_type"] is not None:
-        print(f"  Feedback type: {stats['feedback_type']}")
-    if stats["preprocessing_preset"] is not None:
-        print(f"  Preprocessing preset: {stats['preprocessing_preset']}")
-    if c.raw_target is not None:
-        print(
-            "  Raw target range: "
-            f"[{float(np.min(c.raw_target)):.2f}, {float(np.max(c.raw_target)):.2f}]"
+    finite_values = response_values[np.isfinite(response_values)]
+    ax.set_title(response_label)
+
+    if finite_values.size == 0:
+        ax.axis("off")
+        ax.text(0.5, 0.5, "No finite values", ha="center", va="center")
+        return
+
+    sample_size = min(finite_values.size, 50_000)
+    sample_indices = np.linspace(0, finite_values.size - 1, sample_size, dtype=np.int64)
+    sample_values = finite_values[sample_indices]
+
+    if np.unique(sample_values).size <= 12:
+        unique_values, counts = np.unique(finite_values, return_counts=True)
+        tick_labels = [
+            value_labels.get(float(value), format_scalar(value))
+            if value_labels is not None
+            else format_scalar(value)
+            for value in unique_values
+        ]
+        ax.bar(
+            tick_labels,
+            counts,
+            color=color,
+            edgecolor="black",
+            linewidth=0.4,
         )
-    if c.exposure_flag is not None:
-        print(f"  Random exposure rate: {float(np.mean(c.exposure_flag)):.2%}")
-    if c.behavior_type is not None:
-        preview = np.unique(c.behavior_type).tolist()[:8]
-        print(f"  Behavior types: {preview}")
-    if c.source_domain is not None:
-        preview = np.unique(c.source_domain).tolist()[:8]
-        print(f"  Source domains: {preview}")
-
-    if c.metadata:
-        for k, v in c.metadata.items():
-            if isinstance(v, np.ndarray):
-                print(
-                    f"  Metadata[{k}]: shape={v.shape}, unique={np.unique(v).tolist()[:10]}"
-                )
-            else:
-                print(f"  Metadata[{k}]: {v}")
-
-    return stats
+        ax.set_xlabel(response_axis_label)
+        ax.set_ylabel("number of interactions")
+    else:
+        ax.hist(finite_values, bins=40, color=color, edgecolor="white")
+        ax.set_xlabel(response_axis_label)
+        ax.set_ylabel("number of interactions")
+    ax.grid(True, axis="y", alpha=0.2)
 
 
-def main():
-    import argparse
+def plot_context_panel(
+    ax: Axes, canonical: CanonicalInteractions, summary: DatasetSummary
+) -> None:
+    """Plot dataset-specific context or side-feature availability.
 
-    parser = argparse.ArgumentParser(description="Explore all benchmark datasets")
-    parser.add_argument("--data-dir", default="data", help="Data directory")
-    parser.add_argument(
-        "--datasets", nargs="*", default=BENCHMARK_DATASETS, help="Datasets to explore"
+    Args:
+        ax: Matplotlib axes that receive the plot.
+        canonical: Loaded canonical dataset.
+        summary: Scalar summary for the same dataset.
+
+    Returns:
+        None. The axes are modified in place.
+    """
+    if canonical.exposure_flag is not None:
+        plot_group_positive_rate(
+            ax=ax,
+            group_labels=["randomized", "standard"],
+            group_masks=[
+                np.asarray(canonical.exposure_flag, dtype=bool),
+                ~np.asarray(canonical.exposure_flag, dtype=bool),
+            ],
+            labels=canonical.label,
+            title="Share labeled positive by exposure policy",
+        )
+        return
+
+    if (
+        canonical.behavior_type is not None
+        and np.unique(canonical.behavior_type).size > 1
+    ):
+        labels, counts = top_category_counts(canonical.behavior_type)
+        title = "Interaction-type mix"
+    elif (
+        canonical.source_domain is not None
+        and np.unique(canonical.source_domain).size > 1
+    ):
+        source_labels = np.unique(
+            canonical.source_domain.astype(str, copy=False)
+        ).tolist()
+        plot_group_positive_rate(
+            ax=ax,
+            group_labels=source_labels,
+            group_masks=[
+                canonical.source_domain.astype(str, copy=False) == label
+                for label in source_labels
+            ],
+            labels=canonical.label,
+            title="Share labeled positive by source domain",
+        )
+        return
+    elif (
+        canonical.raw_target is not None
+        and summary.feedback_type == "explicit"
+        and summary.timestamp_coverage > 0.0
+    ):
+        plot_mean_raw_target_over_time(
+            ax=ax,
+            raw_target=canonical.raw_target,
+            timestamps=canonical.timestamp,
+            color=DATASET_COLORS[summary.name],
+        )
+        return
+    else:
+        labels, counts, title = [], np.array([], dtype=np.int64), ""
+
+    if counts.size > 0:
+        ax.bar(labels, counts, color=DATASET_COLORS[summary.name], edgecolor="white")
+        ax.set_title(title)
+        ax.set_xlabel("interaction type")
+        ax.set_ylabel("number of interactions")
+        ax.tick_params(axis="x", rotation=30)
+        ax.grid(True, axis="y", alpha=0.2)
+        return
+
+    if summary.user_feature_dim > 0 or summary.item_feature_dim > 0:
+        ax.bar(
+            ["user features", "item features"],
+            [summary.user_feature_dim, summary.item_feature_dim],
+            color=FEATURE_COLORS,
+        )
+        ax.set_title("Available side-feature dimensions")
+        ax.set_ylabel("columns")
+        ax.grid(True, axis="y", alpha=0.2)
+        return
+
+    plot_split_composition(ax, summary)
+
+
+def plot_group_positive_rate(
+    ax: Axes,
+    group_labels: list[str],
+    group_masks: list[np.ndarray],
+    labels: np.ndarray,
+    title: str,
+) -> None:
+    """Plot positive rate for a small set of dataset-specific groups.
+
+    Args:
+        ax: Matplotlib axes that receive the plot.
+        group_labels: Display labels for the groups.
+        group_masks: Boolean masks selecting each group.
+        labels: Binary interaction labels used to compute positive rates.
+        title: Axes title.
+
+    Returns:
+        None. The axes are modified in place.
+    """
+    counts = np.array([int(mask.sum()) for mask in group_masks], dtype=np.int64)
+    rates = np.array(
+        [float(np.mean(labels[mask])) if np.any(mask) else 0.0 for mask in group_masks],
+        dtype=np.float64,
     )
-    args = parser.parse_args()
+    colors = plt.get_cmap("Set2")(np.linspace(0.15, 0.75, len(group_labels)))
 
-    print("=" * 70)
-    print("U-CaGNN DATASET EXPLORATION")
-    print("=" * 70)
+    bars = ax.bar(group_labels, rates, color=colors, edgecolor="black", linewidth=0.4)
+    ax.set_title(title)
+    ax.set_ylabel("share labeled positive")
+    ax.yaxis.set_major_formatter(PercentFormatter(1.0))
+    ax.set_ylim(0.0, max(1.0, float(rates.max()) * 1.15))
+    ax.tick_params(axis="x", rotation=20)
+    ax.grid(True, axis="y", alpha=0.2)
 
-    results = []
+    for bar, count in zip(bars, counts, strict=True):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + 0.02,
+            f"n={count:,}",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+        )
+
+
+def plot_mean_raw_target_over_time(
+    ax: Axes,
+    raw_target: np.ndarray,
+    timestamps: np.ndarray,
+    color: str,
+) -> None:
+    """Plot average rating across relative time bins.
+
+    Args:
+        ax: Matplotlib axes that receive the plot.
+        raw_target: Rating values aligned with the timestamps.
+        timestamps: Interaction timestamps aligned with ``raw_target``.
+        color: Plot color.
+
+    Returns:
+        None. The axes are modified in place.
+    """
+    valid_mask = (timestamps > 0) & np.isfinite(raw_target)
+    valid_timestamps = timestamps[valid_mask].astype(np.float64, copy=False)
+    valid_target = raw_target[valid_mask].astype(np.float64, copy=False)
+
+    if valid_timestamps.size < 2:
+        ax.axis("off")
+        ax.set_title("Average rating over relative time")
+        ax.text(0.5, 0.5, "Not enough timestamped targets", ha="center", va="center")
+        return
+
+    start_timestamp = float(valid_timestamps.min())
+    end_timestamp = float(valid_timestamps.max())
+    if np.isclose(start_timestamp, end_timestamp):
+        ax.axis("off")
+        ax.set_title("Average rating over relative time")
+        ax.text(
+            0.5, 0.5, "Timestamps collapse to one instant", ha="center", va="center"
+        )
+        return
+
+    bin_edges = np.linspace(start_timestamp, end_timestamp, 11)
+    bin_centers: list[float] = []
+    bin_means: list[float] = []
+
+    for idx in range(bin_edges.size - 1):
+        lower = bin_edges[idx]
+        upper = bin_edges[idx + 1]
+        if idx == bin_edges.size - 2:
+            in_bin = (valid_timestamps >= lower) & (valid_timestamps <= upper)
+        else:
+            in_bin = (valid_timestamps >= lower) & (valid_timestamps < upper)
+        if np.any(in_bin):
+            bin_centers.append((idx + 0.5) / (bin_edges.size - 1))
+            bin_means.append(float(np.mean(valid_target[in_bin])))
+
+    if not bin_centers:
+        ax.axis("off")
+        ax.set_title("Average rating over relative time")
+        ax.text(0.5, 0.5, "No populated time bins", ha="center", va="center")
+        return
+
+    ax.plot(bin_centers, bin_means, marker="o", linewidth=2.0, color=color)
+    ax.fill_between(bin_centers, bin_means, alpha=0.15, color=color)
+    ax.set_title("Average rating over relative time")
+    ax.set_xlabel("relative time within dataset")
+    ax.set_ylabel("average rating")
+    ax.set_xlim(0.0, 1.0)
+    ax.grid(True, alpha=0.2)
+
+
+def plot_split_composition(ax: Axes, summary: DatasetSummary) -> None:
+    """Plot train/validation/test interaction counts.
+
+    Args:
+        ax: Matplotlib axes that receive the plot.
+        summary: Scalar dataset summary with split counts.
+
+    Returns:
+        None. The axes are modified in place.
+    """
+    split_labels = ["train", "val", "test"]
+    split_counts = [summary.train_size, summary.val_size, summary.test_size]
+    split_colors = ["#4C72B0", "#DD8452", "#55A868"]
+
+    ax.bar(split_labels, split_counts, color=split_colors, edgecolor="white")
+    ax.set_title("Train / validation / test split sizes")
+    ax.set_ylabel("number of interactions")
+    ax.grid(True, axis="y", alpha=0.2)
+
+
+def save_figure(fig: Figure, output_path: Path, dpi: int) -> None:
+    """Persist a figure to disk and release the Matplotlib handle.
+
+    Args:
+        fig: Figure object to save.
+        output_path: Target image path.
+        dpi: Figure resolution.
+
+    Returns:
+        None. The figure is saved and closed.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if output_path.exists():
+        output_path.unlink()
+    fig.savefig(output_path, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_dataset_profile(
+    canonical: CanonicalInteractions,
+    summary: DatasetSummary,
+    output_dir: Path,
+    dpi: int,
+) -> Path:
+    """Create and save one per-dataset profile figure.
+
+    Args:
+        canonical: Loaded canonical dataset.
+        summary: Scalar dataset summary.
+        output_dir: Directory where the image should be written.
+        dpi: Figure resolution.
+
+    Returns:
+        Output path of the saved profile figure.
+    """
+    fig, axes = plt.subplots(2, 3, figsize=(16, 9), constrained_layout=True)
+    flat_axes = axes.ravel()
+    color = DATASET_COLORS[summary.name]
+
+    flat_axes[0].axis("off")
+    flat_axes[0].set_title("Dataset card")
+    flat_axes[0].text(
+        0.02,
+        0.98,
+        "\n".join(
+            [
+                f"dataset: {summary.display_name}",
+                f"interaction semantics: {summary.feedback_description}",
+                f"plotted context: {summary.modalities_label}",
+                f"users/items/interactions: {summary.n_users:,} / {summary.n_items:,} / {summary.n_interactions:,}",
+                f"density: {summary.density * 100:.5f}%",
+                f"split strategy: {summary.split_label}",
+                f"share labeled positive: {summary.pos_rate:.2%}",
+                f"average signed-feedback score: {summary.mean_sign:.3f}",
+                f"median interactions per user: {summary.median_user_activity:.1f}",
+                f"median interactions per item: {summary.median_item_popularity:.1f}",
+                f"user/item side-feature columns: {summary.user_feature_dim} / {summary.item_feature_dim}",
+                f"rows with usable timestamps: {summary.timestamp_coverage:.1%}",
+            ]
+        ),
+        va="top",
+        ha="left",
+        family="monospace",
+    )
+
+    user_counts = compute_entity_counts(canonical.user_id, canonical.n_users)
+    item_counts = compute_entity_counts(canonical.item_id, canonical.n_items)
+    plot_tail_ccdf(
+        flat_axes[1],
+        user_counts,
+        "User activity long tail",
+        "interactions per user",
+        "users",
+        color,
+    )
+    plot_tail_ccdf(
+        flat_axes[2],
+        item_counts,
+        "Item popularity long tail",
+        "interactions per item",
+        "items",
+        color,
+    )
+    plot_relative_time_histogram(flat_axes[3], canonical.timestamp, color)
+    plot_response_distribution(flat_axes[4], canonical, summary, color)
+    plot_context_panel(flat_axes[5], canonical, summary)
+
+    fig.suptitle(f"{summary.display_name} dataset profile", fontsize=16)
+
+    output_path = output_dir / f"{summary.name}_profile.png"
+    save_figure(fig, output_path, dpi=dpi)
+    return output_path
+
+
+def save_benchmark_overview(
+    summaries: list[DatasetSummary],
+    output_dir: Path,
+    dpi: int,
+) -> Path:
+    """Create and save the cross-dataset benchmark overview figure.
+
+    Args:
+        summaries: Per-dataset scalar summaries.
+        output_dir: Directory where the image should be written.
+        dpi: Figure resolution.
+
+    Returns:
+        Output path of the saved overview figure.
+    """
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10), constrained_layout=True)
+    flat_axes = axes.ravel()
+    x_positions = np.arange(len(summaries))
+    names = [summary.display_name for summary in summaries]
+    colors = [DATASET_COLORS[summary.name] for summary in summaries]
+
+    metric_specs = [
+        (
+            "Users",
+            [summary.n_users for summary in summaries],
+            "users",
+            True,
+        ),
+        (
+            "Items",
+            [summary.n_items for summary in summaries],
+            "items",
+            True,
+        ),
+        (
+            "Interactions",
+            [summary.n_interactions for summary in summaries],
+            "interactions",
+            True,
+        ),
+        (
+            "Observed density",
+            [summary.density * 100 for summary in summaries],
+            "density (%)",
+            True,
+        ),
+        (
+            "Share labeled positive",
+            [summary.pos_rate for summary in summaries],
+            "share labeled positive",
+            False,
+        ),
+    ]
+
+    for ax, (title, values, ylabel, log_scale) in zip(
+        flat_axes[:5], metric_specs, strict=True
+    ):
+        ax.bar(x_positions, values, color=colors)
+        ax.set_title(title)
+        ax.set_ylabel(ylabel)
+        ax.set_xticks(x_positions)
+        ax.set_xticklabels(names, rotation=25, ha="right")
+        if log_scale:
+            ax.set_yscale("log")
+        else:
+            ax.yaxis.set_major_formatter(PercentFormatter(1.0))
+            ax.set_ylim(0.0, 1.0)
+        ax.grid(True, axis="y", alpha=0.25)
+
+    width = 0.38
+    flat_axes[5].bar(
+        x_positions - width / 2,
+        [summary.user_feature_dim for summary in summaries],
+        width=width,
+        label="user features",
+        color=FEATURE_COLORS[0],
+    )
+    flat_axes[5].bar(
+        x_positions + width / 2,
+        [summary.item_feature_dim for summary in summaries],
+        width=width,
+        label="item features",
+        color=FEATURE_COLORS[1],
+    )
+    flat_axes[5].set_title("Optional feature dimensions")
+    flat_axes[5].set_ylabel("columns")
+    flat_axes[5].set_xticks(x_positions)
+    flat_axes[5].set_xticklabels(names, rotation=25, ha="right")
+    flat_axes[5].legend()
+    flat_axes[5].grid(True, axis="y", alpha=0.25)
+
+    fig.suptitle("Benchmark dataset overview", fontsize=17)
+
+    output_path = output_dir / "benchmark_overview.png"
+    save_figure(fig, output_path, dpi=dpi)
+    return output_path
+
+
+def print_comparative_summary(summaries: list[DatasetSummary]) -> None:
+    """Print a compact comparative summary table.
+
+    Args:
+        summaries: Per-dataset scalar summaries.
+
+    Returns:
+        None. The summary is printed to stdout.
+    """
+    print("\n" + "=" * 108)
+    print("DATASET SUMMARY")
+    print("=" * 108)
+    print(
+        f"{'Dataset':<16} {'Users':>10} {'Items':>10} {'Interact.':>12} "
+        f"{'Density%':>10} {'Pos%':>8} {'UFeat':>7} {'IFeat':>7} {'Split':>24}"
+    )
+    print("-" * 108)
+    for summary in summaries:
+        print(
+            f"{summary.display_name:<16} {summary.n_users:>10,} {summary.n_items:>10,} "
+            f"{summary.n_interactions:>12,} {summary.density * 100:>9.5f} "
+            f"{summary.pos_rate:>7.2%} {summary.user_feature_dim:>7} "
+            f"{summary.item_feature_dim:>7} {summary.split_source:>24}"
+        )
+
+
+def main() -> int:
+    """Load datasets, generate figures, and print a summary.
+
+    Args:
+        None.
+
+    Returns:
+        Shell-style exit code.
+    """
+    args = build_explore_all_datasets_parser().parse_args()
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
+    print("=" * 80)
+    print("U-CaGNN DATASET VISUALIZATION")
+    print("=" * 80)
+    print(f"Output directory: {args.output_dir}")
+
+    summaries: list[DatasetSummary] = []
     for name in args.datasets:
-        print(f"\n--- {name} ---")
-        if name not in LOADERS:
-            print(f"  SKIPPED: unknown loader '{name}'")
-            continue
-        stats = describe(name, args.data_dir)
-        if stats:
-            results.append(stats)
-
-    # Comparative summary table
-    if results:
-        print("\n" + "=" * 70)
-        print("COMPARATIVE SUMMARY")
-        print("=" * 70)
-        print(
-            f"{'Dataset':<15} {'Users':>10} {'Items':>10} {'Interact.':>12} {'Density':>8} {'Pos%':>7} {'Splits':>10}"
+        print(f"\n--- {display_name(name)} ---")
+        canonical = load_dataset(name, args.data_dir)
+        summary = summarize_dataset(name, canonical)
+        profile_path = save_dataset_profile(
+            canonical=canonical,
+            summary=summary,
+            output_dir=args.output_dir,
+            dpi=args.dpi,
         )
-        print("-" * 70)
-        for s in results:
-            print(
-                f"{s['dataset']:<15} {s['n_users']:>10,} {s['n_items']:>10,} "
-                f"{s['n_interactions']:>12,} {s['density']:>7.4f}% {s['pos_rate']:>6.2%} {s['split_source']:>10}"
-            )
+        print(
+            f"users={summary.n_users:,} items={summary.n_items:,} interactions={summary.n_interactions:,} "
+            f"density={summary.density * 100:.5f}% pos_rate={summary.pos_rate:.2%}"
+        )
+        print(
+            f"saved profile: {profile_path} | split={summary.split_label} | "
+            f"context={summary.modalities_label}"
+        )
+        summaries.append(summary)
 
-    print(f"\nLoaded {len(results)}/{len(args.datasets)} datasets successfully.")
-    return 0 if len(results) == len(args.datasets) else 1
+    overview_path = save_benchmark_overview(
+        summaries=summaries,
+        output_dir=args.output_dir,
+        dpi=args.dpi,
+    )
+    print_comparative_summary(summaries)
+    print(f"\nSaved benchmark overview: {overview_path}")
+    return 0
 
 
 if __name__ == "__main__":

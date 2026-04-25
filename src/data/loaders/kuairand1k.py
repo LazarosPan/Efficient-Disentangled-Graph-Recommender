@@ -7,12 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ...utils.dataset_loader_utils import (
-    downcast_numeric_array,
-    get_optional_csv_field,
-    try_parse_float,
-    try_parse_int,
-)
+from ...utils.dataset_loader_utils import downcast_numeric_array
 from ..canonical import CanonicalInteractions
 from ..feature_policy import (
     DEFAULT_FEATURE_POLICY,
@@ -61,7 +56,7 @@ def load_kuairand1k(
     # Collect all columns
     raw_users, raw_items, timestamps = [], [], []
     clicks, likes, hates = [], [], []
-    follows, comments, forwards = [], [], []
+    follows, comments = [], []
     long_views = []
     play_times, durations = [], []
     is_rands = []
@@ -71,7 +66,6 @@ def load_kuairand1k(
         "is_hate": 0,
         "is_follow": 0,
         "is_comment": 0,
-        "is_forward": 0,
         "long_view": 0,
         "play_time_ms": 0,
         "duration_ms": 0,
@@ -92,12 +86,23 @@ def load_kuairand1k(
             hate_c = col.get("is_hate", -1)
             follow_c = col.get("is_follow", -1)
             comment_c = col.get("is_comment", -1)
-            forward_c = col.get("is_forward", -1)
             long_view_c = col.get("long_view", -1)
             play_time_c = col.get("play_time_ms", -1)
             duration_c = col.get("duration_ms", -1)
             is_rand_c = col.get("is_rand", -1)
             ts_c = col.get("time_ms", col.get("timestamp", -1))
+            optional_fields = (
+                ("is_click", click_c, int, clicks, 0),
+                ("is_like", like_c, int, likes, 0),
+                ("is_hate", hate_c, int, hates, 0),
+                ("is_follow", follow_c, int, follows, 0),
+                ("is_comment", comment_c, int, comments, 0),
+                ("long_view", long_view_c, int, long_views, 0),
+                ("play_time_ms", play_time_c, float, play_times, 0.0),
+                ("duration_ms", duration_c, float, durations, 0.0),
+                ("is_rand", is_rand_c, int, is_rands, 0),
+                ("time_ms|timestamp", ts_c, int, timestamps, 0),
+            )
 
             for line in f:
                 parts = line.strip().split(",")
@@ -105,72 +110,20 @@ def load_kuairand1k(
                     continue
                 raw_users.append(int(parts[uid_c]))
                 raw_items.append(int(parts[vid_c]))
-                raw_click = get_optional_csv_field(parts, click_c)
-                raw_like = get_optional_csv_field(parts, like_c)
-                raw_hate = get_optional_csv_field(parts, hate_c)
-                raw_follow = get_optional_csv_field(parts, follow_c)
-                raw_comment = get_optional_csv_field(parts, comment_c)
-                raw_forward = get_optional_csv_field(parts, forward_c)
-                raw_long_view = get_optional_csv_field(parts, long_view_c)
-                raw_play_time = get_optional_csv_field(parts, play_time_c)
-                raw_duration = get_optional_csv_field(parts, duration_c)
-                raw_is_rand = get_optional_csv_field(parts, is_rand_c)
-                raw_timestamp = get_optional_csv_field(parts, ts_c)
-
-                parsed_click = try_parse_int(raw_click)
-                parsed_like = try_parse_int(raw_like)
-                parsed_hate = try_parse_int(raw_hate)
-                parsed_follow = try_parse_int(raw_follow)
-                parsed_comment = try_parse_int(raw_comment)
-                parsed_forward = try_parse_int(raw_forward)
-                parsed_long_view = try_parse_int(raw_long_view)
-                parsed_play_time = try_parse_float(raw_play_time)
-                parsed_duration = try_parse_float(raw_duration)
-                parsed_is_rand = try_parse_int(raw_is_rand)
-                parsed_timestamp = try_parse_int(raw_timestamp)
-
-                if raw_click is not None and parsed_click is None:
-                    malformed_counts["is_click"] += 1
-                if raw_like is not None and parsed_like is None:
-                    malformed_counts["is_like"] += 1
-                if raw_hate is not None and parsed_hate is None:
-                    malformed_counts["is_hate"] += 1
-                if raw_follow is not None and parsed_follow is None:
-                    malformed_counts["is_follow"] += 1
-                if raw_comment is not None and parsed_comment is None:
-                    malformed_counts["is_comment"] += 1
-                if raw_forward is not None and parsed_forward is None:
-                    malformed_counts["is_forward"] += 1
-                if raw_long_view is not None and parsed_long_view is None:
-                    malformed_counts["long_view"] += 1
-                if raw_play_time is not None and parsed_play_time is None:
-                    malformed_counts["play_time_ms"] += 1
-                if raw_duration is not None and parsed_duration is None:
-                    malformed_counts["duration_ms"] += 1
-                if raw_is_rand is not None and parsed_is_rand is None:
-                    malformed_counts["is_rand"] += 1
-                if raw_timestamp is not None and parsed_timestamp is None:
-                    malformed_counts["time_ms|timestamp"] += 1
-
-                clicks.append(parsed_click if parsed_click is not None else 0)
-                likes.append(parsed_like if parsed_like is not None else 0)
-                hates.append(parsed_hate if parsed_hate is not None else 0)
-                follows.append(parsed_follow if parsed_follow is not None else 0)
-                comments.append(parsed_comment if parsed_comment is not None else 0)
-                forwards.append(parsed_forward if parsed_forward is not None else 0)
-                long_views.append(
-                    parsed_long_view if parsed_long_view is not None else 0
-                )
-                play_times.append(
-                    parsed_play_time if parsed_play_time is not None else 0.0
-                )
-                durations.append(
-                    parsed_duration if parsed_duration is not None else 0.0
-                )
-                is_rands.append(parsed_is_rand if parsed_is_rand is not None else 0)
-                timestamps.append(
-                    parsed_timestamp if parsed_timestamp is not None else 0
-                )
+                for (
+                    field_name,
+                    column_idx,
+                    parser,
+                    target_values,
+                    default_value,
+                ) in optional_fields:
+                    parsed_value = default_value
+                    if 0 <= column_idx < len(parts):
+                        try:
+                            parsed_value = parser(parts[column_idx])
+                        except (TypeError, ValueError):
+                            malformed_counts[field_name] += 1
+                    target_values.append(parsed_value)
                 row_count += 1
                 if max_rows is not None and row_count >= max_rows:
                     break

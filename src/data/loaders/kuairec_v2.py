@@ -7,10 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ...utils.dataset_loader_utils import (
-    downcast_numeric_array,
-    try_parse_timestamp_seconds,
-)
+from ...utils.dataset_loader_utils import downcast_numeric_array
 from ..canonical import CanonicalInteractions
 from ..feature_policy import (
     DEFAULT_FEATURE_POLICY,
@@ -172,11 +169,13 @@ def load_kuairec_v2(
             raw_users.append(int(parts[uid_col]))
             raw_items.append(int(parts[vid_col]))
             watch_ratios.append(float(parts[wr_col]))
-            raw_timestamp = parts[ts_col] if ts_col >= 0 else None
-            parsed_timestamp = try_parse_timestamp_seconds(raw_timestamp)
-            if raw_timestamp is not None and parsed_timestamp is None:
-                malformed_timestamp_count += 1
-            timestamps.append(parsed_timestamp if parsed_timestamp is not None else 0)
+            parsed_timestamp = 0
+            if ts_col >= 0:
+                try:
+                    parsed_timestamp = int(float(parts[ts_col]))
+                except ValueError:
+                    malformed_timestamp_count += 1
+            timestamps.append(parsed_timestamp)
             row_count += 1
             if max_rows is not None and row_count >= max_rows:
                 break

@@ -36,6 +36,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
+from src.utils.cli_parsers import build_data_information_parser  # noqa: E402
+
 
 def load_exploration_api() -> tuple[Any, Any, Any]:
     """Load exploration helpers lazily so this script still runs directly."""
@@ -1918,20 +1920,7 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed args namespace.
     """
-    parser = argparse.ArgumentParser(description="Generate dataset information report.")
-    parser.add_argument(
-        "--output",
-        type=str,
-        default=None,
-        help="Output path for report (default: data/datasets_information.md)",
-    )
-    parser.add_argument(
-        "--audit-json",
-        type=str,
-        default=None,
-        help="Optional path for machine-readable feature audit export",
-    )
-    return parser.parse_args()
+    return build_data_information_parser().parse_args()
 
 
 def main() -> None:
