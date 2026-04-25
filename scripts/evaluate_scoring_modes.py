@@ -9,12 +9,9 @@ retraining.
 
 from __future__ import annotations
 
-import argparse
 import dataclasses
-import sys
+import json
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import torch
 from torch_geometric.data import Data
@@ -26,58 +23,11 @@ from experiments.run_experiment import (
 )
 from src.models.ucagnn import UCaGNN
 from src.training.evaluator import Evaluator, THESIS_PRIMARY_METRICS
+from src.utils.cli_parsers import build_evaluate_scoring_modes_parser
 from src.utils.config import UCaGNNConfig
-from scripts._workflow_helpers import write_json_report
-
-DEFAULT_MODES = ("default", "interest_only", "conformity_suppressed")
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse CLI arguments for same-checkpoint scoring-mode evaluation."""
-    parser = argparse.ArgumentParser(
-        description="Evaluate a single checkpoint under multiple scoring modes"
-    )
-    parser.add_argument(
-        "--checkpoint-path",
-        required=True,
-        help="Path to a completed training checkpoint produced by run_experiment.py",
-    )
-    parser.add_argument(
-        "--modes",
-        nargs="*",
-        default=list(DEFAULT_MODES),
-        choices=[
-            "default",
-            "interest_only",
-            "conformity_only",
-            "counterfactual_only",
-            "conformity_suppressed",
-        ],
-        help="Evaluation-time scoring modes to compare",
-    )
-    parser.add_argument(
-        "--split",
-        choices=["val", "test", "both"],
-        default="test",
-        help="Which split to evaluate",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=512,
-        help="Evaluation batch size for full-catalog scoring",
-    )
-    parser.add_argument(
-        "--device",
-        default=None,
-        help="Optional device override; defaults to the checkpoint config device",
-    )
-    parser.add_argument(
-        "--output-json",
-        default=None,
-        help="Optional JSON output path for the collected metric table",
-    )
-    return parser.parse_args()
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _resolve_device(config: UCaGNNConfig, override: str | None) -> str:
@@ -136,7 +86,7 @@ def _print_table(split: str, results: dict[str, dict[str, float]]) -> None:
 
 def main() -> int:
     """Run same-checkpoint evaluation under multiple scoring modes."""
-    args = parse_args()
+    args = build_evaluate_scoring_modes_parser().parse_args()
     checkpoint_path = Path(args.checkpoint_path)
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
@@ -179,7 +129,11 @@ def main() -> int:
         _print_table(split_name, split_results)
 
     if args.output_json is not None:
-        output_path = write_json_report(args.output_json, payload)
+        output_path = Path(args.output_json)
+        if not output_path.is_absolute():
+            output_path = REPO_ROOT / output_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         print(f"\nSaved JSON: {output_path}")
 
     return 0

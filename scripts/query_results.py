@@ -17,21 +17,17 @@ Usage:
 
 from __future__ import annotations
 
-import argparse
 from collections import defaultdict
 import json
 import sqlite3
 import sys
 from pathlib import Path
 
+from src.utils.experiment_logger import ExperimentLogger
+from src.utils.cli_parsers import build_query_results_parser
+
 
 REPO_ROOT = Path(__file__).parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
-from src.utils.experiment_logger import ExperimentLogger  # noqa: E402
-
-
 DB_PATH = REPO_ROOT / "results" / "thesis_experiments.db"
 VIEW_TABLES = ExperimentLogger.VIEW_TABLES
 
@@ -183,8 +179,11 @@ def show_metrics(conn: sqlite3.Connection, exp_id: int) -> None:
             print(f"  {'Epoch':>5} | {'Metric':<20} | {'Value':>10} | Timestamp")
             print("  " + "-" * 90)
             for row in rows:
-                epoch_str = str(row[0]) if row[0] is not None else "final"
-                print(f"  {epoch_str:>5} | {row[1]:<20} | {row[2]:>10.4f} | {row[3]}")
+                epoch_str = str(row["epoch"]) if row["epoch"] is not None else "final"
+                print(
+                    f"  {epoch_str:>5} | {row['metric_name']:<20} | "
+                    f"{row['metric_value']:>10.4f} | {row['timestamp']}"
+                )
 
 
 def show_profiling(conn: sqlite3.Connection, exp_id: int) -> None:
@@ -219,17 +218,22 @@ def show_profiling(conn: sqlite3.Connection, exp_id: int) -> None:
         print("No profiling data found.")
         return
 
-    total_ms = sum(row[1] for row in rows)
+    total_ms = sum(float(row["total_ms"]) for row in rows)
 
     print(
         f"\n{'Stage':<15} | {'Total/Epoch':>11} | {'Avg/Call':>10} | {'Calls':>6} | {'Epochs':>6} | {'%':>6} | Peak VRAM | Last Logged"
     )
     print("-" * 150)
     for row in rows:
-        pct = (row[1] / total_ms * 100) if total_ms > 0 else 0
-        peak_str = f"{row[7]:.0f} MB" if row[7] else "-"
+        stage_total_ms = float(row["total_ms"])
+        pct = (stage_total_ms / total_ms * 100) if total_ms > 0 else 0
+        peak_vram_mb = row["peak_vram_mb"]
+        peak_str = f"{peak_vram_mb:.0f} MB" if peak_vram_mb else "-"
         print(
-            f"{row[0]:<15} | {row[2]:>11.1f} | {row[6]:>10.1f} | {row[5]:>6} | {row[8]:>6} | {pct:>5.1f}% | {peak_str:<9} | {row[10]}"
+            f"{row['stage']:<15} | {row['avg_epoch_ms']:>11.1f} | "
+            f"{row['avg_call_ms']:>10.1f} | {row['total_calls']:>6} | "
+            f"{row['profiled_epochs']:>6} | {pct:>5.1f}% | "
+            f"{peak_str:<9} | {row['last_logged_at']}"
         )
 
     print("-" * 150)
@@ -261,7 +265,7 @@ def show_alpha_drift(conn: sqlite3.Connection, exp_id: int) -> None:
 
     epochs: dict[int, dict[str, float]] = defaultdict(dict)
     for row in rows:
-        epochs[row[0]][row[1]] = row[2]
+        epochs[row["epoch"]][row["metric_name"]] = row["metric_value"]
 
     for epoch in sorted(epochs.keys()):
         alpha_pos = epochs[epoch].get("alpha_pos", float("nan"))
@@ -292,45 +296,30 @@ def show_bottleneck(conn: sqlite3.Connection, exp_id: int) -> None:
         print("No profiling data found.")
         return
 
-    grand_total = sum(row[1] for row in rows)
+    grand_total = sum(float(row["total_ms"]) for row in rows)
 
     print(
         f"\n{'Rank':>4} | {'Stage':<15} | {'Total (ms)':>12} | {'Calls':>6} | {'% of Total':>10}"
     )
     print("-" * 60)
     for i, row in enumerate(rows, 1):
-        pct = (row[1] / grand_total * 100) if grand_total > 0 else 0
-        print(f"{i:>4} | {row[0]:<15} | {row[1]:>12.1f} | {row[2]:>6} | {pct:>9.1f}%")
+        stage_total_ms = float(row["total_ms"])
+        pct = (stage_total_ms / grand_total * 100) if grand_total > 0 else 0
+        print(
+            f"{i:>4} | {row['stage']:<15} | {stage_total_ms:>12.1f} | "
+            f"{row['n_calls']:>6} | {pct:>9.1f}%"
+        )
 
     print("-" * 60)
     print(
-        f"\nBottleneck: {rows[0][0]} ({rows[0][1] / grand_total * 100:.1f}% of total time)"
+        f"\nBottleneck: {rows[0]['stage']} "
+        f"({float(rows[0]['total_ms']) / grand_total * 100:.1f}% of total time)"
     )
 
 
 def main() -> int:
     """Parse arguments and print the requested experiment view."""
-    parser = argparse.ArgumentParser(description="Query experiment results")
-    parser.add_argument(
-        "--view",
-        choices=["all", "completed", "attention", "errors"],
-        default="all",
-        help="Select a convenience exploration view before applying any extra filters.",
-    )
-    parser.add_argument("--batch-id", help="Filter experiment list to one batch id")
-    parser.add_argument(
-        "--status",
-        choices=["running", "completed", "oom", "failed", "unknown"],
-        help="Filter experiment list by status",
-    )
-    parser.add_argument("--exp", type=int, help="Show experiment details")
-    parser.add_argument("--metrics", type=int, help="Show metrics for experiment")
-    parser.add_argument("--profiling", type=int, help="Show profiling for experiment")
-    parser.add_argument("--alpha", type=int, help="Show alpha drift for experiment")
-    parser.add_argument(
-        "--bottleneck", type=int, help="Show bottleneck analysis for experiment"
-    )
-    args = parser.parse_args()
+    args = build_query_results_parser().parse_args()
 
     conn = connect()
     try:

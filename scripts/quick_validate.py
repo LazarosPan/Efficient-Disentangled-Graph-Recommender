@@ -11,91 +11,36 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
-import sys
 import time
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import torch
 
 from experiments.ablation_configs import ABLATION_VARIANTS, make_ablation_config
 from experiments.recipes import get_recipe, load_experiment_catalog
 from experiments.run_experiment import MLFLOW_DB_PATH, build_config, run_experiment
-from scripts._workflow_helpers import (
-    default_runtime_device,
-    timed_run_experiment,
-    tiny_loader_max_rows,
-    tiny_sample_interactions,
-)
 from src.data.feature_policy import supports_feature_utility
+from src.utils.cli_parsers import build_quick_validate_parser
 from src.utils.config import DEFAULT_SEED, UCaGNNConfig
 
 
-PROJECT_ROOT = Path(__file__).parent.parent
-THESIS_DB_PATH = PROJECT_ROOT / "results" / "thesis_experiments.db"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+THESIS_DB_PATH = REPO_ROOT / "results" / "thesis_experiments.db"
+RUNTIME_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-DEFAULT_DATASETS = [
-    "amazonbook",
-    "movielens1m",
-    "movielens20m",
-    "kuairec_v2",
-    "taobao",
-    "kuairand1k",
-]
-DEFAULT_CATEGORIES = ["recipes", "ablations", "observability", "evaluation"]
 DEFAULT_EVAL_MODES = [
     "default",
     "interest_only",
     "conformity_suppressed",
 ]
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Run unified tiny-scale validation across the full experiment surface"
-    )
-    parser.add_argument(
-        "--datasets", nargs="*", default=DEFAULT_DATASETS, help="Datasets to validate"
-    )
-    parser.add_argument(
-        "--categories",
-        nargs="*",
-        choices=DEFAULT_CATEGORIES,
-        default=DEFAULT_CATEGORIES,
-        help="Validation categories to run",
-    )
-    parser.add_argument(
-        "--recipe-names",
-        nargs="*",
-        default=None,
-        help="Optional canonical recipe filter",
-    )
-    parser.add_argument(
-        "--ablation-variants",
-        nargs="*",
-        default=None,
-        help="Optional ablation-variant filter",
-    )
-    parser.add_argument("--data-dir", default="data", help="Data directory")
-    parser.add_argument(
-        "--epochs", type=int, default=1, help="Epochs for each tiny validation run"
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=128,
-        help="Batch size for tiny validation runs",
-    )
-    parser.add_argument(
-        "--mlflow",
-        action="store_true",
-        help="Enable the optional MLflow observability probe",
-    )
-    parser.add_argument(
-        "--fail-fast", action="store_true", help="Stop after the first failure"
-    )
-    return parser.parse_args()
+_TINY_DATASET_LIMITS = {
+    "amazonbook": 100,
+    "movielens1m": 100,
+    "movielens20m": 100,
+    "kuairec_v2": 100,
+    "taobao": 100,
+    "kuairand1k": 100,
+}
 
 
 def _build_runtime_config(
@@ -153,7 +98,7 @@ def _build_runtime_config(
         "num_neighbors": num_neighbors,
         "sample_interactions": sample_interactions,
         "loader_max_rows": loader_max_rows,
-        "device": default_runtime_device(),
+        "device": RUNTIME_DEVICE,
         "data_dir": args.data_dir,
     }
     config = build_config(config_inputs)
@@ -179,14 +124,15 @@ def _build_tiny_recipe_config(
     enable_profiling: bool = False,
 ) -> UCaGNNConfig:
     """Build a tiny validation config for a catalog recipe on one dataset."""
+    dataset_limit = int(_TINY_DATASET_LIMITS.get(dataset, 100))
     return _build_runtime_config(
         args,
         dataset,
         recipe=recipe,
         eval_scoring_mode=eval_scoring_mode,
         use_features=use_features,
-        sample_interactions=tiny_sample_interactions(dataset),
-        loader_max_rows=tiny_loader_max_rows(dataset),
+        sample_interactions=dataset_limit,
+        loader_max_rows=dataset_limit,
         patience=1,
         enable_profiling=enable_profiling,
         profiling_cadence=1,
@@ -296,7 +242,8 @@ def _run_single_case(
         if expect_mlflow_db_touch and MLFLOW_DB_PATH.exists()
         else None
     )
-    result, elapsed = timed_run_experiment(
+    started = time.perf_counter()
+    result = run_experiment(
         config,
         preset=preset,
         intervention=intervention,
@@ -308,6 +255,7 @@ def _run_single_case(
         checkpoint_every=1,
         auto_resume=auto_resume,
     )
+    elapsed = time.perf_counter() - started
 
     exp_id = int(result["exp_id"])
     if expect_logging:
@@ -383,16 +331,17 @@ def _run_ablation_category(args: argparse.Namespace, results: list[dict]) -> Non
         f"Ablation coverage: {len(args.datasets)} datasets x {len(variants)} variants"
     )
     for dataset in args.datasets:
+        dataset_limit = int(_TINY_DATASET_LIMITS.get(dataset, 100))
         for variant in variants:
             config = make_ablation_config(
                 variant,
                 dataset=dataset,
                 data_dir=args.data_dir,
-                device=default_runtime_device(),
+                device=RUNTIME_DEVICE,
                 epochs=args.epochs,
                 batch_size=args.batch_size,
-                sample_interactions=tiny_sample_interactions(dataset),
-                loader_max_rows=tiny_loader_max_rows(dataset),
+                sample_interactions=dataset_limit,
+                loader_max_rows=dataset_limit,
             )
             config.use_torch_compile = False
             config.patience = 1
@@ -563,7 +512,7 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
     resume_label = "checkpoint-resume:ucagnn"
     for dataset in args.datasets:
         checkpoint_path = (
-            PROJECT_ROOT
+            REPO_ROOT
             / "results"
             / "checkpoints"
             / f"quick_validate_resume_probe_{dataset}.pt"
@@ -729,7 +678,7 @@ def _print_summary(results: list[dict], total_elapsed: float) -> None:
 
 
 def main() -> int:
-    args = parse_args()
+    args = build_quick_validate_parser().parse_args()
     start_time = time.perf_counter()
     results: list[dict] = []
     category_runners = {
