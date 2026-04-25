@@ -44,6 +44,8 @@ uv run query-results --view completed
 uv run query-results --view attention
 uv run query-results --view errors
 uv run evaluate-scoring-modes --checkpoint-path results/checkpoints/<checkpoint>.pt
+uv run python src/data_exploration/explore_all_datasets.py
+uv run python src/data_exploration/explore_all_datasets.py --output-dir results/dataset_visualizations
 uv run query-results --batch-id smoke-bench
 uv run query-results --status completed
 uv run query-results --exp 12
@@ -65,8 +67,7 @@ uv run query-results --bottleneck 12
 - `query-results --profiling 12`: show per-stage runtime and VRAM summary for experiment 12.
 - `query-results --alpha 12`: inspect alpha drift for sign-aware runs.
 - `query-results --bottleneck 12`: rank the slowest profiling stages for experiment 12.
-
-There is currently no supported plotting command in the main workflow. Use `query-results`, `evaluate-scoring-modes`, and the convenience SQLite views for inspection.
+- `python src/data_exploration/explore_all_datasets.py`: load the six benchmark datasets through the canonical loader path, always use the full selected datasets, and rewrite the fixed benchmark/profile PNGs in `results/dataset_visualizations/`.
 
 ## Data
 

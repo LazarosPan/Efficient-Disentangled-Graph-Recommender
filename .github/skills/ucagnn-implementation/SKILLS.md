@@ -7,7 +7,7 @@ description: Implementation guide for U-CaGNN covering architecture, configurati
 
 Use this skill set when working on the U-CaGNN recommendation system implementation.
 
-Prefer changing an existing routed file before adding a new script or module; add new entry points only when reuse would make the current path less clear. When cleaning CLI/orchestration code, remove no-op wrappers, collapse repeated validation/config scaffolding, and prefer direct named-field access over schema-order-dependent indexing.
+Prefer changing an existing routed file before adding a new script or module; add new entry points only when reuse would make the current path less clear. When cleaning CLI/orchestration code, remove no-op wrappers, collapse repeated validation/config scaffolding, let centralized parsers enforce valid CLI choices, remove redundant repo-root `sys.path` bootstrapping instead of suppressing import-order lint, and prefer direct named-field access over schema-order-dependent indexing.
 
 ## Read the Most Relevant File
 
