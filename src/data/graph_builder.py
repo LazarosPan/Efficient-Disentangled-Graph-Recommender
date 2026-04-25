@@ -251,7 +251,7 @@ def _build_cagra(
         index = cagra.build(index_params, emb_np)
 
         search_params = cagra.SearchParams(team_size=config.cagra_team_size)
-        distances, neighbors = cagra.search(
+        _, neighbors = cagra.search(
             search_params,
             index,
             emb_np,

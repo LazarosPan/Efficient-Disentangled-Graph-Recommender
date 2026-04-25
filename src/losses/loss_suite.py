@@ -123,7 +123,7 @@ class LossSuite(nn.Module):
             ramp_rate: Linear ramp slope used when the schedule is
                 ``linear_ramp``.
             active_in_phased_schedule: Whether the loss is active under the
-                legacy phased schedule.
+                phased schedule.
 
         Returns:
             Effective scalar weight for the current epoch.
@@ -169,20 +169,13 @@ class LossSuite(nn.Module):
         use_dual_branch = cfg.use_dual_branch
 
         # Fused BPR is always active from epoch 0; only auxiliary losses phase in.
-        fused_bpr_active = True
-        aux2_active = phase2_active
-        aux3_active = phase3_active
-
         # L_rec: fused BPR on the final score
         weights = ipw_weights if cfg.use_ipw else None
-        if fused_bpr_active:
-            losses["rec"] = _bpr_loss(
-                pos_scores["final_score"],
-                neg_scores["final_score"],
-                weights,
-            )
-        else:
-            losses["rec"] = zero
+        losses["rec"] = _bpr_loss(
+            pos_scores["final_score"],
+            neg_scores["final_score"],
+            weights,
+        )
 
         interest_weight = self._resolve_auxiliary_weight(
             cfg.lambda_interest_bpr,
@@ -200,31 +193,31 @@ class LossSuite(nn.Module):
             cfg.lambda_independence,
             epoch,
             ramp_rate=cfg.independence_ramp_rate,
-            active_in_phased_schedule=aux2_active,
+            active_in_phased_schedule=phase2_active,
         )
         contrastive_weight = self._resolve_auxiliary_weight(
             cfg.lambda_contrastive,
             epoch,
             ramp_rate=cfg.auxiliary_ramp_rate,
-            active_in_phased_schedule=aux2_active,
+            active_in_phased_schedule=phase2_active,
         )
         align_weight = self._resolve_auxiliary_weight(
             cfg.lambda_align,
             epoch,
             ramp_rate=cfg.auxiliary_ramp_rate,
-            active_in_phased_schedule=aux2_active,
+            active_in_phased_schedule=phase2_active,
         )
         uniform_weight = self._resolve_auxiliary_weight(
             cfg.lambda_uniform,
             epoch,
             ramp_rate=cfg.auxiliary_ramp_rate,
-            active_in_phased_schedule=aux2_active,
+            active_in_phased_schedule=phase2_active,
         )
         popularity_weight = self._resolve_auxiliary_weight(
             cfg.lambda_pop,
             epoch,
             ramp_rate=cfg.auxiliary_ramp_rate,
-            active_in_phased_schedule=aux3_active,
+            active_in_phased_schedule=phase3_active,
         )
 
         # Branch-local BPR auxiliaries keep each branch predictive on its own.

@@ -239,16 +239,13 @@ class ScoringModule(nn.Module):
         if self.score_weight_logits is None:
             raise RuntimeError("Adaptive fusion requested without score_weight_logits")
 
-        if self.config.use_dual_branch:
-            gate_inputs = torch.cat(
-                [
-                    propagated["user_interest"][user_ids],
-                    propagated["user_conformity"][user_ids],
-                ],
-                dim=-1,
-            )
-        else:
-            gate_inputs = propagated["user"][user_ids]
+        gate_inputs = torch.cat(
+            [
+                propagated["user_interest"][user_ids],
+                propagated["user_conformity"][user_ids],
+            ],
+            dim=-1,
+        )
         logits = self.gate_mlp(gate_inputs) + self.score_weight_logits.to(
             device=gate_inputs.device,
             dtype=gate_inputs.dtype,
@@ -391,7 +388,6 @@ class ScoringModule(nn.Module):
             "conformity_score": conformity_score,
             "popularity_score": popularity_score,
             "counterfactual_score": counterfactual_score,
-            "cf_score": counterfactual_score,
             "gate_weights": gate_weights,
             "final_score": final_score,
         }
@@ -424,7 +420,6 @@ class ScoringModule(nn.Module):
             "conformity_score": conformity_score,
             "popularity_score": popularity_score,
             "counterfactual_score": counterfactual_score,
-            "cf_score": counterfactual_score,
             "gate_weights": gate_weights,
             "final_score": final_score,
         }
@@ -476,32 +471,7 @@ class ScoringModule(nn.Module):
         scoring_mode: str = "default",
     ) -> torch.Tensor:
         """Return only the fused full-catalog score matrix for evaluation."""
-        interest_score, conformity_score = self._score_components(
-            propagated,
-            user_ids,
-            None,
-            pairwise=False,
-        )
-        popularity_items = self._popularity_scores(propagated, None)
-        gate_weights = self._resolve_gate_weights(
-            propagated,
-            user_ids,
-            scoring_mode=scoring_mode,
-            device=interest_score.device,
-            dtype=interest_score.dtype,
-        )
-        if self.config.use_counterfactual:
-            counterfactual_score = interest_score - conformity_score
-        else:
-            counterfactual_score = torch.zeros_like(interest_score)
-        return self._combine_matrix_scores(
-            interest_score,
-            conformity_score,
-            popularity_items,
-            counterfactual_score,
-            gate_weights,
-            scoring_mode=scoring_mode,
-        )
+        return self.score_all_items(propagated, user_ids, scoring_mode)["final_score"]
 
     def score_all_items(
         self,

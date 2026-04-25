@@ -38,8 +38,3 @@ class PropensityEstimator(nn.Module):
         """
         raw = self.mlp(item_embeddings).squeeze(-1)
         return torch.clamp(raw, self.clip_min, self.clip_max)
-
-    def get_ipw_weights(self, item_embeddings: torch.Tensor) -> torch.Tensor:
-        """Return inverse propensity weights: 1 / P(exposure | item)."""
-        propensity = self.forward(item_embeddings)
-        return 1.0 / propensity

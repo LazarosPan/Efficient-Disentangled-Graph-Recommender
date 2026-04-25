@@ -96,7 +96,9 @@ class DualBranchGCN(nn.Module):
         Returns:
             Dict with propagated user/item embeddings per branch.
         """
-        edge_weight = self._compute_edge_weights(edge_sign, edge_norm)
+        edge_weight = self._combine_weights(
+            self._compute_edge_weights_impl(edge_sign), edge_norm
+        )
 
         out: dict[str, torch.Tensor] = {}
 
@@ -123,16 +125,6 @@ class DualBranchGCN(nn.Module):
             out["item"] = h[n_users:]
 
         return out
-
-    def _compute_edge_weights(
-        self,
-        edge_sign: torch.Tensor | None,
-        edge_norm: torch.Tensor | None,
-    ) -> torch.Tensor | None:
-        """Return the combined sign-aware and degree-normalization weights."""
-        return self._combine_weights(
-            self._compute_edge_weights_impl(edge_sign), edge_norm
-        )
 
     @staticmethod
     def _combine_weights(

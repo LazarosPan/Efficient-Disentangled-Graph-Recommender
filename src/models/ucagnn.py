@@ -97,7 +97,7 @@ class UCaGNN(nn.Module):
         neg_item_ids: torch.Tensor,
     ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
         """Build the shared training payload from propagated embeddings."""
-        train_scoring_mode = getattr(self.config, "train_scoring_mode", "default")
+        train_scoring_mode = self.config.train_scoring_mode
         pos_scores = self.scoring(
             propagated,
             user_ids,
@@ -113,9 +113,7 @@ class UCaGNN(nn.Module):
 
         if self.config.use_ipw:
             item_key = "item_interest" if self.config.use_dual_branch else "item"
-            ipw_weights = self.propensity.get_ipw_weights(
-                propagated[item_key][pos_item_ids]
-            )
+            ipw_weights = 1.0 / self.propensity(propagated[item_key][pos_item_ids])
         else:
             ipw_weights = torch.ones(user_ids.size(0), device=user_ids.device)
 
@@ -259,31 +257,6 @@ class UCaGNN(nn.Module):
         )
 
     @torch.no_grad()
-    def get_all_scores(
-        self,
-        edge_index: torch.Tensor,
-        user_ids: torch.Tensor,
-        edge_sign: torch.Tensor | None = None,
-        scoring_mode: str | None = None,
-    ) -> torch.Tensor:
-        """Score all items for given users (for evaluation).
-
-        Args:
-            edge_index: (2, E) graph edges.
-            user_ids: (B,) user indices.
-            edge_sign: optional edge signs.
-
-        Returns:
-            (B, n_items) score matrix.
-        """
-        return self.get_all_score_components(
-            edge_index=edge_index,
-            user_ids=user_ids,
-            edge_sign=edge_sign,
-            scoring_mode=scoring_mode,
-        )["final_score"]
-
-    @torch.no_grad()
     def get_all_score_components(
         self,
         edge_index: torch.Tensor,
@@ -311,8 +284,3 @@ class UCaGNN(nn.Module):
             scores["user_interest_emb"] = propagated["user_interest"][user_ids]
             scores["user_conformity_emb"] = propagated["user_conformity"][user_ids]
         return scores
-
-    def get_score_weight_summary(
-        self, scoring_mode: str = "default"
-    ) -> dict[str, float]:
-        return self.scoring.get_score_weight_summary(scoring_mode=scoring_mode)
