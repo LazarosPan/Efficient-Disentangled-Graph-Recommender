@@ -186,10 +186,6 @@ class UCaGNNConfig:
             raise ValueError("score weights must be non-negative")
 
     @property
-    def use_cagra(self) -> bool:
-        return self.graph_method == "cagra"
-
-    @property
     def max_gnn_layers(self) -> int:
         if not self.use_dual_branch:
             return self.single_branch_gnn_layers

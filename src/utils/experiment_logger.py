@@ -87,29 +87,11 @@ class ExperimentLogger:
         self.conn.commit()
 
     def _ensure_current_schema(self) -> None:
-        self.conn.execute("PRAGMA foreign_keys=OFF")
-        try:
-            for view_name in self.SUMMARY_VIEWS:
-                self.conn.execute(f"DROP VIEW IF EXISTS {view_name}")
-            self._ensure_experiments_table()
-            self._ensure_profiling_table()
-            self._ensure_metrics_table()
-            self._cleanup_legacy_tables()
-            self.conn.commit()
-        finally:
-            self.conn.execute("PRAGMA foreign_keys=ON")
-
-    @staticmethod
-    def _qualified_or_default(
-        legacy_columns: set[str],
-        qualified_name: str,
-        default_sql: str,
-    ) -> str:
-        return (
-            qualified_name
-            if qualified_name.split(".")[-1] in legacy_columns
-            else default_sql
-        )
+        for view_name in self.SUMMARY_VIEWS:
+            self.conn.execute(f"DROP VIEW IF EXISTS {view_name}")
+        self._ensure_experiments_table()
+        self._ensure_profiling_table()
+        self._ensure_metrics_table()
 
     def _table_exists(self, table_name: str) -> bool:
         row = self.conn.execute(
@@ -127,24 +109,6 @@ class ExperimentLogger:
             row[2]
             for row in self.conn.execute(f"PRAGMA foreign_key_list({table_name})")
         }
-
-    def _next_legacy_name(self, base_name: str) -> str:
-        candidate = f"{base_name}__legacy"
-        suffix = 2
-        while self._table_exists(candidate):
-            candidate = f"{base_name}__legacy_{suffix}"
-            suffix += 1
-        return candidate
-
-    def _cleanup_legacy_tables(self) -> None:
-        for table_name in ("metrics", "profiling", "experiments"):
-            legacy_rows = self.conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name GLOB ?",
-                (f"{table_name}__legacy*",),
-            ).fetchall()
-            for (legacy_name,) in legacy_rows:
-                if self._table_exists(legacy_name):
-                    self.conn.execute(f"DROP TABLE {legacy_name}")
 
     def _create_experiments_table(self) -> None:
         self.conn.execute("""
@@ -206,60 +170,11 @@ class ExperimentLogger:
         current_columns = self._table_columns("experiments")
         if current_columns == self._EXPECTED_EXPERIMENT_COLUMNS:
             return
-
-        legacy_table = self._next_legacy_name("experiments")
-        self.conn.execute(f"ALTER TABLE experiments RENAME TO {legacy_table}")
-        self._create_experiments_table()
-
-        legacy_columns = set(self._table_columns(legacy_table))
-        self.conn.execute(
-            f"""
-            INSERT INTO experiments (
-                id,
-                dataset,
-                preset,
-                intervention,
-                config_json,
-                seed,
-                training_mode,
-                graph_method,
-                status,
-                failure_reason,
-                oom_flag,
-                batch_id,
-                profile_name,
-                gpu_name,
-                gpu_vram_gb,
-                timestamp,
-                updated_at
-            )
-            SELECT
-                id,
-                dataset,
-                preset,
-                intervention,
-                config_json,
-                seed,
-                {self._qualified_or_default(legacy_columns, "e.training_mode", "NULL")} AS training_mode,
-                {self._qualified_or_default(legacy_columns, "e.graph_method", "NULL")} AS graph_method,
-                {self._qualified_or_default(legacy_columns, "e.status", "'unknown'")} AS status,
-                {self._qualified_or_default(legacy_columns, "e.failure_reason", "NULL")} AS failure_reason,
-                {self._qualified_or_default(legacy_columns, "e.oom_flag", "0")} AS oom_flag,
-                {self._qualified_or_default(legacy_columns, "e.batch_id", "NULL")} AS batch_id,
-                {self._qualified_or_default(legacy_columns, "e.profile_name", "NULL")} AS profile_name,
-                {self._qualified_or_default(legacy_columns, "e.gpu_name", "NULL")} AS gpu_name,
-                {self._qualified_or_default(legacy_columns, "e.gpu_vram_gb", "NULL")} AS gpu_vram_gb,
-                {self._qualified_or_default(legacy_columns, "e.timestamp", self._SQLITE_NOW_UTC)} AS timestamp,
-                COALESCE(
-                    {self._qualified_or_default(legacy_columns, "e.updated_at", "NULL")},
-                    {self._qualified_or_default(legacy_columns, "e.timestamp", self._SQLITE_NOW_UTC)},
-                    {self._SQLITE_NOW_UTC}
-                ) AS updated_at
-            FROM {legacy_table} e
-            ORDER BY id
-            """
+        raise RuntimeError(
+            "experiments must already use the current schema. "
+            f"Expected columns {self._EXPECTED_EXPERIMENT_COLUMNS}, "
+            f"found {current_columns}."
         )
-        self.conn.execute(f"DROP TABLE {legacy_table}")
 
     def _ensure_profiling_table(self) -> None:
         if not self._table_exists("profiling"):
@@ -272,47 +187,12 @@ class ExperimentLogger:
             "experiments"
         }:
             return
-
-        legacy_table = self._next_legacy_name("profiling")
-        self.conn.execute(f"ALTER TABLE profiling RENAME TO {legacy_table}")
-        self._create_profiling_table()
-
-        legacy_columns = set(self._table_columns(legacy_table))
-        self.conn.execute(
-            f"""
-            INSERT INTO profiling (
-                id,
-                experiment_id,
-                epoch,
-                stage,
-                duration_ms,
-                vram_before_mb,
-                vram_after_mb,
-                vram_peak_mb,
-                stage_call_count,
-                timestamp
-            )
-            SELECT
-                p.id,
-                p.experiment_id,
-                p.epoch,
-                p.stage,
-                p.duration_ms,
-                p.vram_before_mb,
-                p.vram_after_mb,
-                p.vram_peak_mb,
-                {self._qualified_or_default(legacy_columns, "p.stage_call_count", "1")} AS stage_call_count,
-                COALESCE(
-                    {self._qualified_or_default(legacy_columns, "p.timestamp", "NULL")},
-                    e.timestamp,
-                    {self._SQLITE_NOW_UTC}
-                ) AS timestamp
-            FROM {legacy_table} p
-            LEFT JOIN experiments e ON e.id = p.experiment_id
-            ORDER BY p.id
-            """
+        raise RuntimeError(
+            "profiling must already use the current schema. "
+            f"Expected columns {self._EXPECTED_PROFILING_COLUMNS} with "
+            "foreign keys {'experiments'}, "
+            f"found columns {current_columns} with foreign keys {sorted(fk_targets)}."
         )
-        self.conn.execute(f"DROP TABLE {legacy_table}")
 
     def _ensure_metrics_table(self) -> None:
         if not self._table_exists("metrics"):
@@ -325,41 +205,12 @@ class ExperimentLogger:
             "experiments"
         }:
             return
-
-        legacy_table = self._next_legacy_name("metrics")
-        self.conn.execute(f"ALTER TABLE metrics RENAME TO {legacy_table}")
-        self._create_metrics_table()
-
-        legacy_columns = set(self._table_columns(legacy_table))
-        self.conn.execute(
-            f"""
-            INSERT INTO metrics (
-                id,
-                experiment_id,
-                epoch,
-                split,
-                metric_name,
-                metric_value,
-                timestamp
-            )
-            SELECT
-                m.id,
-                m.experiment_id,
-                m.epoch,
-                m.split,
-                m.metric_name,
-                m.metric_value,
-                COALESCE(
-                    {self._qualified_or_default(legacy_columns, "m.timestamp", "NULL")},
-                    e.timestamp,
-                    {self._SQLITE_NOW_UTC}
-                ) AS timestamp
-            FROM {legacy_table} m
-            LEFT JOIN experiments e ON e.id = m.experiment_id
-            ORDER BY m.id
-            """
+        raise RuntimeError(
+            "metrics must already use the current schema. "
+            f"Expected columns {self._EXPECTED_METRIC_COLUMNS} with "
+            "foreign keys {'experiments'}, "
+            f"found columns {current_columns} with foreign keys {sorted(fk_targets)}."
         )
-        self.conn.execute(f"DROP TABLE {legacy_table}")
 
     def _create_indexes_and_views(self) -> None:
         self.conn.executescript("""
@@ -504,63 +355,6 @@ class ExperimentLogger:
             """
         )
 
-    def _serialize_config(self, config) -> str:
-        if hasattr(config, "model_dump"):
-            return json.dumps(config.model_dump(), default=str)
-        if is_dataclass(config):
-            return json.dumps(asdict(config), default=str)
-        return json.dumps(config, default=str)
-
-    @staticmethod
-    def _mean_or_none(values: list[float | None]) -> float | None:
-        finite_values = [float(value) for value in values if value is not None]
-        if not finite_values:
-            return None
-        return sum(finite_values) / len(finite_values)
-
-    def _aggregate_profiler_stages(
-        self,
-        profiler_stages: list,
-    ) -> list[dict[str, float | int | str | None]]:
-        aggregated: dict[str, dict[str, object]] = defaultdict(
-            lambda: {
-                "duration_ms": 0.0,
-                "vram_before_mb": [],
-                "vram_after_mb": [],
-                "vram_peak_mb": [],
-                "stage_call_count": 0,
-            }
-        )
-
-        for stage in profiler_stages:
-            bucket = aggregated[stage.name]
-            bucket["duration_ms"] = float(bucket["duration_ms"]) + float(
-                stage.elapsed_ms
-            )
-            bucket["vram_before_mb"].append(stage.vram_before_mb)
-            bucket["vram_after_mb"].append(stage.vram_after_mb)
-            bucket["vram_peak_mb"].append(stage.vram_peak_mb)
-            bucket["stage_call_count"] = int(bucket["stage_call_count"]) + 1
-
-        return [
-            {
-                "stage": stage_name,
-                "duration_ms": float(values["duration_ms"]),
-                "vram_before_mb": self._mean_or_none(values["vram_before_mb"]),
-                "vram_after_mb": self._mean_or_none(values["vram_after_mb"]),
-                "vram_peak_mb": max(
-                    (
-                        float(value)
-                        for value in values["vram_peak_mb"]
-                        if value is not None
-                    ),
-                    default=None,
-                ),
-                "stage_call_count": int(values["stage_call_count"]),
-            }
-            for stage_name, values in sorted(aggregated.items())
-        ]
-
     # ── Public API ────────────────────────────────────────────────────────
 
     def log_experiment(
@@ -576,7 +370,12 @@ class ExperimentLogger:
         gpu_vram_gb: float | None = None,
     ) -> int:
         """Create an experiment row and return its id."""
-        config_json = self._serialize_config(config)
+        if hasattr(config, "model_dump"):
+            config_json = json.dumps(config.model_dump(), default=str)
+        elif is_dataclass(config):
+            config_json = json.dumps(asdict(config), default=str)
+        else:
+            config_json = json.dumps(config, default=str)
         seed = getattr(config, "seed", None)
         training_mode = getattr(config, "training_mode", None)
         graph_method = getattr(config, "graph_method", None)
@@ -775,19 +574,65 @@ class ExperimentLogger:
         for name, value in val_metrics.items():
             self.log_metric(exp_id, name, value, epoch=epoch, split="val")
 
-        for stage_summary in self._aggregate_profiler_stages(profiler_stages):
+        aggregated_stages: dict[str, dict[str, object]] = defaultdict(
+            lambda: {
+                "duration_ms": 0.0,
+                "vram_before_mb": [],
+                "vram_after_mb": [],
+                "vram_peak_mb": [],
+                "stage_call_count": 0,
+            }
+        )
+        for stage in profiler_stages:
+            stage_summary = aggregated_stages[stage.name]
+            stage_summary["duration_ms"] = float(stage_summary["duration_ms"]) + float(
+                stage.elapsed_ms
+            )
+            stage_summary["vram_before_mb"].append(stage.vram_before_mb)
+            stage_summary["vram_after_mb"].append(stage.vram_after_mb)
+            stage_summary["vram_peak_mb"].append(stage.vram_peak_mb)
+            stage_summary["stage_call_count"] = (
+                int(stage_summary["stage_call_count"]) + 1
+            )
+
+        for stage_name, stage_values in sorted(aggregated_stages.items()):
+            vram_before_values = [
+                float(value)
+                for value in stage_values["vram_before_mb"]
+                if value is not None
+            ]
+            vram_after_values = [
+                float(value)
+                for value in stage_values["vram_after_mb"]
+                if value is not None
+            ]
             self.conn.execute(
                 "INSERT INTO profiling (experiment_id, epoch, stage, duration_ms, vram_before_mb, vram_after_mb, vram_peak_mb, stage_call_count, timestamp) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     exp_id,
                     epoch,
-                    stage_summary["stage"],
-                    stage_summary["duration_ms"],
-                    stage_summary["vram_before_mb"],
-                    stage_summary["vram_after_mb"],
-                    stage_summary["vram_peak_mb"],
-                    stage_summary["stage_call_count"],
+                    stage_name,
+                    float(stage_values["duration_ms"]),
+                    (
+                        sum(vram_before_values) / len(vram_before_values)
+                        if vram_before_values
+                        else None
+                    ),
+                    (
+                        sum(vram_after_values) / len(vram_after_values)
+                        if vram_after_values
+                        else None
+                    ),
+                    max(
+                        (
+                            float(value)
+                            for value in stage_values["vram_peak_mb"]
+                            if value is not None
+                        ),
+                        default=None,
+                    ),
+                    int(stage_values["stage_call_count"]),
                     datetime.now(timezone.utc).isoformat(),
                 ),
             )
@@ -806,9 +651,6 @@ class ExperimentLogger:
         self.conn.commit()
 
     def close(self) -> None:
-        self.flush()
-        self.conn.close()
-
-    def flush(self) -> None:
-        """Flush pending writes to the database."""
+        """Flush pending writes and close the database connection."""
         self.conn.commit()
+        self.conn.close()
