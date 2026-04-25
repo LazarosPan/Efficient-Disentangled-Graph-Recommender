@@ -4,23 +4,19 @@
 Runs named variants around the UCaGNN mainline on specified datasets.
 
 Usage:
-    python experiments/run_ablation.py --dataset movielens1m --epochs 3
-    python experiments/run_ablation.py --dataset movielens1m --variants mainline no_ipw no_dual_branch
-    python experiments/run_ablation.py --dataset movielens1m --dry-run
+    uv run ablation --dataset movielens1m --epochs 3
+    uv run ablation --dataset movielens1m --variants mainline no_ipw no_dual_branch
+    uv run ablation --dataset movielens1m --dry-run
 """
 
 from __future__ import annotations
 
-import argparse
 import logging
-import sys
 import time
 import traceback
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from experiments.ablation_configs import ABLATION_VARIANTS, make_ablation_config
+from experiments.cli_parsers import build_ablation_parser
 from experiments.run_experiment import DB_PATH, run_experiment
 from scripts._workflow_helpers import metric_value, resolve_batch_id
 from src.training import THESIS_PRIMARY_METRICS
@@ -31,81 +27,9 @@ logger = logging.getLogger("ucagnn.ablation")
 UCAGNN_PRESET = "ucagnn"
 
 
-def _find_existing_ablation_experiment(
-    tracker: ExperimentLogger,
-    *,
-    batch_id: str,
-    dataset: str,
-    variant: str,
-) -> object | None:
-    """Return the newest ablation row for the canonical UCaGNN preset."""
-    return tracker.find_latest_batch_experiment(
-        batch_id=batch_id,
-        dataset=dataset,
-        preset=UCAGNN_PRESET,
-        intervention=variant,
-        seed=DEFAULT_SEED,
-        training_mode=None,
-        graph_method=None,
-    )
-
-
-def main():
-    parser = argparse.ArgumentParser(description="Run U-CaGNN ablation study")
-    parser.add_argument("--dataset", required=True, help="Dataset name")
-    parser.add_argument(
-        "--variants",
-        nargs="*",
-        default=list(ABLATION_VARIANTS.keys()),
-        help="Ablation variants to run",
-    )
-    parser.add_argument("--epochs", type=int, default=None, help="Override epochs")
-    parser.add_argument(
-        "--batch-size", type=int, default=None, help="Override batch size"
-    )
-    parser.add_argument(
-        "--sample-interactions",
-        type=int,
-        default=None,
-        help="Optional interaction budget for sampled ablation smoke runs.",
-    )
-    parser.add_argument(
-        "--loader-max-rows",
-        type=int,
-        default=None,
-        help="Optional early row cap for dataset loading during fast ablation smoke runs.",
-    )
-    parser.add_argument("--device", default="cuda", help="Device")
-    parser.add_argument("--data-dir", default="data", help="Data directory")
-    parser.add_argument(
-        "--no-mlflow",
-        action="store_true",
-        help="Disable MLflow tracking for all ablation runs",
-    )
-    parser.add_argument(
-        "--mlflow-tracking-uri",
-        default=None,
-        help="Override MLflow tracking URI for all ablation runs",
-    )
-    parser.add_argument(
-        "--mlflow-experiment-name",
-        default="ucagnn-ablation",
-        help="MLflow experiment name for ablation runs",
-    )
-    parser.add_argument(
-        "--batch-id",
-        default=None,
-        help="Optional batch identifier for grouping and resuming ablation runs.",
-    )
-    parser.add_argument(
-        "--resume-batch",
-        action="store_true",
-        help="Skip ablation variants already recorded with a terminal status for this batch id.",
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true", help="Print plan without running"
-    )
-    args = parser.parse_args()
+def main() -> int:
+    """Parse arguments and run the ablation sweep."""
+    args = build_ablation_parser().parse_args()
 
     logging.basicConfig(
         level=logging.INFO,
@@ -113,12 +37,6 @@ def main():
         datefmt="%H:%M:%S",
     )
     batch_id = resolve_batch_id(args.batch_id, prefix="ablation")
-
-    # Validate variants
-    for v in args.variants:
-        if v not in ABLATION_VARIANTS:
-            print(f"Unknown variant: {v}. Available: {list(ABLATION_VARIANTS.keys())}")
-            return 1
 
     print("=" * 70)
     print(f"ABLATION STUDY: {args.dataset}")
@@ -151,11 +69,14 @@ def main():
         print(f"[{i}/{len(args.variants)}] Ablation: {variant}")
         print("=" * 70)
 
-        existing = _find_existing_ablation_experiment(
-            tracker,
+        existing = tracker.find_latest_batch_experiment(
             batch_id=batch_id,
             dataset=args.dataset,
-            variant=variant,
+            preset=UCAGNN_PRESET,
+            intervention=variant,
+            seed=DEFAULT_SEED,
+            training_mode=None,
+            graph_method=None,
         )
         if (
             args.resume_batch
@@ -279,4 +200,6 @@ def main():
 
 
 if __name__ == "__main__":
+    import sys
+
     sys.exit(main())

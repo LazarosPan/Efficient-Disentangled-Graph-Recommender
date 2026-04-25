@@ -46,13 +46,8 @@ def _slugify_fragment(raw: object) -> str:
 def _catalog_formal_profiles() -> list[dict[str, Any]]:
     """Return the raw formal profile entries from the experiment catalog."""
     raw_profiles = load_experiment_catalog().get("formal_profiles", [])
-    if isinstance(raw_profiles, dict):
-        return [
-            {**dict(profile), "_legacy_name": name}
-            for name, profile in raw_profiles.items()
-        ]
     if not isinstance(raw_profiles, list):
-        raise TypeError("formal_profiles must be a list or mapping")
+        raise TypeError("formal_profiles must be a list")
     return [dict(profile) for profile in raw_profiles]
 
 
@@ -119,9 +114,6 @@ def get_formal_profile(profile_name: str) -> dict[str, Any]:
     for index, profile in enumerate(profiles):
         resolved_name = _formal_profile_name(profile)
         aliases = {resolved_name}
-        legacy_name = profile.get("_legacy_name")
-        if legacy_name is not None:
-            aliases.add(str(legacy_name))
         if index == 0:
             aliases.update({"default", "latest"})
         if profile_name in aliases:

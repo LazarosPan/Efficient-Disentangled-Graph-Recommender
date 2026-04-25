@@ -2,8 +2,8 @@
 """Main single-experiment CLI runner for U-CaGNN.
 
 Usage:
-    python experiments/run_experiment.py --dataset movielens1m --preset lightgcn --epochs 3
-    python experiments/run_experiment.py --dataset kuairec_v2 --preset ucagnn
+    uv run experiment --dataset movielens1m --preset lightgcn --epochs 3
+    uv run experiment --dataset kuairec_v2 --preset ucagnn
 """
 
 from __future__ import annotations
@@ -17,20 +17,17 @@ from importlib import metadata as importlib_metadata
 import logging
 import os
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any
-
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 os.environ.setdefault("PYTORCH_ALLOC_CONF", "expandable_segments:True")
 
 import torch
 import numpy as np
 
+from experiments.cli_parsers import build_run_experiment_parser
 from experiments.recipes import (
     get_recipe,
-    recipe_names,
     recipe_summary_lines,
 )
 from src.utils.config import DEFAULT_SEED, UCaGNNConfig
@@ -61,17 +58,6 @@ PRESETS = {
     "lightgcn": "preset_lightgcn",
     "dice_like": "preset_dice_like",
 }
-DEFAULT_PRESET_ORDER = ["ucagnn", "lightgcn", "dice_like"]
-
-
-def canonicalize_preset_names(presets: list[str]) -> list[str]:
-    """Normalize and deduplicate preset names while preserving order."""
-    normalized: list[str] = []
-    for preset in presets:
-        if preset in normalized:
-            continue
-        normalized.append(preset)
-    return normalized
 
 
 def _build_canonical_name(
@@ -473,16 +459,6 @@ def _git_commit_short() -> str:
     return result.stdout.strip() or "unknown"
 
 
-def _run_started_at_utc() -> str:
-    """Return the current UTC timestamp in ISO-8601 format."""
-    return (
-        datetime.now(timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
-
-
 def _gpu_hardware_metadata(device: str) -> tuple[str | None, float | None]:
     """Return GPU name and VRAM size in GiB when running on CUDA."""
     if device != "cuda" or not torch.cuda.is_available():
@@ -588,7 +564,12 @@ def _start_mlflow_run(
         return None
 
     resolved_tracking_uri = tracking_uri or _default_mlflow_tracking_uri()
-    run_started_at_utc = _run_started_at_utc()
+    run_started_at_utc = (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
     try:
         MLFLOW_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
         mlflow.set_tracking_uri(resolved_tracking_uri)
@@ -634,44 +615,21 @@ def _start_mlflow_run(
         return None
 
 
-def _config_input_value(
-    args: argparse.Namespace | Mapping[str, object],
-    field_name: str,
-    default: Any = None,
-) -> Any:
-    """Return one build-config field from a namespace-like input.
-
-    Args:
-        args: Parsed CLI namespace or mapping-style config input.
-        field_name: Field name to read.
-        default: Value returned when the field is absent.
-
-    Returns:
-        The resolved field value.
-    """
-    if isinstance(args, Mapping):
-        return args.get(field_name, default)
-    return getattr(args, field_name, default)
-
-
 def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfig:
     """Build UCaGNNConfig from CLI args or mapping-style overrides.
 
     Precedence is: defaults -> recipe overrides -> explicit CLI flags -> preset -> recipe overrides.
     The final recipe-override pass ensures matrix-defining recipe values win over preset defaults.
     """
-
-    def value(field_name: str, default: Any = None) -> Any:
-        """Read one field from the supported build-config inputs."""
-        return _config_input_value(args, field_name, default)
+    config_inputs = args if isinstance(args, Mapping) else vars(args)
 
     kwargs: dict[str, object] = {}
 
-    recipe_name = value("recipe")
+    recipe_name = config_inputs.get("recipe")
     recipe = get_recipe(recipe_name) if recipe_name else None
-    effective_preset = value("preset")
+    effective_preset = config_inputs.get("preset")
     if recipe is not None:
-        _validate_recipe_cli_conflicts(args, recipe)
+        _validate_recipe_cli_conflicts(config_inputs, recipe)
         kwargs.update(recipe.get("overrides", {}))
         if effective_preset is None:
             effective_preset = recipe.get("preset")
@@ -683,10 +641,10 @@ def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfi
         )
 
     # Core args
-    kwargs["dataset"] = value("dataset")
-    kwargs["data_dir"] = value("data_dir")
-    kwargs["seed"] = value("seed", DEFAULT_SEED)
-    kwargs["device"] = value("device")
+    kwargs["dataset"] = config_inputs.get("dataset")
+    kwargs["data_dir"] = config_inputs.get("data_dir")
+    kwargs["seed"] = config_inputs.get("seed", DEFAULT_SEED)
+    kwargs["device"] = config_inputs.get("device")
 
     for field_name in (
         "epochs",
@@ -714,41 +672,41 @@ def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfi
         "sample_interactions",
         "loader_max_rows",
     ):
-        field_value = value(field_name)
+        field_value = config_inputs.get(field_name)
         if field_value is not None:
             kwargs[field_name] = field_value
 
     requested_loss_schedule = kwargs.get("loss_schedule")
     if requested_loss_schedule not in (None, "baseline"):
         raise ValueError(
-            "loss_schedule no longer supports legacy staged BPR modes; "
-            "fused BPR stays active from epoch 0."
+            "loss_schedule only supports 'baseline'; fused BPR stays active "
+            "from epoch 0."
         )
 
     config = UCaGNNConfig()
-    for key, value in kwargs.items():
-        setattr(config, key, value)
+    for key, val in kwargs.items():
+        setattr(config, key, val)
 
     # Apply preset
     if effective_preset in PRESETS:
         getattr(config, PRESETS[effective_preset])()
 
     if recipe is not None:
-        for key, value in recipe.get("overrides", {}).items():
-            setattr(config, key, value)
+        for key, val in recipe.get("overrides", {}).items():
+            setattr(config, key, val)
 
     config.validate()
     return config
 
 
 def _validate_recipe_cli_conflicts(
-    args: argparse.Namespace | Mapping[str, object],
+    args: Mapping[str, object],
     recipe: dict[str, object],
 ) -> None:
     """Reject CLI overrides that conflict with an explicitly selected recipe.
 
     Args:
-        args: Parsed CLI arguments.
+        args: Parsed CLI arguments normalized to a mapping.
         recipe: Resolved recipe metadata from the experiment catalog.
 
     Raises:
@@ -758,7 +716,7 @@ def _validate_recipe_cli_conflicts(
     conflicts: list[str] = []
 
     recipe_preset = recipe.get("preset")
-    cli_preset = _config_input_value(args, "preset")
+    cli_preset = args.get("preset")
     if (
         cli_preset is not None
         and recipe_preset is not None
@@ -772,7 +730,7 @@ def _validate_recipe_cli_conflicts(
     assert isinstance(overrides, dict)
 
     for field_name in ("graph_method",):
-        cli_value = _config_input_value(args, field_name)
+        cli_value = args.get(field_name)
         recipe_value = overrides.get(field_name)
         if (
             cli_value is not None
@@ -1046,164 +1004,9 @@ def run_experiment(
             torch.cuda.empty_cache()
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Build the single-run experiment CLI parser."""
-    parser = argparse.ArgumentParser(description="Run a U-CaGNN experiment")
-    parser.add_argument("--dataset", default="movielens1m", help="Dataset name")
-    parser.add_argument(
-        "--recipe", choices=recipe_names(), help="Named experiment recipe"
-    )
-    parser.add_argument("--preset", choices=list(PRESETS.keys()), help="Config preset")
-    parser.add_argument("--epochs", type=int, default=None, help="Override epochs")
-    parser.add_argument(
-        "--batch-size", type=int, default=None, help="Override batch size"
-    )
-    parser.add_argument(
-        "--embed-dim", type=int, default=None, help="Override embed dim"
-    )
-    parser.add_argument(
-        "--single-branch-gnn-layers",
-        type=int,
-        default=None,
-        help="Override the LightGCN single-branch depth",
-    )
-    parser.add_argument(
-        "--interest-gnn-layers",
-        type=int,
-        default=None,
-        help="Override the interest-branch GNN depth",
-    )
-    parser.add_argument(
-        "--conformity-gnn-layers",
-        type=int,
-        default=None,
-        help="Override the conformity-branch GNN depth",
-    )
-    parser.add_argument("--lr", type=float, default=None, help="Override learning rate")
-    parser.add_argument(
-        "--eval-scoring-mode",
-        choices=[
-            "default",
-            "interest_only",
-            "conformity_suppressed",
-        ],
-        default=None,
-        help="Evaluation-time scoring mode for Recall/NDCG",
-    )
-    parser.add_argument(
-        "--scoring-weight-mode",
-        choices=["fixed", "learned"],
-        default=None,
-        help="Scoring mixture mode for the default score: fixed config weights or learned simplex weights.",
-    )
-    parser.add_argument(
-        "--use-features",
-        dest="use_features",
-        action="store_true",
-        help="Enable dataset side features when available",
-    )
-    parser.add_argument(
-        "--no-features",
-        dest="use_features",
-        action="store_false",
-        help="Disable dataset side features even when available",
-    )
-    parser.add_argument(
-        "--feature-policy",
-        choices=["thesis_default", "all_optional"],
-        default=None,
-        help="Feature-loading policy: thesis_default enforces the safe thesis allowlist; all_optional restores the full optional side-feature scans.",
-    )
-    parser.add_argument("--graph-method", choices=["knn", "cagra"], default=None)
-    parser.add_argument(
-        "--num-neighbors",
-        type=int,
-        nargs="+",
-        default=None,
-        help="Fan-out per GNN layer for mini_batch mode (e.g., 10 10)",
-    )
-    parser.add_argument(
-        "--sample-interactions",
-        type=int,
-        default=None,
-        help="Optional interaction budget for sampled runs such as preflight.",
-    )
-    parser.add_argument(
-        "--loader-max-rows",
-        type=int,
-        default=None,
-        help="Optional early row cap for dataset loading during fast smoke/preflight runs.",
-    )
-    parser.add_argument("--device", default="cuda", help="Device (cuda/cpu)")
-    parser.add_argument("--data-dir", default="data", help="Data directory")
-    parser.add_argument(
-        "--no-checkpoint", action="store_true", help="Skip saving checkpoint"
-    )
-    parser.add_argument(
-        "--checkpoint-path", default=None, help="Optional explicit checkpoint path"
-    )
-    parser.add_argument(
-        "--checkpoint-every", type=int, default=1, help="Save checkpoint every N epochs"
-    )
-    parser.add_argument(
-        "--auto-resume",
-        dest="auto_resume",
-        action="store_true",
-        help="Resume automatically from a matching checkpoint",
-    )
-    parser.add_argument(
-        "--no-auto-resume",
-        dest="auto_resume",
-        action="store_false",
-        help="Disable automatic checkpoint resume for this run",
-    )
-    parser.add_argument(
-        "--intervention", default=None, help="Ablation intervention name"
-    )
-    parser.add_argument(
-        "--enable-mlflow",
-        dest="enable_mlflow",
-        action="store_true",
-        help="Explicitly enable MLflow tracking",
-    )
-    parser.add_argument(
-        "--no-mlflow",
-        dest="enable_mlflow",
-        action="store_false",
-        help="Disable MLflow tracking for this run",
-    )
-    parser.add_argument(
-        "--mlflow-tracking-uri",
-        default=None,
-        help="Override MLflow tracking URI (otherwise uses MLFLOW_TRACKING_URI or results/mlflow.db)",
-    )
-    parser.add_argument(
-        "--mlflow-experiment-name",
-        default="ucagnn-thesis",
-        help="MLflow experiment name",
-    )
-    parser.add_argument(
-        "--mlflow-run-name", default=None, help="Optional explicit MLflow run name"
-    )
-    parser.add_argument(
-        "--experiment-id",
-        default=None,
-        help="Optional thesis experiment identifier tag, e.g. E1",
-    )
-    parser.add_argument(
-        "--list-recipes",
-        action="store_true",
-        help="Print available named recipes and exit",
-    )
-    parser.set_defaults(enable_mlflow=True)
-    parser.set_defaults(auto_resume=True)
-    parser.set_defaults(use_features=None)
-    return parser
-
-
 def main() -> int:
     """Parse CLI arguments and run one experiment."""
-    parser = build_parser()
+    parser = build_run_experiment_parser()
     args = parser.parse_args()
 
     if args.list_recipes:
@@ -1245,4 +1048,6 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    import sys
+
     sys.exit(main())

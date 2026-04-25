@@ -2,25 +2,24 @@
 """Formal matrix benchmark runner for dataset x preset x graph_method.
 
 Usage:
-    python experiments/run_benchmark.py --tier small --dry-run
-    python experiments/run_benchmark.py --tier small --presets ucagnn
-    python experiments/run_benchmark.py --tier all
+    uv run formal-run --dry-run
+    uv run formal-run --profile default
+    uv run formal-run --resume-latest
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import argparse
 import json
 from itertools import product
 import logging
-import sys
 import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
+from experiments.cli_parsers import build_benchmark_parser, build_formal_run_parser
 from experiments.recipes import (
     default_formal_profile_name,
     formal_profile_names,
@@ -28,10 +27,7 @@ from experiments.recipes import (
 )
 from experiments.run_experiment import (
     DB_PATH,
-    DEFAULT_PRESET_ORDER,
-    PRESETS,
     build_config,
-    canonicalize_preset_names,
     run_experiment,
 )
 from scripts._workflow_helpers import metric_value, resolve_batch_id
@@ -49,9 +45,29 @@ TIERS = {
 }
 TIERS["all"] = TIERS["small"] + TIERS["medium"] + TIERS["large"]
 
-DEFAULT_GRAPH_METHODS = ["cagra", "knn"]
 DEFAULT_SCORING_WEIGHT_MODES = ["learned"]
-SCORING_WEIGHT_MODE_CHOICES = ["learned", "fixed"]
+PLAN_COMPARISON_FIELDS = (
+    "tier",
+    "presets",
+    "graph_methods",
+    "scoring_weight_modes",
+    "epochs",
+    "use_early_stopping",
+    "batch_size",
+    "lr",
+    "single_branch_gnn_layers",
+    "interest_gnn_layers",
+    "conformity_gnn_layers",
+    "dropout",
+    "num_neighbors",
+    "hard_negative_ratio",
+    "curriculum_phase1_end",
+    "curriculum_phase2_end",
+    "loss_schedule",
+    "loader_max_rows",
+    "sample_interactions",
+    "profile_name",
+)
 
 
 def _normalize_profile_name(raw_profile: str) -> str:
@@ -96,85 +112,19 @@ def _write_state(payload: dict[str, object]) -> None:
     STATE_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
-def _args_to_state(args: argparse.Namespace) -> dict[str, object]:
-    """Convert benchmark arguments into a JSON-safe state payload."""
-    return {
-        "tier": args.tier,
-        "presets": list(args.presets),
-        "graph_methods": list(args.graph_methods),
-        "scoring_weight_modes": list(args.scoring_weight_modes),
-        "profile_name": args.profile_name,
-        "epochs": args.epochs,
-        "use_early_stopping": args.use_early_stopping,
-        "batch_size": args.batch_size,
-        "lr": args.lr,
-        "single_branch_gnn_layers": args.single_branch_gnn_layers,
-        "interest_gnn_layers": args.interest_gnn_layers,
-        "conformity_gnn_layers": args.conformity_gnn_layers,
-        "dropout": args.dropout,
-        "num_neighbors": list(args.num_neighbors)
-        if args.num_neighbors is not None
-        else None,
-        "hard_negative_ratio": args.hard_negative_ratio,
-        "curriculum_phase1_end": args.curriculum_phase1_end,
-        "curriculum_phase2_end": args.curriculum_phase2_end,
-        "loss_schedule": getattr(args, "loss_schedule", None),
-        "loader_max_rows": args.loader_max_rows,
-        "device": args.device,
-        "data_dir": args.data_dir,
-        "no_mlflow": args.no_mlflow,
-        "mlflow_tracking_uri": args.mlflow_tracking_uri,
-        "mlflow_experiment_name": args.mlflow_experiment_name,
-        "batch_id": args.batch_id,
-        "resume_batch": args.resume_batch,
-        "dry_run": args.dry_run,
-    }
-
-
-def _state_to_args(state: dict[str, object]) -> argparse.Namespace:
-    """Restore benchmark arguments from saved state."""
-    benchmark_args = state["benchmark_args"]
-    assert isinstance(benchmark_args, dict)
-    scoring_weight_modes = benchmark_args.get("scoring_weight_modes")
-    if not isinstance(scoring_weight_modes, list) or not scoring_weight_modes:
-        scoring_weight_modes = list(DEFAULT_SCORING_WEIGHT_MODES)
-    legacy_depth = benchmark_args.get("n_gnn_layers")
-    normalized_args = {
-        "batch_size": None,
-        "lr": None,
-        "num_neighbors": None,
-        "hard_negative_ratio": None,
-        "curriculum_phase1_end": None,
-        "curriculum_phase2_end": None,
-        "loss_schedule": None,
-        "loader_max_rows": None,
-        "sample_interactions": None,
-        "scoring_weight_modes": list(scoring_weight_modes),
-        "use_early_stopping": benchmark_args.get("use_early_stopping", True),
-        "profile_name": state.get("profile_name") or state.get("version"),
-        "single_branch_gnn_layers": benchmark_args.get(
-            "single_branch_gnn_layers", legacy_depth
-        ),
-        "interest_gnn_layers": benchmark_args.get("interest_gnn_layers", legacy_depth),
-        "conformity_gnn_layers": benchmark_args.get(
-            "conformity_gnn_layers", legacy_depth
-        ),
-        "dropout": benchmark_args.get("dropout"),
-        **benchmark_args,
-    }
-    return argparse.Namespace(**normalized_args)
-
-
-def _plans_match(
-    saved_args: argparse.Namespace,
-    expected_args: argparse.Namespace,
-) -> bool:
-    """Return whether a saved formal benchmark plan matches the current profile plan."""
-    comparable_fields = (
+def _normalize_benchmark_args(
+    raw_args: argparse.Namespace | Mapping[str, object] | object,
+    *,
+    fallback_profile_name: str | None = None,
+) -> dict[str, object]:
+    """Return a JSON-safe benchmark payload."""
+    benchmark_args = raw_args if isinstance(raw_args, Mapping) else vars(raw_args)
+    allowed_fields = {
         "tier",
         "presets",
         "graph_methods",
         "scoring_weight_modes",
+        "profile_name",
         "epochs",
         "use_early_stopping",
         "batch_size",
@@ -190,83 +140,126 @@ def _plans_match(
         "loss_schedule",
         "loader_max_rows",
         "sample_interactions",
-        "profile_name",
-    )
-    for field_name in comparable_fields:
-        if getattr(saved_args, field_name, None) != getattr(
-            expected_args, field_name, None
-        ):
-            return False
-    return True
+        "device",
+        "data_dir",
+        "no_mlflow",
+        "mlflow_tracking_uri",
+        "mlflow_experiment_name",
+        "batch_id",
+        "resume_batch",
+        "dry_run",
+    }
+    unexpected_fields = sorted(set(benchmark_args) - allowed_fields)
+    if unexpected_fields:
+        raise ValueError(
+            "Formal-run state contains unexpected fields "
+            f"{unexpected_fields}. Start a fresh formal run."
+        )
+    scoring_weight_modes = benchmark_args.get("scoring_weight_modes")
+    if not isinstance(scoring_weight_modes, (list, tuple)) or not scoring_weight_modes:
+        scoring_weight_modes = list(DEFAULT_SCORING_WEIGHT_MODES)
+    num_neighbors = benchmark_args.get("num_neighbors")
+    return {
+        "tier": str(benchmark_args["tier"]),
+        "presets": list(benchmark_args["presets"]),
+        "graph_methods": list(benchmark_args["graph_methods"]),
+        "scoring_weight_modes": list(scoring_weight_modes),
+        "profile_name": benchmark_args.get("profile_name") or fallback_profile_name,
+        "epochs": benchmark_args.get("epochs"),
+        "use_early_stopping": benchmark_args.get("use_early_stopping", True),
+        "batch_size": benchmark_args.get("batch_size"),
+        "lr": benchmark_args.get("lr"),
+        "single_branch_gnn_layers": benchmark_args.get("single_branch_gnn_layers"),
+        "interest_gnn_layers": benchmark_args.get("interest_gnn_layers"),
+        "conformity_gnn_layers": benchmark_args.get("conformity_gnn_layers"),
+        "dropout": benchmark_args.get("dropout"),
+        "num_neighbors": list(num_neighbors) if num_neighbors is not None else None,
+        "hard_negative_ratio": benchmark_args.get("hard_negative_ratio"),
+        "curriculum_phase1_end": benchmark_args.get("curriculum_phase1_end"),
+        "curriculum_phase2_end": benchmark_args.get("curriculum_phase2_end"),
+        "loss_schedule": benchmark_args.get("loss_schedule"),
+        "loader_max_rows": benchmark_args.get("loader_max_rows"),
+        "sample_interactions": benchmark_args.get("sample_interactions"),
+        "device": benchmark_args.get("device"),
+        "data_dir": benchmark_args.get("data_dir"),
+        "no_mlflow": benchmark_args.get("no_mlflow"),
+        "mlflow_tracking_uri": benchmark_args.get("mlflow_tracking_uri"),
+        "mlflow_experiment_name": benchmark_args.get("mlflow_experiment_name"),
+        "batch_id": benchmark_args.get("batch_id"),
+        "resume_batch": benchmark_args.get("resume_batch"),
+        "dry_run": benchmark_args.get("dry_run"),
+    }
+
+
+def _benchmark_plan_signature(
+    args: argparse.Namespace | Mapping[str, object] | object,
+) -> tuple[object, ...]:
+    """Return the semantic plan signature used to compare saved formal runs."""
+    normalized_args = _normalize_benchmark_args(args)
+    return tuple(normalized_args[field_name] for field_name in PLAN_COMPARISON_FIELDS)
 
 
 def _build_new_run_args(
     cli_args: argparse.Namespace,
     profile_name: str,
-) -> argparse.Namespace:
+) -> dict[str, object]:
     """Build benchmark arguments for a fresh formal run."""
     profile_bundle = _resolve_profile_bundle(profile_name)
     matrix = profile_bundle["matrix"]
     assert isinstance(matrix, dict)
     config_overrides = profile_bundle["config_overrides"]
     assert isinstance(config_overrides, dict)
-    legacy_depth = config_overrides.get("n_gnn_layers")
-    return argparse.Namespace(
-        tier=str(matrix["tier"]),
-        presets=list(matrix["presets"]),
-        graph_methods=list(matrix["graph_methods"]),
-        scoring_weight_modes=list(
+    return {
+        "tier": str(matrix["tier"]),
+        "presets": list(matrix["presets"]),
+        "graph_methods": list(matrix["graph_methods"]),
+        "scoring_weight_modes": list(
             matrix.get("scoring_weight_modes", DEFAULT_SCORING_WEIGHT_MODES)
         ),
-        profile_name=profile_name,
-        epochs=int(config_overrides["epochs"]),
-        use_early_stopping=bool(config_overrides.get("use_early_stopping", True)),
-        batch_size=int(config_overrides["batch_size"]),
-        lr=float(config_overrides["lr"]),
-        single_branch_gnn_layers=int(config_overrides["single_branch_gnn_layers"])
+        "profile_name": profile_name,
+        "epochs": int(config_overrides["epochs"]),
+        "use_early_stopping": bool(config_overrides.get("use_early_stopping", True)),
+        "batch_size": int(config_overrides["batch_size"]),
+        "lr": float(config_overrides["lr"]),
+        "single_branch_gnn_layers": int(config_overrides["single_branch_gnn_layers"])
         if config_overrides.get("single_branch_gnn_layers") is not None
-        else int(legacy_depth)
-        if legacy_depth is not None
         else None,
-        interest_gnn_layers=int(config_overrides["interest_gnn_layers"])
+        "interest_gnn_layers": int(config_overrides["interest_gnn_layers"])
         if config_overrides.get("interest_gnn_layers") is not None
-        else int(legacy_depth)
-        if legacy_depth is not None
         else None,
-        conformity_gnn_layers=int(config_overrides["conformity_gnn_layers"])
+        "conformity_gnn_layers": int(config_overrides["conformity_gnn_layers"])
         if config_overrides.get("conformity_gnn_layers") is not None
-        else int(legacy_depth)
-        if legacy_depth is not None
         else None,
-        dropout=float(config_overrides["dropout"])
+        "dropout": float(config_overrides["dropout"])
         if config_overrides.get("dropout") is not None
         else None,
-        num_neighbors=list(config_overrides["num_neighbors"]),
-        hard_negative_ratio=float(config_overrides.get("hard_negative_ratio", 0.0)),
-        curriculum_phase1_end=int(config_overrides.get("curriculum_phase1_end", 15)),
-        curriculum_phase2_end=int(config_overrides.get("curriculum_phase2_end", 30)),
-        loss_schedule=str(config_overrides["loss_schedule"])
+        "num_neighbors": list(config_overrides["num_neighbors"]),
+        "hard_negative_ratio": float(config_overrides.get("hard_negative_ratio", 0.0)),
+        "curriculum_phase1_end": int(config_overrides.get("curriculum_phase1_end", 15)),
+        "curriculum_phase2_end": int(config_overrides.get("curriculum_phase2_end", 30)),
+        "loss_schedule": str(config_overrides["loss_schedule"])
         if config_overrides.get("loss_schedule") is not None
         else None,
-        loader_max_rows=None,
-        sample_interactions=None,
-        device=cli_args.device or "cuda",
-        data_dir=cli_args.data_dir or "data",
-        no_mlflow=bool(cli_args.no_mlflow),
-        mlflow_tracking_uri=cli_args.mlflow_tracking_uri,
-        mlflow_experiment_name=cli_args.mlflow_experiment_name or "ucagnn-formal",
-        batch_id=_build_batch_id(profile_name),
-        resume_batch=True,
-        dry_run=cli_args.dry_run,
-    )
+        "loader_max_rows": None,
+        "sample_interactions": None,
+        "device": cli_args.device or "cuda",
+        "data_dir": cli_args.data_dir or "data",
+        "no_mlflow": bool(cli_args.no_mlflow),
+        "mlflow_tracking_uri": cli_args.mlflow_tracking_uri,
+        "mlflow_experiment_name": cli_args.mlflow_experiment_name or "ucagnn-formal",
+        "batch_id": _build_batch_id(profile_name),
+        "resume_batch": True,
+        "dry_run": cli_args.dry_run,
+    }
 
 
 def _override_resumed_args(
-    benchmark_args: argparse.Namespace,
+    benchmark_args: dict[str, object],
     cli_args: argparse.Namespace,
     profile_name: str,
-) -> argparse.Namespace:
+) -> dict[str, object]:
     """Apply a small set of runtime overrides when resuming a saved run."""
+    overridden_args = dict(benchmark_args)
     for attribute in (
         "device",
         "data_dir",
@@ -275,24 +268,25 @@ def _override_resumed_args(
     ):
         value = getattr(cli_args, attribute)
         if value is not None:
-            setattr(benchmark_args, attribute, value)
+            overridden_args[attribute] = value
     if cli_args.no_mlflow:
-        benchmark_args.no_mlflow = True
-    benchmark_args.dry_run = cli_args.dry_run
-    benchmark_args.resume_batch = True
-    benchmark_args.sample_interactions = None
-    benchmark_args.loader_max_rows = None
+        overridden_args["no_mlflow"] = True
+    overridden_args["dry_run"] = cli_args.dry_run
+    overridden_args["resume_batch"] = True
+    overridden_args["sample_interactions"] = None
+    overridden_args["loader_max_rows"] = None
     if cli_args.restart:
-        benchmark_args.batch_id = _build_batch_id(profile_name)
-    return benchmark_args
+        overridden_args["batch_id"] = _build_batch_id(profile_name)
+    return overridden_args
 
 
 def _resolve_benchmark_args(
     cli_args: argparse.Namespace,
-) -> tuple[argparse.Namespace, str, bool]:
+) -> tuple[dict[str, object], str, bool]:
     """Resolve whether to create a new formal run or resume the saved one."""
     saved_state = _load_state()
     current_profile_bundle = None
+    saved_benchmark_args: dict[str, object] | None = None
 
     requested_profile = None
     if cli_args.profile is not None:
@@ -314,6 +308,12 @@ def _resolve_benchmark_args(
         except ValueError:
             saved_profile = raw_saved_profile
             saved_profile_bundle = saved_state.get("profile_config")
+        raw_saved_benchmark_args = saved_state.get("benchmark_args")
+        if isinstance(raw_saved_benchmark_args, dict):
+            saved_benchmark_args = _normalize_benchmark_args(
+                raw_saved_benchmark_args,
+                fallback_profile_name=raw_saved_profile,
+            )
 
     should_resume_latest = cli_args.resume_latest or (
         requested_profile is None and not cli_args.new_run and saved_state is not None
@@ -330,10 +330,13 @@ def _resolve_benchmark_args(
             profile_name = requested_profile or DEFAULT_PROFILE_NAME
             benchmark_args = _build_new_run_args(cli_args, profile_name)
             return benchmark_args, profile_name, False
-        benchmark_args = _state_to_args(saved_state)
+        assert saved_benchmark_args is not None
+        benchmark_args = saved_benchmark_args
         profile_name = saved_profile or DEFAULT_PROFILE_NAME
         expected_args = _build_new_run_args(cli_args, profile_name)
-        if not _plans_match(benchmark_args, expected_args):
+        if _benchmark_plan_signature(benchmark_args) != _benchmark_plan_signature(
+            expected_args
+        ):
             if cli_args.resume_latest:
                 raise ValueError(
                     "The saved formal-run state no longer matches the current profile bundle. "
@@ -342,7 +345,7 @@ def _resolve_benchmark_args(
             benchmark_args = expected_args
             return benchmark_args, profile_name, False
         benchmark_args = _override_resumed_args(benchmark_args, cli_args, profile_name)
-        benchmark_args.profile_name = profile_name
+        benchmark_args["profile_name"] = profile_name
         return benchmark_args, profile_name, True
 
     if (
@@ -353,9 +356,12 @@ def _resolve_benchmark_args(
         and requested_profile == saved_profile
         and saved_profile_bundle == current_profile_bundle
     ):
-        benchmark_args = _state_to_args(saved_state)
+        assert saved_benchmark_args is not None
+        benchmark_args = saved_benchmark_args
         expected_args = _build_new_run_args(cli_args, requested_profile)
-        if not _plans_match(benchmark_args, expected_args):
+        if _benchmark_plan_signature(benchmark_args) != _benchmark_plan_signature(
+            expected_args
+        ):
             profile_name = requested_profile
             benchmark_args = _build_new_run_args(cli_args, profile_name)
             return benchmark_args, profile_name, False
@@ -364,7 +370,7 @@ def _resolve_benchmark_args(
             cli_args,
             requested_profile,
         )
-        benchmark_args.profile_name = requested_profile
+        benchmark_args["profile_name"] = requested_profile
         return benchmark_args, requested_profile, True
 
     profile_name = requested_profile or DEFAULT_PROFILE_NAME
@@ -383,7 +389,7 @@ def _scoring_weight_modes_for_preset(
 
 
 def build_benchmark_plan(
-    args: argparse.Namespace,
+    args: argparse.Namespace | Mapping[str, object] | object,
 ) -> list[tuple[str, str, str, str]]:
     """Build the ordered benchmark execution plan.
 
@@ -392,13 +398,14 @@ def build_benchmark_plan(
     dataset-specific failure surfaces during the first method sweep instead of
     after one dataset has already exhausted every method combination.
     """
-    datasets = TIERS[args.tier]
+    benchmark_args = _normalize_benchmark_args(args)
+    datasets = TIERS[str(benchmark_args["tier"])]
     experiments: list[tuple[str, str, str, str]] = []
-    presets = canonicalize_preset_names(args.presets)
-    for preset, graph_method in product(presets, args.graph_methods):
+    presets = list(dict.fromkeys(benchmark_args["presets"]))
+    for preset, graph_method in product(presets, benchmark_args["graph_methods"]):
         for scoring_weight_mode in _scoring_weight_modes_for_preset(
             preset,
-            args.scoring_weight_modes,
+            benchmark_args["scoring_weight_modes"],
         ):
             for dataset in datasets:
                 experiments.append(
@@ -412,121 +419,9 @@ def build_benchmark_plan(
     return experiments
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Build the benchmark CLI parser."""
-    parser = argparse.ArgumentParser(description="Run U-CaGNN benchmark matrix")
-    parser.add_argument(
-        "--tier", choices=list(TIERS.keys()), default="small", help="Dataset tier"
-    )
-    parser.add_argument(
-        "--presets",
-        nargs="*",
-        default=list(DEFAULT_PRESET_ORDER),
-        choices=list(PRESETS.keys()),
-        help="Presets to run (canonical defaults: ucagnn, lightgcn, dice_like).",
-    )
-    parser.add_argument(
-        "--graph-methods",
-        nargs="*",
-        default=DEFAULT_GRAPH_METHODS,
-        choices=DEFAULT_GRAPH_METHODS,
-        help="Graph construction methods to run across the matrix",
-    )
-    parser.add_argument(
-        "--scoring-weight-modes",
-        nargs="*",
-        default=DEFAULT_SCORING_WEIGHT_MODES,
-        choices=SCORING_WEIGHT_MODE_CHOICES,
-        help="Score-mixture modes to run. LightGCN stays fixed-only because learned weights are inapplicable without dual branches.",
-    )
-    parser.add_argument(
-        "--epochs", type=int, default=None, help="Override epochs for all"
-    )
-    early_stopping_group = parser.add_mutually_exclusive_group()
-    early_stopping_group.add_argument(
-        "--early-stopping",
-        dest="use_early_stopping",
-        action="store_true",
-        help="Enable early stopping for all benchmark runs.",
-    )
-    early_stopping_group.add_argument(
-        "--no-early-stopping",
-        dest="use_early_stopping",
-        action="store_false",
-        help="Disable early stopping for all benchmark runs.",
-    )
-    parser.set_defaults(use_early_stopping=None)
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=None,
-        help="Override batch size for all runs in the matrix.",
-    )
-    parser.add_argument(
-        "--lr",
-        type=float,
-        default=None,
-        help="Override learning rate for all runs in the matrix.",
-    )
-    parser.add_argument(
-        "--num-neighbors",
-        nargs="*",
-        type=int,
-        default=None,
-        help="Optional mini-batch fan-out override applied to all matrix items.",
-    )
-    parser.add_argument(
-        "--loader-max-rows",
-        type=int,
-        default=None,
-        help="Optional dataset loader row cap for all runs in the matrix.",
-    )
-    parser.add_argument(
-        "--sample-interactions",
-        type=int,
-        default=None,
-        help="Optional interaction budget for sampled benchmark passes.",
-    )
-    parser.add_argument("--device", default="cuda", help="Device")
-    parser.add_argument("--data-dir", default="data", help="Data directory")
-    parser.add_argument(
-        "--no-mlflow",
-        action="store_true",
-        help="Disable MLflow tracking for all benchmark runs",
-    )
-    parser.add_argument(
-        "--mlflow-tracking-uri",
-        default=None,
-        help="Override MLflow tracking URI for all benchmark runs",
-    )
-    parser.add_argument(
-        "--mlflow-experiment-name",
-        default="ucagnn-benchmark",
-        help="MLflow experiment name for benchmark runs",
-    )
-    parser.add_argument(
-        "--batch-id",
-        default=None,
-        help="Optional batch identifier for grouping and resuming benchmark runs.",
-    )
-    parser.add_argument(
-        "--profile-name",
-        default=None,
-        help="Optional semantic formal profile label to persist alongside batch metadata.",
-    )
-    parser.add_argument(
-        "--resume-batch",
-        action="store_true",
-        help="Skip benchmark items already recorded with a terminal status for this batch id.",
-    )
-    parser.add_argument(
-        "--dry-run", action="store_true", help="Print plan without running"
-    )
-    return parser
-
-
-def run_benchmark(args: argparse.Namespace) -> int:
+def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> int:
     """Execute the formal benchmark matrix from parsed arguments."""
+    benchmark_args = _normalize_benchmark_args(args)
 
     logging.basicConfig(
         level=logging.INFO,
@@ -534,11 +429,11 @@ def run_benchmark(args: argparse.Namespace) -> int:
         datefmt="%H:%M:%S",
     )
 
-    datasets = TIERS[args.tier]
-    args.presets = canonicalize_preset_names(args.presets)
-    batch_id = resolve_batch_id(args.batch_id, prefix="benchmark")
-    profile_name = getattr(args, "profile_name", None)
-    experiments = build_benchmark_plan(args)
+    datasets = TIERS[str(benchmark_args["tier"])]
+    presets = list(dict.fromkeys(benchmark_args["presets"]))
+    batch_id = resolve_batch_id(benchmark_args["batch_id"], prefix="benchmark")
+    profile_name = benchmark_args.get("profile_name")
+    experiments = build_benchmark_plan(benchmark_args)
 
     if not experiments:
         logger.error(
@@ -548,17 +443,19 @@ def run_benchmark(args: argparse.Namespace) -> int:
 
     print("=" * 70)
     print(f"BENCHMARK PLAN: {len(experiments)} experiments")
-    print(f"  Tier: {args.tier} ({len(datasets)} datasets: {', '.join(datasets)})")
-    print(f"  Presets: {', '.join(args.presets)}")
-    print(f"  Graph methods: {', '.join(args.graph_methods)}")
-    print(f"  Score-mix modes: {', '.join(args.scoring_weight_modes)}")
+    print(
+        f"  Tier: {benchmark_args['tier']} ({len(datasets)} datasets: {', '.join(datasets)})"
+    )
+    print(f"  Presets: {', '.join(presets)}")
+    print(f"  Graph methods: {', '.join(benchmark_args['graph_methods'])}")
+    print(f"  Score-mix modes: {', '.join(benchmark_args['scoring_weight_modes'])}")
     print(f"  Batch ID: {batch_id}")
     if profile_name:
         print(f"  Profile: {profile_name}")
-    print(f"  Resume batch: {args.resume_batch}")
+    print(f"  Resume batch: {benchmark_args['resume_batch']}")
     print("=" * 70)
 
-    if args.dry_run:
+    if benchmark_args["dry_run"]:
         print(
             f"\n{'#':>4} | {'Dataset':<15} | {'Preset':<12} | {'Graph':<5} | {'ScoreMix':<8}"
         )
@@ -598,7 +495,7 @@ def run_benchmark(args: argparse.Namespace) -> int:
             config_filters={"scoring_weight_mode": scoring_weight_mode},
         )
         if (
-            args.resume_batch
+            benchmark_args["resume_batch"]
             and existing is not None
             and existing["status"] in ExperimentLogger.TERMINAL_STATUSES
         ):
@@ -630,37 +527,25 @@ def run_benchmark(args: argparse.Namespace) -> int:
                 "recipe": None,
                 "preset": preset,
                 "seed": DEFAULT_SEED,
-                "epochs": args.epochs,
-                "batch_size": args.batch_size,
-                "single_branch_gnn_layers": getattr(
-                    args,
-                    "single_branch_gnn_layers",
-                    None,
-                ),
-                "interest_gnn_layers": getattr(args, "interest_gnn_layers", None),
-                "conformity_gnn_layers": getattr(args, "conformity_gnn_layers", None),
-                "dropout": getattr(args, "dropout", None),
-                "lr": args.lr,
-                "use_early_stopping": args.use_early_stopping,
+                "epochs": benchmark_args["epochs"],
+                "batch_size": benchmark_args["batch_size"],
+                "single_branch_gnn_layers": benchmark_args["single_branch_gnn_layers"],
+                "interest_gnn_layers": benchmark_args["interest_gnn_layers"],
+                "conformity_gnn_layers": benchmark_args["conformity_gnn_layers"],
+                "dropout": benchmark_args["dropout"],
+                "lr": benchmark_args["lr"],
+                "use_early_stopping": benchmark_args["use_early_stopping"],
                 "scoring_weight_mode": scoring_weight_mode,
                 "graph_method": graph_method,
-                "num_neighbors": args.num_neighbors,
-                "hard_negative_ratio": getattr(args, "hard_negative_ratio", None),
-                "curriculum_phase1_end": getattr(
-                    args,
-                    "curriculum_phase1_end",
-                    None,
-                ),
-                "curriculum_phase2_end": getattr(
-                    args,
-                    "curriculum_phase2_end",
-                    None,
-                ),
-                "sample_interactions": args.sample_interactions,
-                "loader_max_rows": args.loader_max_rows,
-                "loss_schedule": getattr(args, "loss_schedule", None),
-                "device": args.device,
-                "data_dir": args.data_dir,
+                "num_neighbors": benchmark_args["num_neighbors"],
+                "hard_negative_ratio": benchmark_args["hard_negative_ratio"],
+                "curriculum_phase1_end": benchmark_args["curriculum_phase1_end"],
+                "curriculum_phase2_end": benchmark_args["curriculum_phase2_end"],
+                "sample_interactions": benchmark_args["sample_interactions"],
+                "loader_max_rows": benchmark_args["loader_max_rows"],
+                "loss_schedule": benchmark_args["loss_schedule"],
+                "device": benchmark_args["device"],
+                "data_dir": benchmark_args["data_dir"],
             }
 
             config = build_config(config_inputs)
@@ -668,9 +553,9 @@ def run_benchmark(args: argparse.Namespace) -> int:
             result = run_experiment(
                 config,
                 preset=preset,
-                enable_mlflow=not args.no_mlflow,
-                mlflow_tracking_uri=args.mlflow_tracking_uri,
-                mlflow_experiment_name=args.mlflow_experiment_name,
+                enable_mlflow=not bool(benchmark_args["no_mlflow"]),
+                mlflow_tracking_uri=benchmark_args["mlflow_tracking_uri"],
+                mlflow_experiment_name=str(benchmark_args["mlflow_experiment_name"]),
                 batch_id=batch_id,
                 profile_name=profile_name,
             )
@@ -728,78 +613,13 @@ def run_benchmark(args: argparse.Namespace) -> int:
 
 def main() -> int:
     """Parse CLI arguments and run the benchmark matrix."""
-    parser = build_parser()
-    args = parser.parse_args()
+    args = build_benchmark_parser().parse_args()
     return run_benchmark(args)
-
-
-def _build_formal_run_parser() -> argparse.ArgumentParser:
-    """Build the simple formal-run CLI parser."""
-    parser = argparse.ArgumentParser(
-        description="Run the formal U-CaGNN experiment matrix with semantic profile-based resume."
-    )
-    parser.add_argument(
-        "--profile",
-        "--version",
-        dest="profile",
-        default=None,
-        help=(
-            "Optional semantic formal profile slug. "
-            f"Supported profiles: {', '.join(formal_profile_names())}."
-        ),
-    )
-    parser.add_argument(
-        "--list-profiles",
-        action="store_true",
-        help="Print the predefined formal profiles from experiments/experiment_catalog.json and exit.",
-    )
-    parser.add_argument(
-        "--resume-latest",
-        action="store_true",
-        help="Resume the latest saved formal run state instead of creating a new one.",
-    )
-    parser.add_argument(
-        "--new-run",
-        action="store_true",
-        help="Force a fresh run even if a saved formal-run state exists.",
-    )
-    parser.add_argument(
-        "--restart",
-        action="store_true",
-        help="Start the selected profile from the beginning under a fresh batch id.",
-    )
-    parser.add_argument(
-        "--device",
-        default=None,
-        help="Device override. Defaults to cuda for new runs.",
-    )
-    parser.add_argument("--data-dir", default=None, help="Data directory override.")
-    parser.add_argument(
-        "--no-mlflow",
-        action="store_true",
-        help="Disable MLflow logging for this formal run.",
-    )
-    parser.add_argument(
-        "--mlflow-tracking-uri",
-        default=None,
-        help="Optional MLflow tracking URI override.",
-    )
-    parser.add_argument(
-        "--mlflow-experiment-name",
-        default=None,
-        help="Optional MLflow experiment name override. Defaults to ucagnn-formal.",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview the formal run plan without executing it.",
-    )
-    return parser
 
 
 def formal_main() -> int:
     """Run the formal experiment workflow through one simple entry point."""
-    parser = _build_formal_run_parser()
+    parser = build_formal_run_parser()
     cli_args = parser.parse_args()
 
     if cli_args.list_profiles:
@@ -816,12 +636,12 @@ def formal_main() -> int:
 
     state = {
         "profile_name": profile_name,
-        "batch_id": benchmark_args.batch_id,
+        "batch_id": benchmark_args["batch_id"],
         "resumed": resumed,
         "last_started_at_utc": datetime.now(timezone.utc).isoformat(),
         "last_finished_at_utc": None,
         "last_exit_code": None,
-        "benchmark_args": _args_to_state(benchmark_args),
+        "benchmark_args": _normalize_benchmark_args(benchmark_args),
     }
     if not cli_args.dry_run:
         _write_state(state)
@@ -829,8 +649,8 @@ def formal_main() -> int:
     print("=" * 70)
     print("FORMAL RUN")
     print(f"  Profile: {profile_name}")
-    print(f"  Batch ID: {benchmark_args.batch_id}")
-    print(f"  Resuming: {benchmark_args.resume_batch}")
+    print(f"  Batch ID: {benchmark_args['batch_id']}")
+    print(f"  Resuming: {benchmark_args['resume_batch']}")
     print("  Full datasets: True")
     print("  OOM fallback: log-and-continue")
     print("=" * 70)
@@ -844,4 +664,6 @@ def formal_main() -> int:
 
 
 if __name__ == "__main__":
+    import sys
+
     sys.exit(main())
