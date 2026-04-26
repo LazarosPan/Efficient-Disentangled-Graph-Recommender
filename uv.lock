@@ -158,6 +158,7 @@ source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "cudf-polars-cu13" },
+    { name = "cupy" },
     { name = "cuvs-cu13" },
     { name = "h5py" },
     { name = "ipykernel" },
@@ -194,6 +195,7 @@ dev = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.13.0" },
     { name = "cudf-polars-cu13", specifier = ">=26.2.1" },
+    { name = "cupy", specifier = ">=14.0.1" },
     { name = "cuvs-cu13", specifier = ">=26.2.0" },
     { name = "h5py", specifier = ">=3.15.1" },
     { name = "ipykernel", specifier = ">=7.2.0" },
@@ -459,6 +461,16 @@ dependencies = [
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e7/69/524fe85e520cdd5175136137e5b77cf5ecaa99c72d69c31a0ef50c46664f/cudf_polars_cu13-26.2.1-py3-none-any.whl", hash = "sha256:9578125336f7f8dc8c6a81879e994da94fba6b6792e9ad9c9923b1ebc937acee", size = 292018, upload-time = "2026-02-09T17:00:19.349Z" },
 ]
+
+[[package]]
+name = "cupy"
+version = "14.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cuda-pathfinder" },
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/18/3c/d3aa4aaf179567f6588dbfb18b29471949fb782fc79fddfd43480b052d71/cupy-14.0.1.tar.gz", hash = "sha256:4b673ab2d8b2329abe7ae0a7ae6159656044a8eecca56cf0b834b7c907063205", size = 3899909, upload-time = "2026-02-20T10:25:27.585Z" }
 
 [[package]]
 name = "cuvs-cu13"

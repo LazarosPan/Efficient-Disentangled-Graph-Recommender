@@ -37,6 +37,7 @@ dependencies = [
     "ipykernel>=7.2.0",
     "mlflow>=3.10.1",
     "torchmetrics>=1.9.0",
+    "cupy>=14.0.1",
 ]
 
 
