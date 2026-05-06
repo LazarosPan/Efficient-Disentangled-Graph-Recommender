@@ -1,4 +1,4 @@
-# Run: `tree -I 'latex|.venv|external'`
+# Run: `tree -I 'latex|.venv|external|results/checkpoints|mlruns|*/__pycache__/'`
 
 ```
 ├── causal_embeddings_for_recommendations.egg-info
@@ -168,12 +168,13 @@
 │   │   ├── DICE_audit.md
 │   │   ├── DirectAU_audit.md
 │   │   ├── FMMRec_audit.md
+│   │   ├── LayerGCN.md
 │   │   ├── LightGCNpp_audit.md
 │   │   ├── MCLN_audit.md
 │   │   ├── MGCE_audit.md
 │   │   ├── PropCare_audit.md
 │   │   ├── SIGformer_audit.md
-│   │   └── U-CaGNN_Synthesis_Report.md
+│   │   └── Cross_Repository_Technical_Synthesis.md
 │   ├── guidelines
 │   │   ├── env_setup.md
 │   │   ├── profile_plan.md
@@ -187,8 +188,9 @@
 │   │   ├── UCaGNN_updates.md
 │   │   └── useful_commands.md
 │   ├── paper_summaries
+│   │   ├── full_summary_detailed.md
 │   │   ├── full_summary.md
-│   │   ├── lightgcn.md
+│   │   ├── gcn_models.md
 │   │   ├── methematical_formulations.md
 │   │   ├── notes_by_paper_10.md
 │   │   ├── summary_by_paper_10.md
@@ -212,48 +214,37 @@
 │       └── scripts.md
 ├── experiments
 │   ├── ablation_configs.py
+│   ├── cli_parsers.py
 │   ├── experiment_catalog.json
 │   ├── __init__.py
-│   ├── __pycache__
-│   │   ├── ablation_configs.cpython-313.pyc
-│   │   ├── __init__.cpython-313.pyc
-│   │   ├── recipes.cpython-313.pyc
-│   │   ├── run_ablation.cpython-313.pyc
-│   │   ├── run_benchmark.cpython-313.pyc
-│   │   └── run_experiment.cpython-313.pyc
 │   ├── recipes.py
 │   ├── run_ablation.py
 │   ├── run_benchmark.py
 │   └── run_experiment.py
 ├── LICENCE
-├── __pycache__
-│   └── main.cpython-313.pyc
 ├── pyproject.toml
 ├── README.md
 ├── results
+│   ├── dataset_visualizations
+│   │   ├── amazonbook_profile.png
+│   │   ├── benchmark_overview.png
+│   │   ├── benchmark_summary.json
+│   │   ├── benchmark_summary.md
+│   │   ├── kuairand1k_profile.png
+│   │   ├── kuairec_v2_profile.png
+│   │   ├── movielens1m_profile.png
+│   │   ├── movielens20m_profile.png
+│   │   └── taobao_profile.png
+│   ├── formal_run_state.json
+│   ├── mlflow.db
 │   └── thesis_experiments.db
 ├── scripts
 │   ├── cleanup_experiment_artifacts.py
 │   ├── download_pyg_datasets.py
 │   ├── evaluate_scoring_modes.py
+│   ├── fix_nn_md.py
+│   ├── format_nn_md.py
 │   ├── __init__.py
-│   ├── __pycache__
-│   │   ├── audit_metrics.cpython-313.pyc
-│   │   ├── cleanup_experiment_artifacts.cpython-313.pyc
-│   │   ├── download_pyg_datasets.cpython-313.pyc
-│   │   ├── feature_policy_probes.cpython-313.pyc
-│   │   ├── __init__.cpython-313.pyc
-│   │   ├── list_commands.cpython-313.pyc
-│   │   ├── preflight_experiments.cpython-313.pyc
-│   │   ├── query_results.cpython-313.pyc
-│   │   ├── quick_validate.cpython-313.pyc
-│   │   ├── reset_experiment_db.cpython-313.pyc
-│   │   ├── verify_pipeline.cpython-313.pyc
-│   │   ├── verify_setup.cpython-313.pyc
-│   │   ├── verify_setup.cpython-314.pyc
-│   │   ├── verify_sqlite.cpython-313.pyc
-│   │   ├── visualize_results.cpython-313.pyc
-│   │   └── _workflow_helpers.cpython-313.pyc
 │   ├── query_results.py
 │   ├── quick_validate.py
 │   ├── reset_experiment_db.py
@@ -271,126 +262,48 @@
 │   │   │   ├── kuairec_v2.py
 │   │   │   ├── movielens1m.py
 │   │   │   ├── movielens20m.py
-│   │   │   ├── __pycache__
-│   │   │   │   ├── amazonbook.cpython-313.pyc
-│   │   │   │   ├── _feature_utils.cpython-313.pyc
-│   │   │   │   ├── __init__.cpython-313.pyc
-│   │   │   │   ├── kuairand1k.cpython-310.pyc
-│   │   │   │   ├── kuairand1k.cpython-313.pyc
-│   │   │   │   ├── kuairec_v2.cpython-310.pyc
-│   │   │   │   ├── kuairec_v2.cpython-313.pyc
-│   │   │   │   ├── movielens1m.cpython-310.pyc
-│   │   │   │   ├── movielens1m.cpython-313.pyc
-│   │   │   │   ├── movielens20m.cpython-310.pyc
-│   │   │   │   ├── movielens20m.cpython-313.pyc
-│   │   │   │   ├── _shared.cpython-313.pyc
-│   │   │   │   └── taobao.cpython-313.pyc
 │   │   │   └── taobao.py
 │   │   ├── negative_sampler.py
-│   │   ├── __pycache__
-│   │   │   ├── canonical.cpython-310.pyc
-│   │   │   ├── canonical.cpython-313.pyc
-│   │   │   ├── canonical.cpython-314.pyc
-│   │   │   ├── feature_policy.cpython-313.pyc
-│   │   │   ├── graph_builder.cpython-310.pyc
-│   │   │   ├── graph_builder.cpython-313.pyc
-│   │   │   ├── __init__.cpython-310.pyc
-│   │   │   ├── __init__.cpython-313.pyc
-│   │   │   ├── __init__.cpython-314.pyc
-│   │   │   ├── negative_sampler.cpython-313.pyc
-│   │   │   ├── subgraph_sampler.cpython-313.pyc
-│   │   │   └── subgraph_sampler.cpython-314.pyc
 │   │   └── subgraph_sampler.py
 │   ├── data_exploration
 │   │   ├── data_exploration.ipynb
 │   │   ├── data_exploration.py
 │   │   ├── data_information.py
-│   │   ├── explore_all_datasets.py
-│   │   └── __pycache__
-│   │       ├── data_exploration.cpython-313.pyc
-│   │       ├── data_information.cpython-313.pyc
-│   │       └── explore_all_datasets.cpython-313.pyc
-│   ├── evaluation
-│   │   └── __init__.py
+│   │   └── explore_all_datasets.py
 │   ├── __init__.py
 │   ├── losses
 │   │   ├── __init__.py
-│   │   ├── loss_suite.py
-│   │   └── __pycache__
-│   │       ├── bpr.cpython-313.pyc
-│   │       ├── contrastive.cpython-313.pyc
-│   │       ├── counterfactual.cpython-313.pyc
-│   │       ├── __init__.cpython-313.pyc
-│   │       ├── loss_suite.cpython-313.pyc
-│   │       ├── orthogonality.cpython-313.pyc
-│   │       └── popularity.cpython-313.pyc
+│   │   └── loss_suite.py
 │   ├── models
 │   │   ├── embeddings.py
 │   │   ├── __init__.py
 │   │   ├── lightgcn.py
 │   │   ├── propensity.py
-│   │   ├── __pycache__
-│   │   │   ├── embeddings.cpython-310.pyc
-│   │   │   ├── embeddings.cpython-313.pyc
-│   │   │   ├── __init__.cpython-313.pyc
-│   │   │   ├── lightgcn.cpython-310.pyc
-│   │   │   ├── lightgcn.cpython-313.pyc
-│   │   │   ├── propensity.cpython-313.pyc
-│   │   │   ├── scoring.cpython-313.pyc
-│   │   │   └── ucagnn.cpython-313.pyc
 │   │   ├── scoring.py
 │   │   └── ucagnn.py
 │   ├── profiling
 │   │   ├── gpu_profiler.py
-│   │   ├── __init__.py
-│   │   └── __pycache__
-│   │       ├── gpu_profiler.cpython-313.pyc
-│   │       └── __init__.cpython-313.pyc
-│   ├── __pycache__
-│   │   ├── feature_policy.cpython-313.pyc
-│   │   ├── __init__.cpython-313.pyc
-│   │   └── __init__.cpython-314.pyc
+│   │   └── __init__.py
 │   ├── training
 │   │   ├── evaluator.py
 │   │   ├── __init__.py
-│   │   ├── mini_batch_trainer.py
-│   │   └── __pycache__
-│   │       ├── _base.cpython-313.pyc
-│   │       ├── cached_trainer.cpython-313.pyc
-│   │       ├── evaluator.cpython-313.pyc
-│   │       ├── __init__.cpython-313.pyc
-│   │       ├── mini_batch_trainer.cpython-313.pyc
-│   │       └── trainer.cpython-313.pyc
+│   │   └── mini_batch_trainer.py
 │   └── utils
+│       ├── cli_parsers.py
 │       ├── config.py
 │       ├── csv_features.py
 │       ├── dataset_loader_utils.py
 │       ├── experiment_logger.py
 │       ├── __init__.py
 │       ├── interaction_indexing.py
-│       ├── __pycache__
-│       │   ├── config.cpython-310.pyc
-│       │   ├── config.cpython-313.pyc
-│       │   ├── csv_features.cpython-313.pyc
-│       │   ├── dataset_loader_utils.cpython-313.pyc
-│       │   ├── experiment_logger.cpython-313.pyc
-│       │   ├── __init__.cpython-310.pyc
-│       │   ├── __init__.cpython-313.pyc
-│       │   ├── interaction_indexing.cpython-313.pyc
-│       │   └── trainer_runtime.cpython-313.pyc
+│       ├── reproducibility.py
 │       └── trainer_runtime.py
 ├── tests
-│   ├── __pycache__
-│   │   ├── test_benchmark_plan.cpython-313.pyc
-│   │   ├── test_benchmark_plan.cpython-313-pytest-9.0.2.pyc
-│   │   ├── test_causal_training_contract.cpython-313.pyc
-│   │   ├── test_causal_training_contract.cpython-313-pytest-9.0.2.pyc
-│   │   ├── test_formal_training_policy.cpython-313.pyc
-│   │   ├── test_formal_training_policy.cpython-313-pytest-9.0.2.pyc
-│   │   ├── test_split_safety.cpython-313.pyc
-│   │   └── test_split_safety.cpython-313-pytest-9.0.2.pyc
 │   ├── sqlite_queries
 │   │   └── failure_reasons.sql
+│   ├── test_cli_parsers.py
+│   ├── test_data_and_reproducibility.py
+│   ├── test_experiment_logger.py
 │   ├── test_formal_training_policy.py
 │   └── test_split_safety.py
 └── uv.lock

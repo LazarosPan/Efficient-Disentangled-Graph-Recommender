@@ -16,7 +16,7 @@ config = UCaGNNConfig().preset_lightgcn()
 # DICE-like (dual branch + independence only)
 config = UCaGNNConfig().preset_dice_like()
 
-# Full U-CaGNN wave-1 mainline (fused scoring + sign-aware + IPW)
+# Full U-CaGNN mainline (fused scoring + sign-aware + IPW)
 config = UCaGNNConfig().preset_full()
 ```
 
@@ -74,8 +74,8 @@ Public experiment naming note: use `ucagnn` as the main CLI preset/recipe name. 
 - `use_torch_compile` is now opt-in. The current mini-batch runtime feeds dynamic sampled subgraphs into `DualBranchGCN`, and observed `torch.compile(dynamic=True)` recompiles have outweighed the expected kernel-fusion win on formal runs.
 
 ## IPW Weight Range
-Default `propensity_clip_min` is `0.01` (yields max weight 100×) for the base config.
-`preset_full()` overrides this to `0.1` (max weight 10×) to prevent gradient explosion from poorly calibrated propensity estimates early in training.
+Default `propensity_clip_min` is `0.01` (yields max weight 100*) for the base config.
+`preset_full()` overrides this to `0.1` (max weight 10*) to prevent gradient explosion from poorly calibrated propensity estimates early in training.
 
 ## Preset Eval Scoring Modes
 `preset_full()` now uses the fused `"default"` scorer for both training and evaluation, while `preset_dice_like()` keeps `"interest_only"` so the baseline continues to measure the interest branch directly. `preset_lightgcn()` also uses `"default"`.

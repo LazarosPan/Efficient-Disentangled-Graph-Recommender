@@ -9,7 +9,7 @@ Use this skill when working on loss functions, multi-task learning, curriculum s
 ## Ownership Notes
 - `LossSuite` is the only public loss-layer surface.
 - The individual loss implementations now live as private helpers inside `src/losses/loss_suite.py`; keep them there unless an external caller with a real separate lifecycle appears.
-- The current wave-1 mainline uses a batch-safe within-branch contrastive auxiliary with `auxiliary_loss_schedule="linear_ramp"`; keep DirectAU alignment/uniformity available as optional ablations rather than the default path.
+- The current mainline uses a batch-safe within-branch contrastive auxiliary with `auxiliary_loss_schedule="linear_ramp"`; keep DirectAU alignment/uniformity available as optional ablations rather than the default path.
 - Keep popularity supervision attached to the scorer-owned popularity head rather than reintroducing a separate predictor inside the loss suite.
 - `LossSuite` receives scores from `UCaGNN.build_training_output()`, which now respects `config.train_scoring_mode`; keep the ranking loss semantics aligned with that model-owned scoring contract.
 
@@ -33,7 +33,7 @@ L_total = lambda_rec * L_rec + lambda_interest_bpr * L_int + lambda_conformity_b
 
 ## Curriculum Scheduling
 Config field `auxiliary_loss_schedule` controls how auxiliary weights activate:
-- `"linear_ramp"`: wave-1 mainline path; auxiliaries ramp from 0 using `auxiliary_ramp_rate` and `independence_ramp_rate` while fused BPR stays on from epoch 0.
+- `"linear_ramp"`: mainline path; auxiliaries ramp from 0 using `auxiliary_ramp_rate` and `independence_ramp_rate` while fused BPR stays on from epoch 0.
 - `"phased"`: stage auxiliaries with `curriculum_phase1_end` and `curriculum_phase2_end` while fused BPR still stays on from epoch 0.
 
 When the phased schedule is active, `curriculum_phase1_end` and `curriculum_phase2_end` control when auxiliary losses activate:

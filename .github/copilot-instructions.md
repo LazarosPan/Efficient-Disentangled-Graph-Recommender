@@ -35,20 +35,25 @@ You are working on a thesis project about causal embeddings for recommendation. 
 
 ## Iteration Workflow (Mandatory)
 
-Before each implementation iteration:
+Before each implementation iteration read the following files:
 
-1. Read `.github/skills/ucagnn-implementation/`.
-2. Read `docs/ucagnn_implementation/ucagnn_full.md`.
+-  `.github/skills/` - Useful skills for implementation, project structure, and existing work (see the detailed list below).
 
-After each iteration, update both so they match the code:
+- Target system / development tracking files:
+
+1. `.github/skills/ucagnn-implementation/`.
+2. `docs/ucagnn_implementation/ucagnn_full.md`.
+
+After each iteration, update the target system files so they match the code; do not treat them as the primary theory source:
 
 - `.github/skills/ucagnn-implementation/`
 - `docs/ucagnn_implementation/ucagnn_full.md`
+- `pyproject.toml` (for dependencies and versioning if applicable)
 
 ## Project Rules
 
 - SQLite is the primary experiment record; MLflow is a secondary UI and artifact tracker.
-- The formal experiment grid is `dataset × preset × graph_method`, with score-mix sweeps for dual-branch presets handled inside that protocol.
+- The formal experiment grid is `dataset * preset`, with score-mix sweeps for dual-branch presets handled inside that protocol.
 - Treat `batch_size`, `num_neighbors`, and similar settings as support parameters to validate quickly, not thesis axes.
 - One experiment = one training run = one checkpoint; evaluation should reuse checkpoints, not retrain.
 - Prefer editing existing files over adding new ones; avoid new scripts/CLIs unless clearly justified.
@@ -60,27 +65,44 @@ After each iteration, update both so they match the code:
 - Apply KISS, YAGNI, DRY, and SOLID pragmatically.
 - Maintain consistent abstraction levels within a file/function.
 - Reuse existing code and utilities whenever possible.
-- Keep the codebase clean and organized; remove unused code created by your own changes.
+- Keep the codebase clean and organized; remove unused or duplicated code.
 - Use mermaid diagrams in docs for complex workflows or data flows.
 
 ## Coding Standards
 
 - Every function must be type-annotated and include a short docstring describing purpose, arguments, and return values.
-- Prefer vectorized operations and efficient data structures over explicit Python loops where feasible.
-- Follow PEP 8.
-- Run `ruff format` and `ruff check` at the repository root.
-- After any change, run `uv run scripts/quick_validate.py`.
+- Prefer vectorized operations (NumPy/CuPy/Torch), efficient data structures and algorithms over explicit Python loops to optimize performance.
+- Follow PEP 8 via the project's Ruff configuration.
+- Before considering an iteration complete:
+    1. Run `ruff check --fix .` to apply all safe and unsafe fixes.
+    2. Run `ruff format .` and `ruff check --statistics .`, then fix any remaining errors manually.
+    3. Run `ruff format .` again to ensure consistent styling.
+- After any code change, run `uv run scripts/quick_validate.py` (document updates do not require this).
 
 ## Repository Layout (Guidance)
+
+### Instructions:
 
 - `.github/copilot-instructions.md` - always-on router; keep short and pointer-based.
 - `.github/instructions/` - file- or topic-scoped guidance.
 - `.github/prompts/` - reusable prompt templates.
 - `.github/agents/` - custom agents for specialized workflows.
-- `.github/skills/` - skill files that route to task-specific docs.
 
-Core project folders:
+### Skills:
 
+Read the SKILL.md files and choose which files that they point to are relevant for the task at hand.
+
+- `.github/skills/cuvs/SKILL.md` - cuVS Python API reference.
+- `.github/skills/existing-work/SKILL.md` - prior causal recommendation implementation synthesis.
+- `.github/skills/mlflow/SKILL.md` - MLflow/PyTorch tracking guidance.
+- `.github/skills/project-structure/SKILL.md` - project layout reference.
+- `.github/skills/pytorch/SKILL.md` - PyTorch module and runtime guide.
+- `.github/skills/pytorch-geometric/SKILL.md` - PyG reference and performance tips.
+- `.github/skills/ucagnn-implementation/SKILL.md` - U-CaGNN implementation guide.
+
+### Core project folders:
+
+- `src/utils/` - utilities and helpers for all other code.
 - `src/training/` - training loops, checkpointing, evaluation.
 - `src/models/` - model architecture and scoring.
 - `src/data/` - dataset loaders and graph builders.
