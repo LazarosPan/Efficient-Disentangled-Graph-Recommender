@@ -12,6 +12,7 @@ wheels/
 # Documentation
 /docs/*
 !/docs/usage/
+!/docs/existing_implementations/
 
 #Thesis
 /latex/*

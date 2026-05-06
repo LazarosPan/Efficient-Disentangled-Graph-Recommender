@@ -40,7 +40,6 @@ dependencies = [
     "cupy>=14.0.1",
 ]
 
-
 [[tool.uv.index]]
 url = "https://download.pytorch.org/whl/cu131"
 
@@ -61,10 +60,6 @@ include-package-data = false
 [tool.setuptools.packages.find]
 include = ["experiments*", "scripts*", "src*"]
 
-[tool.ruff.lint.per-file-ignores]
-# The exploration notebook bootstraps repo-local imports after extending sys.path.
-"src/data_exploration/data_exploration.ipynb" = ["E402"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
@@ -72,3 +67,34 @@ testpaths = ["tests"]
 dev = [
     "pytest>=9.0.2",
 ]
+
+[tool.ruff]
+# Align with project requires-python = ">=3.13"
+target-version = "py313"
+line-length = 100
+src = ["src", "experiments", "scripts"]
+# FIXED: Moved from [tool.ruff.lint] to [tool.ruff]
+unsafe-fixes = true
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # Pyflakes
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "I",    # isort
+    "N",    # pep8-naming
+    "RUF",  # Ruff-specific rules
+]
+fixable = ["ALL"]
+unfixable = []
+
+[tool.ruff.lint.per-file-ignores]
+"src/data_exploration/data_exploration.ipynb" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
