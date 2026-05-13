@@ -1,17 +1,14 @@
-"""LossSuite: fused BPR plus branch-local auxiliaries for wave-1 U-CaGNN v2."""
+"""LossSuite: fused BPR plus branch-local auxiliaries for U-CaGNN."""
 
 from __future__ import annotations
 
 from typing import cast
 
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch_geometric.nn.models.lightgcn import BPRLoss as _PyGBPRLoss
+from torch import nn
+from torch.nn import functional
 
 from ..utils.config import UCaGNNConfig
-
-_bpr_unweighted = _PyGBPRLoss(lambda_reg=0.0)
 
 
 def _bpr_loss(
@@ -20,11 +17,8 @@ def _bpr_loss(
     weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Compute the ranking loss, optionally reweighted by IPW."""
-    if weights is None:
-        return _bpr_unweighted(pos_scores, neg_scores)
-
-    loss = -F.logsigmoid(pos_scores - neg_scores)
-    return (loss * weights).mean()
+    loss = -functional.logsigmoid(pos_scores - neg_scores)
+    return (loss * weights).mean() if weights is not None else loss.mean()
 
 
 def _independence_loss(
@@ -32,7 +26,7 @@ def _independence_loss(
     conformity: torch.Tensor,
 ) -> torch.Tensor:
     """Penalize correlation between interest and conformity embeddings."""
-    cos_sim = F.cosine_similarity(interest, conformity, dim=-1)
+    cos_sim = functional.cosine_similarity(interest, conformity, dim=-1)
     return (cos_sim**2).mean()
 
 
@@ -53,17 +47,19 @@ def _within_branch_contrastive_loss(
     Returns:
         Scalar symmetric InfoNCE loss. Returns zero if fewer than two pairs are
         available.
+
     """
     pair_count = min(user_embeddings.size(0), item_embeddings.size(0), max_pairs)
     if pair_count <= 1:
         return user_embeddings.new_zeros(())
 
-    user_view = F.normalize(user_embeddings[:pair_count].float(), dim=-1)
-    item_view = F.normalize(item_embeddings[:pair_count].float(), dim=-1)
+    user_view = functional.normalize(user_embeddings[:pair_count].float(), dim=-1)
+    item_view = functional.normalize(item_embeddings[:pair_count].float(), dim=-1)
     logits = user_view @ item_view.t()
     logits = logits / temperature
     labels = torch.arange(pair_count, device=logits.device)
-    return 0.5 * (F.cross_entropy(logits, labels) + F.cross_entropy(logits.t(), labels))
+    ce = functional.cross_entropy
+    return 0.5 * (ce(logits, labels) + ce(logits.t(), labels))
 
 
 def _directau_alignment_loss(
@@ -73,8 +69,8 @@ def _directau_alignment_loss(
     """DirectAU-style alignment loss on normalized positive user-item pairs."""
     if user_embeddings.size(0) == 0:
         return user_embeddings.new_zeros(())
-    user_norm = F.normalize(user_embeddings, dim=-1)
-    item_norm = F.normalize(item_embeddings, dim=-1)
+    user_norm = functional.normalize(user_embeddings, dim=-1)
+    item_norm = functional.normalize(item_embeddings, dim=-1)
     return (user_norm - item_norm).pow(2).sum(dim=-1).mean()
 
 
@@ -85,7 +81,7 @@ def _directau_uniformity_loss(
     """DirectAU-style uniformity loss on normalized embeddings."""
     if embeddings.size(0) <= 1:
         return embeddings.new_zeros(())
-    normalized = F.normalize(embeddings, dim=-1)
+    normalized = functional.normalize(embeddings, dim=-1)
     pairwise_dist = torch.pdist(normalized, p=2)
     if pairwise_dist.numel() == 0:
         return embeddings.new_zeros(())
@@ -97,7 +93,31 @@ def _popularity_loss(
     pop_target: torch.Tensor,
 ) -> torch.Tensor:
     """Compute MSE between predicted and observed popularity."""
-    return F.mse_loss(pop_pred, pop_target)
+    return functional.mse_loss(pop_pred, pop_target)
+
+
+def _au_branch_contrib(
+    users: torch.Tensor,
+    items: torch.Tensor,
+    temperature: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Compute DirectAU alignment and uniformity for one branch.
+
+    Args:
+        users: User embeddings for the batch, shape ``(B, D)``.
+        items: Item embeddings for the batch, shape ``(B, D)``.
+        temperature: Temperature for the uniformity loss kernel.
+
+    Returns:
+        Tuple of ``(alignment_loss, uniformity_loss)`` scalars.
+
+    """
+    align = _directau_alignment_loss(users, items)
+    uniform = 0.5 * (
+        _directau_uniformity_loss(users, temperature=temperature)
+        + _directau_uniformity_loss(items, temperature=temperature)
+    )
+    return align, uniform
 
 
 class LossSuite(nn.Module):
@@ -127,6 +147,7 @@ class LossSuite(nn.Module):
 
         Returns:
             Effective scalar weight for the current epoch.
+
         """
         if lambda_max <= 0:
             return 0.0
@@ -151,21 +172,22 @@ class LossSuite(nn.Module):
 
         Returns:
             Dict with individual losses and 'total' combined loss.
+
         """
         cfg = self.config
-        pos_scores = cast(dict[str, torch.Tensor], model_output["pos_scores"])
-        neg_scores = cast(dict[str, torch.Tensor], model_output["neg_scores"])
-        propagated = cast(dict[str, torch.Tensor], model_output["propagated"])
-        ipw_weights = cast(torch.Tensor, model_output["ipw_weights"])
-        loss_user_ids = cast(torch.Tensor, model_output["loss_user_ids"])
+        pos_scores = cast("dict[str, torch.Tensor]", model_output["pos_scores"])
+        neg_scores = cast("dict[str, torch.Tensor]", model_output["neg_scores"])
+        propagated = cast("dict[str, torch.Tensor]", model_output["propagated"])
+        ipw_weights = cast("torch.Tensor", model_output["ipw_weights"])
+        loss_user_ids = cast("torch.Tensor", model_output["loss_user_ids"])
 
         losses: dict[str, torch.Tensor] = {}
         reference_score = pos_scores["final_score"]
         zero = reference_score.new_zeros(())
 
-        # Curriculum: check phase thresholds
-        phase2_active = epoch >= cfg.curriculum_phase1_end
-        phase3_active = epoch >= cfg.curriculum_phase2_end
+        # Curriculum: check phase thresholds.
+        auxiliary_losses_active = epoch >= cfg.auxiliary_losses_start_epoch
+        popularity_supervision_active = epoch >= cfg.popularity_supervision_start_epoch
         use_dual_branch = cfg.use_dual_branch
 
         # Fused BPR is always active from epoch 0; only auxiliary losses phase in.
@@ -177,48 +199,29 @@ class LossSuite(nn.Module):
             weights,
         )
 
-        interest_weight = self._resolve_auxiliary_weight(
-            cfg.lambda_interest_bpr,
-            epoch,
-            ramp_rate=cfg.auxiliary_ramp_rate,
-            active_in_phased_schedule=True,
-        )
-        conformity_weight = self._resolve_auxiliary_weight(
-            cfg.lambda_conformity_bpr,
-            epoch,
-            ramp_rate=cfg.auxiliary_ramp_rate,
-            active_in_phased_schedule=True,
-        )
-        independence_weight = self._resolve_auxiliary_weight(
-            cfg.lambda_independence,
-            epoch,
-            ramp_rate=cfg.independence_ramp_rate,
-            active_in_phased_schedule=phase2_active,
-        )
-        contrastive_weight = self._resolve_auxiliary_weight(
-            cfg.lambda_contrastive,
-            epoch,
-            ramp_rate=cfg.auxiliary_ramp_rate,
-            active_in_phased_schedule=phase2_active,
-        )
-        align_weight = self._resolve_auxiliary_weight(
-            cfg.lambda_align,
-            epoch,
-            ramp_rate=cfg.auxiliary_ramp_rate,
-            active_in_phased_schedule=phase2_active,
-        )
-        uniform_weight = self._resolve_auxiliary_weight(
-            cfg.lambda_uniform,
-            epoch,
-            ramp_rate=cfg.auxiliary_ramp_rate,
-            active_in_phased_schedule=phase2_active,
-        )
-        popularity_weight = self._resolve_auxiliary_weight(
-            cfg.lambda_pop,
-            epoch,
-            ramp_rate=cfg.auxiliary_ramp_rate,
-            active_in_phased_schedule=phase3_active,
-        )
+        # Resolve all auxiliary weights from a single spec table.
+        # Each entry: (lambda_val, ramp_rate, active_in_phased_schedule)
+        _aux_specs = [
+            (cfg.lambda_interest_bpr, cfg.auxiliary_ramp_rate, True),
+            (cfg.lambda_conformity_bpr, cfg.auxiliary_ramp_rate, True),
+            (cfg.lambda_independence, cfg.independence_ramp_rate, auxiliary_losses_active),
+            (cfg.lambda_contrastive, cfg.auxiliary_ramp_rate, auxiliary_losses_active),
+            (cfg.lambda_align, cfg.auxiliary_ramp_rate, auxiliary_losses_active),
+            (cfg.lambda_uniform, cfg.auxiliary_ramp_rate, auxiliary_losses_active),
+            (cfg.lambda_pop, cfg.auxiliary_ramp_rate, popularity_supervision_active),
+        ]
+        (
+            interest_weight,
+            conformity_weight,
+            independence_weight,
+            contrastive_weight,
+            align_weight,
+            uniform_weight,
+            popularity_weight,
+        ) = [
+            self._resolve_auxiliary_weight(lmax, epoch, ramp_rate=rr, active_in_phased_schedule=act)
+            for lmax, rr, act in _aux_specs
+        ]
 
         # Branch-local BPR auxiliaries keep each branch predictive on its own.
         if use_dual_branch and interest_weight > 0:
@@ -268,50 +271,26 @@ class LossSuite(nn.Module):
 
         # DirectAU-style branch-local geometry lives on positive user-item pairs.
         if use_dual_branch and (align_weight > 0 or uniform_weight > 0):
-            branch_align_losses: list[torch.Tensor] = []
-            branch_uniform_losses: list[torch.Tensor] = []
-
             interest_users = propagated["user_interest"][loss_user_ids]
             interest_items = propagated["item_interest"][pos_item_ids]
-            branch_align_losses.append(
-                _directau_alignment_loss(interest_users, interest_items)
+            i_align, i_uniform = _au_branch_contrib(
+                interest_users,
+                interest_items,
+                cfg.uniformity_temperature,
             )
-            branch_uniform_losses.append(
-                0.5
-                * (
-                    _directau_uniformity_loss(
-                        interest_users,
-                        temperature=cfg.uniformity_temperature,
-                    )
-                    + _directau_uniformity_loss(
-                        interest_items,
-                        temperature=cfg.uniformity_temperature,
-                    )
-                )
-            )
+            branch_align_losses: list[torch.Tensor] = [i_align]
+            branch_uniform_losses: list[torch.Tensor] = [i_uniform]
 
             if cfg.use_conformity_au:
                 conformity_users = propagated["user_conformity"][loss_user_ids]
                 conformity_items = propagated["item_conformity"][pos_item_ids]
-                branch_align_losses.append(
-                    _directau_alignment_loss(
-                        conformity_users,
-                        conformity_items,
-                    )
+                c_align, c_uniform = _au_branch_contrib(
+                    conformity_users,
+                    conformity_items,
+                    cfg.uniformity_temperature,
                 )
-                branch_uniform_losses.append(
-                    0.5
-                    * (
-                        _directau_uniformity_loss(
-                            conformity_users,
-                            temperature=cfg.uniformity_temperature,
-                        )
-                        + _directau_uniformity_loss(
-                            conformity_items,
-                            temperature=cfg.uniformity_temperature,
-                        )
-                    )
-                )
+                branch_align_losses.append(c_align)
+                branch_uniform_losses.append(c_uniform)
 
             losses["align"] = torch.stack(branch_align_losses).mean()
             losses["uniform"] = torch.stack(branch_uniform_losses).mean()
@@ -321,7 +300,10 @@ class LossSuite(nn.Module):
 
         # Popularity regression now supervises the scorer-owned popularity head.
         if use_dual_branch and cfg.use_popularity_head and popularity_weight > 0:
-            pop_target = item_popularity[pos_item_ids].to(reference_score.device)
+            pop_target = item_popularity[pos_item_ids].to(
+                device=reference_score.device,
+                dtype=reference_score.dtype,
+            )
             losses["pop"] = _popularity_loss(
                 pos_scores["popularity_score"],
                 pop_target,

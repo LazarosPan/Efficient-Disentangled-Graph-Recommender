@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 import torch
-from torch_geometric.profile import count_parameters, get_model_size, get_data_size
+from torch_geometric.profile import count_parameters, get_data_size, get_model_size
 
 
 @dataclass
@@ -23,11 +23,7 @@ class StageMetrics:
         return self.vram_after_mb - self.vram_before_mb
 
     def __repr__(self) -> str:
-        return (
-            f"{self.name}: {self.elapsed_ms:.1f}ms | "
-            f"VRAM: {self.vram_before_mb:.0f} -> {self.vram_after_mb:.0f} MB "
-            f"(peak {self.vram_peak_mb:.0f} MB, delta {self.vram_delta_mb:+.0f} MB)"
-        )
+        return f"{self.name}: {self.elapsed_ms:.1f}ms | VRAM: {self.vram_before_mb:.0f} -> {self.vram_after_mb:.0f} MB (peak {self.vram_peak_mb:.0f} MB, delta {self.vram_delta_mb:+.0f} MB)"
 
 
 @dataclass
@@ -35,16 +31,32 @@ class GPUProfiler:
     """Collects per-stage timing and VRAM usage across an epoch."""
 
     stages: list[StageMetrics] = field(default_factory=list)
-    _enabled: bool = False  # TODO: Change to True to profile the GPU
+    epoch_elapsed_ms: float = 0.0
+    _enabled: bool = False  # Change to True if we want to profile the GPU
 
-    def set_enabled(self, enabled: bool) -> None:
-        """Enable or disable stage collection for the current epoch."""
+    def reset(self, enabled: bool) -> None:
+        """Set enabled state and clear stage data for a new epoch.
+
+        Args:
+            enabled: Whether stage profiling is active this epoch.
+
+        """
         self._enabled = enabled
-
-    def reset(self) -> None:
         self.stages.clear()
+        self.epoch_elapsed_ms = 0.0
         if self._enabled and torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats()
+
+    @contextmanager
+    def epoch_timer(self):
+        """Wall-clock context manager for total epoch duration.
+
+        Records elapsed time without ``torch.cuda.synchronize()`` overhead;
+        safe to use regardless of whether stage profiling is enabled.
+        """
+        t0 = time.perf_counter()
+        yield
+        self.epoch_elapsed_ms = (time.perf_counter() - t0) * 1000
 
     @contextmanager
     def stage(self, name: str):
@@ -72,19 +84,21 @@ class GPUProfiler:
                 vram_before_mb=vram_before,
                 vram_after_mb=vram_after,
                 vram_peak_mb=vram_peak,
-            )
+            ),
         )
 
     def summary(self) -> str:
+        """Return a formatted multi-line profiling summary for the last epoch."""
         lines = ["=== GPU Profile ==="]
         total_ms = sum(s.elapsed_ms for s in self.stages)
         for s in self.stages:
             pct = (s.elapsed_ms / total_ms * 100) if total_ms > 0 else 0
             lines.append(
-                f"  {s.name:20s} {s.elapsed_ms:8.1f}ms ({pct:5.1f}%) | "
-                f"VRAM peak {s.vram_peak_mb:.0f} MB"
+                f"  {s.name:20s} {s.elapsed_ms:8.1f}ms ({pct:5.1f}%) | VRAM peak {s.vram_peak_mb:.0f} MB",
             )
         lines.append(f"  {'TOTAL':20s} {total_ms:8.1f}ms")
+        if self.epoch_elapsed_ms > 0:
+            lines.append(f"  {'EPOCH WALL':20s} {self.epoch_elapsed_ms:8.1f}ms")
         return "\n".join(lines)
 
     @staticmethod
