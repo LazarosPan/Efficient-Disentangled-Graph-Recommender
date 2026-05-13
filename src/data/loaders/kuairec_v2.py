@@ -2,29 +2,67 @@
 
 from __future__ import annotations
 
+import csv
 import logging
 from pathlib import Path
 
 import numpy as np
+import polars as pl
 
-from ...utils.dataset_loader_utils import downcast_numeric_array
-from ..canonical import CanonicalInteractions
+from ...utils.csv_features import (
+    PolicyCsvFeatureSpec,
+    load_policy_csv_feature_blocks,
+    stack_feature_blocks,
+)
+from ...utils.dataset_loader_utils import downcast_numeric_array, downcast_numeric_arrays
+from ...utils.interaction_indexing import (
+    build_repeat_collapse_canonical_payload,
+    collapse_pairwise_max_priority_rows_with_stats,
+    remap_interaction_ids,
+)
+from ..canonical import (
+    CanonicalInteractions,
+    build_indexed_canonical_interactions,
+)
 from ..feature_policy import (
     DEFAULT_FEATURE_POLICY,
     FeaturePolicyName,
     resolve_feature_source,
 )
-from ...utils.csv_features import load_csv_features
-from ...utils.interaction_indexing import (
-    compute_normalized_popularity,
-    remap_interaction_ids,
-)
 
 logger = logging.getLogger(__name__)
 
 
+def _parse_listlike_ints(raw_value: str) -> list[int]:
+    """Parse a list-like CSV field such as ``[27, 9]`` into integers.
+
+    Args:
+        raw_value: Raw CSV field content.
+
+    Returns:
+        Parsed integer values in encounter order.
+
+    """
+    cleaned = raw_value.strip().strip('"').strip("'").strip()
+    if not cleaned:
+        return []
+    cleaned = cleaned.strip("[]").strip()
+    if not cleaned:
+        return []
+
+    values: list[int] = []
+    for token in cleaned.replace(",", " ").split():
+        try:
+            values.append(int(float(token)))
+        except ValueError:
+            continue
+    return values
+
+
 def _load_item_categories(
-    path: Path, id_map: dict[int, int], n_items: int
+    path: Path,
+    id_map: dict[int, int],
+    n_items: int,
 ) -> np.ndarray | None:
     """Load item_categories.csv -> (n_items, n_categories) multi-hot vector.
 
@@ -36,27 +74,20 @@ def _load_item_categories(
     # First pass: collect all category IDs to determine dimensionality
     raw_categories: dict[int, list[int]] = {}
     all_cat_ids: set[int] = set()
-    with open(path, encoding="utf-8") as f:
-        header = f.readline().strip().split(",")
-        vid_idx = header.index("video_id")
-        feat_idx = header.index("feat")
-        for line in f:
-            parts = line.strip().split(",", len(header) - 1)
-            if len(parts) <= max(vid_idx, feat_idx):
+    with open(path, encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            video_id = row.get("video_id")
+            if video_id is None:
                 continue
-            vid = int(parts[vid_idx])
+            try:
+                vid = int(float(video_id))
+            except ValueError:
+                continue
             if vid not in id_map:
                 continue
-            feat_str = parts[feat_idx].strip().strip("[]")
-            cats = []
-            for tok in feat_str.split():
-                tok = tok.strip().rstrip(",")
-                if tok:
-                    try:
-                        cats.append(int(float(tok)))
-                        all_cat_ids.add(cats[-1])
-                    except ValueError:
-                        continue
+            cats = _parse_listlike_ints(row.get("feat", ""))
+            all_cat_ids.update(cats)
             raw_categories[id_map[vid]] = cats
 
     if not raw_categories or not all_cat_ids:
@@ -91,41 +122,37 @@ def _load_caption_categories(
             "first_level_category_id",
             "second_level_category_id",
             "third_level_category_id",
-        )
+        ),
     )
-    with open(path, encoding="utf-8") as f:
-        header = f.readline().strip().split(",")
-        vid_idx = header.index("video_id") if "video_id" in header else -1
-        if vid_idx < 0:
+    with open(path, encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        if reader.fieldnames is None or "video_id" not in reader.fieldnames:
             return None
-        col_indices = []
-        for tc in target_cols:
-            if tc in header:
-                col_indices.append(header.index(tc))
-            else:
-                col_indices.append(-1)
-
-        if all(ci < 0 for ci in col_indices):
+        available_cols = {column for column in target_cols if column in reader.fieldnames}
+        if not available_cols:
             return None
-
         features = np.zeros((n_items, len(target_cols)), dtype=np.int32)
-        for line in f:
-            parts = line.strip().split(",")
-            if len(parts) <= vid_idx:
+        for row in reader:
+            video_id = row.get("video_id")
+            if video_id is None:
                 continue
             try:
-                vid = int(parts[vid_idx])
+                vid = int(float(video_id))
             except ValueError:
                 continue
             if vid not in id_map:
                 continue
             mapped = id_map[vid]
-            for j, ci in enumerate(col_indices):
-                if ci >= 0 and ci < len(parts):
-                    try:
-                        features[mapped, j] = int(float(parts[ci]))
-                    except ValueError:
-                        pass
+            for column_index, column_name in enumerate(target_cols):
+                if column_name not in available_cols:
+                    continue
+                raw_value = row.get(column_name, "")
+                if raw_value in {"", None}:
+                    continue
+                try:
+                    features[mapped, column_index] = int(float(raw_value))
+                except (TypeError, ValueError):
+                    continue
     return downcast_numeric_array(features)
 
 
@@ -149,117 +176,117 @@ def load_kuairec_v2(
     path = base / f"{matrix_variant}.csv"
     if not path.exists():
         raise FileNotFoundError(
-            f"KuaiRec v2 not found at {path}. Download from https://kuairec.com/"
+            f"KuaiRec v2 not found at {path}. Download from https://kuairec.com/",
         )
 
-    raw_users, raw_items, watch_ratios, timestamps = [], [], [], []
-    malformed_timestamp_count = 0
-    row_count = 0
-    with open(path, encoding="utf-8") as f:
-        header = f.readline().strip().split(",")
-        uid_col = header.index("user_id")
-        vid_col = header.index("video_id")
-        wr_col = header.index("watch_ratio")
-        ts_col = header.index("timestamp") if "timestamp" in header else -1
+    df = pl.read_csv(
+        path,
+        schema_overrides={
+            "user_id": pl.Int64,
+            "video_id": pl.Int64,
+            "watch_ratio": pl.Float32,
+            "timestamp": pl.Int64,
+        },
+        n_rows=max_rows,
+        ignore_errors=True,
+    )
+    n_loaded = len(df)
+    df = df.drop_nulls(subset=["user_id", "video_id", "watch_ratio"])
+    df = df.filter(pl.col("watch_ratio").is_finite())
+    malformed_core_rows = n_loaded - len(df)
 
-        for line in f:
-            parts = line.strip().split(",")
-            if len(parts) <= max(uid_col, vid_col, wr_col):
-                continue
-            raw_users.append(int(parts[uid_col]))
-            raw_items.append(int(parts[vid_col]))
-            watch_ratios.append(float(parts[wr_col]))
-            parsed_timestamp = 0
-            if ts_col >= 0:
-                try:
-                    parsed_timestamp = int(float(parts[ts_col]))
-                except ValueError:
-                    malformed_timestamp_count += 1
-            timestamps.append(parsed_timestamp)
-            row_count += 1
-            if max_rows is not None and row_count >= max_rows:
-                break
-
-    if malformed_timestamp_count > 0:
+    if malformed_core_rows > 0:
         logger.warning(
-            "KuaiRec v2 loader coerced %d malformed timestamp values to 0.",
-            malformed_timestamp_count,
+            "KuaiRec v2 loader skipped %d malformed or non-finite interaction rows.",
+            malformed_core_rows,
         )
+    if len(df) == 0:
+        raise ValueError("KuaiRec v2 loader found no valid interaction rows.")
+    if "timestamp" in df.columns:
+        df = df.with_columns(pl.col("timestamp").fill_null(0).cast(pl.Int64))
 
-    raw_users_arr = downcast_numeric_array(np.array(raw_users, dtype=np.int64))
-    raw_items_arr = downcast_numeric_array(np.array(raw_items, dtype=np.int64))
-    raw_watch_ratio = np.array(watch_ratios, dtype=np.float32)
-    timestamps_arr = downcast_numeric_array(np.array(timestamps, dtype=np.int64))
+    raw_users_arr, raw_items_arr = downcast_numeric_arrays(
+        df["user_id"].to_numpy(),
+        df["video_id"].to_numpy(),
+    )
+    raw_watch_ratio = df["watch_ratio"].to_numpy()
+    timestamps_arr = downcast_numeric_arrays(df["timestamp"].to_numpy())[0] if "timestamp" in df.columns else np.zeros(len(df), dtype=np.int32)
+
+    effective_preset = preprocessing_preset or ("kuairec_fullobs" if matrix_variant == "small_matrix" else "kuairec_watchratio")
+    stabilized_watch_ratio = raw_watch_ratio if effective_preset == "kuairec_watchratio_raw" else np.clip(raw_watch_ratio, 0.0, 5.0)
+    collapsed_rows = 0
+    repeat_summary = None
+    if effective_preset == "kuairec_watchratio":
+        # Collapse repeated user-item pairs before split construction so one
+        # watch-ratio trajectory cannot leak across train/val/test boundaries.
+        # The retained row is the strongest stabilized watch-ratio observation,
+        # with timestamp as the secondary tie-breaker.
+        (
+            (
+                raw_users_arr,
+                raw_items_arr,
+                timestamps_arr,
+                stabilized_watch_ratio,
+            ),
+            repeat_summary,
+            collapsed_rows,
+        ) = collapse_pairwise_max_priority_rows_with_stats(
+            raw_users_arr,
+            raw_items_arr,
+            stabilized_watch_ratio,
+            timestamps_arr,
+            stabilized_watch_ratio,
+            timestamp=timestamps_arr,
+        )
 
     indexed = remap_interaction_ids(raw_users_arr, raw_items_arr)
-    user_id = indexed.user_id
-    item_id = indexed.item_id
-    n_users = indexed.n_users
-    n_items = indexed.n_items
     user_map = indexed.user_map
     item_map = indexed.item_map
+    n_users = indexed.n_users
+    n_items = indexed.n_items
 
-    # Clamp outliers before computing sign (watch_ratio can exceed 100)
-    wr_arr = np.clip(raw_watch_ratio, 0.0, 5.0)
-
-    label = (wr_arr >= 0.5).astype(np.float32)
-    sign = (np.clip(wr_arr, 0.0, 2.0) - 1.0).astype(np.float32)
-
-    popularity = compute_normalized_popularity(item_id, n_items)
+    label = (stabilized_watch_ratio >= 0.5).astype(np.float32)
+    sign = (np.clip(stabilized_watch_ratio, 0.0, 2.0) - 1.0).astype(np.float32)
 
     user_features = None
     item_features = None
     if include_optional_features:
-        load_user_features, user_feature_columns = resolve_feature_source(
-            feature_policy,
-            "kuairec_v2",
-            "user_features",
-            "data/user_features.csv",
+        user_features = load_policy_csv_feature_blocks(
+            feature_policy=feature_policy,
+            dataset_name="kuairec_v2",
+            aspect="user_features",
+            id_map=user_map,
+            n_entities=n_users,
+            sources=(
+                PolicyCsvFeatureSpec(
+                    path=base / "user_features.csv",
+                    relative_path="data/user_features.csv",
+                    id_col="user_id",
+                ),
+                PolicyCsvFeatureSpec(
+                    path=base / "user_features_raw.csv",
+                    relative_path="data/user_features_raw.csv",
+                    id_col="user_id",
+                ),
+            ),
         )
-        if load_user_features:
-            user_features = load_csv_features(
-                base / "user_features.csv",
-                "user_id",
-                user_map,
-                n_users,
-                include_columns=user_feature_columns,
-            )
-        load_user_features_raw, user_feature_raw_columns = resolve_feature_source(
-            feature_policy,
-            "kuairec_v2",
-            "user_features",
-            "data/user_features_raw.csv",
-        )
-        if load_user_features_raw:
-            user_features_raw = load_csv_features(
-                base / "user_features_raw.csv",
-                "user_id",
-                user_map,
-                n_users,
-                include_columns=user_feature_raw_columns,
-            )
-            if user_features is not None and user_features_raw is not None:
-                user_features = np.hstack([user_features, user_features_raw])
-            elif user_features_raw is not None:
-                user_features = user_features_raw
 
-        item_features_daily = None
         item_caption_cats = None
         item_cat_feats = None
-        load_item_daily_features, item_daily_columns = resolve_feature_source(
-            feature_policy,
-            "kuairec_v2",
-            "item_features",
-            "data/item_daily_features.csv",
+        item_features_daily = load_policy_csv_feature_blocks(
+            feature_policy=feature_policy,
+            dataset_name="kuairec_v2",
+            aspect="item_features",
+            id_map=item_map,
+            n_entities=n_items,
+            sources=(
+                PolicyCsvFeatureSpec(
+                    path=base / "item_daily_features.csv",
+                    relative_path="data/item_daily_features.csv",
+                    id_col="video_id",
+                ),
+            ),
         )
-        if load_item_daily_features:
-            item_features_daily = load_csv_features(
-                base / "item_daily_features.csv",
-                "video_id",
-                item_map,
-                n_items,
-                include_columns=item_daily_columns,
-            )
         load_caption_categories, caption_columns = resolve_feature_source(
             feature_policy,
             "kuairec_v2",
@@ -285,35 +312,32 @@ def load_kuairec_v2(
                 item_map,
                 n_items,
             )
-        item_parts = [
-            f
-            for f in [item_features_daily, item_cat_feats, item_caption_cats]
-            if f is not None
-        ]
-        item_features = np.hstack(item_parts) if item_parts else None
+        item_features = stack_feature_blocks(
+            item_features_daily,
+            item_cat_feats,
+            item_caption_cats,
+        )
 
-    effective_preset = preprocessing_preset or (
-        "kuairec_fullobs" if matrix_variant == "small_matrix" else "kuairec_watchratio"
-    )
-    source_domain = np.full(len(user_id), matrix_variant, dtype="<U16")
-    metadata = {"matrix_variant": matrix_variant}
-
-    return CanonicalInteractions(
-        user_id=user_id,
-        item_id=item_id,
+    source_domain = np.full(len(indexed.user_id), matrix_variant, dtype="<U16")
+    return build_indexed_canonical_interactions(
+        indexed,
         label=label,
         timestamp=timestamps_arr,
         sign=sign,
-        raw_target=raw_watch_ratio,
+        raw_target=stabilized_watch_ratio,
         source_domain=source_domain,
-        popularity=popularity,
-        n_users=n_users,
-        n_items=n_items,
-        user_map=user_map,
-        item_map=item_map,
         user_features=user_features,
         item_features=item_features,
-        metadata=metadata,
+        **build_repeat_collapse_canonical_payload(
+            repeat_summary,
+            applied=effective_preset == "kuairec_watchratio",
+            dropped_rows=collapsed_rows,
+            reason=("Collapse repeated raw user-item pairs before splitting so the same pair cannot span train/val/test; keep the strongest watch-ratio observation with timestamp tie-breaks."),
+            metadata={
+                "matrix_variant": matrix_variant,
+                "watch_ratio_policy": ("raw" if effective_preset == "kuairec_watchratio_raw" else "clipped_to_5"),
+            },
+        ),
         feedback_type="implicit",
         preprocessing_preset=effective_preset,
     )

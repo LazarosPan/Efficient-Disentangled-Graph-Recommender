@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
 
 from ...utils.dataset_loader_utils import resolve_local_dataset_dir
-from ..canonical import CanonicalInteractions
-from ..feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 from ...utils.interaction_indexing import (
-    compute_normalized_popularity,
     remap_interaction_ids,
 )
+from ..canonical import (
+    CanonicalInteractions,
+    build_indexed_canonical_interactions,
+)
+from ..feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_interaction_file(
@@ -25,18 +30,41 @@ def _parse_interaction_file(
     Returns list of (user_id, item_id) pairs.
     """
     pairs: list[tuple[int, int]] = []
+    malformed_rows = 0
     row_count = 0
     with open(path, encoding="utf-8") as f:
         for line in f:
             tokens = line.strip().split()
             if len(tokens) < 2:
+                malformed_rows += 1
                 continue
-            uid = int(tokens[0])
+            try:
+                uid = int(tokens[0])
+            except ValueError:
+                malformed_rows += 1
+                continue
             for iid_str in tokens[1:]:
-                pairs.append((uid, int(iid_str)))
+                try:
+                    iid = int(iid_str)
+                except ValueError:
+                    malformed_rows += 1
+                    continue
+                pairs.append((uid, iid))
                 row_count += 1
                 if max_rows is not None and row_count >= max_rows:
+                    if malformed_rows > 0:
+                        logger.warning(
+                            "AmazonBook loader skipped %d malformed interaction tokens in %s.",
+                            malformed_rows,
+                            path.name,
+                        )
                     return pairs
+    if malformed_rows > 0:
+        logger.warning(
+            "AmazonBook loader skipped %d malformed interaction tokens in %s.",
+            malformed_rows,
+            path.name,
+        )
     return pairs
 
 
@@ -48,10 +76,7 @@ def _resolve_raw_dir(data_dir: str) -> Path:
             Path(data_dir) / "AmazonBook" / "raw" / "amazon-book",
         ],
         required_files=["train.txt", "test.txt", "user_list.txt", "item_list.txt"],
-        missing_message=(
-            "AmazonBook raw files not found under data/AmazonBook/raw. "
-            "Expected train.txt, test.txt, user_list.txt, and item_list.txt."
-        ),
+        missing_message=("AmazonBook raw files not found under data/AmazonBook/raw. Expected train.txt, test.txt, user_list.txt, and item_list.txt."),
     )
 
 
@@ -85,6 +110,8 @@ def load_amazonbook(
     This avoids PyG download side effects and uses the repository-local data
     folder directly. All interactions are implicit positives.
     """
+    del include_optional_features, feature_policy
+
     raw_dir = _resolve_raw_dir(data_dir)
     train_target = max_rows
     test_target = None
@@ -101,29 +128,16 @@ def load_amazonbook(
 
     indexed = remap_interaction_ids(raw_users, raw_items)
     user_id = indexed.user_id
-    item_id = indexed.item_id
-    user_map = indexed.user_map
-    item_map = indexed.item_map
 
     label = np.ones(len(user_id), dtype=np.float32)
     sign = np.zeros(len(user_id), dtype=np.float32)
-
-    n_users = indexed.n_users
-    n_items = indexed.n_items
-    popularity = compute_normalized_popularity(item_id, n_items)
     effective_preset = preprocessing_preset or "amazonbook_graph_only"
 
-    return CanonicalInteractions(
-        user_id=user_id,
-        item_id=item_id,
+    return build_indexed_canonical_interactions(
+        indexed,
         label=label,
         timestamp=timestamps,
         sign=sign,
-        popularity=popularity,
-        n_users=n_users,
-        n_items=n_items,
-        user_map=user_map,
-        item_map=item_map,
         train_mask=train_mask,
         test_mask=test_mask,
         feedback_type="implicit",

@@ -2,90 +2,73 @@
 
 from __future__ import annotations
 
+import csv
 import logging
 from pathlib import Path
 
 import numpy as np
 
-from ...utils.dataset_loader_utils import downcast_numeric_array
+from ...utils.csv_features import stack_feature_blocks
+from ...utils.dataset_loader_utils import downcast_numeric_array, downcast_numeric_arrays
 from ..canonical import CanonicalInteractions
 from ..feature_policy import (
     DEFAULT_FEATURE_POLICY,
     FeaturePolicyName,
     resolve_feature_source,
 )
-from ...utils.interaction_indexing import (
-    compute_normalized_popularity,
-    remap_interaction_ids,
+from ._explicit_ratings import (
+    build_explicit_rating_canonical,
+    build_movie_genre_features,
+    prepare_explicit_rating_feedback,
 )
 
 logger = logging.getLogger(__name__)
 
-# ML-20M genre list (20 genres)
-_GENRES_20M = [
-    "Action",
-    "Adventure",
-    "Animation",
-    "Children",
-    "Comedy",
-    "Crime",
-    "Documentary",
-    "Drama",
-    "Fantasy",
-    "Film-Noir",
-    "Horror",
-    "IMAX",
-    "Musical",
-    "Mystery",
-    "Romance",
-    "Sci-Fi",
-    "Thriller",
-    "War",
-    "Western",
-    "(no genres listed)",
-]
-_GENRE_TO_IDX_20M = {g: i for i, g in enumerate(_GENRES_20M)}
-
 
 def _load_movie_genres(
-    path: Path, item_map: dict[int, int], n_items: int
+    path: Path,
+    item_map: dict[int, int],
+    n_items: int,
 ) -> np.ndarray | None:
-    """Parse movies.csv -> (n_items, 20) multi-hot genre vector.
+    """Parse movies.csv into a multi-hot genre matrix inferred from the file.
 
     Format: movieId,title,genres (pipe-separated)
     """
     if not path.exists():
         return None
 
-    features = np.zeros((n_items, len(_GENRES_20M)), dtype=np.uint8)
-    matched = 0
-    with open(path, encoding="utf-8") as f:
-        f.readline()  # skip header
-        for line in f:
-            # Handle commas in movie titles: split from right for genres
-            parts = line.strip().split(",")
-            if len(parts) < 3:
+    genre_rows: list[tuple[int, str]] = []
+    with open(path, encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            raw_movie_id = row.get("movieId")
+            if raw_movie_id is None:
                 continue
             try:
-                mid = int(parts[0])
+                movie_id = int(raw_movie_id)
             except ValueError:
                 continue
-            if mid not in item_map:
-                continue
-            idx = item_map[mid]
-            genres_str = parts[-1]  # genres is always the last column
-            for genre in genres_str.split("|"):
-                gi = _GENRE_TO_IDX_20M.get(genre.strip())
-                if gi is not None:
-                    features[idx, gi] = 1.0
-            matched += 1
+            genre_rows.append((movie_id, row.get("genres", "")))
 
-    logger.info("Loaded genre features for %d / %d items", matched, n_items)
-    return features if matched > 0 else None
+    features, mapped_item_count = build_movie_genre_features(
+        genre_rows,
+        item_map,
+        n_items,
+    )
+    if features is not None:
+        logger.info(
+            "Loaded MovieLens20M genre features for %d / %d items (%d columns).",
+            mapped_item_count,
+            n_items,
+            features.shape[1],
+        )
+    return features
 
 
 def _load_genome_scores(
-    path: Path, item_map: dict[int, int], n_items: int
+    path: Path,
+    item_map: dict[int, int],
+    n_items: int,
 ) -> np.ndarray | None:
     """Parse genome-scores.csv -> (n_items, n_tags) dense tag relevance matrix.
 
@@ -151,8 +134,7 @@ def load_movielens20m(
     path = Path(data_dir) / "MovieLens20M" / "raw" / "ratings.csv"
     if not path.exists():
         raise FileNotFoundError(
-            f"ML-20M ratings not found at {path}. "
-            "Download from https://grouplens.org/datasets/movielens/20m/"
+            f"ML-20M ratings not found at {path}. Download from https://grouplens.org/datasets/movielens/20m/",
         )
 
     # Use numpy for speed on 20M rows
@@ -163,25 +145,22 @@ def load_movielens20m(
         dtype=np.float64,
         usecols=(0, 1, 2, 3),
         max_rows=max_rows,
+        ndmin=2,
     )
+    if data.size == 0:
+        raise ValueError("MovieLens20M loader found no valid rating rows.")
 
-    raw_users = downcast_numeric_array(data[:, 0].astype(np.int64))
-    raw_items = downcast_numeric_array(data[:, 1].astype(np.int64))
+    raw_users, raw_items, timestamps = downcast_numeric_arrays(
+        data[:, 0].astype(np.int64),
+        data[:, 1].astype(np.int64),
+        data[:, 3].astype(np.int64),
+    )
     ratings = data[:, 2].astype(np.float32)
-    timestamps = downcast_numeric_array(data[:, 3].astype(np.int64))
 
-    indexed = remap_interaction_ids(raw_users, raw_items)
-    user_id = indexed.user_id
-    item_id = indexed.item_id
-    n_users = indexed.n_users
+    prepared = prepare_explicit_rating_feedback(raw_users, raw_items, ratings)
+    indexed = prepared.indexed
     n_items = indexed.n_items
-    user_map = indexed.user_map
     item_map = indexed.item_map
-
-    label = (ratings >= 4.0).astype(np.float32)
-    sign = ((ratings - 3.0) / 2.0).astype(np.float32)
-
-    popularity = compute_normalized_popularity(item_id, n_items)
 
     item_features = None
     if include_optional_features:
@@ -208,24 +187,13 @@ def load_movielens20m(
                 item_map,
                 n_items,
             )
-        item_parts = [f for f in [genre_feats, genome_feats] if f is not None]
-        item_features = np.hstack(item_parts) if item_parts else None
+        item_features = stack_feature_blocks(genre_feats, genome_feats)
 
     effective_preset = preprocessing_preset or "movielens_explicit"
 
-    return CanonicalInteractions(
-        user_id=user_id,
-        item_id=item_id,
-        label=label,
-        timestamp=timestamps,
-        sign=sign,
-        raw_target=ratings.astype(np.float32, copy=False),
-        popularity=popularity,
-        n_users=n_users,
-        n_items=n_items,
-        user_map=user_map,
-        item_map=item_map,
+    return build_explicit_rating_canonical(
+        prepared,
+        timestamps,
         item_features=item_features,
-        feedback_type="explicit",
         preprocessing_preset=effective_preset,
     )

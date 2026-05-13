@@ -6,21 +6,40 @@ import logging
 from pathlib import Path
 
 import numpy as np
+import polars as pl
 
-from ...utils.dataset_loader_utils import downcast_numeric_array
-from ..canonical import CanonicalInteractions
+from ...utils.csv_features import (
+    PolicyCsvFeatureSpec,
+    load_policy_csv_feature_blocks,
+)
+from ...utils.dataset_loader_utils import downcast_numeric_arrays
+from ...utils.interaction_indexing import (
+    build_repeat_collapse_canonical_payload,
+    collapse_pairwise_max_priority_rows_with_stats,
+    remap_interaction_ids,
+)
+from ..canonical import (
+    CanonicalInteractions,
+    build_indexed_canonical_interactions,
+)
 from ..feature_policy import (
     DEFAULT_FEATURE_POLICY,
     FeaturePolicyName,
-    resolve_feature_source,
-)
-from ...utils.csv_features import load_csv_features
-from ...utils.interaction_indexing import (
-    compute_normalized_popularity,
-    remap_interaction_ids,
 )
 
 logger = logging.getLogger(__name__)
+
+# Optional behavior columns and their neutral fill values
+_OPTIONAL_UINT_COLS = (
+    "is_click",
+    "is_like",
+    "is_hate",
+    "is_follow",
+    "is_comment",
+    "long_view",
+    "is_rand",
+)
+_OPTIONAL_FLOAT_COLS = ("play_time_ms", "duration_ms")
 
 
 def load_kuairand1k(
@@ -36,142 +55,178 @@ def load_kuairand1k(
     The random-exposure logs (is_rand=1) are critical for causal analysis.
     Uses expanded engagement signals for richer label/sign computation:
     - Label: click OR like OR follow -> positive
-    - Sign (graded): like=1.0, follow=0.7, comment=0.5, click+long_view=0.3,
+    - Sign (graded): like=1.0, follow=0.7, comment=0.0, click+long_view=0.3,
       neutral=0.0, hate=-1.0
     - is_rand flag preserved as metadata for causal analysis
     """
     base = Path(data_dir) / "KuaiRand-1K" / "data"
     if not base.exists():
         raise FileNotFoundError(
-            f"KuaiRand-1K not found at {base}. Download from https://kuairand.com/"
+            f"KuaiRand-1K not found at {base}. Download from https://kuairand.com/",
         )
 
     csv_files = sorted(base.glob("log_standard*.csv"))
     csv_files += sorted(base.glob("log_random*.csv"))
     if not csv_files:
         raise FileNotFoundError(
-            f"No log_standard*.csv or log_random*.csv files found in {base}"
+            f"No log_standard*.csv or log_random*.csv files found in {base}",
         )
 
-    # Collect all columns
-    raw_users, raw_items, timestamps = [], [], []
-    clicks, likes, hates = [], [], []
-    follows, comments = [], []
-    long_views = []
-    play_times, durations = [], []
-    is_rands = []
-    malformed_counts = {
-        "is_click": 0,
-        "is_like": 0,
-        "is_hate": 0,
-        "is_follow": 0,
-        "is_comment": 0,
-        "long_view": 0,
-        "play_time_ms": 0,
-        "duration_ms": 0,
-        "is_rand": 0,
-        "time_ms|timestamp": 0,
-    }
+    # Load all CSV files and concatenate; diagonal_relaxed fills missing columns with null
+    dfs = [
+        pl.read_csv(
+            csv_path,
+            schema_overrides={
+                "user_id": pl.Int64,
+                "video_id": pl.Int64,
+                "time_ms": pl.Int64,
+                "timestamp": pl.Int64,
+                "play_time_ms": pl.Float32,
+                "duration_ms": pl.Float32,
+            },
+            ignore_errors=True,
+        )
+        for csv_path in csv_files
+    ]
+    df = pl.concat(dfs, how="diagonal_relaxed")
+    if max_rows is not None:
+        df = df.head(max_rows)
 
-    row_count = 0
-    for csv_path in csv_files:
-        with open(csv_path, encoding="utf-8") as f:
-            header = f.readline().strip().split(",")
-            col = {name: idx for idx, name in enumerate(header)}
-
-            uid_c = col["user_id"]
-            vid_c = col["video_id"]
-            click_c = col.get("is_click", -1)
-            like_c = col.get("is_like", -1)
-            hate_c = col.get("is_hate", -1)
-            follow_c = col.get("is_follow", -1)
-            comment_c = col.get("is_comment", -1)
-            long_view_c = col.get("long_view", -1)
-            play_time_c = col.get("play_time_ms", -1)
-            duration_c = col.get("duration_ms", -1)
-            is_rand_c = col.get("is_rand", -1)
-            ts_c = col.get("time_ms", col.get("timestamp", -1))
-            optional_fields = (
-                ("is_click", click_c, int, clicks, 0),
-                ("is_like", like_c, int, likes, 0),
-                ("is_hate", hate_c, int, hates, 0),
-                ("is_follow", follow_c, int, follows, 0),
-                ("is_comment", comment_c, int, comments, 0),
-                ("long_view", long_view_c, int, long_views, 0),
-                ("play_time_ms", play_time_c, float, play_times, 0.0),
-                ("duration_ms", duration_c, float, durations, 0.0),
-                ("is_rand", is_rand_c, int, is_rands, 0),
-                ("time_ms|timestamp", ts_c, int, timestamps, 0),
+    # Unify timestamp column: prefer time_ms, fall back to timestamp
+    if "time_ms" in df.columns and "timestamp" in df.columns:
+        df = (
+            df.with_columns(
+                pl.coalesce(["time_ms", "timestamp"]).alias("_ts"),
             )
-
-            for line in f:
-                parts = line.strip().split(",")
-                if len(parts) <= max(uid_c, vid_c):
-                    continue
-                raw_users.append(int(parts[uid_c]))
-                raw_items.append(int(parts[vid_c]))
-                for (
-                    field_name,
-                    column_idx,
-                    parser,
-                    target_values,
-                    default_value,
-                ) in optional_fields:
-                    parsed_value = default_value
-                    if 0 <= column_idx < len(parts):
-                        try:
-                            parsed_value = parser(parts[column_idx])
-                        except (TypeError, ValueError):
-                            malformed_counts[field_name] += 1
-                    target_values.append(parsed_value)
-                row_count += 1
-                if max_rows is not None and row_count >= max_rows:
-                    break
-        if max_rows is not None and row_count >= max_rows:
-            break
-
-    malformed_counts = {
-        name: count for name, count in malformed_counts.items() if count > 0
-    }
-    if malformed_counts:
-        logger.warning(
-            "KuaiRand-1K loader coerced malformed optional field values to neutral defaults: %s",
-            malformed_counts,
+            .drop(["time_ms", "timestamp"])
+            .rename({"_ts": "time_ms"})
         )
+    elif "timestamp" in df.columns:
+        df = df.rename({"timestamp": "time_ms"})
 
-    raw_users_arr = downcast_numeric_array(np.array(raw_users, dtype=np.int64))
-    raw_items_arr = downcast_numeric_array(np.array(raw_items, dtype=np.int64))
-    clicks_arr = np.array(clicks, dtype=np.uint8)
-    likes_arr = np.array(likes, dtype=np.uint8)
-    hates_arr = np.array(hates, dtype=np.uint8)
-    follows_arr = np.array(follows, dtype=np.uint8)
-    comments_arr = np.array(comments, dtype=np.uint8)
-    long_views_arr = np.array(long_views, dtype=np.uint8)
-    play_times_arr = downcast_numeric_array(np.array(play_times, dtype=np.float32))
-    durations_arr = downcast_numeric_array(np.array(durations, dtype=np.float32))
-    is_rand_arr = np.array(is_rands, dtype=np.uint8)
-    timestamps_arr = downcast_numeric_array(np.array(timestamps, dtype=np.int64))
+    n_loaded = len(df)
+    df = df.drop_nulls(subset=["user_id", "video_id"])
+    malformed_core_rows = n_loaded - len(df)
+    if malformed_core_rows > 0:
+        logger.warning(
+            "KuaiRand-1K loader skipped %d malformed core interaction rows.",
+            malformed_core_rows,
+        )
+    if len(df) == 0:
+        raise ValueError("KuaiRand-1K loader found no valid interaction rows.")
+
+    # Fill missing optional columns with 0
+    for col in _OPTIONAL_UINT_COLS:
+        df = df.with_columns(pl.lit(0, dtype=pl.UInt8).alias(col)) if col not in df.columns else df.with_columns(pl.col(col).fill_null(0).cast(pl.UInt8))
+    for col in _OPTIONAL_FLOAT_COLS:
+        df = df.with_columns(pl.lit(0.0, dtype=pl.Float32).alias(col)) if col not in df.columns else df.with_columns(pl.col(col).fill_nan(0.0).fill_null(0.0).cast(pl.Float32))
+    df = df.with_columns(pl.lit(0, dtype=pl.Int64).alias("time_ms")) if "time_ms" not in df.columns else df.with_columns(pl.col("time_ms").fill_null(0).cast(pl.Int64))
+
+    raw_users_arr, raw_items_arr, play_times_arr, durations_arr, timestamps_arr = downcast_numeric_arrays(
+        df["user_id"].to_numpy(),
+        df["video_id"].to_numpy(),
+        df["play_time_ms"].to_numpy(),
+        df["duration_ms"].to_numpy(),
+        df["time_ms"].to_numpy(),
+    )
+    clicks_arr = df["is_click"].to_numpy()
+    likes_arr = df["is_like"].to_numpy()
+    hates_arr = df["is_hate"].to_numpy()
+    follows_arr = df["is_follow"].to_numpy()
+    comments_arr = df["is_comment"].to_numpy()
+    long_views_arr = df["long_view"].to_numpy()
+    is_rand_arr = df["is_rand"].to_numpy()
+
+    effective_preset = preprocessing_preset or "kuairand_causal"
+    if effective_preset == "kuairand_random_only":
+        keep_mask = is_rand_arr > 0
+        if not np.any(keep_mask):
+            raise ValueError("KuaiRand-1K random-only preset found no randomized rows.")
+        raw_users_arr = raw_users_arr[keep_mask]
+        raw_items_arr = raw_items_arr[keep_mask]
+        clicks_arr = clicks_arr[keep_mask]
+        likes_arr = likes_arr[keep_mask]
+        hates_arr = hates_arr[keep_mask]
+        follows_arr = follows_arr[keep_mask]
+        comments_arr = comments_arr[keep_mask]
+        long_views_arr = long_views_arr[keep_mask]
+        play_times_arr = play_times_arr[keep_mask]
+        durations_arr = durations_arr[keep_mask]
+        is_rand_arr = is_rand_arr[keep_mask]
+        timestamps_arr = timestamps_arr[keep_mask]
+
+    # Compute watch-ratio priority before collapsing so the best interaction per
+    # user-item pair is retained consistently across both presets. The collapse
+    # happens before split construction so one raw pair cannot leak across
+    # train/val/test boundaries; timestamp breaks ties between equally strong
+    # outcomes.
+    raw_target = np.zeros(len(raw_users_arr), dtype=np.float32)
+    valid_dur_mask = durations_arr > 0
+    raw_target[valid_dur_mask] = np.clip(
+        play_times_arr[valid_dur_mask] / durations_arr[valid_dur_mask],
+        0.0,
+        5.0,
+    ).astype(np.float32)
+
+    (
+        (
+            raw_users_arr,
+            raw_items_arr,
+            clicks_arr,
+            likes_arr,
+            hates_arr,
+            follows_arr,
+            comments_arr,
+            long_views_arr,
+            play_times_arr,
+            durations_arr,
+            is_rand_arr,
+            timestamps_arr,
+            raw_target,
+        ),
+        repeat_summary,
+        collapsed_rows,
+    ) = collapse_pairwise_max_priority_rows_with_stats(
+        raw_users_arr,
+        raw_items_arr,
+        raw_target,
+        clicks_arr,
+        likes_arr,
+        hates_arr,
+        follows_arr,
+        comments_arr,
+        long_views_arr,
+        play_times_arr,
+        durations_arr,
+        is_rand_arr,
+        timestamps_arr,
+        raw_target,
+        timestamp=timestamps_arr,
+    )
+    if collapsed_rows > 0:
+        logger.info(
+            "KuaiRand-1K collapsed %d repeated user-item pairs (preset=%s).",
+            collapsed_rows,
+            effective_preset,
+        )
 
     indexed = remap_interaction_ids(raw_users_arr, raw_items_arr)
-    user_id = indexed.user_id
-    item_id = indexed.item_id
-    n_users = indexed.n_users
-    n_items = indexed.n_items
     user_map = indexed.user_map
     item_map = indexed.item_map
+    n_users = indexed.n_users
+    n_items = indexed.n_items
 
     # Expanded label: click OR like OR follow
     label = ((clicks_arr > 0) | (likes_arr > 0) | (follows_arr > 0)).astype(np.float32)
 
-    # Graded sign: like=1.0 > follow=0.7 > comment=0.5 > click+long_view=0.3 > neutral=0.0 > hate=-1.0
-    sign = np.full(len(user_id), 0.0, dtype=np.float32)
+    # Graded sign: like=1.0 > follow=0.7 > click+long_view=0.3 > neutral/comment=0.0 > hate=-1.0
+    sign = np.full(len(indexed.user_id), 0.0, dtype=np.float32)
     sign[hates_arr > 0] = -1.0
     sign[(clicks_arr > 0) & (long_views_arr > 0)] = 0.3
-    sign[comments_arr > 0] = 0.5
     sign[follows_arr > 0] = 0.7
     sign[likes_arr > 0] = 1.0  # highest priority: last assignment wins
 
-    behavior_type = np.full(len(user_id), "neutral", dtype="<U10")
+    behavior_type = np.full(len(indexed.user_id), "neutral", dtype="<U10")
     behavior_type[hates_arr > 0] = "hate"
     behavior_type[clicks_arr > 0] = "click"
     behavior_type[(clicks_arr > 0) & (long_views_arr > 0)] = "long_view"
@@ -179,81 +234,48 @@ def load_kuairand1k(
     behavior_type[follows_arr > 0] = "follow"
     behavior_type[likes_arr > 0] = "like"
 
-    raw_target = np.zeros(len(user_id), dtype=np.float32)
-    valid_duration = durations_arr > 0
-    raw_target[valid_duration] = np.clip(
-        play_times_arr[valid_duration] / durations_arr[valid_duration],
-        0.0,
-        5.0,
-    ).astype(np.float32)
-
-    popularity = compute_normalized_popularity(item_id, n_items)
-
     user_features = None
     item_features = None
     if include_optional_features:
-        feat_base = Path(data_dir) / "KuaiRand-1K" / "data"
-        load_user_features, user_feature_columns = resolve_feature_source(
-            feature_policy,
-            "kuairand1k",
-            "user_features",
-            "data/user_features_1k.csv",
+        user_features = load_policy_csv_feature_blocks(
+            feature_policy=feature_policy,
+            dataset_name="kuairand1k",
+            aspect="user_features",
+            id_map=user_map,
+            n_entities=n_users,
+            sources=(
+                PolicyCsvFeatureSpec(
+                    path=base / "user_features_1k.csv",
+                    relative_path="data/user_features_1k.csv",
+                    id_col="user_id",
+                ),
+            ),
         )
-        if load_user_features:
-            user_features = load_csv_features(
-                feat_base / "user_features_1k.csv",
-                "user_id",
-                user_map,
-                n_users,
-                include_columns=user_feature_columns,
-            )
-
-        item_features_basic = None
-        item_features_stat = None
-        load_basic_item_features, basic_item_columns = resolve_feature_source(
-            feature_policy,
-            "kuairand1k",
-            "item_features",
-            "data/video_features_basic_1k.csv",
+        item_features = load_policy_csv_feature_blocks(
+            feature_policy=feature_policy,
+            dataset_name="kuairand1k",
+            aspect="item_features",
+            id_map=item_map,
+            n_entities=n_items,
+            sources=(
+                PolicyCsvFeatureSpec(
+                    path=base / "video_features_basic_1k.csv",
+                    relative_path="data/video_features_basic_1k.csv",
+                    id_col="video_id",
+                ),
+                PolicyCsvFeatureSpec(
+                    path=base / "video_features_statistic_1k.csv",
+                    relative_path="data/video_features_statistic_1k.csv",
+                    id_col="video_id",
+                ),
+            ),
         )
-        if load_basic_item_features:
-            item_features = load_csv_features(
-                feat_base / "video_features_basic_1k.csv",
-                "video_id",
-                item_map,
-                n_items,
-                include_columns=basic_item_columns,
-            )
-            item_features_basic = item_features
-        load_stat_item_features, stat_item_columns = resolve_feature_source(
-            feature_policy,
-            "kuairand1k",
-            "item_features",
-            "data/video_features_statistic_1k.csv",
-        )
-        if load_stat_item_features:
-            item_features_stat = load_csv_features(
-                feat_base / "video_features_statistic_1k.csv",
-                "video_id",
-                item_map,
-                n_items,
-                include_columns=stat_item_columns,
-            )
-        if item_features_basic is not None and item_features_stat is not None:
-            item_features = np.hstack([item_features_basic, item_features_stat])
-        elif item_features_basic is not None:
-            item_features = item_features_basic
-        elif item_features_stat is not None:
-            item_features = item_features_stat
 
     # Store is_rand as metadata for causal analysis
-    metadata = {"is_rand": is_rand_arr.astype(bool, copy=False)}
     source_domain = np.where(is_rand_arr > 0, "random", "standard").astype("<U8")
-    effective_preset = preprocessing_preset or "kuairand_causal"
 
-    return CanonicalInteractions(
-        user_id=user_id,
-        item_id=item_id,
+    return build_indexed_canonical_interactions(
+        indexed,
         label=label,
         timestamp=timestamps_arr,
         sign=sign,
@@ -261,14 +283,22 @@ def load_kuairand1k(
         behavior_type=behavior_type,
         exposure_flag=is_rand_arr.astype(bool),
         source_domain=source_domain,
-        popularity=popularity,
-        n_users=n_users,
-        n_items=n_items,
-        user_map=user_map,
-        item_map=item_map,
+        **build_repeat_collapse_canonical_payload(
+            repeat_summary,
+            applied=True,
+            dropped_rows=collapsed_rows,
+            reason=("Collapse repeated raw user-item pairs before splitting so the same pair cannot span train/val/test; keep the strongest watch-ratio outcome with timestamp tie-breaks."),
+            metadata={
+                "is_rand": is_rand_arr.astype(bool, copy=False),
+                "exposure_summary": {
+                    "randomized_count": int(np.sum(is_rand_arr > 0)),
+                    "standard_count": int(np.sum(is_rand_arr == 0)),
+                    "view": effective_preset,
+                },
+            },
+        ),
         user_features=user_features,
         item_features=item_features,
-        metadata=metadata,
         feedback_type="randomized-exposure",
         preprocessing_preset=effective_preset,
     )

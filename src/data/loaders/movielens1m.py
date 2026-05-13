@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
 
 from ...utils.dataset_loader_utils import (
-    downcast_numeric_array,
+    downcast_numeric_arrays,
     resolve_local_dataset_dir,
 )
 from ..canonical import CanonicalInteractions
@@ -16,41 +17,34 @@ from ..feature_policy import (
     FeaturePolicyName,
     resolve_feature_source,
 )
-from ...utils.interaction_indexing import (
-    compute_normalized_popularity,
-    remap_interaction_ids,
+from ._explicit_ratings import (
+    build_explicit_rating_canonical,
+    build_movie_genre_features,
+    prepare_explicit_rating_feedback,
 )
 
+# Based on the README.md file `data/MovieLens1M/raw/README.md`:
+# - Gender is denoted by a "M" for male and "F" for female
+# - Age is chosen from the following ranges:
+
+# 	*  1:  "Under 18"
+# 	* 18:  "18-24"
+# 	* 25:  "25-34"
+# 	* 35:  "35-44"
+# 	* 45:  "45-49"
+# 	* 50:  "50-55"
+# 	* 56:  "56+"
 
 # ML-1M age buckets mapped to ordinal values
 _AGE_MAP = {1: 0, 18: 1, 25: 2, 35: 3, 45: 4, 50: 5, 56: 6}
 
-# ML-1M genre list (18 genres)
-_GENRES = [
-    "Action",
-    "Adventure",
-    "Animation",
-    "Children's",
-    "Comedy",
-    "Crime",
-    "Documentary",
-    "Drama",
-    "Fantasy",
-    "Film-Noir",
-    "Horror",
-    "Musical",
-    "Mystery",
-    "Romance",
-    "Sci-Fi",
-    "Thriller",
-    "War",
-    "Western",
-]
-_GENRE_TO_IDX = {g: i for i, g in enumerate(_GENRES)}
+logger = logging.getLogger(__name__)
 
 
 def _parse_users_dat(
-    raw_dir: Path, user_map: dict[int, int], n_users: int
+    raw_dir: Path,
+    user_map: dict[int, int],
+    n_users: int,
 ) -> np.ndarray | None:
     """Parse users.dat -> (n_users, 3) array: [gender, age_ordinal, occupation]."""
     path = raw_dir / "users.dat"
@@ -74,27 +68,39 @@ def _parse_users_dat(
 
 
 def _parse_movies_dat(
-    raw_dir: Path, item_map: dict[int, int], n_items: int
+    raw_dir: Path,
+    item_map: dict[int, int],
+    n_items: int,
 ) -> np.ndarray | None:
-    """Parse movies.dat -> (n_items, 18) multi-hot genre vector."""
+    """Parse movies.dat into a multi-hot genre matrix inferred from the file."""
     path = raw_dir / "movies.dat"
     if not path.exists():
         return None
 
-    features = np.zeros((n_items, len(_GENRES)), dtype=np.uint8)
+    genre_rows: list[tuple[int, str]] = []
     with open(path, encoding="latin-1") as f:
         for line in f:
             parts = line.strip().split("::")
             if len(parts) < 3:
                 continue
-            mid = int(parts[0])
-            if mid not in item_map:
+            try:
+                movie_id = int(parts[0])
+            except ValueError:
                 continue
-            idx = item_map[mid]
-            for genre in parts[2].split("|"):
-                gi = _GENRE_TO_IDX.get(genre)
-                if gi is not None:
-                    features[idx, gi] = 1.0
+            genre_rows.append((movie_id, parts[2]))
+
+    features, mapped_item_count = build_movie_genre_features(
+        genre_rows,
+        item_map,
+        n_items,
+    )
+    if features is not None:
+        logger.info(
+            "Loaded MovieLens1M genre features for %d / %d items (%d columns).",
+            mapped_item_count,
+            n_items,
+            features.shape[1],
+        )
     return features
 
 
@@ -108,10 +114,7 @@ def _resolve_raw_dir(data_dir: str) -> Path:
             Path(data_dir) / "ml-1m",
         ],
         required_files=["ratings.dat", "users.dat", "movies.dat"],
-        missing_message=(
-            "MovieLens1M raw files not found in the local data directory. "
-            f"Checked under {raw_base}."
-        ),
+        missing_message=(f"MovieLens1M raw files not found in the local data directory. Checked under {raw_base}."),
     )
 
 
@@ -125,27 +128,48 @@ def _parse_ratings_dat(
     item_ids: list[int] = []
     ratings: list[float] = []
     timestamps: list[int] = []
+    malformed_rows = 0
 
     row_count = 0
     with open(path, encoding="latin-1") as f:
         for line in f:
             parts = line.strip().split("::")
             if len(parts) < 4:
+                malformed_rows += 1
                 continue
-            user_ids.append(int(parts[0]))
-            item_ids.append(int(parts[1]))
-            ratings.append(float(parts[2]))
-            timestamps.append(int(parts[3]))
+            try:
+                user_id = int(parts[0])
+                item_id = int(parts[1])
+                rating = float(parts[2])
+                timestamp = int(parts[3])
+            except ValueError:
+                malformed_rows += 1
+                continue
+            if not np.isfinite(rating):
+                malformed_rows += 1
+                continue
+            user_ids.append(user_id)
+            item_ids.append(item_id)
+            ratings.append(rating)
+            timestamps.append(timestamp)
             row_count += 1
             if max_rows is not None and row_count >= max_rows:
                 break
 
-    return (
-        downcast_numeric_array(np.asarray(user_ids, dtype=np.int64)),
-        downcast_numeric_array(np.asarray(item_ids, dtype=np.int64)),
-        np.asarray(ratings, dtype=np.float32),
-        downcast_numeric_array(np.asarray(timestamps, dtype=np.int64)),
+    if malformed_rows > 0:
+        logger.warning(
+            "MovieLens1M loader skipped %d malformed ratings rows.",
+            malformed_rows,
+        )
+    if not user_ids:
+        raise ValueError("MovieLens1M loader found no valid rating rows.")
+
+    raw_users, raw_items, timestamps_arr = downcast_numeric_arrays(
+        np.asarray(user_ids, dtype=np.int64),
+        np.asarray(item_ids, dtype=np.int64),
+        np.asarray(timestamps, dtype=np.int64),
     )
+    return raw_users, raw_items, np.asarray(ratings, dtype=np.float32), timestamps_arr
 
 
 def load_movielens1m(
@@ -166,23 +190,16 @@ def load_movielens1m(
     """
     raw_dir = _resolve_raw_dir(data_dir)
     raw_users, raw_items, ratings, timestamps = _parse_ratings_dat(
-        raw_dir, max_rows=max_rows
+        raw_dir,
+        max_rows=max_rows,
     )
 
-    indexed = remap_interaction_ids(raw_users, raw_items)
-    user_id = indexed.user_id
-    item_id = indexed.item_id
+    prepared = prepare_explicit_rating_feedback(raw_users, raw_items, ratings)
+    indexed = prepared.indexed
     n_users = indexed.n_users
     n_items = indexed.n_items
     user_map = indexed.user_map
     item_map = indexed.item_map
-
-    # Labels and signs
-    label = (ratings >= 4.0).astype(np.float32)
-    sign = ((ratings - 3.0) / 2.0).astype(np.float32)
-
-    # Popularity: per-item interaction count, normalized to [0, 1]
-    popularity = compute_normalized_popularity(item_id, n_items)
 
     user_features = None
     item_features = None
@@ -206,20 +223,10 @@ def load_movielens1m(
 
     effective_preset = preprocessing_preset or "movielens_explicit"
 
-    return CanonicalInteractions(
-        user_id=user_id,
-        item_id=item_id,
-        label=label,
-        timestamp=timestamps,
-        sign=sign,
-        raw_target=ratings.astype(np.float32, copy=False),
-        popularity=popularity,
-        n_users=n_users,
-        n_items=n_items,
-        user_map=user_map,
-        item_map=item_map,
+    return build_explicit_rating_canonical(
+        prepared,
+        timestamps,
         user_features=user_features,
         item_features=item_features,
-        feedback_type="explicit",
         preprocessing_preset=effective_preset,
     )
