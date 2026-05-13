@@ -1,95 +1,122 @@
 {
   "formal_profiles": [
     {
-      "description": "Development-focused formal profile: wave-1 ucagnn with learned fused scoring, explicit 1/2 branch depth, and CAGRA/kNN coverage across all thesis datasets.",
+      "id": "dev-ucagnn",
+      "aliases": ["default", "latest"],
+      "description": "Development-focused formal profile: ucagnn with learned fused scoring, explicit 1/2 branch depth, and the default CAGRA graph across all thesis datasets.",
       "matrix": {
-        "tier": "all",
+        "datasets": "all",
         "presets": ["ucagnn"],
-        "graph_methods": ["cagra", "knn"],
         "scoring_weight_modes": ["learned"]
       },
       "config_overrides": {
         "epochs": 60,
         "use_early_stopping": false,
         "lr": 0.001,
-        "batch_size": 4096,
+        "auto_batch_size": true,
+        "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
         "interest_gnn_layers": 1,
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
         "num_neighbors": [10, 5],
         "hard_negative_ratio": 0.0,
-        "curriculum_phase1_end": 15,
-        "curriculum_phase2_end": 30,
+        "auxiliary_losses_start_epoch": 15,
+        "popularity_supervision_start_epoch": 30,
         "loss_schedule": "baseline"
       }
     },
     {
-      "description": "Final matched-comparison profile: one end-stage shared-pipeline pass for ucagnn, LightGCN, and DICE-like on the default CAGRA graph with fixed fused-score mixing.",
+      "id": "dev-matched-comparison-i1-c2-nn8-4-ep200-lr0.01",
+      "description": "Development-focused matched-comparison profile: one end-stage shared-pipeline pass where ucagnn runs learned and fixed score mixing while LightGCN and DICE-like stay on their fixed baseline path.",
       "matrix": {
-        "tier": "all",
+        "datasets": ["movielens1m", "amazonbook", "kuairec_v2", "kuairand1k", "taobao"],
         "presets": ["ucagnn", "lightgcn", "dice_like"],
-        "graph_methods": ["cagra"],
-        "scoring_weight_modes": ["fixed"]
+        "scoring_weight_modes": ["learned", "fixed"]
+      },
+      "config_overrides": {
+        "epochs": 200,
+        "use_early_stopping": true,
+        "patience": 10,
+        "lr": 0.01,
+        "auto_batch_size": true,
+        "batch_size_candidates": [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+        "single_branch_gnn_layers": 2,
+        "interest_gnn_layers": 1,
+        "conformity_gnn_layers": 2,
+        "dropout": 0.1,
+        "num_neighbors_options": [[8, 4]],
+        "hard_negative_ratio": 0.0,
+        "auxiliary_losses_start_epoch": 15,
+        "popularity_supervision_start_epoch": 30,
+        "loss_schedule": "baseline"
+      }
+    },
+    {
+      "id": "dev-matched-comparison-i2-c3",
+      "description": "Development-focused matched-comparison profile: one end-stage shared-pipeline pass where ucagnn runs learned and fixed score mixing while LightGCN and DICE-like stay on their fixed baseline path.",
+      "matrix": {
+        "datasets": ["small", "medium"],
+        "presets": ["ucagnn", "lightgcn", "dice_like"],
+        "scoring_weight_modes": ["learned", "fixed"]
+      },
+      "config_overrides": {
+        "epochs": 100,
+        "use_early_stopping": true,
+        "patience": 10,
+        "lr": 0.01,
+        "auto_batch_size": true,
+        "batch_size_candidates": [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+        "single_branch_gnn_layers": 2,
+        "interest_gnn_layers": 2,
+        "conformity_gnn_layers": 3,
+        "dropout": 0.1,
+        "num_neighbors_options": [[10, 5, 3], [5, 3, 2]],
+        "hard_negative_ratio": 0.0,
+        "auxiliary_losses_start_epoch": 15,
+        "popularity_supervision_start_epoch": 30,
+        "loss_schedule": "baseline"
+      }
+    },
+    {
+      "id": "movielens1m-all-lr-schedules",
+      "description": "Movielens1M end-stage profile comparing all three presets across all learning rate schedules.",
+      "matrix": {
+        "datasets": ["movielens1m"],
+        "presets": ["ucagnn", "lightgcn", "dice_like"],
+        "scoring_weight_modes": ["learned", "fixed"]
       },
       "config_overrides": {
         "epochs": 60,
-        "use_early_stopping": false,
-        "lr": 0.001,
-        "batch_size": 4096,
+        "use_early_stopping": true,
+        "patience": 10,
+        "lr": 0.01,
+        "lr_scheduler": "all",
+        "auto_batch_size": true,
+        "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
         "single_branch_gnn_layers": 2,
-        "interest_gnn_layers": 2,
+        "interest_gnn_layers": 1,
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
-        "num_neighbors": [10, 5],
+        "num_neighbors_options": [[10, 5]],
         "hard_negative_ratio": 0.0,
-        "curriculum_phase1_end": 15,
-        "curriculum_phase2_end": 30,
+        "auxiliary_losses_start_epoch": 15,
+        "popularity_supervision_start_epoch": 30,
         "loss_schedule": "baseline"
       }
     }
   ],
   "recipes": {
     "ucagnn": {
-      "description": "UCaGNN with mini-batch training on CAGRA edges.",
-      "preset": "ucagnn",
-      "overrides": {
-        "graph_method": "cagra"
-      }
-    },
-    "ucagnn_knn": {
-      "description": "UCaGNN with mini-batch training on kNN edges.",
-      "preset": "ucagnn",
-      "overrides": {
-        "graph_method": "knn"
-      }
+      "description": "UCaGNN with mini-batch training on the default CAGRA graph.",
+      "preset": "ucagnn"
     },
     "lightgcn": {
-      "description": "LightGCN baseline with mini-batch training on CAGRA edges.",
-      "preset": "lightgcn",
-      "overrides": {
-        "graph_method": "cagra"
-      }
-    },
-    "lightgcn_knn": {
-      "description": "LightGCN baseline with mini-batch training on kNN edges.",
-      "preset": "lightgcn",
-      "overrides": {
-        "graph_method": "knn"
-      }
+      "description": "LightGCN baseline with mini-batch training on the default CAGRA graph.",
+      "preset": "lightgcn"
     },
     "dice_like": {
-      "description": "DICE-like preset with mini-batch training on CAGRA edges.",
-      "preset": "dice_like",
-      "overrides": {
-        "graph_method": "cagra"
-      }
-    },
-    "dice_like_knn": {
-      "description": "DICE-like preset with mini-batch training on kNN edges.",
-      "preset": "dice_like",
-      "overrides": {
-        "graph_method": "knn"
-      }
+      "description": "DICE-like preset with mini-batch training on the default CAGRA graph.",
+      "preset": "dice_like"
     }
   }
 }
