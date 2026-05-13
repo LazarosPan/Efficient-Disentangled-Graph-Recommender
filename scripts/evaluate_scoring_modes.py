@@ -14,18 +14,16 @@ import json
 from pathlib import Path
 
 import torch
-from torch_geometric.data import Data
-
 from experiments.run_experiment import (
     build_runtime_model,
     load_checkpoint_payload,
     load_runtime_data,
 )
 from src.models.ucagnn import UCaGNN
-from src.training.evaluator import Evaluator, THESIS_PRIMARY_METRICS
+from src.training.evaluator import THESIS_PRIMARY_METRICS, Evaluator
 from src.utils.cli_parsers import build_evaluate_scoring_modes_parser
 from src.utils.config import UCaGNNConfig
-
+from torch_geometric.data import Data
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -55,17 +53,19 @@ def _collect_mode_metrics(
     split: str,
     batch_size: int,
 ) -> dict[str, dict[str, float]]:
-    """Evaluate one split under all requested scoring modes."""
+    """Evaluate one split under all requested scoring modes.
+
+    The same trained checkpoint is reused for every mode. Only the
+    evaluation-time scoring view changes.
+
+    """
     results: dict[str, dict[str, float]] = {}
     mask = _mask_for_split(data, split)
     for mode in modes:
         eval_config = dataclasses.replace(config, eval_scoring_mode=mode)
         evaluator = Evaluator(eval_config)
         metrics = evaluator.evaluate(model, data, mask, batch_size=batch_size)
-        results[mode] = {
-            metric_name: float(metrics.get(metric_name, 0.0))
-            for metric_name in THESIS_PRIMARY_METRICS
-        }
+        results[mode] = {metric_name: float(metrics.get(metric_name, 0.0)) for metric_name in THESIS_PRIMARY_METRICS}
     return results
 
 
@@ -74,13 +74,12 @@ def _print_table(split: str, results: dict[str, dict[str, float]]) -> None:
     print(f"\nSCORING MODE EVALUATION ({split})")
     print("Note: AveragePopularity is lower-is-better.")
     print(
-        f"{'Mode':<24} | {'NDCG@20':>8} | {'Recall@20':>10} | {'AvgPop@20':>10} | {'NDCG@40':>8} | {'Recall@40':>10} | {'AvgPop@40':>10}"
+        f"{'Mode':<24} | {'NDCG@20':>8} | {'Recall@20':>10} | {'AvgPop@20':>10} | {'NDCG@40':>8} | {'Recall@40':>10} | {'AvgPop@40':>10}",
     )
     print("-" * 101)
     for mode, metrics in results.items():
         print(
-            f"{mode:<24} | {metrics['NDCG@20']:>8.4f} | {metrics['Recall@20']:>10.4f} | {metrics['AveragePopularity@20']:>10.4f} | "
-            f"{metrics['NDCG@40']:>8.4f} | {metrics['Recall@40']:>10.4f} | {metrics['AveragePopularity@40']:>10.4f}"
+            f"{mode:<24} | {metrics['NDCG@20']:>8.4f} | {metrics['Recall@20']:>10.4f} | {metrics['AveragePopularity@20']:>10.4f} | {metrics['NDCG@40']:>8.4f} | {metrics['Recall@40']:>10.4f} | {metrics['AveragePopularity@40']:>10.4f}",
         )
 
 

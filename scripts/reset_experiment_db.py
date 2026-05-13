@@ -5,13 +5,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from src.utils.project_paths import THESIS_DB_PATH, iter_sqlite_sidecar_paths
 
-DEFAULT_DB_PATH = Path(__file__).parent.parent / "results" / "thesis_experiments.db"
-SQLITE_SIDE_SUFFIXES = ("-wal", "-shm")
+DEFAULT_DB_PATH = THESIS_DB_PATH
 
 
 def _iter_db_paths(db_path: Path) -> list[Path]:
-    return [db_path, *[Path(f"{db_path}{suffix}") for suffix in SQLITE_SIDE_SUFFIXES]]
+    return [db_path, *iter_sqlite_sidecar_paths(db_path)]
 
 
 def print_plan(db_path: Path) -> None:

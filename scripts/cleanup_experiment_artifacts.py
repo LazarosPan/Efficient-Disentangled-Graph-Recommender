@@ -7,13 +7,13 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-
-REPO_ROOT = Path(__file__).parent.parent
-RESULTS_DIR = REPO_ROOT / "results"
-MLFLOW_DB_PATH = RESULTS_DIR / "mlflow.db"
-FORMAL_RUN_STATE_PATH = RESULTS_DIR / "formal_run_state.json"
-MLFLOW_ARTIFACTS_DIR = REPO_ROOT / "mlruns"
-CHECKPOINT_DIR = RESULTS_DIR / "checkpoints"
+from src.utils.project_paths import (
+    CHECKPOINT_DIR,
+    FORMAL_RUN_STATE_PATH,
+    MLFLOW_ARTIFACTS_DIR,
+    MLFLOW_DB_PATH,
+    iter_sqlite_sidecar_paths,
+)
 
 
 @dataclass(frozen=True)
@@ -51,12 +51,6 @@ TARGETS = (
     ),
 )
 
-SQLITE_SIDE_SUFFIXES = ("-wal", "-shm")
-
-
-def iter_sidecar_paths(path: Path) -> list[Path]:
-    return [Path(f"{path}{suffix}") for suffix in SQLITE_SIDE_SUFFIXES]
-
 
 def print_plan(selected: tuple[CleanupTarget, ...]) -> None:
     print("=" * 72)
@@ -69,10 +63,8 @@ def print_plan(selected: tuple[CleanupTarget, ...]) -> None:
         print(f"  exists: {'yes' if exists else 'no'}")
         print(f"  note: {target.description}")
         if target.kind == "file":
-            sidecars = iter_sidecar_paths(target.path)
-            present_sidecars = [
-                str(sidecar) for sidecar in sidecars if sidecar.exists()
-            ]
+            sidecars = iter_sqlite_sidecar_paths(target.path)
+            present_sidecars = [str(sidecar) for sidecar in sidecars if sidecar.exists()]
             if present_sidecars:
                 print(f"  sidecars: {', '.join(present_sidecars)}")
     print("=" * 72)
@@ -80,7 +72,7 @@ def print_plan(selected: tuple[CleanupTarget, ...]) -> None:
 
 def delete_file_target(path: Path) -> None:
     path.unlink(missing_ok=True)
-    for sidecar in iter_sidecar_paths(path):
+    for sidecar in iter_sqlite_sidecar_paths(path):
         sidecar.unlink(missing_ok=True)
 
 

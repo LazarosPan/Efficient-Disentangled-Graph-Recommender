@@ -2,7 +2,8 @@
 """Query experiment results from SQLite database.
 
 Usage:
-    python scripts/query_results.py                    # Show all experiments
+    python scripts/query_results.py                    # Top-20 completed runs by NDCG@20
+    python scripts/query_results.py --view all         # Show all experiments
     python scripts/query_results.py --view completed   # Show only completed runs
     python scripts/query_results.py --view attention   # Show failed, OOM, running, or unknown runs
     python scripts/query_results.py --view errors      # Show only failed and OOM runs
@@ -17,18 +18,16 @@ Usage:
 
 from __future__ import annotations
 
-from collections import defaultdict
 import json
 import sqlite3
 import sys
-from pathlib import Path
+from collections import defaultdict
 
-from src.utils.experiment_logger import ExperimentLogger
 from src.utils.cli_parsers import build_query_results_parser
+from src.utils.experiment_logger import ExperimentLogger
+from src.utils.project_paths import THESIS_DB_PATH
 
-
-REPO_ROOT = Path(__file__).parent.parent
-DB_PATH = REPO_ROOT / "results" / "thesis_experiments.db"
+DB_PATH = THESIS_DB_PATH
 VIEW_TABLES = ExperimentLogger.VIEW_TABLES
 
 
@@ -37,10 +36,10 @@ def connect() -> sqlite3.Connection:
     if not DB_PATH.exists():
         print(f"Database not found: {DB_PATH.resolve()}")
         print(
-            "Run a real experiment first to create the persistent database in results/."
+            "Run a real experiment first to create the persistent database in results/.",
         )
         print(
-            "The verify scripts use temporary .db files and remove them when they finish."
+            "The verify scripts use temporary .db files and remove them when they finish.",
         )
         sys.exit(1)
 
@@ -78,7 +77,7 @@ def list_experiments(
     source_table = VIEW_TABLES[view_name]
     sql = f"""
          SELECT id, timestamp, dataset, preset, intervention, seed, status,
-             batch_id, profile_name, training_mode, graph_method, oom_flag
+             batch_id, profile_name, training_mode, oom_flag
         FROM {source_table}
     """
     if where_clauses:
@@ -93,9 +92,12 @@ def list_experiments(
 
     profile_width = 28
     print(
-        f"{'ID':>4} | {'Status':<10} | {'Dataset':<14} | {'Preset':<12} | {'Profile':<{profile_width}} | {'Mode':<18} | {'Graph':<8} | {'Batch':<22} | Seed"
+        (
+            f"{'ID':>4} | {'Status':<10} | {'Dataset':<14} | {'Preset':<12} | "
+            f"{'Profile':<{profile_width}} | {'Mode':<18} | {'Batch':<22} | Seed"
+        ),
     )
-    print("-" * (146 + profile_width - 8))
+    print("-" * (135 + profile_width - 8))
     for row in rows:
         batch_label = row["batch_id"] or "-"
         if len(batch_label) > 22:
@@ -105,8 +107,85 @@ def list_experiments(
             profile_label = f"{profile_label[: profile_width - 3]}..."
         status_label = row["status"] or ("oom" if row["oom_flag"] else "unknown")
         print(
-            f"{row['id']:>4} | {status_label:<10} | {row['dataset'] or '-':<14} | {row['preset'] or '-':<12} | {profile_label:<{profile_width}} | {row['training_mode'] or '-':<18} | {row['graph_method'] or '-':<8} | {batch_label:<22} | {row['seed'] or '-'}"
+            (
+                f"{row['id']:>4} | {status_label:<10} | {row['dataset'] or '-':<14} | "
+                f"{row['preset'] or '-':<12} | {profile_label:<{profile_width}} | "
+                f"{row['training_mode'] or '-':<18} | {batch_label:<22} | "
+                f"{row['seed'] or '-'}"
+            ),
         )
+
+
+def _load_config_json(config_json: str | None) -> dict[str, object]:
+    """Parse stored config JSON into a Python mapping."""
+    if not config_json:
+        return {}
+    try:
+        return json.loads(config_json)
+    except json.JSONDecodeError:
+        return {}
+
+
+def _build_canonical_name_from_config(
+    config: dict[str, object],
+    preset: str | None,
+    intervention: str | None,
+) -> str:
+    """Reconstruct the canonical experiment name from stored config."""
+    dataset = str(config.get("dataset", "-"))
+    epochs = int(config.get("epochs", 0)) if config.get("epochs") is not None else 0
+    batch_size = int(config.get("batch_size", 0)) if config.get("batch_size") is not None else 0
+    embed_dim = int(config.get("embed_dim", 0)) if config.get("embed_dim") is not None else 0
+
+    use_dual_branch = bool(config.get("use_dual_branch", True))
+    interest_layers = int(config.get("interest_gnn_layers", 0))
+    conformity_layers = int(config.get("conformity_gnn_layers", 0))
+    single_branch_layers = int(config.get("single_branch_gnn_layers", 0))
+    max_gnn_layers = single_branch_layers if not use_dual_branch else max(interest_layers, conformity_layers)
+
+    parts = [
+        dataset,
+        preset or "custom",
+        f"ep{epochs}",
+        f"bs{batch_size}",
+        f"dim{embed_dim}",
+        f"layers{max_gnn_layers}",
+    ]
+
+    if use_dual_branch and interest_layers != conformity_layers:
+        parts.append(f"branchL{interest_layers}-{conformity_layers}")
+
+    num_neighbors = config.get("num_neighbors")
+    if isinstance(num_neighbors, list):
+        parts.append(f"nbr{'-'.join(str(value) for value in num_neighbors)}")
+    elif num_neighbors is not None:
+        parts.append(f"nbr{num_neighbors}")
+
+    if config.get("sample_interactions") is not None:
+        parts.append(f"sample{int(config['sample_interactions'])}")
+    if config.get("loader_max_rows") is not None:
+        parts.append(f"loadrows{int(config['loader_max_rows'])}")
+    if config.get("preprocessing_preset") is not None:
+        parts.append(f"ppreset{config['preprocessing_preset']}")
+    if config.get("derived_split_mode") != "per_user_temporal":
+        parts.append(f"split{config.get('derived_split_mode')}")
+    if config.get("popularity_window_seconds") is not None:
+        parts.append(f"popwin{int(config['popularity_window_seconds'])}")
+    if config.get("use_features"):
+        parts.append("feat")
+    if config.get("feature_policy") not in (None, "thesis_default"):
+        parts.append(f"fpolicy{config['feature_policy']}")
+    if config.get("scoring_weight_mode") != "fixed":
+        parts.append(f"scoremix{config['scoring_weight_mode']}")
+    parts.append(f"lr-{config.get('lr_scheduler')}")
+    if config.get("train_scoring_mode") != "default":
+        parts.append(f"trainscore{config['train_scoring_mode']}")
+    if config.get("eval_scoring_mode") != "default":
+        parts.append(f"score{config['eval_scoring_mode']}")
+    if intervention:
+        parts.append(intervention)
+    parts.append(f"seed{int(config.get('seed', 0))}")
+    return "_".join(parts)
 
 
 def show_experiment(conn: sqlite3.Connection, exp_id: int) -> None:
@@ -115,7 +194,7 @@ def show_experiment(conn: sqlite3.Connection, exp_id: int) -> None:
         """
         SELECT id, timestamp, dataset, preset, intervention, config_json, seed,
              status, failure_reason, oom_flag, batch_id, profile_name,
-             gpu_name, gpu_vram_gb, training_mode, graph_method, updated_at
+             gpu_name, gpu_vram_gb, training_mode, updated_at
         FROM experiments WHERE id = ?
     """,
         (exp_id,),
@@ -136,12 +215,11 @@ def show_experiment(conn: sqlite3.Connection, exp_id: int) -> None:
     print(f"Seed:         {row['seed'] or '-'}")
     print(f"Status:       {row['status'] or '-'}")
     print(f"Training:     {row['training_mode'] or '-'}")
-    print(f"Graph:        {row['graph_method'] or '-'}")
     print(f"Batch ID:     {row['batch_id'] or '-'}")
     print(f"Profile:      {row['profile_name'] or '-'}")
     print(f"GPU:          {row['gpu_name'] or '-'}")
     print(
-        f"VRAM (GiB):   {row['gpu_vram_gb'] if row['gpu_vram_gb'] is not None else '-'}"
+        f"VRAM (GiB):   {row['gpu_vram_gb'] if row['gpu_vram_gb'] is not None else '-'}",
     )
     print(f"Updated:      {row['updated_at'] or '-'}")
     if row["oom_flag"]:
@@ -181,8 +259,7 @@ def show_metrics(conn: sqlite3.Connection, exp_id: int) -> None:
             for row in rows:
                 epoch_str = str(row["epoch"]) if row["epoch"] is not None else "final"
                 print(
-                    f"  {epoch_str:>5} | {row['metric_name']:<20} | "
-                    f"{row['metric_value']:>10.4f} | {row['timestamp']}"
+                    f"  {epoch_str:>5} | {row['metric_name']:<20} | {row['metric_value']:>10.4f} | {row['timestamp']}",
                 )
 
 
@@ -221,7 +298,11 @@ def show_profiling(conn: sqlite3.Connection, exp_id: int) -> None:
     total_ms = sum(float(row["total_ms"]) for row in rows)
 
     print(
-        f"\n{'Stage':<15} | {'Total/Epoch':>11} | {'Avg/Call':>10} | {'Calls':>6} | {'Epochs':>6} | {'%':>6} | Peak VRAM | Last Logged"
+        (
+            f"\n{'Stage':<15} | {'Total/Epoch':>11} | {'Avg/Call':>10} | "
+            f"{'Calls':>6} | {'Epochs':>6} | {'%':>6} | Peak VRAM | "
+            f"Last Logged"
+        ),
     )
     print("-" * 150)
     for row in rows:
@@ -230,10 +311,12 @@ def show_profiling(conn: sqlite3.Connection, exp_id: int) -> None:
         peak_vram_mb = row["peak_vram_mb"]
         peak_str = f"{peak_vram_mb:.0f} MB" if peak_vram_mb else "-"
         print(
-            f"{row['stage']:<15} | {row['avg_epoch_ms']:>11.1f} | "
-            f"{row['avg_call_ms']:>10.1f} | {row['total_calls']:>6} | "
-            f"{row['profiled_epochs']:>6} | {pct:>5.1f}% | "
-            f"{peak_str:<9} | {row['last_logged_at']}"
+            (
+                f"{row['stage']:<15} | {row['avg_epoch_ms']:>11.1f} | "
+                f"{row['avg_call_ms']:>10.1f} | {row['total_calls']:>6} | "
+                f"{row['profiled_epochs']:>6} | {pct:>5.1f}% | {peak_str:<9} | "
+                f"{row['last_logged_at']}"
+            ),
         )
 
     print("-" * 150)
@@ -299,22 +382,112 @@ def show_bottleneck(conn: sqlite3.Connection, exp_id: int) -> None:
     grand_total = sum(float(row["total_ms"]) for row in rows)
 
     print(
-        f"\n{'Rank':>4} | {'Stage':<15} | {'Total (ms)':>12} | {'Calls':>6} | {'% of Total':>10}"
+        f"\n{'Rank':>4} | {'Stage':<15} | {'Total (ms)':>12} | {'Calls':>6} | {'% of Total':>10}",
     )
     print("-" * 60)
     for i, row in enumerate(rows, 1):
         stage_total_ms = float(row["total_ms"])
         pct = (stage_total_ms / grand_total * 100) if grand_total > 0 else 0
         print(
-            f"{i:>4} | {row['stage']:<15} | {stage_total_ms:>12.1f} | "
-            f"{row['n_calls']:>6} | {pct:>9.1f}%"
+            f"{i:>4} | {row['stage']:<15} | {stage_total_ms:>12.1f} | {row['n_calls']:>6} | {pct:>9.1f}%",
         )
 
     print("-" * 60)
     print(
-        f"\nBottleneck: {rows[0]['stage']} "
-        f"({float(rows[0]['total_ms']) / grand_total * 100:.1f}% of total time)"
+        f"\nBottleneck: {rows[0]['stage']} ({float(rows[0]['total_ms']) / grand_total * 100:.1f}% of total time)",
     )
+
+
+def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
+    """Print the top-n completed full-data runs per dataset.
+
+    Smoke-test runs (sample_interactions set in config) are excluded automatically.
+    """
+    print("=" * 80)
+    print(f"TOP {n} COMPLETED RUNS PER DATASET — ranked by test NDCG@20 (full-data only)")
+    print("=" * 80)
+    print(f"Database: {DB_PATH.resolve()}")
+    print()
+
+    rows = conn.execute(
+        """
+        SELECT s.id, s.dataset, s.preset, s.seed,
+               s.test_ndcg_20, s.test_ndcg_40,
+               s.test_recall_20, s.test_recall_40,
+               s.test_hit_ratio_20, s.test_hit_ratio_40,
+               s.test_personalization_20, s.test_personalization_40,
+               s.test_average_popularity_20, s.test_average_popularity_40,
+               s.avg_epoch_time_s, s.training_mode, s.training_hash, s.peak_vram_mb,
+               e.intervention,
+               e.config_json
+        FROM experiment_completed_summary s
+        JOIN experiments e ON s.id = e.id
+        WHERE s.test_ndcg_20 IS NOT NULL
+          AND json_extract(e.config_json, '$.sample_interactions') IS NULL
+          AND json_extract(e.config_json, '$.loader_max_rows') IS NULL
+        ORDER BY s.dataset ASC, s.test_ndcg_20 DESC, s.test_ndcg_40 DESC,
+                 s.test_recall_20 DESC, s.test_recall_40 DESC, s.id ASC
+        """,
+    ).fetchall()
+
+    if not rows:
+        print("No completed full-data runs with test NDCG@20 found.")
+        print("Use --view all to see all experiments (including smoke-test runs).")
+        return
+
+    top_rows: list[sqlite3.Row] = []
+    dataset_counts: dict[str, int] = {}
+    for row in rows:
+        dataset = row["dataset"] or "-"
+        if dataset_counts.get(dataset, 0) >= n:
+            continue
+        dataset_counts[dataset] = dataset_counts.get(dataset, 0) + 1
+        top_rows.append(row)
+
+    if not top_rows:
+        print("No completed full-data runs with test NDCG@20 found.")
+        print("Use --view all to see all experiments (including smoke-test runs).")
+        return
+    print(
+        (
+            f"{'Dataset':<14} | {'Preset':<12} | {'ScoreMix':<8} | "
+            f"{'Neighbors':<10} | {'NDCG@20':>8} | {'Recall@20':>10} | "
+            f"{'AvgPop@20':>10} | {'NDCG@40':>8} | {'Recall@40':>10} | "
+            f"{'AvgPop@40':>10} | {'Time':>8} | {'Epochs':>6} | "
+            f"{'PeakVRAM':>8} | {'Experiment':<40}"
+        ),
+    )
+    print("-" * 232)
+    for row in top_rows:
+        config = _load_config_json(row["config_json"])
+        intervention = row["intervention"]
+        canonical_name = _build_canonical_name_from_config(config, row["preset"], intervention)
+        experiment_label = f"{canonical_name}_train-{row['training_hash']}" if row["training_hash"] else canonical_name
+        scoremix = str(config.get("scoring_weight_mode", "-"))
+        num_neighbors = config.get("num_neighbors")
+        neighbor_label = "-"
+        if isinstance(num_neighbors, list):
+            neighbor_label = "-".join(str(value) for value in num_neighbors)
+        elif num_neighbors is not None:
+            neighbor_label = str(num_neighbors)
+        epochs = str(int(config.get("epochs", 0))) if config.get("epochs") is not None else "-"
+        peak_vram = f"{row['peak_vram_mb']:.0f}MB" if row["peak_vram_mb"] is not None else "-"
+        ndcg20 = f"{row['test_ndcg_20']:.4f}" if row["test_ndcg_20"] is not None else "-"
+        recall20 = f"{row['test_recall_20']:.4f}" if row["test_recall_20"] is not None else "-"
+        avgpop20 = f"{row['test_average_popularity_20']:.4f}" if row["test_average_popularity_20"] is not None else "-"
+        ndcg40 = f"{row['test_ndcg_40']:.4f}" if row["test_ndcg_40"] is not None else "-"
+        recall40 = f"{row['test_recall_40']:.4f}" if row["test_recall_40"] is not None else "-"
+        avgpop40 = f"{row['test_average_popularity_40']:.4f}" if row["test_average_popularity_40"] is not None else "-"
+        time_s = f"{row['avg_epoch_time_s']:.1f}s" if row["avg_epoch_time_s"] is not None else "-"
+        print(
+            (
+                f"{row['dataset'] or '-':<14} | {row['preset'] or '-':<12} | "
+                f"{scoremix:<8} | {neighbor_label:<10} | {ndcg20:>8} | "
+                f"{recall20:>10} | {avgpop20:>10} | {ndcg40:>8} | "
+                f"{recall40:>10} | {avgpop40:>10} | {time_s:>8} | "
+                f"{epochs:>6} | {peak_vram:>8} | {experiment_label:<40}"
+            ),
+        )
 
 
 def main() -> int:
@@ -333,12 +506,14 @@ def main() -> int:
             show_alpha_drift(conn, args.alpha)
         elif args.bottleneck is not None:
             show_bottleneck(conn, args.bottleneck)
+        elif args.view is None and args.batch_id is None and args.status is None:
+            list_top_completed(conn)
         else:
             list_experiments(
                 conn,
                 batch_id=args.batch_id,
                 status=args.status,
-                view_name=args.view,
+                view_name=args.view or "all",
             )
     finally:
         conn.close()
