@@ -39,7 +39,7 @@ Before each implementation iteration read the following files:
 
 -  `.github/skills/` - Useful skills for implementation, project structure, and existing work (see the detailed list below).
 
-- Target system / development tracking files:
+- Target system / development tracking files (not source of truth):
 
 1. `.github/skills/ucagnn-implementation/`.
 2. `docs/ucagnn_implementation/ucagnn_full.md`.
@@ -98,6 +98,8 @@ Read the SKILL.md files and choose which files that they point to are relevant f
 - `.github/skills/project-structure/SKILL.md` - project layout reference.
 - `.github/skills/pytorch/SKILL.md` - PyTorch module and runtime guide.
 - `.github/skills/pytorch-geometric/SKILL.md` - PyG reference and performance tips.
+- `.github/skills/memory-optimizations/SKILL.md` - memory optimization techniques for Python and PyTorch.
+- `.github/skills/numba/SKILL.md` - Numba JIT compilation guide and best practices.
 - `.github/skills/ucagnn-implementation/SKILL.md` - U-CaGNN implementation guide.
 
 ### Core project folders:
