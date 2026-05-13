@@ -6,9 +6,11 @@ import json
 import math
 import sqlite3
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import ClassVar
 
 
 class ExperimentLogger:
@@ -20,16 +22,18 @@ class ExperimentLogger:
         "experiment_completed_summary",
         "experiment_attention_summary",
         "experiment_error_summary",
+        "experiment_code_comparison",
     )
-    VIEW_TABLES = {
+    VIEW_TABLES: ClassVar[dict[str, str]] = {
         "all": "experiments",
         "completed": "experiment_completed_summary",
         "attention": "experiment_attention_summary",
         "errors": "experiment_error_summary",
+        "comparison": "experiment_code_comparison",
     }
 
     _SQLITE_NOW_UTC = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
-    _EXPECTED_EXPERIMENT_COLUMNS = [
+    _EXPECTED_EXPERIMENT_COLUMNS: ClassVar[tuple[str, ...]] = (
         "id",
         "dataset",
         "preset",
@@ -37,7 +41,6 @@ class ExperimentLogger:
         "config_json",
         "seed",
         "training_mode",
-        "graph_method",
         "status",
         "failure_reason",
         "oom_flag",
@@ -47,8 +50,31 @@ class ExperimentLogger:
         "gpu_vram_gb",
         "timestamp",
         "updated_at",
-    ]
-    _EXPECTED_PROFILING_COLUMNS = [
+        "project_version",
+        "git_commit",
+        "training_hash",
+        "evaluation_hash",
+        "change_note",
+    )
+    _LEGACY_EXPERIMENT_COLUMNS: ClassVar[tuple[str, ...]] = (
+        "id",
+        "dataset",
+        "preset",
+        "intervention",
+        "config_json",
+        "seed",
+        "training_mode",
+        "status",
+        "failure_reason",
+        "oom_flag",
+        "batch_id",
+        "profile_name",
+        "gpu_name",
+        "gpu_vram_gb",
+        "timestamp",
+        "updated_at",
+    )
+    _EXPECTED_PROFILING_COLUMNS: ClassVar[tuple[str, ...]] = (
         "id",
         "experiment_id",
         "epoch",
@@ -59,8 +85,8 @@ class ExperimentLogger:
         "vram_peak_mb",
         "stage_call_count",
         "timestamp",
-    ]
-    _EXPECTED_METRIC_COLUMNS = [
+    )
+    _EXPECTED_METRIC_COLUMNS: ClassVar[tuple[str, ...]] = (
         "id",
         "experiment_id",
         "epoch",
@@ -68,7 +94,7 @@ class ExperimentLogger:
         "metric_name",
         "metric_value",
         "timestamp",
-    ]
+    )
 
     def __init__(self, db_path: str = "results/thesis_experiments.db") -> None:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -89,9 +115,62 @@ class ExperimentLogger:
     def _ensure_current_schema(self) -> None:
         for view_name in self.SUMMARY_VIEWS:
             self.conn.execute(f"DROP VIEW IF EXISTS {view_name}")
-        self._ensure_experiments_table()
-        self._ensure_profiling_table()
-        self._ensure_metrics_table()
+        self._ensure_table(
+            "experiments",
+            self._EXPECTED_EXPERIMENT_COLUMNS,
+            self._create_experiments_table,
+        )
+        self._ensure_table(
+            "profiling",
+            self._EXPECTED_PROFILING_COLUMNS,
+            self._create_profiling_table,
+            expected_fks=frozenset({"experiments"}),
+        )
+        self._ensure_table(
+            "metrics",
+            self._EXPECTED_METRIC_COLUMNS,
+            self._create_metrics_table,
+            expected_fks=frozenset({"experiments"}),
+        )
+
+    def _ensure_table(
+        self,
+        table_name: str,
+        expected_columns: tuple[str, ...],
+        create_fn: Callable[[], None],
+        expected_fks: frozenset[str] | None = None,
+    ) -> None:
+        """Create *table_name* if absent, else validate its schema.
+
+        Args:
+            table_name: Name of the SQLite table to check or create.
+            expected_columns: Ordered tuple of expected column names.
+            create_fn: Zero-arg callable that creates the table when absent.
+            expected_fks: Optional set of expected referenced table names.
+
+        """
+        if not self._table_exists(table_name):
+            create_fn()
+            return
+
+        current_columns = self._table_columns(table_name)
+        if expected_fks is not None:
+            fk_targets = self._foreign_key_targets(table_name)
+            if current_columns == expected_columns and fk_targets == expected_fks:
+                return
+            raise RuntimeError(
+                f"{table_name} must already use the current schema. Expected columns {expected_columns} with foreign keys {sorted(expected_fks)}, found columns {current_columns} with foreign keys {sorted(fk_targets)}.",
+            )
+        if current_columns == expected_columns:
+            return
+        if table_name == "experiments" and current_columns == self._LEGACY_EXPERIMENT_COLUMNS:
+            self._migrate_legacy_experiments_table()
+            current_columns = self._table_columns(table_name)
+            if current_columns == expected_columns:
+                return
+        raise RuntimeError(
+            f"{table_name} must already use the current schema. Expected columns {expected_columns}, found {current_columns}.",
+        )
 
     def _table_exists(self, table_name: str) -> bool:
         row = self.conn.execute(
@@ -100,15 +179,12 @@ class ExperimentLogger:
         ).fetchone()
         return row is not None
 
-    def _table_columns(self, table_name: str) -> list[str]:
-        return [row[1] for row in self.conn.execute(f"PRAGMA table_info({table_name})")]
+    def _table_columns(self, table_name: str) -> tuple[str, ...]:
+        return tuple(row[1] for row in self.conn.execute(f"PRAGMA table_info({table_name})"))
 
     def _foreign_key_targets(self, table_name: str) -> set[str]:
         """Return referenced table names declared by a table's foreign keys."""
-        return {
-            row[2]
-            for row in self.conn.execute(f"PRAGMA foreign_key_list({table_name})")
-        }
+        return {row[2] for row in self.conn.execute(f"PRAGMA foreign_key_list({table_name})")}
 
     def _create_experiments_table(self) -> None:
         self.conn.execute("""
@@ -120,7 +196,6 @@ class ExperimentLogger:
                 config_json  TEXT,
                 seed         INTEGER,
                 training_mode TEXT,
-                graph_method TEXT,
                 status       TEXT    NOT NULL DEFAULT 'unknown',
                 failure_reason TEXT,
                 oom_flag     INTEGER NOT NULL DEFAULT 0,
@@ -129,9 +204,27 @@ class ExperimentLogger:
                 gpu_name     TEXT,
                 gpu_vram_gb  REAL,
                 timestamp    TEXT    NOT NULL
-                ,updated_at  TEXT    NOT NULL
+                ,updated_at  TEXT    NOT NULL,
+                project_version TEXT,
+                git_commit   TEXT,
+                training_hash TEXT,
+                evaluation_hash TEXT,
+                change_note  TEXT
             )
         """)
+
+    def _migrate_legacy_experiments_table(self) -> None:
+        """Add provenance columns to the immediately previous experiment schema."""
+        for column_name in (
+            "project_version",
+            "git_commit",
+            "training_hash",
+            "evaluation_hash",
+            "change_note",
+        ):
+            self.conn.execute(
+                f"ALTER TABLE experiments ADD COLUMN {column_name} TEXT",
+            )
 
     def _create_profiling_table(self) -> None:
         self.conn.execute("""
@@ -162,66 +255,22 @@ class ExperimentLogger:
             )
         """)
 
-    def _ensure_experiments_table(self) -> None:
-        if not self._table_exists("experiments"):
-            self._create_experiments_table()
-            return
-
-        current_columns = self._table_columns("experiments")
-        if current_columns == self._EXPECTED_EXPERIMENT_COLUMNS:
-            return
-        raise RuntimeError(
-            "experiments must already use the current schema. "
-            f"Expected columns {self._EXPECTED_EXPERIMENT_COLUMNS}, "
-            f"found {current_columns}."
-        )
-
-    def _ensure_profiling_table(self) -> None:
-        if not self._table_exists("profiling"):
-            self._create_profiling_table()
-            return
-
-        current_columns = self._table_columns("profiling")
-        fk_targets = self._foreign_key_targets("profiling")
-        if current_columns == self._EXPECTED_PROFILING_COLUMNS and fk_targets == {
-            "experiments"
-        }:
-            return
-        raise RuntimeError(
-            "profiling must already use the current schema. "
-            f"Expected columns {self._EXPECTED_PROFILING_COLUMNS} with "
-            "foreign keys {'experiments'}, "
-            f"found columns {current_columns} with foreign keys {sorted(fk_targets)}."
-        )
-
-    def _ensure_metrics_table(self) -> None:
-        if not self._table_exists("metrics"):
-            self._create_metrics_table()
-            return
-
-        current_columns = self._table_columns("metrics")
-        fk_targets = self._foreign_key_targets("metrics")
-        if current_columns == self._EXPECTED_METRIC_COLUMNS and fk_targets == {
-            "experiments"
-        }:
-            return
-        raise RuntimeError(
-            "metrics must already use the current schema. "
-            f"Expected columns {self._EXPECTED_METRIC_COLUMNS} with "
-            "foreign keys {'experiments'}, "
-            f"found columns {current_columns} with foreign keys {sorted(fk_targets)}."
-        )
-
     def _create_indexes_and_views(self) -> None:
         self.conn.executescript("""
             CREATE INDEX IF NOT EXISTS idx_experiments_lookup
-                ON experiments(dataset, preset, training_mode, graph_method);
+                ON experiments(dataset, preset, training_mode);
 
             CREATE INDEX IF NOT EXISTS idx_experiments_batch_lookup
-                ON experiments(batch_id, dataset, preset, intervention, training_mode, graph_method, seed, id DESC);
+                ON experiments(
+                    batch_id, dataset, preset, intervention,
+                    training_mode, seed, id DESC
+                );
 
             CREATE INDEX IF NOT EXISTS idx_experiments_profile_updated
                 ON experiments(profile_name, updated_at DESC);
+
+            CREATE INDEX IF NOT EXISTS idx_experiments_training_hash_updated
+                ON experiments(training_hash, updated_at DESC);
 
             CREATE INDEX IF NOT EXISTS idx_experiments_status
                 ON experiments(status, oom_flag);
@@ -246,13 +295,17 @@ class ExperimentLogger:
                 e.preset,
                 e.intervention,
                 e.training_mode,
-                e.graph_method,
                 e.seed,
                 e.status,
                 e.failure_reason,
                 e.oom_flag,
                 e.batch_id,
                 e.profile_name,
+                e.project_version,
+                e.git_commit,
+                e.training_hash,
+                e.evaluation_hash,
+                e.change_note,
                 e.gpu_name,
                 e.gpu_vram_gb,
                 AVG(CASE
@@ -287,11 +340,70 @@ class ExperimentLogger:
                     WHEN m.metric_name = 'AveragePopularity@40' AND m.split = 'val'
                     THEN m.metric_value
                 END) AS best_average_popularity_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'HitRatio@20' AND m.split = 'val'
+                    THEN m.metric_value
+                END) AS best_hit_ratio_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'HitRatio@40' AND m.split = 'val'
+                    THEN m.metric_value
+                END) AS best_hit_ratio_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'Personalization@20' AND m.split = 'val'
+                    THEN m.metric_value
+                END) AS best_personalization_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'Personalization@40' AND m.split = 'val'
+                    THEN m.metric_value
+                END) AS best_personalization_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'NDCG@20' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_ndcg_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'NDCG@40' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_ndcg_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'Recall@20' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_recall_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'Recall@40' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_recall_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'HitRatio@20' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_hit_ratio_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'HitRatio@40' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_hit_ratio_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'Personalization@20' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_personalization_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'Personalization@40' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_personalization_40,
+                MIN(CASE
+                    WHEN m.metric_name = 'AveragePopularity@20' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_average_popularity_20,
+                MIN(CASE
+                    WHEN m.metric_name = 'AveragePopularity@40' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_average_popularity_40,
                 AVG(CASE
                     WHEN p.stage = 'forward'
                     THEN p.duration_ms / NULLIF(p.stage_call_count, 0)
                 END) AS avg_forward_ms,
-                MAX(p.vram_peak_mb) AS peak_vram_mb
+                COALESCE(
+                    MAX(p.vram_peak_mb),
+                    MAX(CASE WHEN m.metric_name = 'peak_vram_mb' THEN m.metric_value END)
+                ) AS peak_vram_mb
             FROM experiments e
             LEFT JOIN metrics m ON e.id = m.experiment_id
             LEFT JOIN profiling p ON e.id = p.experiment_id
@@ -318,6 +430,44 @@ class ExperimentLogger:
             FROM experiment_summary
             WHERE status IN ('oom', 'failed')
             ORDER BY updated_at DESC, id DESC;
+
+            DROP VIEW IF EXISTS experiment_code_comparison;
+            CREATE VIEW experiment_code_comparison AS
+            SELECT
+                s.id,
+                s.timestamp,
+                s.updated_at,
+                s.dataset,
+                s.preset,
+                s.intervention,
+                s.profile_name,
+                s.project_version,
+                s.git_commit,
+                s.training_hash,
+                s.evaluation_hash,
+                s.change_note,
+                s.test_ndcg_20,
+                s.test_recall_20,
+                s.test_average_popularity_20,
+                s.test_ndcg_40,
+                s.test_recall_40,
+                s.test_average_popularity_40,
+                s.avg_epoch_time_s,
+                s.peak_vram_mb,
+                s.test_ndcg_20 - LAG(s.test_ndcg_20) OVER (
+                    PARTITION BY s.dataset, s.preset, COALESCE(s.intervention, ''), s.training_hash, s.evaluation_hash
+                    ORDER BY s.updated_at, s.id
+                ) AS delta_test_ndcg_20,
+                s.test_recall_20 - LAG(s.test_recall_20) OVER (
+                    PARTITION BY s.dataset, s.preset, COALESCE(s.intervention, ''), s.training_hash, s.evaluation_hash
+                    ORDER BY s.updated_at, s.id
+                ) AS delta_test_recall_20,
+                s.test_average_popularity_20 - LAG(s.test_average_popularity_20) OVER (
+                    PARTITION BY s.dataset, s.preset, COALESCE(s.intervention, ''), s.training_hash, s.evaluation_hash
+                    ORDER BY s.updated_at, s.id
+                ) AS delta_test_average_popularity_20
+            FROM experiment_summary s
+            ORDER BY s.updated_at DESC, s.id DESC;
         """)
 
     def _repair_experiment_statuses(self) -> None:
@@ -334,7 +484,7 @@ class ExperimentLogger:
                   WHERE m.experiment_id = experiments.id
                     AND m.split = 'test'
               )
-            """
+            """,
         )
         self.conn.execute(
             f"""
@@ -343,7 +493,7 @@ class ExperimentLogger:
                 updated_at = COALESCE(updated_at, timestamp, {self._SQLITE_NOW_UTC})
             WHERE status IN ('running', 'unknown')
               AND oom_flag = 1
-            """
+            """,
         )
         self.conn.execute(
             f"""
@@ -352,7 +502,7 @@ class ExperimentLogger:
                 updated_at = COALESCE(updated_at, timestamp, {self._SQLITE_NOW_UTC})
             WHERE status IN ('running', 'unknown')
               AND failure_reason IS NOT NULL
-            """
+            """,
         )
 
     # ── Public API ────────────────────────────────────────────────────────
@@ -363,9 +513,15 @@ class ExperimentLogger:
         config,
         preset: str | None = None,
         intervention: str | None = None,
+        training_mode: str | None = None,
         status: str = "running",
         batch_id: str | None = None,
         profile_name: str | None = None,
+        project_version: str | None = None,
+        git_commit: str | None = None,
+        training_hash: str | None = None,
+        evaluation_hash: str | None = None,
+        change_note: str | None = None,
         gpu_name: str | None = None,
         gpu_vram_gb: float | None = None,
     ) -> int:
@@ -377,12 +533,18 @@ class ExperimentLogger:
         else:
             config_json = json.dumps(config, default=str)
         seed = getattr(config, "seed", None)
-        training_mode = getattr(config, "training_mode", None)
-        graph_method = getattr(config, "graph_method", None)
-        now = datetime.now(timezone.utc).isoformat()
+        if training_mode is None:
+            training_mode = getattr(config, "training_mode", None)
+        now = datetime.now(UTC).isoformat()
         cur = self.conn.execute(
-            "INSERT INTO experiments (dataset, preset, intervention, config_json, seed, training_mode, graph_method, status, failure_reason, oom_flag, batch_id, profile_name, gpu_name, gpu_vram_gb, timestamp, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "INSERT INTO experiments ("
+                "dataset, preset, intervention, config_json, seed, training_mode, "
+                "status, failure_reason, oom_flag, batch_id, profile_name, "
+                "project_version, git_commit, training_hash, evaluation_hash, "
+                "change_note, gpu_name, gpu_vram_gb, timestamp, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ),
             (
                 dataset,
                 preset,
@@ -390,12 +552,16 @@ class ExperimentLogger:
                 config_json,
                 seed,
                 training_mode,
-                graph_method,
                 status,
                 None,
                 0,
                 batch_id,
                 profile_name,
+                project_version,
+                git_commit,
+                training_hash,
+                evaluation_hash,
+                change_note,
                 gpu_name,
                 gpu_vram_gb,
                 now,
@@ -420,6 +586,7 @@ class ExperimentLogger:
             status: New experiment status.
             failure_reason: Optional free-form failure detail.
             oom_flag: Optional explicit OOM indicator.
+
         """
         self.conn.execute(
             "UPDATE experiments SET status = ?, failure_reason = ?, oom_flag = COALESCE(?, oom_flag), updated_at = ? WHERE id = ?",
@@ -427,7 +594,7 @@ class ExperimentLogger:
                 status,
                 failure_reason,
                 None if oom_flag is None else int(oom_flag),
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
                 exp_id,
             ),
         )
@@ -442,7 +609,6 @@ class ExperimentLogger:
         intervention: str | None,
         seed: int | None,
         training_mode: str | None,
-        graph_method: str | None,
         config_filters: dict[str, object] | None = None,
     ) -> sqlite3.Row | None:
         """Return the most recent experiment row for a batch-scoped matrix item."""
@@ -451,7 +617,6 @@ class ExperimentLogger:
             "intervention": intervention,
             "seed": seed,
             "training_mode": training_mode,
-            "graph_method": graph_method,
         }
         where_clauses = ["batch_id = ?", "dataset = ?"]
         params: list[object] = [batch_id, dataset]
@@ -467,11 +632,7 @@ class ExperimentLogger:
                 where_clauses.append("config_json LIKE ?")
                 params.append(f'%"{field_name}": {json.dumps(value)}%')
 
-        sql = (
-            "SELECT * FROM experiments WHERE "
-            + " AND ".join(where_clauses)
-            + " ORDER BY id DESC LIMIT 1"
-        )
+        sql = "SELECT * FROM experiments WHERE " + " AND ".join(where_clauses) + " ORDER BY id DESC LIMIT 1"
         return self.conn.execute(sql, params).fetchone()
 
     def get_metrics_for_split(
@@ -512,8 +673,7 @@ class ExperimentLogger:
         per-batch StageMetrics into one row per (epoch, stage).
         """
         self.conn.execute(
-            "INSERT INTO profiling (experiment_id, epoch, stage, duration_ms, vram_before_mb, vram_after_mb, vram_peak_mb, stage_call_count, timestamp) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO profiling (experiment_id, epoch, stage, duration_ms, vram_before_mb, vram_after_mb, vram_peak_mb, stage_call_count, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 exp_id,
                 epoch,
@@ -523,7 +683,7 @@ class ExperimentLogger:
                 stage.vram_after_mb,
                 stage.vram_peak_mb,
                 stage_call_count,
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
             ),
         )
 
@@ -538,20 +698,17 @@ class ExperimentLogger:
         """Log a single metric value."""
         if not math.isfinite(float(value)):
             raise ValueError(
-                "Cannot log non-finite metric value "
-                f"for experiment_id={exp_id}, split={split}, epoch={epoch}, "
-                f"metric={metric_name}: {value!r}"
+                f"Cannot log non-finite metric value for experiment_id={exp_id}, split={split}, epoch={epoch}, metric={metric_name}: {value!r}",
             )
         self.conn.execute(
-            "INSERT INTO metrics (experiment_id, epoch, split, metric_name, metric_value, timestamp) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO metrics (experiment_id, epoch, split, metric_name, metric_value, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
             (
                 exp_id,
                 epoch,
                 split,
                 metric_name,
                 value,
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
             ),
         )
 
@@ -568,7 +725,11 @@ class ExperimentLogger:
         """Convenience: log all data for one epoch in a single call."""
         self.log_metric(exp_id, "loss", train_loss, epoch=epoch, split="train")
         self.log_metric(
-            exp_id, "epoch_time_s", epoch_time_s, epoch=epoch, split="train"
+            exp_id,
+            "epoch_time_s",
+            epoch_time_s,
+            epoch=epoch,
+            split="train",
         )
 
         for name, value in val_metrics.items():
@@ -581,59 +742,36 @@ class ExperimentLogger:
                 "vram_after_mb": [],
                 "vram_peak_mb": [],
                 "stage_call_count": 0,
-            }
+            },
         )
         for stage in profiler_stages:
             stage_summary = aggregated_stages[stage.name]
             stage_summary["duration_ms"] = float(stage_summary["duration_ms"]) + float(
-                stage.elapsed_ms
+                stage.elapsed_ms,
             )
             stage_summary["vram_before_mb"].append(stage.vram_before_mb)
             stage_summary["vram_after_mb"].append(stage.vram_after_mb)
             stage_summary["vram_peak_mb"].append(stage.vram_peak_mb)
-            stage_summary["stage_call_count"] = (
-                int(stage_summary["stage_call_count"]) + 1
-            )
+            stage_summary["stage_call_count"] = int(stage_summary["stage_call_count"]) + 1
 
         for stage_name, stage_values in sorted(aggregated_stages.items()):
-            vram_before_values = [
-                float(value)
-                for value in stage_values["vram_before_mb"]
-                if value is not None
-            ]
-            vram_after_values = [
-                float(value)
-                for value in stage_values["vram_after_mb"]
-                if value is not None
-            ]
+            vram_before_values = [float(value) for value in stage_values["vram_before_mb"] if value is not None]
+            vram_after_values = [float(value) for value in stage_values["vram_after_mb"] if value is not None]
             self.conn.execute(
-                "INSERT INTO profiling (experiment_id, epoch, stage, duration_ms, vram_before_mb, vram_after_mb, vram_peak_mb, stage_call_count, timestamp) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO profiling (experiment_id, epoch, stage, duration_ms, vram_before_mb, vram_after_mb, vram_peak_mb, stage_call_count, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     exp_id,
                     epoch,
                     stage_name,
                     float(stage_values["duration_ms"]),
-                    (
-                        sum(vram_before_values) / len(vram_before_values)
-                        if vram_before_values
-                        else None
-                    ),
-                    (
-                        sum(vram_after_values) / len(vram_after_values)
-                        if vram_after_values
-                        else None
-                    ),
+                    (sum(vram_before_values) / len(vram_before_values) if vram_before_values else None),
+                    (sum(vram_after_values) / len(vram_after_values) if vram_after_values else None),
                     max(
-                        (
-                            float(value)
-                            for value in stage_values["vram_peak_mb"]
-                            if value is not None
-                        ),
+                        (float(value) for value in stage_values["vram_peak_mb"] if value is not None),
                         default=None,
                     ),
                     int(stage_values["stage_call_count"]),
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(UTC).isoformat(),
                 ),
             )
 
@@ -645,7 +783,11 @@ class ExperimentLogger:
                     param = getattr(gcn, attr, None)
                     if param is not None:
                         self.log_metric(
-                            exp_id, attr, param.item(), epoch=epoch, split="train"
+                            exp_id,
+                            attr,
+                            param.item(),
+                            epoch=epoch,
+                            split="train",
                         )
 
         self.conn.commit()

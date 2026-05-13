@@ -8,15 +8,105 @@ from typing import Literal
 from ..data.canonical import DerivedSplitMode
 from ..data.feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 
-
 DEFAULT_SEED = 13
 ScoringMode = Literal[
     "default",
     "interest_only",
     "conformity_only",
-    "counterfactual_only",
     "conformity_suppressed",
 ]
+LRSchedulerName = Literal[
+    "none",
+    "plateau",
+    "step",
+    "multi_step",
+    "exponential",
+    "cosine",
+    "cosine_restart",
+    "polynomial",
+    "linear",
+]
+SUPPORTED_LR_SCHEDULERS: tuple[LRSchedulerName, ...] = (
+    "none",
+    "plateau",
+    "step",
+    "multi_step",
+    "exponential",
+    "cosine",
+    "cosine_restart",
+    "polynomial",
+    "linear",
+)
+PresetOverrideValue = bool | int | float | str | list[int]
+PresetOverrides = dict[str, PresetOverrideValue]
+
+_NON_CAUSAL_PRESET_OVERRIDES: PresetOverrides = {
+    "use_sign_aware": False,
+    "use_counterfactual": False,
+    "use_ipw": False,
+    "use_popularity_head": False,
+    "use_popularity_emb": False,
+    "lambda_contrastive": 0.0,
+    "lambda_align": 0.0,
+    "lambda_uniform": 0.0,
+    "lambda_pop": 0.0,
+    "auxiliary_loss_schedule": "phased",
+    "scoring_weight_mode": "fixed",
+    "gamma_popularity": 0.0,
+    "train_scoring_mode": "default",
+    "eval_scoring_mode": "default",
+    "use_features": False,
+    "feature_policy": DEFAULT_FEATURE_POLICY,
+    "propensity_clip_min": 0.01,
+}
+_LIGHTGCN_PRESET_OVERRIDES: PresetOverrides = _NON_CAUSAL_PRESET_OVERRIDES | {
+    "use_dual_branch": False,
+    "lambda_interest_bpr": 0.0,
+    "lambda_conformity_bpr": 0.0,
+    "lambda_independence": 0.0,
+    "beta_conformity": 0.0,
+}
+_DICE_LIKE_PRESET_OVERRIDES: PresetOverrides = _NON_CAUSAL_PRESET_OVERRIDES | {
+    "use_dual_branch": True,
+    "lambda_interest_bpr": 0.1,
+    "lambda_conformity_bpr": 0.1,
+    "lambda_independence": 0.01,
+    "alpha_interest": 1.0,
+    "beta_conformity": 1.0,
+    "auxiliary_losses_start_epoch": 0,
+    "popularity_supervision_start_epoch": 0,
+}
+_FULL_PRESET_OVERRIDES: PresetOverrides = {
+    "use_dual_branch": True,
+    "use_sign_aware": True,
+    "use_counterfactual": True,
+    "use_ipw": True,
+    "use_popularity_head": True,
+    "use_popularity_emb": True,
+    "lambda_interest_bpr": 0.02,
+    "lambda_conformity_bpr": 0.02,
+    "lambda_independence": 0.005,
+    "lambda_contrastive": 0.02,
+    "lambda_align": 0.0,
+    "lambda_uniform": 0.0,
+    "lambda_pop": 0.02,
+    "auxiliary_loss_schedule": "linear_ramp",
+    "scoring_weight_mode": "learned",
+    "alpha_interest": 0.5,
+    "beta_conformity": 0.3,
+    "gamma_popularity": 0.2,
+    "train_scoring_mode": "default",
+    "eval_scoring_mode": "default",
+    "auxiliary_losses_start_epoch": 15,
+    "popularity_supervision_start_epoch": 30,
+    "loss_schedule": "baseline",
+    "interest_gnn_layers": 1,
+    "conformity_gnn_layers": 2,
+    "num_neighbors": [10, 5],
+    "propensity_clip_min": 0.1,
+    "use_features": True,
+    "feature_policy": DEFAULT_FEATURE_POLICY,
+}
 
 
 @dataclass
@@ -30,11 +120,12 @@ class UCaGNNConfig:
     use_popularity_emb: bool = True
 
     # ── Graph construction ───────────────────────────────────────────────
-    graph_method: Literal["knn", "cagra"] = "cagra"
-    knn_k: int = 20
-    cagra_out_degree: int = 32
-    cagra_initial_degree: int = 64
-    cagra_team_size: int = 8
+    cagra_k: int = 20
+    cagra_out_degree: int = 32  # thesis-speed default; cuVS library default is 64
+    cagra_initial_degree: int = 64  # thesis-speed default; cuVS library default is 128
+    cagra_team_size: int = 0  # 0 = auto-select (cuVS default)
+    cagra_metric: str = "inner_product"  # dot-product space matches the model's scoring function
+    cagra_itopk_size: int = 64  # intermediate candidates per step; higher = better recall
 
     # ── Embedding / GNN hyperparameters ──────────────────────────────────
     embed_dim: int = 64
@@ -49,7 +140,7 @@ class UCaGNNConfig:
     alpha_interest: float = 0.5
     beta_conformity: float = 0.3
     gamma_popularity: float = 0.2
-    train_scoring_mode: ScoringMode = "default"
+    train_scoring_mode: ScoringMode = "default"  # score view optimized by the ranking loss
 
     # ── Loss lambdas (0.0 = disabled) ────────────────────────────────────
     lambda_rec: float = 1.0
@@ -77,6 +168,10 @@ class UCaGNNConfig:
     lr: float = 1e-3
     weight_decay: float = 1e-5
     batch_size: int = 4096
+    auto_batch_size: bool = False
+    batch_size_candidates: list[int] = field(
+        default_factory=lambda: [16384, 8192, 4096, 2048, 1024, 512, 256],
+    )
     epochs: int = 60
     patience: int = 10
     use_early_stopping: bool = True
@@ -88,11 +183,11 @@ class UCaGNNConfig:
     ema_decay: float = 0.999
     show_progress_bar: bool = True
     progress_bar_loss_cadence: int = 16
-    lr_scheduler: Literal["none", "plateau"] = "plateau"
+    lr_scheduler: LRSchedulerName = "plateau"
     lr_scheduler_factor: float = 0.5
     lr_scheduler_patience: int = 5
     eval_ks: list[int] = field(default_factory=lambda: [20, 40])
-    eval_scoring_mode: ScoringMode = "default"
+    eval_scoring_mode: ScoringMode = "default"  # score view used at validation/test time
     # ── Training ─────────────────────────────────────────────────────────
     num_neighbors: list[int] = field(default_factory=lambda: [10, 5])
     sample_interactions: int | None = None
@@ -100,13 +195,13 @@ class UCaGNNConfig:
 
     # ── Negative sampling ────────────────────────────────────────────────
     n_negatives: int = 1
-    hard_negative_ratio: float = (
-        0.0  # fraction of negatives that are popularity-weighted
-    )
-
+    hard_negative_ratio: float = 0.0  # fraction of negatives that are popularity-weighted
     # ── Curriculum schedule (epoch thresholds) ───────────────────────────
-    curriculum_phase1_end: int = 15  # CaDCR-inspired staged curriculum (0 = disabled)
-    curriculum_phase2_end: int = 30
+    # Phase 1 ends when auxiliary losses begin; phase 2 ends when popularity
+    # supervision begins. Both thresholds stay as explicit config fields so
+    # checkpoints and experiment logs remain stable.
+    auxiliary_losses_start_epoch: int = 15
+    popularity_supervision_start_epoch: int = 30
     loss_schedule: Literal["baseline"] = "baseline"
 
     # ── Side features ─────────────────────────────────────────────────────
@@ -143,8 +238,7 @@ class UCaGNNConfig:
             raise ValueError("conformity_gnn_layers must be >= 1")
         if len(self.num_neighbors) != self.max_gnn_layers:
             raise ValueError(
-                f"num_neighbors length ({len(self.num_neighbors)}) must equal "
-                f"max_gnn_layers ({self.max_gnn_layers})"
+                f"num_neighbors length ({len(self.num_neighbors)}) must equal max_gnn_layers ({self.max_gnn_layers})",
             )
         if self.sample_interactions is not None and self.sample_interactions <= 0:
             raise ValueError("sample_interactions must be > 0 when provided")
@@ -154,11 +248,18 @@ class UCaGNNConfig:
             raise ValueError("progress_bar_loss_cadence must be >= 1")
         if self.profiling_cadence < 1:
             raise ValueError("profiling_cadence must be >= 1")
-        if (
-            self.popularity_window_seconds is not None
-            and self.popularity_window_seconds <= 0
-        ):
+        if self.batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+        if not self.batch_size_candidates:
+            raise ValueError("batch_size_candidates must contain at least one value")
+        if any(candidate < 1 for candidate in self.batch_size_candidates):
+            raise ValueError("batch_size_candidates must all be >= 1")
+        if self.popularity_window_seconds is not None and self.popularity_window_seconds <= 0:
             raise ValueError("popularity_window_seconds must be > 0 when provided")
+        if self.lr_scheduler not in SUPPORTED_LR_SCHEDULERS:
+            raise ValueError(
+                f"lr_scheduler must be one of {', '.join(SUPPORTED_LR_SCHEDULERS)}",
+            )
         if self.amp_dtype != "bfloat16":
             raise ValueError("amp_dtype is fixed to 'bfloat16'")
         if self.propensity_clip_min <= 0 or self.propensity_clip_min >= 1:
@@ -191,77 +292,66 @@ class UCaGNNConfig:
             return self.single_branch_gnn_layers
         return max(self.interest_gnn_layers, self.conformity_gnn_layers)
 
-    def preset_lightgcn(self) -> UCaGNNConfig:
-        """Non-causal LightGCN baseline."""
-        self.use_dual_branch = False
-        self.use_sign_aware = False
-        self.use_counterfactual = False
-        self.use_ipw = False
-        self.use_popularity_head = False
-        self.use_popularity_emb = False
-        self.lambda_interest_bpr = 0.0
-        self.lambda_conformity_bpr = 0.0
-        self.lambda_independence = 0.0
-        self.lambda_contrastive = 0.0
-        self.lambda_align = 0.0
-        self.lambda_uniform = 0.0
-        self.lambda_pop = 0.0
-        self.auxiliary_loss_schedule = "phased"
-        self.scoring_weight_mode = "fixed"
-        self.beta_conformity = 0.0
-        self.gamma_popularity = 0.0
-        self.train_scoring_mode = "default"
-        self.eval_scoring_mode = "default"
-        self.graph_method = "cagra"
-        self.feature_policy = DEFAULT_FEATURE_POLICY
+    @property
+    def curriculum_phase1_end(self) -> int:
+        """Backwards-compatible alias for auxiliary_losses_start_epoch."""
+        return self.auxiliary_losses_start_epoch
+
+    @property
+    def curriculum_phase2_end(self) -> int:
+        """Backwards-compatible alias for popularity_supervision_start_epoch."""
+        return self.popularity_supervision_start_epoch
+
+    # ── Scoring contract (authoritative table) ────────────────────────────
+    # Each preset fixes the train/eval scoring modes so the model optimises and
+    # reports results using a consistent score view.  Same-checkpoint
+    # evaluation via ``scripts/evaluate_scoring_modes.py`` may override
+    # ``eval_scoring_mode`` without retraining.
+    #
+    # Preset           | train_scoring_mode | eval_scoring_mode
+    # -----------------|--------------------|------------------
+    # preset_lightgcn  | "default"          | "default"
+    # preset_dice_like | "default"          | "default"
+    # preset_full      | "default"          | "default"
+    # intervention     | "default" (train)  | overridden at eval time
+    #
+    # "default"           = interest + conformity (if dual-branch) + popularity (if enabled)
+    # "interest_only"     = interest branch only (strips popularity bias from ranking score)
+    # "conformity_suppressed" = interest + popularity, no conformity (diagnostic only)
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _apply_preset_overrides(
+        self,
+        overrides: PresetOverrides,
+    ) -> UCaGNNConfig:
+        """Apply a preset's field overrides in place.
+
+        Args:
+            overrides: Mapping from config field names to preset-owned values.
+
+        Returns:
+            UCaGNNConfig: The mutated config instance.
+
+        """
+        for field_name, value in overrides.items():
+            setattr(self, field_name, list(value) if isinstance(value, list) else value)
         return self
+
+    def preset_lightgcn(self) -> UCaGNNConfig:
+        """Non-causal LightGCN baseline using the default single-branch score."""
+        return self._apply_preset_overrides(_LIGHTGCN_PRESET_OVERRIDES)
 
     def preset_dice_like(self) -> UCaGNNConfig:
-        """DICE-like: dual branch + orthogonality only."""
-        self.use_dual_branch = True
-        self.use_counterfactual = False
-        self.use_ipw = False
-        self.use_popularity_head = False
-        self.use_popularity_emb = False
-        self.lambda_interest_bpr = 0.0
-        self.lambda_conformity_bpr = 0.0
-        self.lambda_contrastive = 0.0
-        self.lambda_align = 0.0
-        self.lambda_uniform = 0.0
-        self.lambda_pop = 0.0
-        self.auxiliary_loss_schedule = "phased"
-        self.scoring_weight_mode = "fixed"
-        self.gamma_popularity = 0.0
-        self.graph_method = "knn"
-        self.feature_policy = DEFAULT_FEATURE_POLICY
-        # Evaluate on the interest branch only — conformity captures popularity
-        # bias that the dual-branch is designed to separate, so using it in the
-        # recommendation score would undermine the causal measurement.
-        self.train_scoring_mode = "interest_only"
-        self.eval_scoring_mode = "interest_only"
-        return self
+        """DICE-like baseline with fixed interest+conformity scoring."""
+        return self._apply_preset_overrides(_DICE_LIKE_PRESET_OVERRIDES)
 
     def preset_full(self) -> UCaGNNConfig:
-        """Wave-1 U-CaGNN v2 mainline: fused scoring with asymmetric depth."""
-        self.use_dual_branch = True
-        self.use_sign_aware = True
-        self.use_counterfactual = True
-        self.use_ipw = True
-        self.use_popularity_head = True
-        self.use_popularity_emb = True
-        self.scoring_weight_mode = "learned"
-        self.train_scoring_mode = "default"
-        self.eval_scoring_mode = "default"
-        self.loss_schedule = "baseline"
-        self.auxiliary_loss_schedule = "linear_ramp"
-        self.interest_gnn_layers = 1
-        self.conformity_gnn_layers = 2
-        self.num_neighbors = [10, 5]
-        self.lambda_contrastive = 0.02
-        self.lambda_align = 0.0
-        self.lambda_uniform = 0.0
-        # Tighter IPW clipping (max weight = 10×) prevents gradient explosion
-        # from poorly calibrated propensity estimates early in training.
-        self.propensity_clip_min = 0.1
-        self.feature_policy = DEFAULT_FEATURE_POLICY
-        return self
+        """U-CaGNN mainline: fused scoring with asymmetric depth.
+
+        The trained checkpoint optimizes and evaluates the fused ``default``
+        score by default. Same-checkpoint intervention scripts may still
+        override ``eval_scoring_mode`` later to measure alternate views without
+        retraining.
+
+        """
+        return self._apply_preset_overrides(_FULL_PRESET_OVERRIDES)

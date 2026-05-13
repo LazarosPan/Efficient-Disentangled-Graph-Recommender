@@ -3,20 +3,166 @@
 from __future__ import annotations
 
 import logging
-from contextlib import nullcontext
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import Any
 
 import torch
-import torch.optim as optim
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch import optim
+from torch.optim.lr_scheduler import (
+    CosineAnnealingLR,
+    CosineAnnealingWarmRestarts,
+    ExponentialLR,
+    LambdaLR,
+    LinearLR,
+    MultiStepLR,
+    ReduceLROnPlateau,
+    StepLR,
+)
+
 from ..data.negative_sampler import NegativeSampler
 from ..losses.loss_suite import LossSuite
 from ..models.ucagnn import UCaGNN
 from ..profiling.gpu_profiler import GPUProfiler
 from .config import UCaGNNConfig
+from .reproducibility import configure_torch_runtime
 
 logger = logging.getLogger(__name__)
+
+# Key renames introduced during refactoring — map old checkpoint keys to current names.
+_STATE_KEY_MIGRATIONS: dict[str, str] = {
+    "propensity.mlp": "_propensity_mlp",
+}
+
+
+def autocast_context(
+    *,
+    use_amp: bool,
+    amp_dtype: torch.dtype = torch.bfloat16,
+) -> AbstractContextManager[None]:
+    """Return the shared CUDA autocast context for AMP-enabled regions.
+
+    Args:
+        use_amp: Whether CUDA AMP should be enabled.
+        amp_dtype: Autocast dtype used when AMP is enabled.
+
+    Returns:
+        Active CUDA autocast context when ``use_amp`` is true, else ``nullcontext``.
+
+    """
+    if use_amp:
+        return torch.autocast("cuda", dtype=amp_dtype)
+    return nullcontext()
+
+
+def move_tensor_to_device(
+    tensor: torch.Tensor,
+    device: torch.device,
+    *,
+    dtype: torch.dtype | None = None,
+) -> torch.Tensor:
+    """Move a tensor with the runtime's shared non-blocking device policy.
+
+    Args:
+        tensor: Tensor to move.
+        device: Destination device.
+        dtype: Optional target dtype override.
+
+    Returns:
+        torch.Tensor: Tensor moved to ``device``.
+
+    """
+    move_kwargs: dict[str, object] = {
+        "device": device,
+        "non_blocking": device.type == "cuda",
+    }
+    if dtype is not None:
+        move_kwargs["dtype"] = dtype
+    return tensor.to(**move_kwargs)
+
+
+def move_optional_tensor_to_device(
+    tensor: torch.Tensor | None,
+    device: torch.device,
+    *,
+    dtype: torch.dtype | None = None,
+) -> torch.Tensor | None:
+    """Move an optional tensor to a device when it exists.
+
+    Args:
+        tensor: Optional tensor to move.
+        device: Destination device.
+        dtype: Optional target dtype override.
+
+    Returns:
+        torch.Tensor | None: Moved tensor, or ``None`` when ``tensor`` is absent.
+
+    """
+    if tensor is None:
+        return None
+    return move_tensor_to_device(tensor, device, dtype=dtype)
+
+
+def stage_graph_tensors_for_device(
+    data: Any,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+    """Stage edge tensors on a device for sampler or evaluator use.
+
+    Args:
+        data: Graph-like object carrying ``edge_index`` and optional edge fields.
+        device: Destination device for the staged tensors.
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        ``(edge_index, edge_sign, edge_norm)`` on ``device``.
+
+    """
+    return (
+        move_tensor_to_device(data.edge_index, device),
+        move_optional_tensor_to_device(getattr(data, "edge_sign", None), device),
+        move_optional_tensor_to_device(getattr(data, "edge_norm", None), device),
+    )
+
+
+def model_device(module: torch.nn.Module) -> torch.device:
+    """Return the device of the first parameter owned by ``module``.
+
+    Args:
+        module: Module whose active parameter device should be reported.
+
+    Returns:
+        torch.device: Device of the first parameter in ``module``.
+
+    """
+    return next(module.parameters()).device
+
+
+def empty_cuda_cache(device: torch.device) -> None:
+    """Clear the CUDA allocator cache when the target device is CUDA.
+
+    Args:
+        device: Device whose allocator cache should be considered.
+
+    Returns:
+        None.
+
+    """
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
+
+def _migrate_model_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite legacy parameter-name prefixes so old checkpoints load cleanly."""
+    migrated: dict[str, Any] = {}
+    for key, value in state.items():
+        new_key = key
+        for old_prefix, new_prefix in _STATE_KEY_MIGRATIONS.items():
+            if key.startswith(old_prefix + ".") or key == old_prefix:
+                new_key = new_prefix + key[len(old_prefix) :]
+                break
+        migrated[new_key] = value
+    return migrated
 
 
 class TrainerRuntime:
@@ -31,6 +177,7 @@ class TrainerRuntime:
         profiler: GPUProfiler | None = None,
         experiment_logger: Any = None,
         exp_id: int | None = None,
+        mlflow_module: Any = None,
     ) -> None:
         """Initialize shared trainer state and optimizer-owned modules."""
         self.model = model
@@ -40,25 +187,22 @@ class TrainerRuntime:
         self.profiler = profiler
         self.experiment_logger = experiment_logger
         self.exp_id = exp_id
+        self.mlflow_module = mlflow_module
         from ..training.evaluator import Evaluator
 
         self.evaluator = Evaluator(config)
 
         self.device = torch.device(
-            config.device if torch.cuda.is_available() else "cpu"
+            config.device if torch.cuda.is_available() else "cpu",
         )
+        configure_torch_runtime()
         self.use_amp = self.device.type == "cuda" and self.config.use_amp
         self.amp_dtype = torch.bfloat16
-        if self.device.type == "cuda":
-            torch.backends.cudnn.benchmark = True
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-            torch.set_float32_matmul_precision("medium")
         self.model.to(self.device)
         self.loss_suite.to(self.device)
-        self.popularity = data.popularity.to(self.device)
+        self.popularity = move_tensor_to_device(data.popularity, self.device)
         self.trainable_parameters = list(model.parameters()) + list(
-            loss_suite.parameters()
+            loss_suite.parameters(),
         )
 
         # Separate sign-aware scalar parameters (alpha_pos / alpha_neg) from the
@@ -70,18 +214,14 @@ class TrainerRuntime:
         sign_params = [
             p
             for attr in ("alpha_pos", "alpha_neg")
-            for p in (
-                [getattr(gcn, attr)] if gcn is not None and hasattr(gcn, attr) else []
-            )
+            for p in ([getattr(gcn, attr)] if gcn is not None and hasattr(gcn, attr) else [])
         ]
         sign_param_ids = {id(p) for p in sign_params}
-        main_params = [
-            p for p in self.trainable_parameters if id(p) not in sign_param_ids
-        ]
+        main_params = [p for p in self.trainable_parameters if id(p) not in sign_param_ids]
 
         use_fused = self.device.type == "cuda"
         param_groups: list[dict] = [
-            {"params": main_params, "weight_decay": config.weight_decay}
+            {"params": main_params, "weight_decay": config.weight_decay},
         ]
         if sign_params:
             param_groups.append({"params": sign_params, "weight_decay": 0.0})
@@ -91,14 +231,7 @@ class TrainerRuntime:
             fused=use_fused,
         )
 
-        self.scheduler: ReduceLROnPlateau | None = None
-        if config.lr_scheduler == "plateau":
-            self.scheduler = ReduceLROnPlateau(
-                self.optimizer,
-                mode="max",
-                factor=config.lr_scheduler_factor,
-                patience=config.lr_scheduler_patience,
-            )
+        self.scheduler = self._build_scheduler()
 
         self.sampler = NegativeSampler(
             n_items=data.n_items,
@@ -112,17 +245,83 @@ class TrainerRuntime:
         if config.use_ema:
             ema_fn = torch.optim.swa_utils.get_ema_multi_avg_fn(config.ema_decay)
             self.ema_model = torch.optim.swa_utils.AveragedModel(
-                model, multi_avg_fn=ema_fn
+                model,
+                multi_avg_fn=ema_fn,
             )
 
         self.best_ndcg = 0.0
         self.patience_counter = 0
         self.best_state = None
         self.completed_epoch = -1
+        self.training_identity: dict[str, Any] | None = None
+        self.training_hash: str | None = None
+        self.evaluation_identity: dict[str, Any] | None = None
+        self.evaluation_hash: str | None = None
         self.resume_history: dict[str, list] = {
             "train_loss": [],
             "val_metrics": [],
         }
+
+    def _build_scheduler(self) -> Any:
+        """Build the configured learning-rate scheduler for the optimizer."""
+        scheduler_name = self.config.lr_scheduler
+        if scheduler_name == "none":
+            return None
+        if scheduler_name == "plateau":
+            return ReduceLROnPlateau(
+                self.optimizer,
+                mode="max",
+                factor=self.config.lr_scheduler_factor,
+                patience=self.config.lr_scheduler_patience,
+            )
+        if scheduler_name == "step":
+            return StepLR(
+                self.optimizer,
+                step_size=max(1, self.config.epochs // 10),
+                gamma=self.config.lr_scheduler_factor,
+            )
+        if scheduler_name == "multi_step":
+            return MultiStepLR(
+                self.optimizer,
+                milestones=[
+                    max(1, int(self.config.epochs * 0.3)),
+                    max(1, int(self.config.epochs * 0.8)),
+                ],
+                gamma=self.config.lr_scheduler_factor,
+            )
+        if scheduler_name == "exponential":
+            return ExponentialLR(
+                self.optimizer,
+                gamma=max(0.01, self.config.lr_scheduler_factor),
+            )
+        if scheduler_name == "cosine":
+            return CosineAnnealingLR(
+                self.optimizer,
+                T_max=max(1, self.config.epochs),
+            )
+        if scheduler_name == "cosine_restart":
+            return CosineAnnealingWarmRestarts(
+                self.optimizer,
+                T_0=max(1, self.config.epochs // 10),
+                T_mult=2,
+            )
+        if scheduler_name == "polynomial":
+            exponent = max(0.1, self.config.lr_scheduler_factor)
+            return LambdaLR(
+                self.optimizer,
+                lr_lambda=lambda epoch: max(
+                    0.0,
+                    (1.0 - float(epoch) / float(self.config.epochs)) ** exponent,
+                ),
+            )
+        if scheduler_name == "linear":
+            return LinearLR(
+                self.optimizer,
+                start_factor=1.0,
+                end_factor=0.0,
+                total_iters=max(1, self.config.epochs),
+            )
+        raise ValueError(f"Unsupported lr_scheduler {scheduler_name!r}.")
 
     def _get_train_interactions(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Return training user/item tensors in the shared index space."""
@@ -147,15 +346,86 @@ class TrainerRuntime:
         if self.ema_model is not None:
             self.ema_model.update_parameters(self.model)
 
-    def _evaluate_validation_metrics(self) -> dict[str, float]:
-        """Run the shared validation pass, using EMA weights when available."""
-        eval_model = self.ema_model if self.ema_model is not None else self.model
-        with self._autocast_context():
+    def _move_optimizer_state(self, device: torch.device) -> None:
+        """Move optimizer state tensors to ``device`` in place."""
+        for state in self.optimizer.state.values():
+            for key, value in state.items():
+                if torch.is_tensor(value):
+                    state[key] = move_tensor_to_device(value, device)
+
+    @staticmethod
+    def _invalidate_eval_feature_cache(eval_model: Any) -> None:
+        """Drop cached full-catalog feature tensors before an evaluation retry."""
+        embedding = getattr(eval_model, "embedding", None)
+        invalidate = getattr(embedding, "invalidate_feature_cache", None)
+        if callable(invalidate):
+            invalidate()
+
+    def _evaluate_split_metrics_on_cpu(
+        self,
+        eval_model: Any,
+        mask: torch.Tensor,
+    ) -> dict[str, float]:
+        """Evaluate one split on CPU, restoring the model device afterward."""
+        self._invalidate_eval_feature_cache(eval_model)
+        eval_model.to(torch.device("cpu"))
+        try:
+            return self._evaluate_model(eval_model, mask.cpu(), use_amp=False)
+        finally:
+            self._invalidate_eval_feature_cache(eval_model)
+            eval_model.to(self.device)
+
+    def _evaluate_model(
+        self,
+        eval_model: Any,
+        mask: torch.Tensor,
+        *,
+        use_amp: bool,
+    ) -> dict[str, float]:
+        """Run evaluator metrics for one model/split pair under a chosen AMP policy."""
+        with autocast_context(use_amp=use_amp, amp_dtype=self.amp_dtype):
             return self.evaluator.evaluate(
                 eval_model,
                 self.data,
-                self.data.val_mask,
+                mask,
             )
+
+    def _evaluate_split_metrics(self, mask: torch.Tensor) -> dict[str, float]:
+        """Evaluate one split with progressive CUDA-OOM fallbacks."""
+        eval_model = self.ema_model if self.ema_model is not None else self.model
+        try:
+            return self._evaluate_model(eval_model, mask, use_amp=self.use_amp)
+        except torch.OutOfMemoryError:
+            if self.device.type != "cuda":
+                raise
+
+        logger.warning(
+            "Evaluation hit CUDA OOM; retrying after temporarily offloading optimizer state to CPU.",
+        )
+        self.optimizer.zero_grad(set_to_none=True)
+        self._invalidate_eval_feature_cache(eval_model)
+        empty_cuda_cache(self.device)
+        self._move_optimizer_state(torch.device("cpu"))
+        empty_cuda_cache(self.device)
+        try:
+            try:
+                return self._evaluate_model(eval_model, mask, use_amp=self.use_amp)
+            except torch.OutOfMemoryError:
+                logger.warning(
+                    "Evaluation still hit CUDA OOM after optimizer offload; retrying on CPU.",
+                )
+                self._invalidate_eval_feature_cache(eval_model)
+                empty_cuda_cache(self.device)
+                return self._evaluate_split_metrics_on_cpu(eval_model, mask)
+        finally:
+            empty_cuda_cache(self.device)
+            self._move_optimizer_state(self.device)
+            self._invalidate_eval_feature_cache(eval_model)
+            empty_cuda_cache(self.device)
+
+    def _evaluate_validation_metrics(self) -> dict[str, float]:
+        """Run the shared validation pass, using EMA weights when available."""
+        return self._evaluate_split_metrics(self.data.val_mask)
 
     def _log_epoch_summary(
         self,
@@ -181,12 +451,6 @@ class TrainerRuntime:
                 skipped_batches,
             )
 
-    def _autocast_context(self):
-        """Return the CUDA bf16 autocast context when AMP is enabled."""
-        if self.use_amp:
-            return torch.autocast("cuda", dtype=self.amp_dtype)
-        return nullcontext()
-
     def _set_epoch_profiling(self, epoch: int) -> bool:
         """Enable or disable profiling for the current epoch based on config."""
         should_profile = (
@@ -195,8 +459,7 @@ class TrainerRuntime:
             and (epoch + 1) % self.config.profiling_cadence == 0
         )
         if self.profiler:
-            self.profiler.set_enabled(should_profile)
-            self.profiler.reset()
+            self.profiler.reset(should_profile)
         return should_profile
 
     def _step_scheduler(self, metric_value: float, epoch: int) -> None:
@@ -204,11 +467,7 @@ class TrainerRuntime:
         if self.scheduler is None:
             return
 
-        warmup_end = max(
-            self.config.curriculum_phase1_end,
-            self.config.curriculum_phase2_end,
-        )
-        if epoch < warmup_end:
+        if epoch < self._curriculum_warmup_end:
             return
 
         self.scheduler.step(metric_value)
@@ -218,6 +477,14 @@ class TrainerRuntime:
         from ..training.evaluator import THESIS_EVAL_KS
 
         return f"NDCG@{THESIS_EVAL_KS[-1]}"
+
+    @property
+    def _curriculum_warmup_end(self) -> int:
+        """Return the epoch index at which the full curriculum becomes active."""
+        return max(
+            self.config.auxiliary_losses_start_epoch,
+            self.config.popularity_supervision_start_epoch,
+        )
 
     def _log_epoch_to_sqlite(
         self,
@@ -238,6 +505,10 @@ class TrainerRuntime:
                 self.profiler.stages if should_profile and self.profiler else [],
                 self.model,
             )
+        if self.mlflow_module is not None:
+            mlflow_metrics = {f"val_{m}".replace("@", "_at_"): float(v) for m, v in val_metrics.items()}
+            mlflow_metrics["train_loss"] = avg_loss
+            self.mlflow_module.log_metrics(mlflow_metrics, step=epoch)
 
     def _update_early_stopping(
         self,
@@ -263,14 +534,10 @@ class TrainerRuntime:
             if self.ema_model is not None:
                 prefix = "module."
                 self.best_state = {
-                    (k[len(prefix) :] if k.startswith(prefix) else k): v.cpu().clone()
-                    for k, v in self.ema_model.state_dict().items()
+                    (k.removeprefix(prefix)): v.cpu().clone() for k, v in self.ema_model.state_dict().items()
                 }
             else:
-                self.best_state = {
-                    key: value.cpu().clone()
-                    for key, value in self.model.state_dict().items()
-                }
+                self.best_state = {key: value.cpu().clone() for key, value in self.model.state_dict().items()}
             return False
 
         if not self.config.use_early_stopping:
@@ -278,11 +545,7 @@ class TrainerRuntime:
             return False
 
         # Defer patience counting until all curriculum phases are active
-        warmup_end = max(
-            self.config.curriculum_phase1_end,
-            self.config.curriculum_phase2_end,
-        )
-        if epoch < warmup_end:
+        if epoch < self._curriculum_warmup_end:
             return False
 
         self.patience_counter += 1
@@ -295,11 +558,7 @@ class TrainerRuntime:
             primary_metric,
             self.best_ndcg,
         )
-        if (
-            checkpoint_path is not None
-            and checkpoint_every is not None
-            and checkpoint_every > 0
-        ):
+        if checkpoint_path is not None and checkpoint_every is not None and checkpoint_every > 0:
             self.save_checkpoint(checkpoint_path, history=history)
         return True
 
@@ -335,12 +594,8 @@ class TrainerRuntime:
             "model_state": self.model.state_dict(),
             "loss_suite_state": self.loss_suite.state_dict(),
             "optimizer_state": self.optimizer.state_dict(),
-            "scheduler_state": (
-                self.scheduler.state_dict() if self.scheduler is not None else None
-            ),
-            "ema_state": (
-                self.ema_model.state_dict() if self.ema_model is not None else None
-            ),
+            "scheduler_state": (self.scheduler.state_dict() if self.scheduler is not None else None),
+            "ema_state": (self.ema_model.state_dict() if self.ema_model is not None else None),
             "config": self.config,
             "best_ndcg": self.best_ndcg,
             "patience_counter": self.patience_counter,
@@ -350,6 +605,10 @@ class TrainerRuntime:
             "rng_state": torch.get_rng_state(),
             "exp_id": exp_id if exp_id is not None else self.exp_id,
             "canonical_name": canonical_name,
+            "training_identity": self.training_identity,
+            "training_hash": self.training_hash,
+            "evaluation_identity": self.evaluation_identity,
+            "evaluation_hash": self.evaluation_hash,
             "is_complete": is_complete,
             "test_metrics": test_metrics,
         }
@@ -361,7 +620,8 @@ class TrainerRuntime:
     def load_checkpoint(self, path: str | Path) -> dict[str, Any]:
         """Load training state from the shared checkpoint schema."""
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
-        self.model.load_state_dict(ckpt["model_state"])
+        model_state = _migrate_model_state(ckpt["model_state"])
+        self.model.load_state_dict(model_state)
         self.loss_suite.load_state_dict(ckpt["loss_suite_state"])
         self.optimizer.load_state_dict(ckpt["optimizer_state"])
         scheduler_state = ckpt.get("scheduler_state")
@@ -387,7 +647,8 @@ class TrainerRuntime:
                 torch.cuda.set_rng_state_all([s.cpu() for s in cuda_rng_state_all])
             except RuntimeError:
                 logger.warning(
-                    "Failed to restore CUDA RNG state from checkpoint %s", path
+                    "Failed to restore CUDA RNG state from checkpoint %s",
+                    path,
                 )
         logger.info("Checkpoint loaded from %s", path)
         return ckpt

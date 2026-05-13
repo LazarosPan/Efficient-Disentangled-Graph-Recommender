@@ -25,34 +25,66 @@ def downcast_numeric_array(
     *,
     allow_float16: bool = False,
 ) -> np.ndarray:
-    """Downcast a numeric NumPy array to the smallest safe storage dtype.
+    """Return a numeric array narrowed to the smallest safe NumPy storage dtype.
 
     Args:
         values: Numeric array to narrow.
         allow_float16: Whether floating arrays may be narrowed to ``float16``.
 
     Returns:
-        Array with the narrowest practical dtype in the same numeric family.
+        Array narrowed by actual value range rather than by the original dtype
+        alone. Integer arrays are checked against every standard NumPy signed or
+        unsigned width with ``np.iinfo``. Floating arrays are checked against
+        ``np.finfo`` and may narrow to ``float16`` only when explicitly allowed.
+        Boolean, empty, and non-numeric arrays are returned unchanged.
+
     """
     if values.size == 0 or values.dtype == np.bool_:
         return values
     if np.issubdtype(values.dtype, np.integer):
-        target_dtype = np.result_type(
-            np.min_scalar_type(values.min()),
-            np.min_scalar_type(values.max()),
-        )
-        return values.astype(target_dtype, copy=False)
+        min_value = int(values.min())
+        max_value = int(values.max())
+        if min_value >= 0:
+            for dtype in (np.uint8, np.uint16, np.uint32, np.uint64):
+                if max_value <= np.iinfo(dtype).max:
+                    return values.astype(dtype, copy=False)
+            return values.astype(np.uint64, copy=False)
+        for dtype in (np.int8, np.int16, np.int32, np.int64):
+            info = np.iinfo(dtype)
+            if info.min <= min_value and max_value <= info.max:
+                return values.astype(dtype, copy=False)
+        return values.astype(np.int64, copy=False)
     if not np.issubdtype(values.dtype, np.floating):
         return values
 
-    if not allow_float16:
-        return values.astype(np.float32, copy=False)
     finite_values = values[np.isfinite(values)]
+    candidate_dtypes: tuple[type[np.floating], ...] = (np.float16, np.float32, np.float64) if allow_float16 else (np.float32, np.float64)
     if finite_values.size == 0:
-        return values.astype(np.float16, copy=False)
-    if (
-        finite_values.min() >= np.finfo(np.float16).min
-        and finite_values.max() <= np.finfo(np.float16).max
-    ):
-        return values.astype(np.float16, copy=False)
-    return values.astype(np.float32, copy=False)
+        return values.astype(candidate_dtypes[0], copy=False)
+
+    min_value = float(finite_values.min())
+    max_value = float(finite_values.max())
+    for dtype in candidate_dtypes:
+        info = np.finfo(dtype)
+        min_supported = float(info.min)
+        max_supported = float(info.max)
+        if min_supported <= min_value and max_value <= max_supported:
+            return values.astype(dtype, copy=False)
+    return values.astype(np.float64, copy=False)
+
+
+def downcast_numeric_arrays(
+    *values: np.ndarray,
+    allow_float16: bool = False,
+) -> tuple[np.ndarray, ...]:
+    """Return multiple arrays narrowed with the shared numeric downcast policy.
+
+    Args:
+        *values: Numeric arrays to narrow independently.
+        allow_float16: Whether floating arrays may narrow to ``float16``.
+
+    Returns:
+        tuple[np.ndarray, ...]: Arrays downcast in the same order they were passed.
+
+    """
+    return tuple(downcast_numeric_array(value, allow_float16=allow_float16) for value in values)
