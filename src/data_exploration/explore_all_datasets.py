@@ -12,8 +12,9 @@ Rerunning the script rewrites the same fixed PNG outputs in place.
 from __future__ import annotations
 
 import importlib
+import json
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -44,6 +45,7 @@ def load_dataset_api() -> tuple[dict[str, Any], Any]:
 
     Returns:
         Loader registry and loader function used by this script.
+
     """
     module = importlib.import_module("src.data.loaders")
     return module.LOADERS, module.load_dataset
@@ -70,9 +72,7 @@ DISPLAY_NAMES = {
 }
 
 DEFAULT_OUTPUT_DIR = Path("results") / "dataset_visualizations"
-DATASET_COLORS = {
-    name: color for name, color in zip(BENCHMARK_DATASETS, plt.get_cmap("tab10").colors)
-}
+DATASET_COLORS = {name: color for name, color in zip(BENCHMARK_DATASETS, plt.get_cmap("tab10").colors, strict=False)}
 FEATURE_COLORS = ("#4C72B0", "#55A868")
 
 
@@ -94,6 +94,8 @@ class DatasetSummary:
     split_source: str
     split_label: str
     timestamp_coverage: float
+    unique_pair_count: int
+    repeated_pair_share: float
     user_feature_dim: int
     item_feature_dim: int
     feedback_type: str | None
@@ -102,6 +104,7 @@ class DatasetSummary:
     median_user_activity: float
     median_item_popularity: float
     modalities_label: str
+    randomized_exposure_share: float | None
 
 
 def display_name(name: str) -> str:
@@ -112,6 +115,7 @@ def display_name(name: str) -> str:
 
     Returns:
         Human-readable dataset label.
+
     """
     return DISPLAY_NAMES.get(name, name)
 
@@ -124,6 +128,7 @@ def describe_split_strategy(split_source: str) -> str:
 
     Returns:
         Human-readable split description.
+
     """
     descriptions = {
         "predefined": "provided train / validation / test split",
@@ -141,6 +146,7 @@ def describe_feedback_semantics(name: str) -> str:
 
     Returns:
         Human-readable feedback description.
+
     """
     descriptions = {
         "amazonbook": "implicit observed interactions only",
@@ -161,6 +167,7 @@ def describe_plotted_context(name: str) -> str:
 
     Returns:
         Human-readable description of the dataset-specific context.
+
     """
     descriptions = {
         "amazonbook": "implicit interaction graph and split structure",
@@ -181,12 +188,9 @@ def split_source(canonical: CanonicalInteractions) -> str:
 
     Returns:
         Short split-source label.
+
     """
-    if (
-        canonical.train_mask is not None
-        and canonical.val_mask is not None
-        and canonical.test_mask is not None
-    ):
+    if canonical.train_mask is not None and canonical.val_mask is not None and canonical.test_mask is not None:
         return "predefined"
     if canonical.train_mask is not None and canonical.test_mask is not None:
         return "train/test+derived-val"
@@ -202,12 +206,39 @@ def compute_entity_counts(entity_ids: np.ndarray, n_entities: int) -> np.ndarray
 
     Returns:
         Count array aligned to entity IDs.
+
     """
     return np.bincount(entity_ids, minlength=n_entities)
 
 
+def count_unique_user_item_pairs(
+    user_id: np.ndarray,
+    item_id: np.ndarray,
+    n_items: int,
+) -> int:
+    """Return the number of distinct user-item interaction pairs.
+
+    Args:
+        user_id: Reindexed user IDs aligned to the interactions.
+        item_id: Reindexed item IDs aligned to the interactions.
+        n_items: Total number of items used to build a stable pair key.
+
+    Returns:
+        Number of unique user-item pairs represented in the interaction table.
+
+    """
+    if user_id.size == 0:
+        return 0
+    pair_keys = user_id.astype(np.int64, copy=False) * int(n_items) + item_id.astype(
+        np.int64,
+        copy=False,
+    )
+    return int(np.unique(pair_keys).size)
+
+
 def top_category_counts(
-    values: np.ndarray, top_k: int = 6
+    values: np.ndarray,
+    top_k: int = 6,
 ) -> tuple[list[str], np.ndarray]:
     """Return the most common categorical values with an optional ``other`` bin.
 
@@ -217,6 +248,7 @@ def top_category_counts(
 
     Returns:
         Tuple of labels and aligned counts.
+
     """
     if values.size == 0:
         return [], np.array([], dtype=np.int64)
@@ -229,9 +261,9 @@ def top_category_counts(
     if labels.size <= top_k:
         return labels.tolist(), counts
 
-    head_labels = labels[: top_k - 1].tolist() + ["other"]
+    head_labels = [*labels[: top_k - 1].tolist(), "other"]
     head_counts = np.concatenate(
-        [counts[: top_k - 1], np.array([counts[top_k - 1 :].sum()], dtype=counts.dtype)]
+        [counts[: top_k - 1], np.array([counts[top_k - 1 :].sum()], dtype=counts.dtype)],
     )
     return head_labels, head_counts
 
@@ -245,12 +277,18 @@ def summarize_dataset(name: str, canonical: CanonicalInteractions) -> DatasetSum
 
     Returns:
         Scalar dataset summary used for printing and overview charts.
+
     """
     train_mask, val_mask, test_mask = canonical.get_splits()
     user_counts = compute_entity_counts(canonical.user_id, canonical.n_users)
     item_counts = compute_entity_counts(canonical.item_id, canonical.n_items)
     active_user_counts = user_counts[user_counts > 0]
     active_item_counts = item_counts[item_counts > 0]
+    unique_pair_count = count_unique_user_item_pairs(
+        canonical.user_id,
+        canonical.item_id,
+        canonical.n_items,
+    )
 
     resolved_split_source = split_source(canonical)
     feedback_description = describe_feedback_semantics(name)
@@ -262,11 +300,7 @@ def summarize_dataset(name: str, canonical: CanonicalInteractions) -> DatasetSum
         n_users=canonical.n_users,
         n_items=canonical.n_items,
         n_interactions=len(canonical),
-        density=(
-            len(canonical) / float(canonical.n_users * canonical.n_items)
-            if canonical.n_users > 0 and canonical.n_items > 0
-            else 0.0
-        ),
+        density=(len(canonical) / float(canonical.n_users * canonical.n_items) if canonical.n_users > 0 and canonical.n_items > 0 else 0.0),
         pos_rate=float(np.mean(canonical.label)),
         mean_sign=float(np.mean(canonical.sign)),
         train_size=int(train_mask.sum()),
@@ -275,27 +309,196 @@ def summarize_dataset(name: str, canonical: CanonicalInteractions) -> DatasetSum
         split_source=resolved_split_source,
         split_label=describe_split_strategy(resolved_split_source),
         timestamp_coverage=float(np.mean(canonical.timestamp > 0)),
-        user_feature_dim=(
-            int(canonical.user_features.shape[1])
-            if canonical.user_features is not None
-            else 0
-        ),
-        item_feature_dim=(
-            int(canonical.item_features.shape[1])
-            if canonical.item_features is not None
-            else 0
-        ),
+        unique_pair_count=unique_pair_count,
+        repeated_pair_share=(1.0 - (unique_pair_count / float(len(canonical))) if len(canonical) > 0 else 0.0),
+        user_feature_dim=(int(canonical.user_features.shape[1]) if canonical.user_features is not None else 0),
+        item_feature_dim=(int(canonical.item_features.shape[1]) if canonical.item_features is not None else 0),
         feedback_type=canonical.feedback_type,
         feedback_description=feedback_description,
         preprocessing_preset=canonical.preprocessing_preset,
-        median_user_activity=(
-            float(np.median(active_user_counts)) if active_user_counts.size > 0 else 0.0
-        ),
-        median_item_popularity=(
-            float(np.median(active_item_counts)) if active_item_counts.size > 0 else 0.0
-        ),
+        median_user_activity=(float(np.median(active_user_counts)) if active_user_counts.size > 0 else 0.0),
+        median_item_popularity=(float(np.median(active_item_counts)) if active_item_counts.size > 0 else 0.0),
         modalities_label=plotted_context,
+        randomized_exposure_share=(float(np.mean(canonical.exposure_flag)) if canonical.exposure_flag is not None and len(canonical.exposure_flag) > 0 else None),
     )
+
+
+def summarize_numeric_signal(values: np.ndarray) -> dict[str, float | int] | None:
+    """Return compact descriptive statistics for one numeric response signal.
+
+    Args:
+        values: Numeric values to summarize.
+
+    Returns:
+        Summary dictionary over finite values or ``None`` when none exist.
+
+    """
+    finite_values = values[np.isfinite(values)].astype(np.float64, copy=False)
+    if finite_values.size == 0:
+        return None
+    return {
+        "count": int(finite_values.size),
+        "mean": float(np.mean(finite_values)),
+        "std": float(np.std(finite_values)),
+        "min": float(np.min(finite_values)),
+        "max": float(np.max(finite_values)),
+    }
+
+
+def build_dataset_summary_payload(
+    canonical: CanonicalInteractions,
+    summary: DatasetSummary,
+) -> dict[str, Any]:
+    """Build a text-friendly dataset summary payload from canonical data.
+
+    Args:
+        canonical: Loaded canonical interactions.
+        summary: Scalar summary for the same dataset.
+
+    Returns:
+        JSON-serializable payload capturing the main statistics behind the plots.
+
+    """
+    payload: dict[str, Any] = asdict(summary)
+    payload["split_counts"] = {
+        "train": summary.train_size,
+        "val": summary.val_size,
+        "test": summary.test_size,
+    }
+
+    if canonical.raw_target is not None:
+        payload["response_signal"] = {
+            "name": "raw_target",
+            "summary": summarize_numeric_signal(np.asarray(canonical.raw_target)),
+        }
+    elif np.unique(canonical.sign).size > 1:
+        payload["response_signal"] = {
+            "name": "sign",
+            "summary": summarize_numeric_signal(np.asarray(canonical.sign)),
+        }
+    else:
+        payload["response_signal"] = {
+            "name": "label",
+            "summary": summarize_numeric_signal(np.asarray(canonical.label)),
+        }
+
+    if canonical.exposure_flag is not None and canonical.exposure_flag.size > 0:
+        randomized_mask = np.asarray(canonical.exposure_flag, dtype=bool)
+        standard_mask = ~randomized_mask
+        payload["exposure_policy"] = {
+            "randomized_count": int(randomized_mask.sum()),
+            "standard_count": int(standard_mask.sum()),
+            "randomized_share": float(np.mean(randomized_mask)),
+            "randomized_positive_rate": (float(np.mean(canonical.label[randomized_mask])) if np.any(randomized_mask) else None),
+            "standard_positive_rate": (float(np.mean(canonical.label[standard_mask])) if np.any(standard_mask) else None),
+        }
+
+    if canonical.behavior_type is not None and np.unique(canonical.behavior_type).size > 1:
+        labels, counts = top_category_counts(canonical.behavior_type)
+        payload["behavior_mix_top"] = {label: int(count) for label, count in zip(labels, counts.tolist(), strict=True)}
+
+    if canonical.source_domain is not None and np.unique(canonical.source_domain).size > 1:
+        domain_summary: dict[str, dict[str, float | int]] = {}
+        for label in np.unique(canonical.source_domain.astype(str, copy=False)).tolist():
+            mask = canonical.source_domain.astype(str, copy=False) == label
+            domain_summary[label] = {
+                "count": int(mask.sum()),
+                "positive_rate": float(np.mean(canonical.label[mask])) if np.any(mask) else 0.0,
+            }
+        payload["source_domain_positive_rate"] = domain_summary
+
+    return payload
+
+
+def render_summary_markdown(dataset_payloads: list[dict[str, Any]]) -> str:
+    """Render a concise markdown summary for the benchmark datasets.
+
+    Args:
+        dataset_payloads: Per-dataset summary payloads.
+
+    Returns:
+        Markdown text that mirrors the machine-readable summary export.
+
+    """
+    lines = [
+        "# Benchmark Dataset Summary",
+        "",
+        "Generated from `src/data_exploration/explore_all_datasets.py` using the same",
+        "canonical statistics that power the benchmark figures.",
+        "",
+        ("| Dataset | Interactions | Pair reuse | Positive share | Timestamp coverage | Randomized share | User feat | Item feat | Split |"),
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for payload in dataset_payloads:
+        randomized_share = payload.get("randomized_exposure_share")
+        randomized_text = f"{randomized_share:.1%}" if randomized_share is not None else "-"
+        lines.append(
+            f"| {payload['display_name']} | {payload['n_interactions']:,} | {payload['repeated_pair_share']:.2%} | {payload['pos_rate']:.2%} | {payload['timestamp_coverage']:.1%} | {randomized_text} | {payload['user_feature_dim']} | {payload['item_feature_dim']} | {payload['split_label']} |"
+        )
+    lines.append("")
+
+    for payload in dataset_payloads:
+        split_counts = payload["split_counts"]
+        lines.extend(
+            [
+                f"## {payload['display_name']}",
+                "",
+                f"- Interaction semantics: {payload['feedback_description']}",
+                f"- Plotted context: {payload['modalities_label']}",
+                f"- Distinct user-item pairs: {payload['unique_pair_count']:,}",
+                f"- Repeated-pair share: {payload['repeated_pair_share']:.2%}",
+                (f"- Split counts: train={split_counts['train']:,}, val={split_counts['val']:,}, test={split_counts['test']:,}"),
+            ],
+        )
+        response_signal = payload.get("response_signal", {})
+        response_summary = response_signal.get("summary")
+        if response_summary is not None:
+            lines.append(f"- Response summary ({response_signal['name']}): mean={response_summary['mean']:.4f}, std={response_summary['std']:.4f}, min={response_summary['min']:.4f}, max={response_summary['max']:.4f}")
+        exposure_policy = payload.get("exposure_policy")
+        if exposure_policy is not None:
+            randomized_positive_rate = exposure_policy["randomized_positive_rate"]
+            standard_positive_rate = exposure_policy["standard_positive_rate"]
+            randomized_positive_text = f"{randomized_positive_rate:.2%}" if randomized_positive_rate is not None else "-"
+            standard_positive_text = f"{standard_positive_rate:.2%}" if standard_positive_rate is not None else "-"
+            lines.append(f"- Exposure policy: randomized_share={exposure_policy['randomized_share']:.2%}, positive_rate_randomized={randomized_positive_text}, positive_rate_standard={standard_positive_text}")
+        behavior_mix = payload.get("behavior_mix_top")
+        if behavior_mix:
+            mix_text = ", ".join(f"{label}={count:,}" for label, count in behavior_mix.items())
+            lines.append(f"- Top behavior mix: {mix_text}")
+        domain_rates = payload.get("source_domain_positive_rate")
+        if domain_rates:
+            domain_text = ", ".join(f"{label}: n={stats['count']:,}, pos={stats['positive_rate']:.2%}" for label, stats in domain_rates.items())
+            lines.append(f"- Source domains: {domain_text}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def save_summary_exports(
+    dataset_payloads: list[dict[str, Any]],
+    output_dir: Path,
+) -> tuple[Path, Path]:
+    """Write machine-readable and markdown summary exports beside the figures.
+
+    Args:
+        dataset_payloads: Per-dataset benchmark summary payloads.
+        output_dir: Directory where the exports should be written.
+
+    Returns:
+        Paths to the JSON and markdown summary files.
+
+    """
+    json_path = output_dir / "benchmark_summary.json"
+    markdown_path = output_dir / "benchmark_summary.md"
+    json_path.write_text(
+        json.dumps({"datasets": dataset_payloads}, indent=2),
+        encoding="utf-8",
+    )
+    markdown_path.write_text(
+        render_summary_markdown(dataset_payloads),
+        encoding="utf-8",
+    )
+    return json_path, markdown_path
 
 
 def format_scalar(value: float) -> str:
@@ -306,6 +509,7 @@ def format_scalar(value: float) -> str:
 
     Returns:
         Compact string representation.
+
     """
     rounded = round(float(value))
     if np.isclose(value, rounded):
@@ -333,6 +537,7 @@ def plot_tail_ccdf(
 
     Returns:
         None. The axes are modified in place.
+
     """
     positive_counts = counts[counts > 0]
     if positive_counts.size == 0:
@@ -362,6 +567,7 @@ def plot_relative_time_histogram(ax: Axes, timestamps: np.ndarray, color: str) -
 
     Returns:
         None. The axes are modified in place.
+
     """
     valid_timestamps = timestamps[timestamps > 0].astype(np.float64, copy=False)
     ax.set_title("Interaction volume over relative time")
@@ -376,15 +582,20 @@ def plot_relative_time_histogram(ax: Axes, timestamps: np.ndarray, color: str) -
     if np.isclose(start_timestamp, end_timestamp):
         ax.axis("off")
         ax.text(
-            0.5, 0.5, "Timestamps collapse to one instant", ha="center", va="center"
+            0.5,
+            0.5,
+            "Timestamps collapse to one instant",
+            ha="center",
+            va="center",
         )
         return
 
-    relative_time = (valid_timestamps - start_timestamp) / (
-        end_timestamp - start_timestamp
-    )
+    relative_time = (valid_timestamps - start_timestamp) / (end_timestamp - start_timestamp)
     ax.hist(
-        relative_time, bins=np.linspace(0.0, 1.0, 25), color=color, edgecolor="white"
+        relative_time,
+        bins=np.linspace(0.0, 1.0, 25),
+        color=color,
+        edgecolor="white",
     )
     ax.set_xlim(0.0, 1.0)
     ax.set_xlabel("relative time within dataset")
@@ -408,13 +619,11 @@ def plot_response_distribution(
 
     Returns:
         None. The axes are modified in place.
+
     """
     value_labels: dict[float, str] | None = None
 
-    if (
-        summary.name in {"movielens1m", "movielens20m"}
-        and canonical.raw_target is not None
-    ):
+    if summary.name in {"movielens1m", "movielens20m"} and canonical.raw_target is not None:
         response_values = np.asarray(canonical.raw_target)
         response_label = "Rating distribution"
         response_axis_label = "rating"
@@ -468,12 +677,7 @@ def plot_response_distribution(
 
     if np.unique(sample_values).size <= 12:
         unique_values, counts = np.unique(finite_values, return_counts=True)
-        tick_labels = [
-            value_labels.get(float(value), format_scalar(value))
-            if value_labels is not None
-            else format_scalar(value)
-            for value in unique_values
-        ]
+        tick_labels = [value_labels.get(float(value), format_scalar(value)) if value_labels is not None else format_scalar(value) for value in unique_values]
         ax.bar(
             tick_labels,
             counts,
@@ -491,7 +695,9 @@ def plot_response_distribution(
 
 
 def plot_context_panel(
-    ax: Axes, canonical: CanonicalInteractions, summary: DatasetSummary
+    ax: Axes,
+    canonical: CanonicalInteractions,
+    summary: DatasetSummary,
 ) -> None:
     """Plot dataset-specific context or side-feature availability.
 
@@ -502,6 +708,7 @@ def plot_context_panel(
 
     Returns:
         None. The axes are modified in place.
+
     """
     if canonical.exposure_flag is not None:
         plot_group_positive_rate(
@@ -516,35 +723,22 @@ def plot_context_panel(
         )
         return
 
-    if (
-        canonical.behavior_type is not None
-        and np.unique(canonical.behavior_type).size > 1
-    ):
+    if canonical.behavior_type is not None and np.unique(canonical.behavior_type).size > 1:
         labels, counts = top_category_counts(canonical.behavior_type)
         title = "Interaction-type mix"
-    elif (
-        canonical.source_domain is not None
-        and np.unique(canonical.source_domain).size > 1
-    ):
+    elif canonical.source_domain is not None and np.unique(canonical.source_domain).size > 1:
         source_labels = np.unique(
-            canonical.source_domain.astype(str, copy=False)
+            canonical.source_domain.astype(str, copy=False),
         ).tolist()
         plot_group_positive_rate(
             ax=ax,
             group_labels=source_labels,
-            group_masks=[
-                canonical.source_domain.astype(str, copy=False) == label
-                for label in source_labels
-            ],
+            group_masks=[canonical.source_domain.astype(str, copy=False) == label for label in source_labels],
             labels=canonical.label,
             title="Share labeled positive by source domain",
         )
         return
-    elif (
-        canonical.raw_target is not None
-        and summary.feedback_type == "explicit"
-        and summary.timestamp_coverage > 0.0
-    ):
+    elif canonical.raw_target is not None and summary.feedback_type == "explicit" and summary.timestamp_coverage > 0.0:
         plot_mean_raw_target_over_time(
             ax=ax,
             raw_target=canonical.raw_target,
@@ -596,6 +790,7 @@ def plot_group_positive_rate(
 
     Returns:
         None. The axes are modified in place.
+
     """
     counts = np.array([int(mask.sum()) for mask in group_masks], dtype=np.int64)
     rates = np.array(
@@ -639,6 +834,7 @@ def plot_mean_raw_target_over_time(
 
     Returns:
         None. The axes are modified in place.
+
     """
     valid_mask = (timestamps > 0) & np.isfinite(raw_target)
     valid_timestamps = timestamps[valid_mask].astype(np.float64, copy=False)
@@ -656,7 +852,11 @@ def plot_mean_raw_target_over_time(
         ax.axis("off")
         ax.set_title("Average rating over relative time")
         ax.text(
-            0.5, 0.5, "Timestamps collapse to one instant", ha="center", va="center"
+            0.5,
+            0.5,
+            "Timestamps collapse to one instant",
+            ha="center",
+            va="center",
         )
         return
 
@@ -667,10 +867,7 @@ def plot_mean_raw_target_over_time(
     for idx in range(bin_edges.size - 1):
         lower = bin_edges[idx]
         upper = bin_edges[idx + 1]
-        if idx == bin_edges.size - 2:
-            in_bin = (valid_timestamps >= lower) & (valid_timestamps <= upper)
-        else:
-            in_bin = (valid_timestamps >= lower) & (valid_timestamps < upper)
+        in_bin = (valid_timestamps >= lower) & (valid_timestamps <= upper) if idx == bin_edges.size - 2 else (valid_timestamps >= lower) & (valid_timestamps < upper)
         if np.any(in_bin):
             bin_centers.append((idx + 0.5) / (bin_edges.size - 1))
             bin_means.append(float(np.mean(valid_target[in_bin])))
@@ -699,6 +896,7 @@ def plot_split_composition(ax: Axes, summary: DatasetSummary) -> None:
 
     Returns:
         None. The axes are modified in place.
+
     """
     split_labels = ["train", "val", "test"]
     split_counts = [summary.train_size, summary.val_size, summary.test_size]
@@ -720,6 +918,7 @@ def save_figure(fig: Figure, output_path: Path, dpi: int) -> None:
 
     Returns:
         None. The figure is saved and closed.
+
     """
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if output_path.exists():
@@ -744,6 +943,7 @@ def save_dataset_profile(
 
     Returns:
         Output path of the saved profile figure.
+
     """
     fig, axes = plt.subplots(2, 3, figsize=(16, 9), constrained_layout=True)
     flat_axes = axes.ravel()
@@ -759,16 +959,19 @@ def save_dataset_profile(
                 f"dataset: {summary.display_name}",
                 f"interaction semantics: {summary.feedback_description}",
                 f"plotted context: {summary.modalities_label}",
-                f"users/items/interactions: {summary.n_users:,} / {summary.n_items:,} / {summary.n_interactions:,}",
+                (f"users/items/interactions: {summary.n_users:,} / {summary.n_items:,} / {summary.n_interactions:,}"),
                 f"density: {summary.density * 100:.5f}%",
                 f"split strategy: {summary.split_label}",
                 f"share labeled positive: {summary.pos_rate:.2%}",
                 f"average signed-feedback score: {summary.mean_sign:.3f}",
+                f"distinct user-item pairs: {summary.unique_pair_count:,}",
+                f"share repeated user-item pairs: {summary.repeated_pair_share:.2%}",
                 f"median interactions per user: {summary.median_user_activity:.1f}",
                 f"median interactions per item: {summary.median_item_popularity:.1f}",
-                f"user/item side-feature columns: {summary.user_feature_dim} / {summary.item_feature_dim}",
+                (f"user/item side-feature columns: {summary.user_feature_dim} / {summary.item_feature_dim}"),
                 f"rows with usable timestamps: {summary.timestamp_coverage:.1%}",
-            ]
+                (f"share randomized-exposure rows: {summary.randomized_exposure_share:.1%}" if summary.randomized_exposure_share is not None else "share randomized-exposure rows: n/a"),
+            ],
         ),
         va="top",
         ha="left",
@@ -818,6 +1021,7 @@ def save_benchmark_overview(
 
     Returns:
         Output path of the saved overview figure.
+
     """
     fig, axes = plt.subplots(2, 3, figsize=(18, 10), constrained_layout=True)
     flat_axes = axes.ravel()
@@ -859,7 +1063,9 @@ def save_benchmark_overview(
     ]
 
     for ax, (title, values, ylabel, log_scale) in zip(
-        flat_axes[:5], metric_specs, strict=True
+        flat_axes[:5],
+        metric_specs,
+        strict=True,
     ):
         ax.bar(x_positions, values, color=colors)
         ax.set_title(title)
@@ -910,21 +1116,18 @@ def print_comparative_summary(summaries: list[DatasetSummary]) -> None:
 
     Returns:
         None. The summary is printed to stdout.
+
     """
     print("\n" + "=" * 108)
     print("DATASET SUMMARY")
     print("=" * 108)
     print(
-        f"{'Dataset':<16} {'Users':>10} {'Items':>10} {'Interact.':>12} "
-        f"{'Density%':>10} {'Pos%':>8} {'UFeat':>7} {'IFeat':>7} {'Split':>24}"
+        f"{'Dataset':<16} {'Users':>10} {'Items':>10} {'Interact.':>12} {'PairReuse%':>10} {'Pos%':>8} {'UFeat':>7} {'IFeat':>7} {'Split':>24}",
     )
     print("-" * 108)
     for summary in summaries:
         print(
-            f"{summary.display_name:<16} {summary.n_users:>10,} {summary.n_items:>10,} "
-            f"{summary.n_interactions:>12,} {summary.density * 100:>9.5f} "
-            f"{summary.pos_rate:>7.2%} {summary.user_feature_dim:>7} "
-            f"{summary.item_feature_dim:>7} {summary.split_source:>24}"
+            f"{summary.display_name:<16} {summary.n_users:>10,} {summary.n_items:>10,} {summary.n_interactions:>12,} {summary.repeated_pair_share:>9.2%} {summary.pos_rate:>7.2%} {summary.user_feature_dim:>7} {summary.item_feature_dim:>7} {summary.split_source:>24}",
         )
 
 
@@ -936,6 +1139,7 @@ def main() -> int:
 
     Returns:
         Shell-style exit code.
+
     """
     args = build_explore_all_datasets_parser().parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -946,10 +1150,12 @@ def main() -> int:
     print(f"Output directory: {args.output_dir}")
 
     summaries: list[DatasetSummary] = []
+    dataset_payloads: list[dict[str, Any]] = []
     for name in args.datasets:
         print(f"\n--- {display_name(name)} ---")
         canonical = load_dataset(name, args.data_dir)
         summary = summarize_dataset(name, canonical)
+        dataset_payloads.append(build_dataset_summary_payload(canonical, summary))
         profile_path = save_dataset_profile(
             canonical=canonical,
             summary=summary,
@@ -957,12 +1163,10 @@ def main() -> int:
             dpi=args.dpi,
         )
         print(
-            f"users={summary.n_users:,} items={summary.n_items:,} interactions={summary.n_interactions:,} "
-            f"density={summary.density * 100:.5f}% pos_rate={summary.pos_rate:.2%}"
+            f"users={summary.n_users:,} items={summary.n_items:,} interactions={summary.n_interactions:,} density={summary.density * 100:.5f}% pos_rate={summary.pos_rate:.2%}",
         )
         print(
-            f"saved profile: {profile_path} | split={summary.split_label} | "
-            f"context={summary.modalities_label}"
+            f"saved profile: {profile_path} | split={summary.split_label} | context={summary.modalities_label}",
         )
         summaries.append(summary)
 
@@ -971,8 +1175,14 @@ def main() -> int:
         output_dir=args.output_dir,
         dpi=args.dpi,
     )
+    summary_json_path, summary_markdown_path = save_summary_exports(
+        dataset_payloads,
+        args.output_dir,
+    )
     print_comparative_summary(summaries)
     print(f"\nSaved benchmark overview: {overview_path}")
+    print(f"Saved summary JSON: {summary_json_path}")
+    print(f"Saved summary markdown: {summary_markdown_path}")
     return 0
 
 

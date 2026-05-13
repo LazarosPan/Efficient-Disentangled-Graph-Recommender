@@ -4,16 +4,15 @@ This script scans ``data/<dataset>/`` recursively and writes a comprehensive
 report to ``data/datasets_information.md``. It is designed to work even when
 datasets are inconsistent, partially downloaded, or stored in mixed formats.
 
-The purpose of the report is purely informational for the thesis pipeline – it
+The purpose of the report is purely informational for the thesis pipeline - it
 has no influence on the training code itself.
 
 Report includes:
 - Dataset-level size totals (bytes, MiB, GiB)
-- Per-file inventory with extension and size
-- Text/tabular counts (line count + parsed count where possible)
-- Optional array metadata (NumPy / NPZ)
-- Optional processed graph metadata from ``processed/data*.pt``
-- Per-column causal feature audit with pipeline-stage labels
+- Per-dataset file inventory across the selected datasets
+- Per-file column names when a tabular schema can be read
+- Per-file column dtypes when a tabular schema can be read
+- Per-file size in MiB
 - Optional machine-readable JSON export for feature-policy automation
 """
 
@@ -21,12 +20,11 @@ from __future__ import annotations
 
 import argparse
 import csv
-import datetime as dt
 import importlib
 import json
 import sys
-from collections import Counter
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,8 +34,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.append(str(REPO_ROOT))
 
-from src.utils.cli_parsers import build_data_information_parser  # noqa: E402
-
 
 def load_exploration_api() -> tuple[Any, Any, Any]:
     """Load exploration helpers lazily so this script still runs directly."""
@@ -45,10 +41,17 @@ def load_exploration_api() -> tuple[Any, Any, Any]:
     return module.inspect_dataset_file, module.schema_overview, module.summarize_dataset
 
 
-def load_feature_policy_api() -> tuple[Any, Any, Any]:
+def load_cli_parser_api() -> Any:
+    """Load the shared CLI parser after the repo-root path bootstrap."""
+    module = importlib.import_module("src.utils.cli_parsers")
+    return module.build_data_information_parser
+
+
+def load_feature_policy_api() -> tuple[Any, Any, Any, Any]:
     """Load feature-policy helpers lazily after the repo-root path bootstrap."""
     module = importlib.import_module("src.data.feature_policy")
     return (
+        module.enabled_feature_sources,
         module.feature_role_for_column,
         module.normalize_dataset_name,
         module.thesis_default_columns,
@@ -56,7 +59,9 @@ def load_feature_policy_api() -> tuple[Any, Any, Any]:
 
 
 INSPECT_DATASET_FILE, SCHEMA_OVERVIEW, SUMMARIZE_DATASET = load_exploration_api()
+BUILD_DATA_INFORMATION_PARSER = load_cli_parser_api()
 (
+    ENABLED_FEATURE_SOURCES,
     FEATURE_ROLE_FOR_COLUMN,
     NORMALIZE_DATASET_NAME,
     THESIS_DEFAULT_COLUMNS,
@@ -218,54 +223,44 @@ PRETREATMENT_CONTEXT_MARKERS = {
     "visible_status",
 }
 
-LOADER_COVERAGE: dict[str, dict[str, Any]] = {
+LOADER_FACTS: dict[str, dict[str, Any]] = {
     "movielens1m": {
         "loader_name": "movielens1m",
-        "interactions": "native loader",
-        "user_features": "loaded into canonical user_features",
-        "item_features": "loaded into canonical item_features",
         "metadata": [],
     },
     "movielens20m": {
         "loader_name": "movielens20m",
-        "interactions": "native loader",
-        "user_features": None,
-        "item_features": "thesis-default canonical item_features from genres and genome relevance scores",
         "metadata": [],
     },
     "taobao": {
         "loader_name": "taobao",
-        "interactions": "native loader",
-        "user_features": None,
-        "item_features": "thesis-default canonical item_features derived from category_id",
         "metadata": [],
     },
     "kuairecv2": {
         "loader_name": "kuairec_v2",
-        "interactions": "native loader",
-        "user_features": None,
-        "item_features": "thesis-default canonical item_features from safe item_daily_features columns, item_categories, and caption category IDs",
         "metadata": [],
     },
     "kuairand1k": {
         "loader_name": "kuairand1k",
-        "interactions": "native loader",
-        "user_features": None,
-        "item_features": "thesis-default canonical item_features from safe video_features_basic_1k descriptor columns only",
         "metadata": ["is_rand"],
     },
     "amazonbook": {
         "loader_name": "amazonbook",
-        "interactions": "native loader",
-        "user_features": None,
-        "item_features": None,
         "metadata": [],
     },
 }
+ALLOWED_DATASETS = (
+    "AmazonBook",
+    "KuaiRand-1K",
+    "KuaiRec_v2",
+    "MovieLens20M",
+    "Taobao",
+    "MovieLens1M",
+)
 # Limits used to avoid expensive scanning or exports.  Set to `None`
 # to disable the check entirely (we keep full datasets by default).
 # Originally I added these when the CSV reader was slow and some files
-# were multi‑GB, but the user reminded us that they want *all* rows kept.
+# were multi-GB, but the user reminded us that they want *all* rows kept.
 MAX_TEXT_SCAN_BYTES: int | None = None
 MAX_JSON_PARSE_BYTES: int | None = None
 MAX_FEATURE_EXPORT_BYTES: int | None = None
@@ -283,6 +278,7 @@ class FileRecord:
         line_count: Optional physical line count.
         parsed_count: Optional parsed semantic count.
         details: Additional parser metadata.
+
     """
 
     relative_path: str
@@ -308,6 +304,7 @@ class DatasetRecord:
         status: Derived status string.
         notes: Warnings/errors encountered while scanning.
         graph_info: Optional graph metadata extracted from processed files.
+
     """
 
     name: str
@@ -335,6 +332,7 @@ def safe_json(value: Any) -> Any:
 
     Returns:
         JSON-safe representation.
+
     """
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
@@ -353,6 +351,7 @@ def format_bytes(size_bytes: int) -> str:
 
     Returns:
         Human-readable size string.
+
     """
     mib = size_bytes / (1024**2)
     gib = size_bytes / (1024**3)
@@ -368,7 +367,7 @@ def safe_count_lines(file_path: Path) -> int | None:
       2.  ``wc -l`` system call (portable and very efficient)
 
     If both fail, we fall back to the old Python loop as a last resort.  The
-    previous max‑size limit has been removed; the caller is responsible for
+    previous max-size limit has been removed; the caller is responsible for
     skipping huge files if desired.
     """
     # use the lightweight `wc -l` command to count lines; no Python loop,
@@ -398,6 +397,7 @@ def parse_csv_counts(file_path: Path) -> tuple[int | None, dict[str, Any]]:
 
     Returns:
         Tuple of parsed count and parser details.
+
     """
     details: dict[str, Any] = {}
 
@@ -406,7 +406,10 @@ def parse_csv_counts(file_path: Path) -> tuple[int | None, dict[str, Any]]:
     first_row: list[str] | None = None
     try:
         with file_path.open(
-            "r", encoding="utf-8", errors="ignore", newline=""
+            "r",
+            encoding="utf-8",
+            errors="ignore",
+            newline="",
         ) as handle:
             sample = handle.read(4096)
             handle.seek(0)
@@ -428,7 +431,7 @@ def parse_csv_counts(file_path: Path) -> tuple[int | None, dict[str, Any]]:
         import subprocess
 
         total_rows = int(
-            subprocess.check_output(["wc", "-l", str(file_path)]).strip().split()[0]
+            subprocess.check_output(["wc", "-l", str(file_path)]).strip().split()[0],
         )
         parsed = total_rows - 1 if has_header and total_rows > 0 else total_rows
         return parsed, details
@@ -437,7 +440,8 @@ def parse_csv_counts(file_path: Path) -> tuple[int | None, dict[str, Any]]:
 
 
 def parse_dat_counts(
-    file_path: Path, line_count: int | None
+    file_path: Path,
+    line_count: int | None,
 ) -> tuple[int | None, dict[str, Any]]:
     """Compute parsed record counts for ``.dat`` files.
 
@@ -447,6 +451,7 @@ def parse_dat_counts(
 
     Returns:
         Tuple of parsed count and parser details.
+
     """
     details: dict[str, Any] = {}
     if line_count is None:
@@ -475,7 +480,7 @@ def parse_amazonbook_interactions(file_path: Path) -> tuple[int | None, dict[str
 
         # count rows
         users = int(
-            subprocess.check_output(["wc", "-l", str(file_path)]).strip().split()[0]
+            subprocess.check_output(["wc", "-l", str(file_path)]).strip().split()[0],
         )
         # sum(i=1..N) (NF - 1)
         awkcmd = [
@@ -498,6 +503,7 @@ def try_numpy_metadata(file_path: Path) -> dict[str, Any]:
 
     Returns:
         Metadata dictionary (possibly empty).
+
     """
     try:
         import numpy as np
@@ -532,11 +538,9 @@ def try_json_metadata(file_path: Path) -> dict[str, Any]:
 
     Returns:
         Metadata dictionary (possibly empty).
+
     """
-    if (
-        MAX_JSON_PARSE_BYTES is not None
-        and file_path.stat().st_size > MAX_JSON_PARSE_BYTES
-    ):
+    if MAX_JSON_PARSE_BYTES is not None and file_path.stat().st_size > MAX_JSON_PARSE_BYTES:
         return {"json_parse": "skipped_large_file"}
 
     try:
@@ -567,6 +571,7 @@ def build_file_record(dataset_root: Path, file_path: Path) -> FileRecord:
 
     Returns:
         Populated ``FileRecord``.
+
     """
     extension = file_path.suffix.lower()
     relative_path = str(file_path.relative_to(dataset_root))
@@ -587,7 +592,7 @@ def build_file_record(dataset_root: Path, file_path: Path) -> FileRecord:
             parsed_count, parsed_details = parse_dat_counts(file_path, line_count)
             details.update(parsed_details)
         elif file_path.name in {"train.txt", "test.txt"} and "AmazonBook" in str(
-            dataset_root
+            dataset_root,
         ):
             parsed_count, parsed_details = parse_amazonbook_interactions(file_path)
             details.update(parsed_details)
@@ -635,11 +640,61 @@ def normalize_dataset_key(name: str) -> str:
     return NORMALIZE_DATASET_NAME(name)
 
 
+def summarize_registered_paths(paths: tuple[str, ...], limit: int = 3) -> str:
+    """Render a short summary for registered feature-source paths."""
+    if not paths:
+        return "-"
+    unique_paths = tuple(sorted(set(paths)))
+    if len(unique_paths) <= limit:
+        return ", ".join(unique_paths)
+    return ", ".join(unique_paths[:limit]) + f" (+{len(unique_paths) - limit} more)"
+
+
+def describe_feature_support(dataset_name: str, aspect: str) -> str | None:
+    """Describe which registered feature sources are active by policy.
+
+    Args:
+        dataset_name: Loader registry dataset name.
+        aspect: Feature aspect such as ``user_features`` or ``item_features``.
+
+    Returns:
+        Human-readable coverage text for the aspect or ``None`` when the dataset
+        has no registered sources for it.
+
+    """
+    thesis_default_sources = ENABLED_FEATURE_SOURCES(
+        "thesis_default",
+        dataset_name,
+        aspect,
+    )
+    all_optional_sources = ENABLED_FEATURE_SOURCES(
+        "all_optional",
+        dataset_name,
+        aspect,
+    )
+    optional_only_sources = tuple(source for source in all_optional_sources if source not in thesis_default_sources)
+    aspect_label = f"canonical {aspect}"
+    if thesis_default_sources:
+        support = f"thesis-default {aspect_label} from {summarize_registered_paths(thesis_default_sources)}"
+        if optional_only_sources:
+            support += "; additional all_optional-only sources: " + summarize_registered_paths(optional_only_sources)
+        return support
+    if all_optional_sources:
+        return f"available only under all_optional in {aspect_label} from {summarize_registered_paths(all_optional_sources)}"
+    return None
+
+
 def get_loader_coverage(record: DatasetRecord) -> dict[str, Any]:
     """Return current loader-coverage facts for a dataset."""
-    coverage = LOADER_COVERAGE.get(normalize_dataset_key(record.name))
-    if coverage is not None:
-        return coverage
+    facts = LOADER_FACTS.get(normalize_dataset_key(record.name))
+    if facts is not None:
+        return {
+            "loader_name": facts["loader_name"],
+            "interactions": "native loader",
+            "user_features": describe_feature_support(record.name, "user_features"),
+            "item_features": describe_feature_support(record.name, "item_features"),
+            "metadata": facts.get("metadata", []),
+        }
     return {
         "loader_name": None,
         "interactions": None,
@@ -724,28 +779,30 @@ def is_interaction_source(file_record: FileRecord) -> bool:
     has_user = has_exact_marker(columns, USER_COLUMN_MARKERS)
     has_item = has_exact_marker(columns, ITEM_COLUMN_MARKERS)
     has_signal = has_exact_marker(columns, INTERACTION_SIGNAL_MARKERS)
-    return (
-        has_user and has_item and (has_signal or file_record.parsed_count is not None)
-    )
+    return has_user and has_item and (has_signal or file_record.parsed_count is not None)
 
 
 def is_user_feature_source(file_record: FileRecord) -> bool:
     """Identify user-side covariate files."""
     relative_path = file_record.relative_path.lower()
-    if any(
-        token in relative_path for token in ["user_features", "users.dat", "user.txt"]
-    ):
+    if any(token in relative_path for token in ["user_features", "users.dat", "user.txt"]):
         return True
 
     columns = schema_columns(file_record)
     feature_columns = relevant_feature_columns(columns)
     return has_exact_marker(columns, USER_COLUMN_MARKERS) and has_substring_marker(
-        feature_columns, USER_FEATURE_HINTS
+        feature_columns,
+        USER_FEATURE_HINTS,
     )
 
 
 def is_item_feature_source(file_record: FileRecord) -> bool:
-    """Identify item-side covariate files, including item descriptors embedded in interaction tables."""
+    """Identify item-side covariate files.
+
+    This also treats item descriptors embedded in interaction tables as
+    item-feature sources for the audit.
+
+    """
     relative_path = file_record.relative_path.lower()
     columns = schema_columns(file_record)
     feature_columns = relevant_feature_columns(columns)
@@ -766,11 +823,7 @@ def is_item_feature_source(file_record: FileRecord) -> bool:
     )
     column_hint = has_substring_marker(columns + feature_columns, ITEM_FEATURE_HINTS)
     item_id_hint = has_exact_marker(columns, ITEM_COLUMN_MARKERS)
-    return (
-        (item_id_hint and bool(feature_columns) and column_hint)
-        or path_hint
-        or column_hint
-    )
+    return (item_id_hint and bool(feature_columns) and column_hint) or path_hint or column_hint
 
 
 def is_metadata_source(file_record: FileRecord) -> bool:
@@ -779,22 +832,23 @@ def is_metadata_source(file_record: FileRecord) -> bool:
     columns = schema_columns(file_record)
 
     if has_exact_marker(
-        columns, RANDOMIZATION_MARKERS | SOCIAL_MARKERS
+        columns,
+        RANDOMIZATION_MARKERS | SOCIAL_MARKERS,
     ) or has_substring_marker(columns, SEARCH_MARKERS):
         return True
-    if any(
-        token in relative_path
-        for token in [
-            "social_network",
-            "links.csv",
-            "tags.csv",
-            "popularity",
-            "role.json",
-            "class_map.json",
-        ]
-    ):
-        return True
-    return False
+    return bool(
+        any(
+            token in relative_path
+            for token in [
+                "social_network",
+                "links.csv",
+                "tags.csv",
+                "popularity",
+                "role.json",
+                "class_map.json",
+            ]
+        )
+    )
 
 
 def collect_aspect_sources(record: DatasetRecord) -> dict[str, list[FileRecord]]:
@@ -836,7 +890,9 @@ def summarize_columns(files: list[FileRecord]) -> set[str]:
 
 
 def loader_support_text(
-    record: DatasetRecord, aspect: str, files: list[FileRecord]
+    record: DatasetRecord,
+    aspect: str,
+    files: list[FileRecord],
 ) -> str:
     """Describe whether the current loader path uses a given aspect."""
     coverage = get_loader_coverage(record)
@@ -878,6 +934,7 @@ def strongest_causal_asset(record: DatasetRecord, opportunities: list[str]) -> s
         "item-side covariates available",
         "user-side covariates available",
         "temporal ordering available",
+        "predefined split available",
         "interaction-only baseline",
     ]
     for candidate in priority_order:
@@ -898,6 +955,11 @@ def build_causal_audit(record: DatasetRecord) -> dict[str, Any]:
     aspects = collect_aspect_sources(record)
     requirements = (record.exploration_summary or {}).get("ucagnn_requirements", {})
     coverage = get_loader_coverage(record)
+    thesis_default_user_sources = ENABLED_FEATURE_SOURCES(
+        "thesis_default",
+        record.name,
+        "user_features",
+    )
 
     interaction_columns = summarize_columns(aspects["interactions"])
     user_feature_columns = summarize_columns(aspects["user_features"])
@@ -908,6 +970,8 @@ def build_causal_audit(record: DatasetRecord) -> dict[str, Any]:
     opportunities: list[str] = []
     if requirements.get("supports_timestamp_split"):
         opportunities.append("temporal ordering available")
+    elif requirements.get("supports_predefined_split"):
+        opportunities.append("predefined split available")
     if requirements.get("supports_sign_split"):
         opportunities.append("graded sign or explicit negative signal")
     if RANDOMIZATION_MARKERS & metadata_columns:
@@ -923,22 +987,23 @@ def build_causal_audit(record: DatasetRecord) -> dict[str, Any]:
     if POST_TREATMENT_MARKERS & feature_columns:
         risks.append("behavioral aggregate features may leak post-exposure outcomes")
     if has_substring_marker(
-        interaction_columns | metadata_columns | feature_columns, SEARCH_MARKERS
+        interaction_columns | metadata_columns | feature_columns,
+        SEARCH_MARKERS,
     ):
         risks.append(
-            "search and recommendation signals are mixed and need causal separation"
+            "search and recommendation signals are mixed and need causal separation",
         )
     if SOCIAL_MARKERS & metadata_columns:
         risks.append("social links may act as confounders and need explicit treatment")
     if has_substring_marker(feature_columns, TEXT_MARKERS):
         risks.append(
-            "textual descriptors need encoding and leakage checks before promotion"
+            "textual descriptors need encoding and leakage checks before promotion",
         )
-    if coverage.get("user_features") and coverage.get("loader_name"):
+    if thesis_default_user_sources and coverage.get("loader_name"):
         risks.append("user features are loaded today but remain unused by the model")
     if requirements.get("preprocessing_cost") == "high":
         risks.append(
-            "preprocessing cost is high before the dataset can join the formal matrix"
+            "preprocessing cost is high before the dataset can join the formal matrix",
         )
 
     if RANDOMIZATION_MARKERS & metadata_columns:
@@ -949,9 +1014,7 @@ def build_causal_audit(record: DatasetRecord) -> dict[str, Any]:
         next_step = "separate pre-treatment descriptors from post-treatment aggregates and promote only safe features"
     elif coverage.get("loader_name"):
         priority = "medium"
-        next_step = (
-            "use as an interaction-only baseline unless new covariates are engineered"
-        )
+        next_step = "use as an interaction-only baseline unless new covariates are engineered"
     else:
         priority = "low"
         next_step = "implement a canonical loader before considering formal experiments"
@@ -991,7 +1054,8 @@ def aspect_note(aspect: str, files: list[FileRecord]) -> str:
         if RANDOMIZATION_MARKERS & columns:
             notes.append("contains randomized exposure indicator")
         if has_exact_marker(
-            list(columns), {"rating", "watch_ratio", "behavior_type", "is_hate"}
+            list(columns),
+            {"rating", "watch_ratio", "behavior_type", "is_hate"},
         ):
             notes.append("supports label/sign construction")
         if has_exact_marker(list(columns), {"timestamp", "time_ms", "ts", "date"}):
@@ -1038,7 +1102,7 @@ def render_causal_audit_table(record: DatasetRecord) -> list[str]:
                 loader_text,
                 model_use_text(record, aspect),
                 aspect_note(aspect, files),
-            ]
+            ],
         )
 
     if not rows:
@@ -1052,7 +1116,7 @@ def render_causal_audit_table(record: DatasetRecord) -> list[str]:
                 "Current Loader Coverage",
                 "Current Model Use",
                 "Causal Notes",
-            ]
+            ],
         ),
         render_table_row(["---", "---", "---", "---", "---"]),
     ]
@@ -1089,7 +1153,9 @@ def infer_column_aspect(file_record: FileRecord) -> str:
 
 
 def infer_pipeline_stage(
-    record: DatasetRecord, file_record: FileRecord, column: str
+    record: DatasetRecord,
+    file_record: FileRecord,
+    column: str,
 ) -> str:
     """Describe how far fields from a file currently travel in the pipeline."""
     aspect = infer_column_aspect(file_record)
@@ -1105,9 +1171,7 @@ def infer_pipeline_stage(
             aspect,
             file_record.relative_path,
         )
-        if default_columns and column.lower() in {
-            value.lower() for value in default_columns
-        }:
+        if default_columns and column.lower() in {value.lower() for value in default_columns}:
             return "model_consumed"
         return "raw_only"
     if aspect == "user_features":
@@ -1116,9 +1180,7 @@ def infer_pipeline_stage(
             aspect,
             file_record.relative_path,
         )
-        if default_columns and column.lower() in {
-            value.lower() for value in default_columns
-        }:
+        if default_columns and column.lower() in {value.lower() for value in default_columns}:
             return "graph_retained"
         return "raw_only"
     metadata_keys = coverage.get("metadata", [])
@@ -1128,7 +1190,9 @@ def infer_pipeline_stage(
 
 
 def infer_causal_role(
-    record: DatasetRecord, file_record: FileRecord, column: str
+    record: DatasetRecord,
+    file_record: FileRecord,
+    column: str,
 ) -> str:
     """Heuristically classify a candidate column by causal role."""
     relative_path = file_record.relative_path.lower()
@@ -1174,12 +1238,7 @@ def infer_causal_role(
         "long_view",
     }:
         return "post_treatment"
-    if (
-        normalized.endswith("_cnt")
-        or normalized.endswith("_user_num")
-        or normalized.endswith("_duration")
-        or normalized.endswith("_progress")
-    ):
+    if normalized.endswith("_cnt") or normalized.endswith("_user_num") or normalized.endswith("_duration") or normalized.endswith("_progress"):
         return "post_treatment"
     if normalized.startswith("onehot_feat") or normalized.endswith("_range"):
         return "pre_treatment"
@@ -1229,7 +1288,10 @@ def infer_causal_role(
 
 
 def quick_safe_use_check(
-    file_record: FileRecord, column: str, causal_role: str, pipeline_stage: str
+    file_record: FileRecord,
+    column: str,
+    causal_role: str,
+    pipeline_stage: str,
 ) -> tuple[str, str]:
     """Return a minimal policy verdict for whether a field is safe to use now."""
     normalized = column.lower()
@@ -1249,11 +1311,7 @@ def quick_safe_use_check(
         )
     if causal_role == "unknown":
         return "review", "needs manual causal review before promotion"
-    if (
-        normalized in TEXT_MARKERS
-        or "caption" in relative_path
-        or normalized == "title"
-    ):
+    if normalized in TEXT_MARKERS or "caption" in relative_path or normalized == "title":
         return (
             "encode_then_test",
             "pre-treatment descriptor but needs encoding and leakage review",
@@ -1286,7 +1344,10 @@ def collect_candidate_feature_rows(record: DatasetRecord) -> list[dict[str, str]
             pipeline_stage = infer_pipeline_stage(record, file_record, column)
             causal_role = infer_causal_role(record, file_record, column)
             safe_use, rationale = quick_safe_use_check(
-                file_record, column, causal_role, pipeline_stage
+                file_record,
+                column,
+                causal_role,
+                pipeline_stage,
             )
             rows.append(
                 {
@@ -1298,7 +1359,7 @@ def collect_candidate_feature_rows(record: DatasetRecord) -> list[dict[str, str]
                     "pipeline_stage": pipeline_stage,
                     "quick_check": safe_use,
                     "rationale": rationale,
-                }
+                },
             )
     return rows
 
@@ -1320,7 +1381,7 @@ def render_candidate_feature_table(record: DatasetRecord) -> list[str]:
                 "Pipeline Stage",
                 "Quick Check",
                 "Rationale",
-            ]
+            ],
         ),
         render_table_row(["---", "---", "---", "---", "---", "---", "---", "---"]),
     ]
@@ -1336,17 +1397,18 @@ def render_candidate_feature_table(record: DatasetRecord) -> list[str]:
                     row["pipeline_stage"],
                     row["quick_check"],
                     row["rationale"],
-                ]
-            )
+                ],
+            ),
         )
     return lines
 
 
 def build_feature_audit_payload(
-    records: list[DatasetRecord], data_root: Path
+    records: list[DatasetRecord],
+    data_root: Path,
 ) -> dict[str, Any]:
     """Build a machine-readable feature-audit export."""
-    generated_at = dt.datetime.now().isoformat(timespec="seconds")
+    generated_at = datetime.now(UTC).isoformat(timespec="seconds")
     datasets: list[dict[str, Any]] = []
     for record in sorted(records, key=lambda item: item.name.lower()):
         audit = build_causal_audit(record)
@@ -1359,8 +1421,26 @@ def build_feature_audit_payload(
                 "primary_risk": audit["primary_risk"],
                 "priority": audit["priority"],
                 "next_step": audit["next_step"],
+                "file_schemas": [
+                    {
+                        "path": file_record.relative_path,
+                        "schema_type": (file_record.schema or {}).get("schema_type"),
+                        "column_count": (file_record.schema or {}).get("column_count"),
+                        "columns": list((file_record.schema or {}).get("columns", [])),
+                        "dtypes": dict((file_record.schema or {}).get("dtypes", {})),
+                        "has_header": (file_record.schema or {}).get("has_header"),
+                        "delimiter": (file_record.schema or {}).get("delimiter"),
+                        "parser": (file_record.schema or {}).get("parser"),
+                        "schema_source": (file_record.schema or {}).get("schema_source"),
+                        "encoding": (file_record.schema or {}).get("encoding"),
+                    }
+                    for file_record in sorted(
+                        schema_file_records(record),
+                        key=lambda item: item.relative_path,
+                    )
+                ],
                 "candidate_columns": collect_candidate_feature_rows(record),
-            }
+            },
         )
 
     return {
@@ -1371,7 +1451,9 @@ def build_feature_audit_payload(
 
 
 def detect_status(
-    has_raw_content: bool, has_processed_data: bool, file_count: int
+    has_raw_content: bool,
+    has_processed_data: bool,
+    file_count: int,
 ) -> str:
     """Compute dataset availability status.
 
@@ -1382,6 +1464,7 @@ def detect_status(
 
     Returns:
         Status label.
+
     """
     if file_count == 0:
         return "EMPTY"
@@ -1405,6 +1488,7 @@ def load_pyg_data_from_processed(processed_path: Path) -> Any:
 
     Raises:
         RuntimeError: If object cannot be reconstructed.
+
     """
     import torch
 
@@ -1413,11 +1497,7 @@ def load_pyg_data_from_processed(processed_path: Path) -> Any:
     except TypeError:
         payload = torch.load(processed_path, map_location="cpu")
 
-    if (
-        isinstance(payload, tuple)
-        and len(payload) >= 3
-        and isinstance(payload[0], dict)
-    ):
+    if isinstance(payload, tuple) and len(payload) >= 3 and isinstance(payload[0], dict):
         data_dict = payload[0]
         data_cls = payload[2]
         if hasattr(data_cls, "from_dict"):
@@ -1441,6 +1521,7 @@ def infer_graph_info(data_obj: Any, source_path: str) -> dict[str, Any]:
 
     Returns:
         Graph metadata dictionary.
+
     """
     node_types = list(getattr(data_obj, "node_types", []))
     edge_types = list(getattr(data_obj, "edge_types", []))
@@ -1451,19 +1532,15 @@ def infer_graph_info(data_obj: Any, source_path: str) -> dict[str, Any]:
         # homogeneous Data objects store them as attributes
         if hasattr(obj, "__dict__"):
             for k, v in obj.__dict__.items():
-                if isinstance(v, torch.Tensor) and any(
-                    prefix in k for prefix in ["train", "val", "test"]
-                ):
+                if isinstance(v, torch.Tensor) and any(prefix in k for prefix in ["train", "val", "test"]):
                     splits[k] = list(v.size())
         # hetero stores have dict-like semantics
         if hasattr(obj, "node_types") and hasattr(obj, "edge_types"):
             for store in list(getattr(obj, "node_stores", [])) + list(
-                getattr(obj, "edge_stores", [])
+                getattr(obj, "edge_stores", []),
             ):
                 for k, v in store.items():
-                    if isinstance(v, torch.Tensor) and any(
-                        prefix in k for prefix in ["train", "val", "test"]
-                    ):
+                    if isinstance(v, torch.Tensor) and any(prefix in k for prefix in ["train", "val", "test"]):
                         keyname = f"{store._key}.{k}"
                         splits[keyname] = list(v.size())
         return splits
@@ -1477,11 +1554,7 @@ def infer_graph_info(data_obj: Any, source_path: str) -> dict[str, Any]:
             node_store = data_obj[node_type]
             node_counts[node_type] = int(getattr(node_store, "num_nodes", 0) or 0)
             x_value = getattr(node_store, "x", None)
-            if (
-                x_value is not None
-                and hasattr(x_value, "shape")
-                and len(x_value.shape) == 2
-            ):
+            if x_value is not None and hasattr(x_value, "shape") and len(x_value.shape) == 2:
                 node_features[node_type] = int(x_value.shape[1])
             else:
                 node_features[node_type] = 0
@@ -1512,9 +1585,7 @@ def infer_graph_info(data_obj: Any, source_path: str) -> dict[str, Any]:
             "node_counts": node_counts,
             "edge_counts": edge_counts,
             "node_feature_dims": node_features,
-            "edge_layouts": "sparse"
-            if any(hasattr(data_obj[et], "adj_t") for et in edge_types)
-            else "dense",
+            "edge_layouts": "sparse" if any(hasattr(data_obj[et], "adj_t") for et in edge_types) else "dense",
         }
         if splits_info:
             result["splits"] = splits_info
@@ -1536,7 +1607,8 @@ def infer_graph_info(data_obj: Any, source_path: str) -> dict[str, Any]:
 
 
 def extract_graph_info_from_processed(
-    dataset_root: Path, processed_paths: list[Path]
+    dataset_root: Path,
+    processed_paths: list[Path],
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Try extracting graph metadata from ``processed/data.pt``.
 
@@ -1546,6 +1618,7 @@ def extract_graph_info_from_processed(
 
     Returns:
         Tuple (graph_info, error_message).
+
     """
     if not processed_paths:
         return None, None
@@ -1554,7 +1627,8 @@ def extract_graph_info_from_processed(
         try:
             data_obj = load_pyg_data_from_processed(processed_path)
             graph_info = infer_graph_info(
-                data_obj, str(processed_path.relative_to(dataset_root))
+                data_obj,
+                str(processed_path.relative_to(dataset_root)),
             )
             return graph_info, None
         except Exception:
@@ -1571,6 +1645,7 @@ def scan_dataset(dataset_root: Path) -> DatasetRecord:
 
     Returns:
         Populated ``DatasetRecord``.
+
     """
     notes: list[str] = []
     file_records: list[FileRecord] = []
@@ -1583,19 +1658,16 @@ def scan_dataset(dataset_root: Path) -> DatasetRecord:
             notes.append(f"file_scan_failed:{file_path.name}:{exc}")
 
     raw_files = [path for path in dataset_root.rglob("raw/**/*") if path.is_file()]
-    processed_files = [
-        path for path in dataset_root.rglob("processed/**/*") if path.is_file()
-    ]
-    processed_paths = [
-        path for path in dataset_root.rglob("processed/data*.pt") if path.is_file()
-    ]
+    processed_files = [path for path in dataset_root.rglob("processed/**/*") if path.is_file()]
+    processed_paths = [path for path in dataset_root.rglob("processed/data*.pt") if path.is_file()]
 
     has_raw_content = len(raw_files) > 0
     has_processed_data = len(processed_files) > 0
     status = detect_status(has_raw_content, has_processed_data, len(file_records))
 
     graph_info, graph_error = extract_graph_info_from_processed(
-        dataset_root, processed_paths
+        dataset_root,
+        processed_paths,
     )
     if graph_error:
         notes.append(graph_error)
@@ -1606,9 +1678,7 @@ def scan_dataset(dataset_root: Path) -> DatasetRecord:
         file_records=file_records,
         has_raw_content=has_raw_content,
         has_processed_data=has_processed_data,
-        processed_paths=[
-            str(path.relative_to(dataset_root)) for path in processed_paths
-        ],
+        processed_paths=[str(path.relative_to(dataset_root)) for path in processed_paths],
         status=status,
         notes=notes,
         graph_info=graph_info,
@@ -1616,42 +1686,82 @@ def scan_dataset(dataset_root: Path) -> DatasetRecord:
     return attach_exploration_summary(record)
 
 
-def format_columns(columns: list[str]) -> str:
-    """Render the full column-name list for markdown tables."""
+def schema_file_records(record: DatasetRecord) -> list[FileRecord]:
+    """Return files that expose a structured schema."""
+    return [file_record for file_record in record.file_records if (file_record.schema or {}).get("column_count") is not None]
+
+
+def format_delimiter(delimiter: Any) -> str:
+    """Render a delimiter value for markdown."""
+    if delimiter is None:
+        return "-"
+    if delimiter == "\t":
+        return "\\t"
+    if delimiter == " ":
+        return "space"
+    return str(delimiter)
+
+
+def format_header_flag(schema: dict[str, Any] | None) -> str:
+    """Render whether the parsed file used a header row."""
+    if not schema or schema.get("has_header") is None:
+        return "-"
+    return "yes" if schema.get("has_header") else "no"
+
+
+def format_schema_pairs(
+    schema: dict[str, Any] | None,
+    limit: int | None = None,
+) -> str:
+    """Render a file schema as ``name:type`` pairs."""
+    if not schema:
+        return "-"
+    columns = [str(column) for column in schema.get("columns", [])]
     if not columns:
         return "-"
-    return ", ".join(columns)
+    dtypes = {str(column): str(dtype) for column, dtype in (schema.get("dtypes") or {}).items()}
+    pairs = [f"{column}:{dtypes.get(column, '-')}" for column in columns]
+    if limit is not None and len(pairs) > limit:
+        return ", ".join(pairs[:limit]) + f" (+{len(pairs) - limit} more)"
+    return ", ".join(pairs)
 
 
-def format_ucagnn_summary(summary: dict[str, Any] | None) -> list[str]:
-    """Render dataset-level U-CaGNN suitability bullets."""
-    if not summary:
-        return ["- U-CaGNN suitability: no registered semantic summary available"]
+def count_schema_sources(record: DatasetRecord, *sources: str) -> int:
+    """Count structured files that use the provided schema sources."""
+    return sum(1 for file_record in schema_file_records(record) if (file_record.schema or {}).get("schema_source") in sources)
 
-    requirements = summary["ucagnn_requirements"]
-    fields = requirements["fields"]
-    return [
-        f"- Registry dataset: {summary['name']}",
-        f"- Pairwise triplets ready: {'yes' if requirements['supports_pairwise_triplets'] else 'no'}",
-        f"- Timestamp split ready: {'yes' if requirements['supports_timestamp_split'] else 'no'}",
-        f"- Sign-aware split ready: {'yes' if requirements['supports_sign_split'] else 'no'}",
-        f"- Popularity signal ready: {'yes' if requirements['supports_popularity_signal'] else 'no'}",
-        f"- Side or multimodal features: {'yes' if requirements['supports_multimodal_or_side_features'] else 'no'}",
-        f"- Preprocessing cost: {requirements['preprocessing_cost']}",
-        (
-            "- Inferred fields: "
-            f"user={fields['user_field'] or '-'}, "
-            f"item={fields['item_field'] or '-'}, "
-            f"label={fields['rating_field'] or '-'}, "
-            f"timestamp={fields['timestamp_field'] or '-'}"
-        ),
-        (
-            f"- File-level semantic inspection errors: {len(summary.get('file_errors', []))}"
-            if summary.get("file_errors")
-            else "- File-level semantic inspection errors: 0"
-        ),
-        f"- Assessment: {summary['note']}",
-    ]
+
+def max_schema_columns(record: DatasetRecord) -> int | None:
+    """Return the widest structured schema found in a dataset."""
+    column_counts = [int((file_record.schema or {}).get("column_count") or 0) for file_record in schema_file_records(record)]
+    return max(column_counts) if column_counts else None
+
+
+def render_schema_inventory(record: DatasetRecord) -> list[str]:
+    """Render a schema-first inventory for structured files."""
+    structured_files = sorted(
+        schema_file_records(record),
+        key=lambda item: item.relative_path,
+    )
+    if not structured_files:
+        return ["- No structured file schemas detected."]
+
+    lines: list[str] = []
+    for file_record in structured_files:
+        schema = file_record.schema or {}
+        lines.append(f"#### {file_record.relative_path}")
+        lines.append("")
+        lines.append(f"- Header row: {format_header_flag(schema)}")
+        lines.append(f"- Delimiter: {format_delimiter(schema.get('delimiter'))}")
+        lines.append(f"- Parser: {schema.get('parser') or '-'}")
+        lines.append(f"- Schema source: {schema.get('schema_source') or '-'}")
+        if schema.get("encoding"):
+            lines.append(f"- Encoding: {schema['encoding']}")
+        lines.append(
+            f"- Columns ({schema.get('column_count') or 0}): {format_schema_pairs(schema)}",
+        )
+        lines.append("")
+    return lines
 
 
 def render_table_row(columns: list[str]) -> str:
@@ -1662,6 +1772,7 @@ def render_table_row(columns: list[str]) -> str:
 
     Returns:
         Markdown row string.
+
     """
     safe_columns = [value.replace("\n", " ").replace("|", "\\|") for value in columns]
     return "| " + " | ".join(safe_columns) + " |"
@@ -1676,8 +1787,9 @@ def build_markdown_report(records: list[DatasetRecord], data_root: Path) -> str:
 
     Returns:
         Markdown document.
+
     """
-    now = dt.datetime.now().isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     total_bytes = sum(record.total_bytes for record in records)
     total_files = sum(len(record.file_records) for record in records)
 
@@ -1686,6 +1798,7 @@ def build_markdown_report(records: list[DatasetRecord], data_root: Path) -> str:
     lines.append("")
     lines.append(f"- Generated at: {now}")
     lines.append(f"- Scan root: `{data_root}`")
+    lines.append(f"- Selected datasets: {', '.join(ALLOWED_DATASETS)}")
     lines.append(f"- Datasets scanned: {len(records)}")
     lines.append(f"- Files scanned: {total_files}")
     lines.append(f"- Total size: {format_bytes(total_bytes)}")
@@ -1697,187 +1810,70 @@ def build_markdown_report(records: list[DatasetRecord], data_root: Path) -> str:
         render_table_row(
             [
                 "Dataset",
-                "Status",
                 "Files",
                 "Total Size",
-                "Pairwise",
-                "Sign",
-                "Preprocessing",
-                "Raw",
-                "Processed",
-            ]
-        )
+            ],
+        ),
     )
     lines.append(
         render_table_row(
-            ["---", "---", "---:", "---:", "---", "---", "---", "---", "---"]
-        )
+            ["---", "---:", "---:"],
+        ),
     )
     ordered_records = sorted(
-        records, key=lambda item: (-item.total_bytes, item.name.lower())
+        records,
+        key=lambda item: (-item.total_bytes, item.name.lower()),
     )
     for record in ordered_records:
-        requirements = (record.exploration_summary or {}).get("ucagnn_requirements", {})
         lines.append(
             render_table_row(
                 [
                     record.name,
-                    record.status,
                     str(len(record.file_records)),
                     f"{record.total_bytes / (1024**2):,.2f} MiB",
-                    "yes" if requirements.get("supports_pairwise_triplets") else "no",
-                    "yes" if requirements.get("supports_sign_split") else "no",
-                    requirements.get("preprocessing_cost", "-"),
-                    "yes" if record.has_raw_content else "no",
-                    "yes" if record.has_processed_data else "no",
-                ]
-            )
-        )
-    lines.append("")
-
-    lines.append("## Causal Audit Summary")
-    lines.append("")
-    lines.append(
-        render_table_row(
-            [
-                "Dataset",
-                "Experiment Path",
-                "Strongest Asset",
-                "Primary Risk",
-                "Priority",
-                "Next Step",
-            ]
-        )
-    )
-    lines.append(render_table_row(["---", "---", "---", "---", "---", "---"]))
-    for record in ordered_records:
-        audit = build_causal_audit(record)
-        lines.append(
-            render_table_row(
-                [
-                    record.name,
-                    audit["loader_name"],
-                    audit["strongest_asset"],
-                    audit["primary_risk"],
-                    audit["priority"],
-                    audit["next_step"],
-                ]
-            )
+                ],
+            ),
         )
     lines.append("")
 
     for record in ordered_records:
         lines.append(f"## {record.name}")
         lines.append("")
-        lines.append(f"- Status: {record.status}")
-        lines.append(f"- Root: `{record.root_path}`")
-        lines.append(f"- Total files: {len(record.file_records)}")
-        lines.append(f"- Dataset size: {format_bytes(record.total_bytes)}")
-        lines.append(
-            f"- Raw files present: {'yes' if record.has_raw_content else 'no'}"
-        )
-        lines.append(
-            f"- Processed files present: {'yes' if record.has_processed_data else 'no'}"
-        )
-        if record.processed_paths:
-            lines.append(f"- Processed file(s): {', '.join(record.processed_paths)}")
-
-        extension_counter = Counter(
-            file.extension or "<no_ext>" for file in record.file_records
-        )
-        if extension_counter:
-            ext_items = ", ".join(
-                f"{ext}: {count}"
-                for ext, count in sorted(
-                    extension_counter.items(), key=lambda item: item[0]
-                )
-            )
-            lines.append(f"- Extension breakdown: {ext_items}")
-
-        if record.notes:
-            lines.append("- Notes:")
-            for note in record.notes:
-                lines.append(f"  - {note}")
-
-        lines.append("")
-        lines.append("### U-CaGNN Suitability")
-        lines.append("")
-        lines.extend(format_ucagnn_summary(record.exploration_summary))
-
-        lines.append("")
-        lines.append("### Causal Feature Audit")
-        lines.append("")
-        lines.extend(format_causal_audit_summary(record))
-
-        lines.append("")
-        lines.extend(render_causal_audit_table(record))
-
-        lines.append("")
-        lines.append("### Candidate Column Audit")
-        lines.append("")
-        lines.extend(render_candidate_feature_table(record))
-
-        lines.append("")
-        lines.append("### Files")
+        lines.append(f"- Files: {len(record.file_records)}")
+        lines.append(f"- Total size: {format_bytes(record.total_bytes)}")
         lines.append("")
         lines.append(
             render_table_row(
                 [
                     "Path",
                     "Extension",
-                    "Size",
-                    "Line Count",
-                    "Parsed Count",
-                    "Column Count",
-                    "Column Names",
-                    "Details",
-                ]
-            )
+                    "Size (MiB)",
+                    "Column Names & DTypes",
+                ],
+            ),
         )
         lines.append(
             render_table_row(
-                ["---", "---", "---:", "---:", "---:", "---:", "---", "---"]
-            )
+                ["---", "---", "---:", "---"],
+            ),
         )
 
         for file_record in sorted(
-            record.file_records, key=lambda item: (-item.size_bytes, item.relative_path)
+            record.file_records,
+            key=lambda item: item.relative_path.lower(),
         ):
-            details_text = ""
-            if file_record.details:
-                details_text = "; ".join(
-                    f"{key}={value}"
-                    for key, value in sorted(file_record.details.items())
-                )
             schema = file_record.schema or {}
             schema_error = schema.get("schema_error")
-            column_count = schema.get("column_count")
-            column_names = (
-                format_columns(schema.get("columns", [])) if not schema_error else "-"
-            )
-            if schema_error:
-                details_text = (
-                    f"{details_text}; schema_error={schema_error}"
-                    if details_text
-                    else f"schema_error={schema_error}"
-                )
+            column_types = format_schema_pairs(schema) if not schema_error else "-"
             lines.append(
                 render_table_row(
                     [
                         file_record.relative_path,
                         file_record.extension or "<no_ext>",
                         f"{file_record.size_bytes / (1024**2):,.2f} MiB",
-                        str(file_record.line_count)
-                        if file_record.line_count is not None
-                        else "-",
-                        str(file_record.parsed_count)
-                        if file_record.parsed_count is not None
-                        else "-",
-                        str(column_count) if column_count is not None else "-",
-                        column_names,
-                        details_text or "-",
-                    ]
-                )
+                        column_types or "-",
+                    ],
+                ),
             )
 
         lines.append("")
@@ -1898,6 +1894,7 @@ def resolve_paths(output_path: str | None) -> tuple[Path, Path]:
 
     Returns:
         Tuple ``(data_root, report_path)``.
+
     """
     # the script now lives under src/data_exploration/, so ``parents[1]``
     # yields the ``src/`` folder; we need the repository root one level above.
@@ -1919,8 +1916,9 @@ def parse_args() -> argparse.Namespace:
 
     Returns:
         Parsed args namespace.
+
     """
-    return build_data_information_parser().parse_args()
+    return BUILD_DATA_INFORMATION_PARSER().parse_args()
 
 
 def main() -> None:
@@ -1931,8 +1929,11 @@ def main() -> None:
     if not data_root.exists():
         raise FileNotFoundError(f"Data root not found: {data_root}")
 
-    # each immediate child of `data/` is treated as a dataset folder
-    dataset_dirs = sorted([path for path in data_root.iterdir() if path.is_dir()])
+    # only scan the selected dataset folders under `data/`
+    dataset_dirs = sorted(
+        [path for path in data_root.iterdir() if path.is_dir() and path.name in ALLOWED_DATASETS],
+        key=lambda item: ALLOWED_DATASETS.index(item.name),
+    )
     records = [scan_dataset(dataset_dir) for dataset_dir in dataset_dirs]
 
     report = build_markdown_report(records, data_root)

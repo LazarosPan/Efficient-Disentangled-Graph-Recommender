@@ -8,17 +8,16 @@ edge construction, side features, and preprocessing cost.
 from __future__ import annotations
 
 import csv
-import io
 import json
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pandas as pd
+import polars as pl
 
 try:
     from scipy.io import whosmat
-except Exception:  # pragma: no cover - optional dependency for .mat inspection
+except Exception:  # pragma: no cover
     whosmat = None
 
 
@@ -27,6 +26,7 @@ DATA_ROOT = REPO_ROOT / "data"
 
 DEFAULT_PREVIEW_ROWS = 5
 MAX_PREVIEW_CHARS = 12_000
+DEFAULT_SCHEMA_ROWS = 2_048
 STRUCTURED_TEXT_SUFFIXES = {".csv", ".tsv", ".dat", ".txt"}
 
 
@@ -160,8 +160,42 @@ FILE_COLUMN_HINTS: dict[str, list[str]] = {
     ],
 }
 
+FILE_SCHEMA_HINTS: dict[str, dict[str, pl.DataType]] = {
+    "ratings.dat": {
+        "user_id": pl.Int64,
+        "movie_id": pl.Int64,
+        "rating": pl.Float64,
+        "timestamp": pl.Int64,
+    },
+    "movies.dat": {
+        "movie_id": pl.Int64,
+        "title": pl.String,
+        "genres": pl.String,
+    },
+    "users.dat": {
+        "user_id": pl.Int64,
+        "gender": pl.String,
+        "age": pl.Int64,
+        "occupation": pl.Int64,
+        "zip_code": pl.String,
+    },
+    "UserBehavior.csv": {
+        "user_id": pl.Int64,
+        "item_id": pl.Int64,
+        "category_id": pl.Int64,
+        "behavior_type": pl.String,
+        "timestamp": pl.Int64,
+    },
+}
 
-def dataset_registry() -> pd.DataFrame:
+FILE_ENCODING_HINTS: dict[str, str] = {
+    "ratings.dat": "latin-1",
+    "movies.dat": "latin-1",
+    "users.dat": "latin-1",
+}
+
+
+def dataset_registry() -> pl.DataFrame:
     """Return a tabular view of the built-in dataset registry."""
     rows = []
     for name, config in CANDIDATE_DATASETS.items():
@@ -171,9 +205,9 @@ def dataset_registry() -> pd.DataFrame:
                 "root": str(config["root"].relative_to(REPO_ROOT)),
                 "kind": config["kind"],
                 "files": ", ".join(config["files"]),
-            }
+            },
         )
-    return pd.DataFrame(rows)
+    return pl.DataFrame(rows)
 
 
 def get_dataset_config(name: str) -> dict[str, Any]:
@@ -194,10 +228,14 @@ def _safe_json(value: Any) -> Any:
     return str(value)
 
 
-def _read_text_head(path: Path, max_lines: int = 10) -> list[str]:
+def _read_text_head(
+    path: Path,
+    max_lines: int = 10,
+    encoding: str = "utf-8",
+) -> list[str]:
     lines: list[str] = []
-    with path.open("r", encoding="utf-8", errors="ignore") as handle:
-        for _, line in zip(range(max_lines), handle):
+    with path.open("r", encoding=encoding, errors="ignore") as handle:
+        for _, line in zip(range(max_lines), handle, strict=False):
             lines.append(line.rstrip("\n"))
     return lines
 
@@ -218,60 +256,101 @@ def _guess_delimiter(sample: str, default: str | None = None) -> str:
         return " "
 
 
+def _use_header_row(header: str | int | None) -> bool:
+    """Return whether a structured text file should consume the first row as a header."""
+    return header not in (None, 0, False)
+
+
+def _schema_source(
+    has_header: bool,
+    column_names: list[str] | None,
+    schema_overrides: dict[str, pl.DataType] | None,
+) -> str:
+    """Describe where the reported schema came from."""
+    if schema_overrides:
+        return "manual_schema"
+    if column_names and not has_header:
+        return "manual_columns"
+    return "sampled_inference"
+
+
 def inspect_text_file(
     path: str | Path,
     delimiter: str | None = None,
     n_rows: int = DEFAULT_PREVIEW_ROWS,
     header: str | int | None = "infer",
     column_names: list[str] | None = None,
+    schema_overrides: dict[str, pl.DataType] | None = None,
+    encoding: str = "utf-8",
+    schema_rows: int = DEFAULT_SCHEMA_ROWS,
 ) -> dict[str, Any]:
     """Inspect a delimited text file without loading it fully into memory."""
     file_path = Path(path)
-    head_lines = _read_text_head(file_path, max_lines=max(n_rows + 2, 8))
+    has_header = _use_header_row(header)
+    sample_rows = max(n_rows, schema_rows)
+    head_lines = _read_text_head(
+        file_path,
+        max_lines=max(sample_rows + (1 if has_header else 0), 8),
+        encoding=encoding,
+    )
     sample = "\n".join(head_lines)
     detected_delimiter = _guess_delimiter(sample, default=delimiter)
+    parser = "polars_csv_sample"
 
     if detected_delimiter == "::":
         normalized_sample = sample.replace("::", "\t")
-        frame = pd.read_csv(
-            io.StringIO(normalized_sample),
-            sep="\t",
-            header=header,
-            names=column_names,
-            engine="python",
-            nrows=n_rows,
+        frame = pl.read_csv(
+            normalized_sample.encode(),
+            separator="\t",
+            has_header=has_header,
+            new_columns=column_names if column_names and not has_header else None,
+            n_rows=sample_rows,
+            infer_schema_length=max(1, sample_rows),
+            schema_overrides=schema_overrides,
         )
+        parser = "normalized_double_colon"
     elif detected_delimiter == " ":
-        frame = pd.read_csv(
-            io.StringIO(sample),
-            sep=r"\s+",
-            header=header,
-            names=column_names,
-            engine="python",
-            nrows=n_rows,
+        # Normalise runs of whitespace to a single tab so polars can parse it.
+        normalized_ws = "\n".join("\t".join(token for token in line.split()) for line in sample.splitlines())
+        frame = pl.read_csv(
+            normalized_ws.encode(),
+            separator="\t",
+            has_header=has_header,
+            new_columns=column_names if column_names and not has_header else None,
+            n_rows=sample_rows,
+            infer_schema_length=max(1, sample_rows),
+            schema_overrides=schema_overrides,
         )
+        parser = "normalized_whitespace"
     else:
-        frame = pd.read_csv(
-            io.StringIO(sample),
-            sep=detected_delimiter,
-            header=header,
-            names=column_names,
-            engine="python",
-            nrows=n_rows,
+        frame = pl.read_csv(
+            file_path,
+            separator=detected_delimiter,
+            has_header=has_header,
+            new_columns=column_names if column_names and not has_header else None,
+            n_rows=sample_rows,
+            infer_schema_length=max(1, sample_rows),
+            schema_overrides=schema_overrides,
+            ignore_errors=True,
         )
 
     return {
         "path": str(file_path.relative_to(REPO_ROOT)),
         "type": "text_table",
         "delimiter": detected_delimiter,
-        "columns": [str(column) for column in frame.columns],
-        "dtypes": {str(column): str(dtype) for column, dtype in frame.dtypes.items()},
-        "sample_rows": frame.head(n_rows).to_dict(orient="records"),
+        "has_header": has_header,
+        "parser": parser,
+        "schema_source": _schema_source(has_header, column_names, schema_overrides),
+        "encoding": encoding,
+        "columns": frame.columns,
+        "dtypes": {column: str(dtype) for column, dtype in frame.schema.items()},
+        "sample_rows": frame.head(n_rows).to_dicts(),
     }
 
 
 def inspect_interaction_list_file(
-    path: str | Path, n_rows: int = DEFAULT_PREVIEW_ROWS
+    path: str | Path,
+    n_rows: int = DEFAULT_PREVIEW_ROWS,
 ) -> dict[str, Any]:
     """Inspect files where each line is `user_id item_1 item_2 ...`."""
     file_path = Path(path)
@@ -289,15 +368,18 @@ def inspect_interaction_list_file(
                 "user_id": int(user_id) if user_id.isdigit() else user_id,
                 "num_items": len(item_ids),
                 "first_items": item_ids[:5],
-            }
+            },
         )
     return {
         "path": str(file_path.relative_to(REPO_ROOT)),
         "type": "interaction_list",
+        "delimiter": " ",
+        "has_header": False,
+        "parser": "interaction_list",
+        "schema_source": "interaction_list",
         "columns": ["user_id", "item_ids..."],
-        "avg_items_per_preview_row": float(np.mean(interaction_counts))
-        if interaction_counts
-        else 0.0,
+        "dtypes": {"user_id": "Int64", "item_ids...": "list[Int64]"},
+        "avg_items_per_preview_row": float(np.mean(interaction_counts)) if interaction_counts else 0.0,
         "sample_rows": rows,
     }
 
@@ -307,6 +389,8 @@ def inspect_dat_file(
     separator: str = "::",
     n_rows: int = DEFAULT_PREVIEW_ROWS,
     column_names: list[str] | None = None,
+    schema_overrides: dict[str, pl.DataType] | None = None,
+    encoding: str = "latin-1",
 ) -> dict[str, Any]:
     """Inspect MovieLens-style DAT files with multi-character separators."""
     return inspect_text_file(
@@ -315,6 +399,8 @@ def inspect_dat_file(
         n_rows=n_rows,
         header=None,
         column_names=column_names,
+        schema_overrides=schema_overrides,
+        encoding=encoding,
     )
 
 
@@ -343,7 +429,7 @@ def inspect_npz_file(path: str | Path) -> dict[str, Any]:
             "shape": list(value.shape),
         }
     sparse_hint = {
-        "looks_like_sparse": {"indices", "indptr", "data", "shape"}.issubset(set(keys))
+        "looks_like_sparse": {"indices", "indptr", "data", "shape"}.issubset(set(keys)),
     }
     return {
         "path": str(file_path.relative_to(REPO_ROOT)),
@@ -367,10 +453,7 @@ def inspect_mat_file(path: str | Path) -> dict[str, Any]:
         return {
             "path": str(file_path.relative_to(REPO_ROOT)),
             "type": "mat",
-            "variables": [
-                {"name": name, "shape": list(shape), "dtype": dtype}
-                for name, shape, dtype in whosmat(file_path)
-            ],
+            "variables": [{"name": name, "shape": list(shape), "dtype": dtype} for name, shape, dtype in whosmat(file_path)],
         }
     except Exception as exc:
         return {
@@ -419,17 +502,15 @@ def inspect_file(path: str | Path, **kwargs: Any) -> dict[str, Any]:
     if suffix == ".json":
         return inspect_json_file(file_path)
     if suffix == ".dat":
-        dat_kwargs = {
-            key: value
-            for key, value in kwargs.items()
-            if key in {"separator", "n_rows", "column_names"}
-        }
+        dat_kwargs = {key: value for key, value in kwargs.items() if key in {"separator", "n_rows", "column_names", "schema_overrides", "encoding"}}
         return inspect_dat_file(file_path, **dat_kwargs)
     return inspect_text_file(file_path, **kwargs)
 
 
 def inspect_dataset_file(
-    dataset_name: str, path: str | Path, n_rows: int = DEFAULT_PREVIEW_ROWS
+    dataset_name: str,
+    path: str | Path,
+    n_rows: int = DEFAULT_PREVIEW_ROWS,
 ) -> dict[str, Any]:
     """Inspect one file using dataset-aware parsing rules when available."""
     file_path = Path(path)
@@ -447,6 +528,7 @@ def inspect_dataset_file(
             n_rows=n_rows,
             header=None,
             column_names=FILE_COLUMN_HINTS.get(file_name),
+            schema_overrides=FILE_SCHEMA_HINTS.get(file_name),
         )
 
     if file_name in FILE_COLUMN_HINTS:
@@ -455,6 +537,8 @@ def inspect_dataset_file(
             n_rows=n_rows,
             header=None,
             column_names=FILE_COLUMN_HINTS[file_name],
+            schema_overrides=FILE_SCHEMA_HINTS.get(file_name),
+            encoding=FILE_ENCODING_HINTS.get(file_name, "utf-8"),
         )
 
     if suffix in STRUCTURED_TEXT_SUFFIXES:
@@ -471,15 +555,18 @@ def inspect_dataset_file(
 
 def schema_overview(inspection: dict[str, Any]) -> dict[str, Any]:
     """Build a compact schema summary from a file inspection payload."""
-    columns = [
-        str(column).replace("\n", " ").strip()
-        for column in inspection.get("columns", [])
-    ]
+    columns = [str(column).replace("\n", " ").strip() for column in inspection.get("columns", [])]
+    dtypes = {str(column).replace("\n", " ").strip(): str(dtype) for column, dtype in inspection.get("dtypes", {}).items()}
     return {
         "schema_type": inspection.get("type", "unknown"),
         "column_count": len(columns) if columns else None,
         "columns": columns,
+        "dtypes": {column: dtypes.get(column, "-") for column in columns},
         "delimiter": inspection.get("delimiter"),
+        "has_header": inspection.get("has_header"),
+        "parser": inspection.get("parser"),
+        "schema_source": inspection.get("schema_source"),
+        "encoding": inspection.get("encoding"),
     }
 
 
@@ -504,6 +591,15 @@ def _infer_ucagnn_fields(columns: list[str]) -> dict[str, Any]:
 
 
 def _derive_ucagnn_requirements(summary: dict[str, Any]) -> dict[str, Any]:
+    """Infer U-CaGNN readiness signals from dataset file inspections.
+
+    Args:
+        summary: Dataset summary produced by ``summarize_dataset``.
+
+    Returns:
+        Dictionary of benchmark-readiness signals used by downstream audit views.
+
+    """
     file_inspections = summary["files"]
     text_columns: list[str] = []
     for inspection in file_inspections:
@@ -511,6 +607,7 @@ def _derive_ucagnn_requirements(summary: dict[str, Any]) -> dict[str, Any]:
 
     fields = _infer_ucagnn_fields(text_columns)
     lower_columns = [column.lower() for column in text_columns]
+    lower_present_files = [str(file_name).lower() for file_name in summary["present_files"]]
 
     sign_support = any(
         candidate in lower_columns
@@ -523,10 +620,26 @@ def _derive_ucagnn_requirements(summary: dict[str, Any]) -> dict[str, Any]:
         ]
     ) or summary["kind"] in {"signed_splits", "preprocessed_sparse"}
 
-    multimodal_support = any(
-        marker in lower_columns
-        for marker in ["feat", "caption", "genre", "category", "author", "music_id"]
-    ) or summary["kind"] in {"graph_binary", "heterogeneous_txt_npz"}
+    has_feature_files = any(
+        marker in file_name
+        for file_name in lower_present_files
+        for marker in (
+            "movies",
+            "users",
+            "tags",
+            "user_features",
+            "item_features",
+            "video_features",
+            "item_daily_features",
+            "item_categories",
+            "caption_category",
+            "social_network",
+        )
+    )
+    multimodal_support = any(marker in lower_columns for marker in ["feat", "caption", "genre", "category", "author", "music_id"]) or has_feature_files or summary["kind"] in {"graph_binary", "heterogeneous_txt_npz"}
+
+    supports_predefined_split = any(file_name.startswith(("train", "valid", "test")) for file_name in summary["present_files"])
+    supports_pairwise_triplets = fields["user_field"] is not None and fields["item_field"] is not None
 
     preprocessing_cost = "low"
     if summary["kind"] in {"heterogeneous_txt_npz", "graph_binary", "mat_only"}:
@@ -535,22 +648,16 @@ def _derive_ucagnn_requirements(summary: dict[str, Any]) -> dict[str, Any]:
         "interaction_lists",
         "preprocessed_sparse",
         "signed_splits",
-    }:
-        preprocessing_cost = "medium"
-    elif summary["name"] in {"Taobao", "KuaiRand-1K", "KuaiSAR_v2", "KuaiRec_v2"}:
+    } or summary["name"] in {"Taobao", "KuaiRand-1K", "KuaiSAR_v2", "KuaiRec_v2"}:
         preprocessing_cost = "medium"
 
     return {
         "fields": fields,
-        "supports_pairwise_triplets": fields["user_field"] is not None
-        and fields["item_field"] is not None,
-        "supports_timestamp_split": fields["timestamp_field"] is not None
-        or any(
-            file_name.startswith(("train", "valid", "test"))
-            for file_name in summary["present_files"]
-        ),
+        "supports_pairwise_triplets": supports_pairwise_triplets,
+        "supports_predefined_split": supports_predefined_split,
+        "supports_timestamp_split": fields["timestamp_field"] is not None,
         "supports_sign_split": sign_support,
-        "supports_popularity_signal": fields["popularity_candidate"] is not None,
+        "supports_popularity_signal": fields["item_field"] is not None,
         "supports_multimodal_or_side_features": multimodal_support,
         "preprocessing_cost": preprocessing_cost,
     }
@@ -569,9 +676,7 @@ def _dataset_note(name: str, requirements: dict[str, Any]) -> str:
         return "Rich dataset, but search and recommendation are mixed, which makes it less aligned with the first U-CaGNN benchmark phase."
     if requirements["preprocessing_cost"] == "high":
         return "Likely off-scope for phase 1 because the structure is not a simple user-item recommendation table."
-    return (
-        "Potentially usable if transformed into the unified U-CaGNN ingestion contract."
-    )
+    return "Potentially usable if transformed into the unified U-CaGNN ingestion contract."
 
 
 def summarize_dataset(name: str) -> dict[str, Any]:
@@ -592,14 +697,14 @@ def summarize_dataset(name: str) -> dict[str, Any]:
         present_files.append(file_name)
         try:
             files.append(inspect_dataset_file(resolved_name, file_path))
-        except Exception as exc:
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
             file_errors.append(f"{file_name}: {exc}")
             files.append(
                 {
                     "path": str(file_path.relative_to(REPO_ROOT)),
                     "type": "inspection_error",
                     "error": str(exc),
-                }
+                },
             )
 
     summary = {
@@ -626,7 +731,7 @@ def summarize_candidates(
     return [summarize_dataset(name) for name in names]
 
 
-def candidate_verdict_table(dataset_names: list[str] | None = None) -> pd.DataFrame:
+def candidate_verdict_table(dataset_names: list[str] | None = None) -> pl.DataFrame:
     """Return a comparative table tuned for dataset selection decisions."""
     summaries = summarize_candidates(dataset_names)
     rows = []
@@ -648,9 +753,9 @@ def candidate_verdict_table(dataset_names: list[str] | None = None) -> pd.DataFr
                 "label_field": fields["rating_field"],
                 "timestamp_field": fields["timestamp_field"],
                 "note": summary["note"],
-            }
+            },
         )
-    return pd.DataFrame(rows)
+    return pl.DataFrame(rows)
 
 
 def to_json_ready(obj: Any) -> Any:
@@ -669,9 +774,9 @@ def main() -> None:
             "KuaiSAR_v2",
             "AmazonBook",
             "Netflix",
-        ]
+        ],
     )
-    print(table.to_string(index=False))
+    print(str(table))
 
 
 if __name__ == "__main__":
