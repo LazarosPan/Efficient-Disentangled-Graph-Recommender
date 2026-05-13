@@ -12,6 +12,7 @@ Use this skill when working on loss functions, multi-task learning, curriculum s
 - The current mainline uses a batch-safe within-branch contrastive auxiliary with `auxiliary_loss_schedule="linear_ramp"`; keep DirectAU alignment/uniformity available as optional ablations rather than the default path.
 - Keep popularity supervision attached to the scorer-owned popularity head rather than reintroducing a separate predictor inside the loss suite.
 - `LossSuite` receives scores from `UCaGNN.build_training_output()`, which now respects `config.train_scoring_mode`; keep the ranking loss semantics aligned with that model-owned scoring contract.
+- Keep the public ablation matrix small: `mainline`, `no_popularity_head`, `no_independence`, and `no_features`. Treat curriculum or geometry toggles as local diagnostics, not thesis headline ablations.
 
 ## Loss Formula
 ```
@@ -34,10 +35,10 @@ L_total = lambda_rec * L_rec + lambda_interest_bpr * L_int + lambda_conformity_b
 ## Curriculum Scheduling
 Config field `auxiliary_loss_schedule` controls how auxiliary weights activate:
 - `"linear_ramp"`: mainline path; auxiliaries ramp from 0 using `auxiliary_ramp_rate` and `independence_ramp_rate` while fused BPR stays on from epoch 0.
-- `"phased"`: stage auxiliaries with `curriculum_phase1_end` and `curriculum_phase2_end` while fused BPR still stays on from epoch 0.
+- `"phased"`: stage auxiliaries with `auxiliary_losses_start_epoch` and `popularity_supervision_start_epoch` while fused BPR still stays on from epoch 0.
 
-When the phased schedule is active, `curriculum_phase1_end` and `curriculum_phase2_end` control when auxiliary losses activate:
-- Default: `curriculum_phase1_end=15, curriculum_phase2_end=30` (CaDCR-inspired staged curriculum)
+When the phased schedule is active, `auxiliary_losses_start_epoch` and `popularity_supervision_start_epoch` control when auxiliary losses activate:
+- Default: `auxiliary_losses_start_epoch=15, popularity_supervision_start_epoch=30` (CaDCR-inspired staged curriculum)
 - Disable curriculum: set both to 0 (joint training from epoch 0)
 
 `loss_schedule` is fixed to `"baseline"` for supported runs. Do not reintroduce delayed-BPR schedules; the mainline contract is fused BPR from epoch 0 with only the auxiliary terms phased or ramped.

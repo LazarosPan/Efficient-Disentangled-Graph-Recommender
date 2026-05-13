@@ -32,7 +32,7 @@ Public experiment naming note: use `ucagnn` as the main CLI preset/recipe name. 
 | dropout | 0.1 | Reserved config knob; surfaced in formal profiles but not yet consumed by the model |
 | lr | 1e-3 | LightGCN |
 | weight_decay | 1e-5 | DDCE |
-| batch_size | 4096 | Repo throughput default for mini-batch training |
+| batch_size | 4096 | Fallback training batch size when auto probing is disabled or running off-CUDA |
 | epochs | 60 | thesis_plan.md |
 | patience | 10 | DDCE |
 | use_early_stopping | True | Repository policy toggle; default formal profile overrides to False |
@@ -64,7 +64,10 @@ Public experiment naming note: use `ucagnn` as the main CLI preset/recipe name. 
 - `eval_scoring_mode` defaults to `default` and controls which score view is used for validation/test metrics.
 - The old semantic-evaluation config placeholders have been removed; the current logged evaluator uses only PyG link-prediction metrics.
 - In `mini_batch` mode, `num_neighbors` must match the effective maximum active depth across `single_branch_gnn_layers`, `interest_gnn_layers`, and `conformity_gnn_layers`. The base dual-branch default is now the explicit two-hop shape `[10, 5]` because the default branch depths are `interest_gnn_layers=1` and `conformity_gnn_layers=2`.
-- `batch_size` now defaults to `4096` so the mini-batch path is less GPU-starved under the current CPU-side subgraph sampler. The trainer also uses a fixed four-worker CPU preparation pool internally. If a full-dataset formal run hits OOM, reduce batch size first rather than changing the graph/loss semantics.
+- Each preset now rewrites its preset-owned fields explicitly before later profile/CLI overrides are applied, so switching presets on the same `UCaGNNConfig` instance does not preserve stale values. Explicit profile/CLI overrides still apply afterward, so branch-depth and `num_neighbors` changes become part of the resolved config and checkpoint identity instead of being reset back to preset values.
+- `experiments/run_experiment.py` is now the shared ownership point for config input fields: `build_config()` normalizes namespace-like inputs through one `CONFIG_OVERRIDE_FIELDS` contract, and formal benchmark runs rebuild each per-run config through `build_benchmark_config_inputs(...)` before handing it back to `build_config()`.
+- Formal profiles may now declare `num_neighbors_options` as a JSON-safe nested list such as `[[10, 5], [5, 3]]`. The benchmark runner expands those support-parameter variants into separate runs while each resolved run still carries one concrete `config.num_neighbors` vector, and shallower presets such as `lightgcn` consume only the prefix needed by their active depth.
+- `batch_size` now defaults to `4096` for fixed-batch runs, but CUDA runs can opt into `auto_batch_size=True` to probe the largest feasible dataset-aware candidate before canonical naming, checkpoint hashing, and logging are frozen. The probe now follows the same epoch-0 shuffle used by training instead of probing an easier sequential slice, and the default candidate ladder extends down to `256` so dense sampled subgraphs can still land on a feasible size.
 - `use_features` now defaults to `True`, so formal runs use canonical side-feature usage whenever a dataset provides item features; the current implementation consumes item features in Module A and falls back to ID-only embeddings on featureless datasets.
 - `feature_policy` now defaults to `thesis_default`, which promotes only `safe_pre_treatment` columns from the structured feature registry on datasets with risky optional scans; switch to `all_optional` only for explicit leakage-sensitive ablations.
 - `derived_split_mode` now defaults to `per_user_temporal`; set it to `global_temporal` only when you explicitly want the alternative global-temporal derived split behavior.
@@ -78,12 +81,12 @@ Default `propensity_clip_min` is `0.01` (yields max weight 100*) for the base co
 `preset_full()` overrides this to `0.1` (max weight 10*) to prevent gradient explosion from poorly calibrated propensity estimates early in training.
 
 ## Preset Eval Scoring Modes
-`preset_full()` now uses the fused `"default"` scorer for both training and evaluation, while `preset_dice_like()` keeps `"interest_only"` so the baseline continues to measure the interest branch directly. `preset_lightgcn()` also uses `"default"`.
+`preset_full()` now uses the fused `"default"` scorer for both training and evaluation. `preset_dice_like()` also uses the fixed `"default"` score so the baseline follows the DICE-style interest+conformity ranking path, while `preset_lightgcn()` keeps the default single-branch score. Both baseline presets now disable side features, and `preset_dice_like()` also disables sign-aware propagation to stay closer to the original repository semantics.
 
 ## Curriculum Schedule (CaDCR-Inspired)
-Default: `curriculum_phase1_end=15, curriculum_phase2_end=30, epochs=60`
+Default: `auxiliary_losses_start_epoch=15, popularity_supervision_start_epoch=30, epochs=60` (these are the auxiliary-loss and popularity-supervision start epochs, respectively).
 Phase 1 (epochs 0-14): fused BPR + branch BPR. Phase 2 (15-29): + independence, within-branch contrastive, and optional DirectAU geometry. Phase 3 (30+): + popularity supervision.
 
 ## Loss Schedule
-`loss_schedule` is fixed to `"baseline"` for supported runs. Fused BPR stays active from epoch 0, and only auxiliary terms phase in via `auxiliary_loss_schedule`, `curriculum_phase1_end`, and `curriculum_phase2_end`.
+`loss_schedule` is fixed to `"baseline"` for supported runs. Fused BPR stays active from epoch 0, and only auxiliary terms phase in via `auxiliary_loss_schedule`, `auxiliary_losses_start_epoch` / `auxiliary_losses_start_epoch`, and `popularity_supervision_start_epoch` / `popularity_supervision_start_epoch`.
 Disable: set both to 0 for joint training from epoch 0.
