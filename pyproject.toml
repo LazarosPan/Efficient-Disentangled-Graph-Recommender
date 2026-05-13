@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "causal-embeddings-for-recommendations"
-version = "0.2.0"
+version = "0.3.0"
 description = "GPU-Efficient Causal Disentanglement: A Unified Embedding Pipeline with ANN-Accelerated Graph Construction and Memory-Aware Optimization"
 readme = "README.md"
 # PyG only supports Python 3.10–3.13, so constrain the interpreter accordingly.
@@ -38,6 +38,8 @@ dependencies = [
     "mlflow>=3.10.1",
     "torchmetrics>=1.9.0",
     "cupy>=14.0.1",
+    "numba-cuda>=0.30.1",
+    "numba>=0.65.1",
 ]
 
 [[tool.uv.index]]
@@ -71,7 +73,7 @@ dev = [
 [tool.ruff]
 # Align with project requires-python = ">=3.13"
 target-version = "py313"
-line-length = 100
+line-length = 120
 src = ["src", "experiments", "scripts"]
 # FIXED: Moved from [tool.ruff.lint] to [tool.ruff]
 unsafe-fixes = true

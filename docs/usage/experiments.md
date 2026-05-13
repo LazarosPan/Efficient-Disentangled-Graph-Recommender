@@ -30,8 +30,8 @@ uv run formal-run --profile <slug-from-list-profiles>
 uv run experiment --list-recipes
 uv run experiment --dataset movielens1m --recipe ucagnn --sample-interactions 100 --loader-max-rows 100 --epochs 1 --no-mlflow
 uv run experiment --dataset amazonbook --recipe ucagnn --sample-interactions 100 --loader-max-rows 100 --epochs 1 --no-mlflow
-uv run experiment --dataset kuairec_v2 --recipe ucagnn_knn --num-neighbors 25 10 --epochs 1 --no-mlflow
-uv run experiment --dataset kuairec_v2 --preset ucagnn --graph-method knn --num-neighbors 25 10 --epochs 1 --no-mlflow
+uv run experiment --dataset kuairec_v2 --recipe ucagnn --num-neighbors 25 10 --epochs 1 --no-mlflow
+uv run experiment --dataset kuairec_v2 --preset ucagnn --num-neighbors 25 10 --epochs 1 --no-mlflow
 uv run experiment --dataset movielens1m --recipe ucagnn --sample-interactions 100 --loader-max-rows 100 --epochs 1 --no-auto-resume --no-mlflow
 ```
 
