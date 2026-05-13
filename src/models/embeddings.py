@@ -3,9 +3,28 @@
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from ..utils.config import UCaGNNConfig
+
+
+def _register_bf16_buffer(
+    module: nn.Module,
+    name: str,
+    tensor: torch.Tensor | None,
+    n: int,
+) -> None:
+    """Register a 1-D bfloat16 non-persistent buffer, using zeros when absent.
+
+    Args:
+        module: The ``nn.Module`` on which to call ``register_buffer``.
+        name: Buffer attribute name.
+        tensor: Source tensor to cast, or ``None`` to create an all-zero fallback.
+        n: Size of the fallback zero tensor (used only when *tensor* is ``None``).
+
+    """
+    resolved = tensor.to(torch.bfloat16) if tensor is not None else torch.zeros(n, dtype=torch.bfloat16)
+    module.register_buffer(name, resolved, persistent=False)
 
 
 class EmbeddingModule(nn.Module):
@@ -29,30 +48,10 @@ class EmbeddingModule(nn.Module):
         self.n_users = n_users
         self.n_items = n_items
         d = config.embed_dim
-        resolved_item_popularity = (
-            item_popularity.float()
-            if item_popularity is not None
-            else torch.zeros(n_items, dtype=torch.bfloat16)
-        )
-        self.register_buffer(
-            "item_popularity",
-            resolved_item_popularity,
-            persistent=False,
-        )
-        resolved_item_recency = (
-            item_recency.float()
-            if item_recency is not None
-            else torch.zeros(n_items, dtype=torch.bfloat16)
-        )
-        self.register_buffer(
-            "item_recency",
-            resolved_item_recency,
-            persistent=False,
-        )
+        _register_bf16_buffer(self, "item_popularity", item_popularity, n_items)
+        _register_bf16_buffer(self, "item_recency", item_recency, n_items)
         self.has_item_features = bool(
-            config.use_features
-            and item_features is not None
-            and item_features.numel() > 0
+            config.use_features and item_features is not None and item_features.numel() > 0,
         )
 
         # User embeddings (xavier_uniform_ per PyG LightGCN convention)
@@ -78,7 +77,7 @@ class EmbeddingModule(nn.Module):
             assert item_features is not None
             self.register_buffer(
                 "item_feature_matrix",
-                item_features.float(),
+                item_features.to(torch.bfloat16),
                 persistent=False,
             )
             self.item_feature_proj = nn.Linear(item_features.size(-1), d)
@@ -109,10 +108,12 @@ class EmbeddingModule(nn.Module):
         """Cast only floating-point tensors, preserving integer index tensors."""
         if dtype is None:
             return tensors
-        return {
-            key: value.to(dtype=dtype) if torch.is_floating_point(value) else value
-            for key, value in tensors.items()
-        }
+        return {key: value.to(dtype=dtype) if torch.is_floating_point(value) else value for key, value in tensors.items()}
+
+    @staticmethod
+    def _module_dtype(module: nn.Module) -> torch.dtype:
+        """Return the dtype of the first parameter owned by ``module``."""
+        return next(module.parameters()).dtype
 
     def _build_user_embeddings(
         self,
@@ -146,9 +147,7 @@ class EmbeddingModule(nn.Module):
         item_ids: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """Return non-trainable item metadata needed by scoring/loss layers."""
-        popularity = (
-            self.item_popularity if item_ids is None else self.item_popularity[item_ids]
-        )
+        popularity = self.item_popularity if item_ids is None else self.item_popularity[item_ids]
         recency = self.item_recency if item_ids is None else self.item_recency[item_ids]
         return {
             "item_popularity": popularity,
@@ -164,13 +163,13 @@ class EmbeddingModule(nn.Module):
         """
         if self._cached_projected_features is not None and not self.training:
             return  # eval-mode cache hit
-        assert hasattr(self, "item_feature_matrix")
-        assert hasattr(self, "item_popularity")
+        feature_dtype = self._module_dtype(self.item_feature_proj)
+        pop_dtype = self._module_dtype(self.popularity_modulator)
         self._cached_projected_features = self.item_feature_norm(
-            self.item_feature_proj(self.item_feature_matrix)
+            self.item_feature_proj(self.item_feature_matrix.to(dtype=feature_dtype)),
         )
         self._cached_popularity_gate = self.popularity_modulator(
-            self.item_popularity.unsqueeze(-1)
+            self.item_popularity.unsqueeze(-1).to(dtype=pop_dtype),
         )
 
     def invalidate_feature_cache(self) -> None:
@@ -190,20 +189,20 @@ class EmbeddingModule(nn.Module):
 
         if item_ids is not None and self.training:
             # Training-time subgraph path: project only the needed item subset
-            # to avoid O(n_items × feature_dim × D) full-catalog linear map
+            # to avoid O(n_items * feature_dim * D) full-catalog linear map
             # every batch.  Eval uses the full-catalog cache below.
-            subset = self.item_feature_matrix[item_ids]
+            feature_dtype = self._module_dtype(self.item_feature_proj)
+            pop_dtype = self._module_dtype(self.popularity_modulator)
+            subset = self.item_feature_matrix[item_ids].to(dtype=feature_dtype)
             projected = self.item_feature_norm(self.item_feature_proj(subset))
             pop_gate = self.popularity_modulator(
-                self.item_popularity[item_ids].unsqueeze(-1)
+                self.item_popularity[item_ids].unsqueeze(-1).to(dtype=pop_dtype),
             )
             return item_embed, projected, pop_gate
 
-        # Full-catalog path (eval) or get_all_embeddings (item_ids is None):
+        # Full-catalog path (eval) or full-catalog get_embeddings (item_ids is None):
         # populate the cache once per eval call and slice as needed.
         self._ensure_feature_cache()
-        assert self._cached_projected_features is not None
-        assert self._cached_popularity_gate is not None
         if item_ids is None:
             return (
                 item_embed,
@@ -221,7 +220,7 @@ class EmbeddingModule(nn.Module):
         item_ids: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         item_embed, projected_features, pop_gate = self._get_item_base_embeddings(
-            item_ids
+            item_ids,
         )
         if projected_features is None or pop_gate is None:
             return {"item": item_embed}
@@ -237,28 +236,28 @@ class EmbeddingModule(nn.Module):
             "item_conformity": item_conformity,
         }
 
-    def get_all_embeddings(
+    def get_embeddings(
         self,
+        user_ids: torch.Tensor | None = None,
+        item_ids: torch.Tensor | None = None,
         dtype: torch.dtype | None = None,
     ) -> dict[str, torch.Tensor]:
-        """Return a dict of all initial (pre-GNN) embeddings."""
-        out = self._build_user_embeddings()
-        out.update(self._build_item_embeddings())
-        out.update(self._build_item_metadata())
-        out.update(self._build_popularity_embeddings())
-        return self._cast_floating_tensors(out, dtype)
+        """Return a dict of initial (pre-GNN) embeddings, optionally filtered.
 
-    def get_subgraph_embeddings(
-        self,
-        user_ids: torch.Tensor,
-        item_ids: torch.Tensor,
-    ) -> dict[str, torch.Tensor]:
-        """Return initial embeddings restricted to a subgraph node set."""
+        Args:
+            user_ids: Optional 1-D tensor of user global indices; ``None`` returns all.
+            item_ids: Optional 1-D tensor of item global indices; ``None`` returns all.
+            dtype: Optional floating-point dtype to cast output tensors to.
+
+        Returns:
+            Dict of named embedding tensors for the requested node subset.
+
+        """
         out = self._build_user_embeddings(user_ids)
         out.update(self._build_item_embeddings(item_ids))
         out.update(self._build_item_metadata(item_ids))
         out.update(self._build_popularity_embeddings(item_ids))
-        return out
+        return self._cast_floating_tensors(out, dtype)
 
     def get_stacked_embeddings(self) -> torch.Tensor:
         """Return (n_users + n_items, D) combined node embeddings for graph building.
@@ -266,10 +265,7 @@ class EmbeddingModule(nn.Module):
         Uses interest embeddings for users when dual_branch is active.
         """
         user_embeddings = self._build_user_embeddings()
-        if self.config.use_dual_branch:
-            user_emb = user_embeddings["user_interest"]
-        else:
-            user_emb = user_embeddings["user"]
+        user_emb = user_embeddings["user_interest"] if self.config.use_dual_branch else user_embeddings["user"]
         item_embs = self._build_item_embeddings()
         item_emb = item_embs.get("item_interest", item_embs["item"])
         return torch.cat([user_emb, item_emb], dim=0)

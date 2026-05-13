@@ -8,7 +8,7 @@ import torch.nn as nn
 from ..utils.config import UCaGNNConfig
 
 
-class PropensityEstimator(nn.Module):
+class PropensityEstimator(nn.Sequential):
     """Estimate item propensity P(exposure | item) for inverse propensity weighting.
 
     Architecture: item_embedding → Linear(D, hidden) → ReLU → Linear(hidden, 1) → Sigmoid
@@ -16,14 +16,13 @@ class PropensityEstimator(nn.Module):
     """
 
     def __init__(self, config: UCaGNNConfig) -> None:
-        super().__init__()
-        self.config = config
-        self.mlp = nn.Sequential(
+        super().__init__(
             nn.Linear(config.embed_dim, config.propensity_hidden),
             nn.ReLU(),
             nn.Linear(config.propensity_hidden, 1),
             nn.Sigmoid(),
         )
+        self.config = config
         self.clip_min = config.propensity_clip_min
         self.clip_max = config.propensity_clip_max
 
@@ -36,5 +35,5 @@ class PropensityEstimator(nn.Module):
         Returns:
             (B,) propensity scores clipped to [clip_min, clip_max].
         """
-        raw = self.mlp(item_embeddings).squeeze(-1)
+        raw = super().forward(item_embeddings).squeeze(-1)
         return torch.clamp(raw, self.clip_min, self.clip_max)

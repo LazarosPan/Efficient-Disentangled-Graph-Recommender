@@ -1,20 +1,20 @@
 """U-CaGNN: Unified Causal Graph Neural Network for recommendations.
 
-Orchestrates Modules A (embeddings), B (LightGCN), C (scoring), F (propensity).
+Orchestrates Modules A (embeddings), B (LightGCN), C (scoring).
 Every component is toggleable via UCaGNNConfig.
 """
 
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
+from torch import nn
 
-from ..utils.config import UCaGNNConfig
 from ..data.subgraph_sampler import SubgraphBatch
+from ..utils.config import UCaGNNConfig
 from .embeddings import EmbeddingModule
 from .lightgcn import DualBranchGCN
-from .scoring import ScoringModule
 from .propensity import PropensityEstimator
+from .scoring import ScoringModule
 
 
 class UCaGNN(nn.Module):
@@ -56,9 +56,9 @@ class UCaGNN(nn.Module):
         # Module C: Scoring
         self.scoring = ScoringModule(config)
 
-        # Module F: Propensity (optional)
+        # Module F: Propensity estimator (optional)
         if config.use_ipw:
-            self.propensity = PropensityEstimator(config)
+            self._propensity_mlp = PropensityEstimator(config)
 
         # Optional: compile GCN for speedup on static graph structures
         if config.use_torch_compile:
@@ -96,7 +96,14 @@ class UCaGNN(nn.Module):
         pos_item_ids: torch.Tensor,
         neg_item_ids: torch.Tensor,
     ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
-        """Build the shared training payload from propagated embeddings."""
+        """Build the shared training payload from propagated embeddings.
+
+        The ranking loss always consumes scores built from
+        ``config.train_scoring_mode`` so training semantics stay explicit even
+        when evaluation later probes alternate score views on the same
+        checkpoint.
+
+        """
         train_scoring_mode = self.config.train_scoring_mode
         pos_scores = self.scoring(
             propagated,
@@ -113,7 +120,8 @@ class UCaGNN(nn.Module):
 
         if self.config.use_ipw:
             item_key = "item_interest" if self.config.use_dual_branch else "item"
-            ipw_weights = 1.0 / self.propensity(propagated[item_key][pos_item_ids])
+            propensity = self._propensity_mlp(propagated[item_key][pos_item_ids])
+            ipw_weights = 1.0 / propensity
         else:
             ipw_weights = torch.ones(user_ids.size(0), device=user_ids.device)
 
@@ -150,9 +158,10 @@ class UCaGNN(nn.Module):
             - embeddings: dict of initial embeddings (pre-GNN)
             - propagated: dict of propagated embeddings (post-GNN)
             - ipw_weights: (B,) inverse propensity weights (if use_ipw)
+
         """
         # Module A: Get initial embeddings
-        init_embs = self.embedding.get_all_embeddings()
+        init_embs = self.embedding.get_embeddings()
 
         # Module B: GCN propagation
         propagated = self.propagate_embeddings(
@@ -185,9 +194,10 @@ class UCaGNN(nn.Module):
 
         Returns:
             Dict matching the output format of ``forward()``.
+
         """
         # Index into embedding tables for subgraph nodes only
-        sub_embs = self.embedding.get_subgraph_embeddings(
+        sub_embs = self.embedding.get_embeddings(
             batch.user_global_ids,
             batch.item_global_ids,
         )
@@ -210,6 +220,18 @@ class UCaGNN(nn.Module):
             batch.batch_neg_local,
         )
 
+    def _resolve_eval_scoring_mode(self, scoring_mode: str | None) -> str:
+        """Resolve the evaluation scoring mode.
+
+        Args:
+            scoring_mode: Optional evaluation-time score override.
+
+        Returns:
+            str: Explicit scoring mode used for evaluation-time helpers.
+
+        """
+        return scoring_mode or self.config.eval_scoring_mode
+
     @torch.no_grad()
     def get_propagated_for_eval(
         self,
@@ -224,7 +246,7 @@ class UCaGNN(nn.Module):
         multiple scoring batches, avoiding repeated GCN forward passes.
         """
         return self.propagate_embeddings(
-            self.embedding.get_all_embeddings(dtype=embedding_dtype),
+            self.embedding.get_embeddings(dtype=embedding_dtype),
             edge_index,
             edge_sign,
             n_users=self.n_users,
@@ -244,17 +266,19 @@ class UCaGNN(nn.Module):
         Args:
             propagated: Output of ``get_propagated_for_eval``.
             user_ids: (B,) user indices.
-            scoring_mode: Scoring mode override.
+            scoring_mode: Optional evaluation-time score override. Passing a
+                different mode here reuses the same checkpoint and propagated
+                embeddings while changing only the score view.
 
         Returns:
             (B, n_items) score matrix.
+
         """
-        resolved = scoring_mode or self.config.eval_scoring_mode
-        return self.scoring.score_final_all_items(
+        return self.scoring.score_all_items(
             propagated,
             user_ids,
-            scoring_mode=resolved,
-        )
+            scoring_mode=self._resolve_eval_scoring_mode(scoring_mode),
+        )["final_score"]
 
     @torch.no_grad()
     def get_all_score_components(
@@ -266,19 +290,11 @@ class UCaGNN(nn.Module):
         edge_norm: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """Return full-catalog score components for evaluation and diagnostics."""
-        propagated = self.propagate_embeddings(
-            self.embedding.get_all_embeddings(),
-            edge_index,
-            edge_sign,
-            n_users=self.n_users,
-            n_items=self.n_items,
-            edge_norm=edge_norm,
-        )
-        resolved_scoring_mode = scoring_mode or self.config.eval_scoring_mode
+        propagated = self.get_propagated_for_eval(edge_index, edge_sign, edge_norm)
         scores = self.scoring.score_all_items(
             propagated,
             user_ids,
-            scoring_mode=resolved_scoring_mode,
+            scoring_mode=self._resolve_eval_scoring_mode(scoring_mode),
         )
         if self.config.use_dual_branch:
             scores["user_interest_emb"] = propagated["user_interest"][user_ids]

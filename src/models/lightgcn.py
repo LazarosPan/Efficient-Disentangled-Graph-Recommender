@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
-from torch_geometric.nn.conv import LGConv
+from torch import nn
 
 from ..utils.config import UCaGNNConfig
 
@@ -12,32 +11,79 @@ from ..utils.config import UCaGNNConfig
 class LightGCNBranch(nn.Module):
     """Multi-layer LightGCN with alpha-weighted layer combination (He et al., 2020).
 
-    Uses PyG's ``LGConv`` with ``normalize=False``; degree normalization is
-    handled externally via pre-computed full-graph ``edge_weight`` so training
-    (subgraph) and evaluation (full graph) use identical normalization factors.
+    Uses repeated sparse adjacency matmuls; degree normalization is handled
+    externally via pre-computed full-graph ``edge_weight`` so training
+    (subgraph) and evaluation (full graph) use identical normalization factors
+    without materializing edge-wise gather-scatter messages.
     """
 
     def __init__(self, n_layers: int) -> None:
         super().__init__()
+        self.n_layers = n_layers
         alpha = 1.0 / (n_layers + 1)
         self.register_buffer("alpha", torch.full((n_layers + 1,), alpha))
-        self.convs = nn.ModuleList([LGConv(normalize=False) for _ in range(n_layers)])
 
     def reset_parameters(self) -> None:
-        for conv in self.convs:
-            conv.reset_parameters()
+        """Reset module state.
+
+        Returns:
+            None. The branch has no learnable propagation parameters.
+
+        """
+        return None
 
     def forward(
         self,
         x: torch.Tensor,
-        edge_index: torch.Tensor,
-        edge_weight: torch.Tensor | None = None,
+        adj: torch.Tensor,
     ) -> torch.Tensor:
-        out = x * self.alpha[0]
-        for i, conv in enumerate(self.convs):
-            x = conv(x, edge_index, edge_weight)
-            out = out + x * self.alpha[i + 1]
-        return out
+        """Propagate one embedding table through repeated sparse matmuls.
+
+        Args:
+            x: Node embeddings with shape ``(num_nodes, embed_dim)``.
+            adj: Sparse normalized adjacency matrix with shape
+                ``(num_nodes, num_nodes)``.
+
+        Returns:
+            torch.Tensor: Alpha-averaged LightGCN embeddings.
+
+        """
+        compute_dtype = torch.float32 if x.dtype in {torch.float16, torch.bfloat16} else x.dtype
+        x_work = x.to(dtype=compute_dtype)
+        adj_work = self._cast_sparse_values(adj, compute_dtype)
+
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            out = x_work * self.alpha[0].to(dtype=compute_dtype)
+            for i in range(self.n_layers):
+                x_work = torch.sparse.mm(adj_work, x_work)
+                out = out + x_work * self.alpha[i + 1].to(dtype=compute_dtype)
+
+        return out.to(dtype=x.dtype) if out.dtype != x.dtype else out
+
+    @staticmethod
+    def _cast_sparse_values(
+        adj: torch.Tensor,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Return ``adj`` with sparse values cast to ``dtype`` when needed.
+
+        Args:
+            adj: COO sparse adjacency matrix.
+            dtype: Target value dtype for sparse matmul.
+
+        Returns:
+            torch.Tensor: Sparse adjacency with values in ``dtype``.
+
+        """
+        if adj.dtype == dtype:
+            return adj
+        return torch.sparse_coo_tensor(
+            adj.indices(),
+            adj.values().to(dtype=dtype),
+            size=adj.size(),
+            device=adj.device,
+            dtype=dtype,
+        ).coalesce()
 
 
 class DualBranchGCN(nn.Module):
@@ -95,9 +141,22 @@ class DualBranchGCN(nn.Module):
 
         Returns:
             Dict with propagated user/item embeddings per branch.
+
         """
         edge_weight = self._combine_weights(
-            self._compute_edge_weights_impl(edge_sign), edge_norm
+            self._compute_edge_weights_impl(edge_sign),
+            edge_norm,
+        )
+
+        # Cast edge_weight once to match embedding dtype (prevents AMP scatter mismatch).
+        # All branches use the same dtype since all embedding tables share initialization.
+        x_dtype = next(iter(embeddings.values())).dtype
+        ew = edge_weight.to(dtype=x_dtype) if edge_weight is not None else None
+        adj = self._build_sparse_adjacency(
+            edge_index,
+            ew,
+            num_nodes=n_users + n_items,
+            dtype=x_dtype,
         )
 
         out: dict[str, torch.Tensor] = {}
@@ -106,25 +165,51 @@ class DualBranchGCN(nn.Module):
             item_interest = embeddings.get("item_interest", embeddings["item"])
             item_conformity = embeddings.get("item_conformity", embeddings["item"])
             x_int = torch.cat([embeddings["user_interest"], item_interest], dim=0)
-            # Cast edge_weight to match input dtype (prevents AMP scatter mismatch)
-            ew = edge_weight.to(dtype=x_int.dtype) if edge_weight is not None else None
-            h_int = self.interest_branch(x_int, edge_index, ew)
+            h_int = self.interest_branch(x_int, adj)
             out["user_interest"] = h_int[:n_users]
             out["item_interest"] = h_int[n_users:]
 
             x_conf = torch.cat([embeddings["user_conformity"], item_conformity], dim=0)
-            ew = edge_weight.to(dtype=x_conf.dtype) if edge_weight is not None else None
-            h_conf = self.conformity_branch(x_conf, edge_index, ew)
+            h_conf = self.conformity_branch(x_conf, adj)
             out["user_conformity"] = h_conf[:n_users]
             out["item_conformity"] = h_conf[n_users:]
         else:
             x = torch.cat([embeddings["user"], embeddings["item"]], dim=0)
-            ew = edge_weight.to(dtype=x.dtype) if edge_weight is not None else None
-            h = self.single_branch(x, edge_index, ew)
+            h = self.single_branch(x, adj)
             out["user"] = h[:n_users]
             out["item"] = h[n_users:]
 
         return out
+
+    @staticmethod
+    def _build_sparse_adjacency(
+        edge_index: torch.Tensor,
+        edge_weight: torch.Tensor | None,
+        *,
+        num_nodes: int,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Build a sparse adjacency tensor for LightGCN propagation.
+
+        Args:
+            edge_index: Graph connectivity with shape ``(2, E)``.
+            edge_weight: Optional normalized edge weights aligned to
+                ``edge_index``.
+            num_nodes: Total number of nodes in the bipartite graph.
+            dtype: Propagation dtype for adjacency values.
+
+        Returns:
+            torch.Tensor: Coalesced COO sparse adjacency matrix.
+
+        """
+        values = edge_weight if edge_weight is not None else torch.ones(edge_index.size(1), device=edge_index.device, dtype=dtype)
+        return torch.sparse_coo_tensor(
+            edge_index,
+            values,
+            size=(num_nodes, num_nodes),
+            device=edge_index.device,
+            dtype=dtype,
+        ).coalesce()
 
     @staticmethod
     def _combine_weights(
@@ -137,13 +222,15 @@ class DualBranchGCN(nn.Module):
             ``sign_weight * edge_norm`` if both are present,
             whichever is non-None if only one is given,
             or None if both are None.
+
         """
         if sign_weight is not None and edge_norm is not None:
             return sign_weight * edge_norm.to(dtype=sign_weight.dtype)
         return sign_weight if sign_weight is not None else edge_norm
 
     def _compute_edge_weights_impl(
-        self, edge_sign: torch.Tensor | None
+        self,
+        edge_sign: torch.Tensor | None,
     ) -> torch.Tensor | None:
         """Compute compile-safe sign-aware edge weights around a unit baseline."""
         if not self.config.use_sign_aware:
@@ -155,18 +242,15 @@ class DualBranchGCN(nn.Module):
         neg_mask = edge_sign < 0
         neutral_mask = ~(pos_mask | neg_mask)
 
+        if not bool(pos_mask.any() and neg_mask.any()):
+            return torch.ones_like(edge_sign)
+
         pos_weight = pos_mask.to(edge_sign.dtype)
         neutral_weight = neutral_mask.to(edge_sign.dtype)
         negative_ratio = (self.alpha_neg / self.alpha_pos.clamp_min(1e-6)).clamp(
             min=0.0,
             max=1.0,
         )
-        signed_weight = (
-            pos_weight + negative_ratio * neg_mask.to(edge_sign.dtype) + neutral_weight
-        )
+        signed_weight = pos_weight + negative_ratio * neg_mask.to(edge_sign.dtype) + neutral_weight
 
-        # When a graph contains only one interaction sign, keep the standard
-        # LightGCN weighting path instead of injecting a synthetic asymmetry.
-        has_mixed_sign = (pos_mask.any() & neg_mask.any()).to(edge_sign.dtype)
-        baseline = torch.ones_like(edge_sign)
-        return baseline + has_mixed_sign * (signed_weight - baseline)
+        return signed_weight

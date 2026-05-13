@@ -1,9 +1,13 @@
-"""Module C: fused scoring with a popularity head and adaptive score mixing."""
+"""Module C: fused scoring with a popularity head and adaptive score mixing.
+
+Scoring modes and the per-preset train/eval contract are documented in
+``UCaGNNConfig`` (``src/utils/config.py``), above the preset methods.
+"""
 
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from ..utils.config import UCaGNNConfig
 
@@ -29,7 +33,6 @@ class ScoringModule(nn.Module):
             "default": torch.tensor([True, use_conformity, use_popularity]),
             "interest_only": torch.tensor([True, False, False]),
             "conformity_only": torch.tensor([False, use_conformity, False]),
-            "counterfactual_only": torch.tensor([False, False, False]),
             "conformity_suppressed": torch.tensor([True, False, use_popularity]),
         }.items():
             self.register_buffer(f"_mask_{name}", mask, persistent=False)
@@ -92,20 +95,14 @@ class ScoringModule(nn.Module):
         return mask
 
     @staticmethod
-    def _pairwise_dot_product(
-        user_embedding: torch.Tensor,
-        item_embedding: torch.Tensor,
-    ) -> torch.Tensor:
-        """Return pairwise dot-product scores for aligned user/item batches."""
-        return (user_embedding * item_embedding).sum(dim=-1)
+    def _module_dtype(module: nn.Module) -> torch.dtype:
+        """Return the dtype of the first parameter owned by ``module``."""
+        return next(module.parameters()).dtype
 
     @staticmethod
-    def _score_matrix(
-        user_embedding: torch.Tensor,
-        item_embedding: torch.Tensor,
-    ) -> torch.Tensor:
-        """Return a full user-by-item score matrix."""
-        return user_embedding @ item_embedding.t()
+    def _cast_like(value: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+        """Return ``value`` cast to the device and dtype of ``ref``."""
+        return value.to(device=ref.device, dtype=ref.dtype)
 
     @staticmethod
     def _select_item_embeddings(
@@ -117,6 +114,38 @@ class ScoringModule(nn.Module):
             return item_embedding
         return item_embedding[item_ids]
 
+    @property
+    def _conformity_item_key(self) -> str:
+        """Return the propagated embedding key for the popularity head anchor."""
+        return "item_conformity" if self.config.use_dual_branch else "item"
+
+    def _get_scalar_feature(
+        self,
+        propagated: dict[str, torch.Tensor],
+        key: str,
+        item_ids: torch.Tensor | None,
+        ref: torch.Tensor,
+    ) -> torch.Tensor:
+        """Fetch an optional per-item scalar from *propagated*, slice, and cast.
+
+        Args:
+            propagated: Dict of propagated embeddings.
+            key: Key to look up in *propagated*.
+            item_ids: Optional item index subset; ``None`` means full catalog.
+            ref: Reference tensor whose device and dtype the result is cast to.
+
+        Returns:
+            1-D tensor of shape ``(ref.size(0),)`` on *ref*'s device and dtype.
+            Falls back to zeros when *key* is absent from *propagated*.
+
+        """
+        value = propagated.get(key)
+        if value is None:
+            return torch.zeros(ref.size(0), device=ref.device, dtype=ref.dtype)
+        if item_ids is not None:
+            value = value[item_ids]
+        return self._cast_like(value, ref)
+
     def _score_components(
         self,
         propagated: dict[str, torch.Tensor],
@@ -124,9 +153,9 @@ class ScoringModule(nn.Module):
         item_ids: torch.Tensor | None,
         *,
         pairwise: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor | None]:
-        """Return interest and optional conformity scores for one scoring path."""
-        score_fn = self._pairwise_dot_product if pairwise else self._score_matrix
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return interest and conformity scores for one scoring path."""
+        score_fn = (lambda u, i: (u * i).sum(dim=-1)) if pairwise else (lambda u, i: u @ i.t())
 
         if self.config.use_dual_branch:
             interest_score = score_fn(
@@ -135,10 +164,7 @@ class ScoringModule(nn.Module):
             )
             conformity_score = score_fn(
                 propagated["user_conformity"][user_ids],
-                self._select_item_embeddings(
-                    propagated["item_conformity"],
-                    item_ids,
-                ),
+                self._select_item_embeddings(propagated["item_conformity"], item_ids),
             )
             return interest_score, conformity_score
 
@@ -154,37 +180,16 @@ class ScoringModule(nn.Module):
         item_ids: torch.Tensor | None,
     ) -> torch.Tensor:
         """Return the popularity-head input features for the requested item rows."""
-        item_key = "item_conformity" if self.config.use_dual_branch else "item"
-        item_anchor = self._select_item_embeddings(propagated[item_key], item_ids)
-        popularity = propagated.get("item_popularity")
-        if popularity is None:
-            popularity = torch.zeros(
-                item_anchor.size(0),
-                device=item_anchor.device,
-                dtype=item_anchor.dtype,
-            )
-        elif item_ids is not None:
-            popularity = popularity[item_ids]
-        popularity = popularity.to(device=item_anchor.device, dtype=item_anchor.dtype)
-        recency = propagated.get("item_recency")
-        if recency is None:
-            recency = torch.zeros(
-                item_anchor.size(0),
-                device=item_anchor.device,
-                dtype=item_anchor.dtype,
-            )
-        elif item_ids is not None:
-            recency = recency[item_ids]
-        recency = recency.to(device=item_anchor.device, dtype=item_anchor.dtype)
+        item_anchor = self._select_item_embeddings(propagated[self._conformity_item_key], item_ids)
+        popularity = self._get_scalar_feature(propagated, "item_popularity", item_ids, item_anchor)
+        recency = self._get_scalar_feature(propagated, "item_recency", item_ids, item_anchor)
 
         features = [item_anchor, popularity.unsqueeze(-1), recency.unsqueeze(-1)]
         item_pop = propagated.get("item_pop")
         if item_pop is not None:
             if item_ids is not None:
                 item_pop = item_pop[item_ids]
-            features.append(
-                item_pop.to(device=item_anchor.device, dtype=item_anchor.dtype)
-            )
+            features.append(self._cast_like(item_pop, item_anchor))
         elif self.config.use_popularity_emb:
             features.append(
                 torch.zeros(
@@ -192,7 +197,7 @@ class ScoringModule(nn.Module):
                     self.config.pop_embed_dim,
                     device=item_anchor.device,
                     dtype=item_anchor.dtype,
-                )
+                ),
             )
         return torch.cat(features, dim=-1)
 
@@ -202,13 +207,15 @@ class ScoringModule(nn.Module):
         item_ids: torch.Tensor | None,
     ) -> torch.Tensor:
         """Return item-level popularity scores for pairwise or full-catalog paths."""
-        item_key = "item_conformity" if self.config.use_dual_branch else "item"
-        item_anchor = self._select_item_embeddings(propagated[item_key], item_ids)
+        item_anchor = self._select_item_embeddings(propagated[self._conformity_item_key], item_ids)
         if not self.config.use_popularity_head or self.popularity_head is None:
             return torch.zeros(
-                item_anchor.size(0), device=item_anchor.device, dtype=item_anchor.dtype
+                item_anchor.size(0),
+                device=item_anchor.device,
+                dtype=item_anchor.dtype,
             )
         pop_inputs = self._popularity_item_inputs(propagated, item_ids)
+        pop_inputs = pop_inputs.to(dtype=self._module_dtype(self.popularity_head))
         return self.popularity_head(pop_inputs).squeeze(-1)
 
     def _resolve_gate_weights(
@@ -222,9 +229,6 @@ class ScoringModule(nn.Module):
     ) -> torch.Tensor:
         """Return per-user gate weights for the active score components."""
         batch_size = user_ids.size(0)
-        if scoring_mode == "counterfactual_only":
-            return torch.zeros(batch_size, 3, device=device, dtype=dtype)
-
         fixed_or_prior = self.get_score_weight_tensor(
             scoring_mode=scoring_mode,
             device=device,
@@ -246,6 +250,7 @@ class ScoringModule(nn.Module):
             ],
             dim=-1,
         )
+        gate_inputs = gate_inputs.to(dtype=self._module_dtype(self.gate_mlp))
         logits = self.gate_mlp(gate_inputs) + self.score_weight_logits.to(
             device=gate_inputs.device,
             dtype=gate_inputs.dtype,
@@ -269,7 +274,9 @@ class ScoringModule(nn.Module):
         resolved_dtype = dtype or torch.bfloat16
         if not self.config.use_dual_branch:
             return torch.tensor(
-                [1.0, 0.0, 0.0], device=resolved_device, dtype=resolved_dtype
+                [1.0, 0.0, 0.0],
+                device=resolved_device,
+                dtype=resolved_dtype,
             )
 
         if self.config.scoring_weight_mode == "fixed":
@@ -280,7 +287,7 @@ class ScoringModule(nn.Module):
         else:
             if self.score_weight_logits is None:
                 raise RuntimeError(
-                    "Learned scoring weights requested without score_weight_logits"
+                    "Learned scoring weights requested without score_weight_logits",
                 )
             base_weights = self.score_weight_logits
             if device is not None or dtype is not None:
@@ -303,123 +310,56 @@ class ScoringModule(nn.Module):
             return torch.zeros_like(base_weights)
 
         active_weights = torch.softmax(active_logits, dim=0).to(
-            dtype=base_weights.dtype
+            dtype=base_weights.dtype,
         )
         weights = torch.zeros_like(base_weights)
         weights[mask] = active_weights
         return weights
 
     def get_score_weight_summary(
-        self, scoring_mode: str = "default"
+        self,
+        scoring_mode: str = "default",
     ) -> dict[str, float]:
-        weights = (
-            self.get_score_weight_tensor(scoring_mode=scoring_mode)
-            .detach()
-            .cpu()
-            .tolist()
-        )
-        return {
-            f"score_weight_{name}": float(weight)
-            for name, weight in zip(self.component_names, weights, strict=True)
-        }
+        weights = self.get_score_weight_tensor(scoring_mode=scoring_mode).detach().cpu().tolist()
+        return {f"score_weight_{name}": float(weight) for name, weight in zip(self.component_names, weights, strict=True)}
 
-    def _combine_pairwise_scores(
+    def _build_score_dict(
         self,
         interest_score: torch.Tensor,
         conformity_score: torch.Tensor,
-        popularity_score: torch.Tensor,
-        cf_score: torch.Tensor,
+        popularity: torch.Tensor,
         gate_weights: torch.Tensor,
         *,
         scoring_mode: str,
-    ) -> torch.Tensor:
-        """Combine pairwise score components into a final ranking score."""
-        if scoring_mode == "counterfactual_only":
-            return cf_score
-        return (
-            gate_weights[:, 0] * interest_score
-            + gate_weights[:, 1] * conformity_score
-            + gate_weights[:, 2] * popularity_score
-        )
-
-    def _combine_matrix_scores(
-        self,
-        interest_score: torch.Tensor,
-        conformity_score: torch.Tensor,
-        popularity_items: torch.Tensor,
-        cf_score: torch.Tensor,
-        gate_weights: torch.Tensor,
-        *,
-        scoring_mode: str,
-    ) -> torch.Tensor:
-        """Combine full-catalog score components into a final score matrix."""
-        if scoring_mode == "counterfactual_only":
-            return cf_score
-        return (
-            gate_weights[:, 0:1] * interest_score
-            + gate_weights[:, 1:2] * conformity_score
-            + gate_weights[:, 2:3] * popularity_items.unsqueeze(0)
-        )
-
-    def _build_pairwise_score_dict(
-        self,
-        interest_score: torch.Tensor,
-        conformity_score: torch.Tensor,
-        popularity_score: torch.Tensor,
-        gate_weights: torch.Tensor,
-        *,
-        scoring_mode: str,
+        pairwise: bool,
     ) -> dict[str, torch.Tensor]:
-        """Assemble pairwise score components and the fused final score."""
-        if self.config.use_counterfactual:
-            counterfactual_score = interest_score - conformity_score
+        """Build the complete score dict for both pairwise and full-catalog paths.
+
+        Args:
+            interest_score: Interest component — (B,) pairwise or (B, I) matrix.
+            conformity_score: Conformity component — same shape as interest_score.
+            popularity: (B,) per-pair scores for pairwise; (I,) per-item for matrix.
+            gate_weights: (B, 3) per-user component weights.
+            scoring_mode: Active score view (used for logging/diagnostics only here).
+            pairwise: ``True`` → pairwise (B,) path; ``False`` → matrix (B, I) path.
+
+        Returns:
+            Dict with interest, conformity, popularity, counterfactual, gate_weights,
+            and fused final scores.
+
+        """
+        cf_score = (interest_score - conformity_score) if self.config.use_counterfactual else torch.zeros_like(interest_score)
+        if pairwise:
+            final_score = gate_weights[:, 0] * interest_score + gate_weights[:, 1] * conformity_score + gate_weights[:, 2] * popularity
+            pop_for_dict = popularity
         else:
-            counterfactual_score = torch.zeros_like(interest_score)
-        final_score = self._combine_pairwise_scores(
-            interest_score,
-            conformity_score,
-            popularity_score,
-            counterfactual_score,
-            gate_weights,
-            scoring_mode=scoring_mode,
-        )
+            final_score = gate_weights[:, 0:1] * interest_score + gate_weights[:, 1:2] * conformity_score + gate_weights[:, 2:3] * popularity.unsqueeze(0)
+            pop_for_dict = popularity.unsqueeze(0).expand_as(interest_score)
         return {
             "interest_score": interest_score,
             "conformity_score": conformity_score,
-            "popularity_score": popularity_score,
-            "counterfactual_score": counterfactual_score,
-            "gate_weights": gate_weights,
-            "final_score": final_score,
-        }
-
-    def _build_full_score_dict(
-        self,
-        interest_score: torch.Tensor,
-        conformity_score: torch.Tensor,
-        popularity_items: torch.Tensor,
-        gate_weights: torch.Tensor,
-        *,
-        scoring_mode: str,
-    ) -> dict[str, torch.Tensor]:
-        """Assemble full-catalog score components and the fused score matrix."""
-        if self.config.use_counterfactual:
-            counterfactual_score = interest_score - conformity_score
-        else:
-            counterfactual_score = torch.zeros_like(interest_score)
-        final_score = self._combine_matrix_scores(
-            interest_score,
-            conformity_score,
-            popularity_items,
-            counterfactual_score,
-            gate_weights,
-            scoring_mode=scoring_mode,
-        )
-        popularity_score = popularity_items.unsqueeze(0).expand_as(interest_score)
-        return {
-            "interest_score": interest_score,
-            "conformity_score": conformity_score,
-            "popularity_score": popularity_score,
-            "counterfactual_score": counterfactual_score,
+            "popularity_score": pop_for_dict,
+            "counterfactual_score": cf_score,
             "gate_weights": gate_weights,
             "final_score": final_score,
         }
@@ -437,10 +377,15 @@ class ScoringModule(nn.Module):
             propagated: Dict of propagated embeddings from DualBranchGCN.
             user_ids: (B,) user indices.
             item_ids: (B,) item indices.
+            scoring_mode: Active score view. Training uses
+                ``config.train_scoring_mode`` through ``UCaGNN``, while
+                evaluation can reuse the same checkpoint with a different score
+                mode.
 
         Returns:
             Dict with interest, conformity, popularity, counterfactual, gate,
             and fused final scores.
+
         """
         interest_score, conformity_score = self._score_components(
             propagated,
@@ -456,22 +401,14 @@ class ScoringModule(nn.Module):
             device=interest_score.device,
             dtype=interest_score.dtype,
         )
-        return self._build_pairwise_score_dict(
+        return self._build_score_dict(
             interest_score,
             conformity_score,
             popularity_score,
             gate_weights,
             scoring_mode=scoring_mode,
+            pairwise=True,
         )
-
-    def score_final_all_items(
-        self,
-        propagated: dict[str, torch.Tensor],
-        user_ids: torch.Tensor,
-        scoring_mode: str = "default",
-    ) -> torch.Tensor:
-        """Return only the fused full-catalog score matrix for evaluation."""
-        return self.score_all_items(propagated, user_ids, scoring_mode)["final_score"]
 
     def score_all_items(
         self,
@@ -479,7 +416,12 @@ class ScoringModule(nn.Module):
         user_ids: torch.Tensor,
         scoring_mode: str = "default",
     ) -> dict[str, torch.Tensor]:
-        """Return full-catalog score components for evaluation and diagnostics."""
+        """Return full-catalog score components for evaluation and diagnostics.
+
+        ``scoring_mode`` lets callers reuse one propagated checkpoint state
+        while selecting a different evaluation-time score contract.
+
+        """
         interest_score, conformity_score = self._score_components(
             propagated,
             user_ids,
@@ -494,10 +436,11 @@ class ScoringModule(nn.Module):
             device=interest_score.device,
             dtype=interest_score.dtype,
         )
-        return self._build_full_score_dict(
+        return self._build_score_dict(
             interest_score,
             conformity_score,
             popularity_items,
             gate_weights,
             scoring_mode=scoring_mode,
+            pairwise=False,
         )
