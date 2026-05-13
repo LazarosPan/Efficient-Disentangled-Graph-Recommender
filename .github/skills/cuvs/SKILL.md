@@ -9,6 +9,7 @@ This directory contains reference documentation for the cuVS Python API modules:
 
 Read the module reference files:
 
-- [nn_cagra.md](nn_cagra.md)
-- [distance.md](distance.md)
-- [cluster_kmeans.md](cluster_kmeans.md)
+- [nn_cagra.md](nn_cagra.md) — cuVS CAGRA index reference, including API usage, configuration options, and performance tips.
+- [distance.md](distance.md) — Pairwise distance utilities for cuVS.
+- [cluster_kmeans.md](cluster_kmeans.md) — K-means clustering utilities for cuVS.
+- [preprocessing.md](preprocessing.md) — Quantization and other preprocessing utilities for cuVS.

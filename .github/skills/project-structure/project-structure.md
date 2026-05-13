@@ -9,6 +9,8 @@
 │   ├── SOURCES.txt
 │   └── top_level.txt
 ├── data
+│   ├── all_datasets_feature_audit.json
+│   ├── all_datasets_information.md
 │   ├── AmazonBook
 │   │   ├── processed
 │   │   └── raw
@@ -16,43 +18,7 @@
 │   │       ├── test.txt
 │   │       ├── train.txt
 │   │       └── user_list.txt
-│   ├── AmazonCDs
-│   │   └── raw
-│   │       ├── info.txt
-│   │       ├── test.txt
-│   │       ├── train.txt
-│   │       └── valid.txt
-│   ├── AmazonMusic
-│   │   └── raw
-│   │       ├── info.txt
-│   │       ├── test.txt
-│   │       ├── train.txt
-│   │       └── valid.txt
-│   ├── AmazonProducts
-│   │   └── raw
-│   │       ├── adj_full.npz
-│   │       ├── class_map.json
-│   │       ├── feats.npy
-│   │       └── role.json
-│   ├── datasets_feature_audit.json
 │   ├── datasets_information.md
-│   ├── Douban
-│   │   └── raw
-│   │       └── training_test_dataset.mat
-│   ├── Douban_Book
-│   │   ├── author.txt
-│   │   ├── item_list.txt
-│   │   ├── location.txt
-│   │   ├── publisher.txt
-│   │   ├── s_adj_mat.npz
-│   │   ├── s_mean_adj_mat.npz
-│   │   ├── s_norm_adj_mat.npz
-│   │   ├── s_pre_adj_mat.npz
-│   │   ├── test.txt
-│   │   ├── train.txt
-│   │   ├── user_list.txt
-│   │   ├── user.txt
-│   │   └── year.txt
 │   ├── KuaiRand-1K
 │   │   ├── data
 │   │   │   ├── log_random_4_22_to_5_08_1k.csv
@@ -97,21 +63,6 @@
 │   │   ├── LICENSE
 │   │   ├── loaddata.py
 │   │   └── Statistics_KuaiRec.ipynb
-│   ├── KuaiSAR_v2
-│   │   ├── item_features.csv
-│   │   ├── README.md
-│   │   ├── rec_inter.csv
-│   │   ├── social_network.csv
-│   │   ├── src_inter.csv
-│   │   └── user_features.csv
-│   ├── MovieLens
-│   │   └── raw
-│   │       └── ml-latest-small
-│   │           ├── links.csv
-│   │           ├── movies.csv
-│   │           ├── ratings.csv
-│   │           ├── README.txt
-│   │           └── tags.csv
 │   ├── MovieLens1M
 │   │   ├── processed
 │   │   └── raw
@@ -128,39 +79,11 @@
 │   │       ├── ratings.csv
 │   │       ├── README.md
 │   │       └── tags.csv
-│   ├── netflix
-│   │   └── raw
-│   │       └── output
-│   │           ├── coo_record.npz
-│   │           ├── item_reindex.json
-│   │           ├── popularity_all.npy
-│   │           ├── popularity_blend.npy
-│   │           ├── popularity.npy
-│   │           ├── popularity_skew.npy
-│   │           ├── record.csv
-│   │           ├── test_coo_record.npz
-│   │           ├── test_record.csv
-│   │           ├── train_blend_coo_adj_graph.npz
-│   │           ├── train_coo_adj_graph.npz
-│   │           ├── train_coo_record.npz
-│   │           ├── train_record.csv
-│   │           ├── train_skew_coo_adj_graph.npz
-│   │           ├── train_skew_coo_record.npz
-│   │           ├── train_skew_record.csv
-│   │           ├── user_reindex.json
-│   │           ├── val_coo_record.npz
-│   │           └── val_record.csv
-│   ├── Taobao
-│   │   └── raw
-│   │       ├── README.md
-│   │       ├── UserBehavior.csv
-│   │       └── UserBehavior.csv.zip.md5
-│   └── Yelp
+│   └── Taobao
 │       └── raw
-│           ├── adj_full.npz
-│           ├── class_map.json
-│           ├── feats.npy
-│           └── role.json
+│           ├── README.md
+│           ├── UserBehavior.csv
+│           └── UserBehavior.csv.zip.md5
 ├── docs
 │   ├── existing_implementations
 │   │   ├── CaDSI_audit.md
@@ -168,13 +91,12 @@
 │   │   ├── DICE_audit.md
 │   │   ├── DirectAU_audit.md
 │   │   ├── FMMRec_audit.md
-│   │   ├── LayerGCN.md
+│   │   ├── LayerGCN_audit.md
 │   │   ├── LightGCNpp_audit.md
 │   │   ├── MCLN_audit.md
 │   │   ├── MGCE_audit.md
 │   │   ├── PropCare_audit.md
-│   │   ├── SIGformer_audit.md
-│   │   └── Cross_Repository_Technical_Synthesis.md
+│   │   └── SIGformer_audit.md
 │   ├── guidelines
 │   │   ├── env_setup.md
 │   │   ├── profile_plan.md
@@ -189,7 +111,6 @@
 │   │   └── useful_commands.md
 │   ├── paper_summaries
 │   │   ├── full_summary_detailed.md
-│   │   ├── full_summary.md
 │   │   ├── gcn_models.md
 │   │   ├── methematical_formulations.md
 │   │   ├── notes_by_paper_10.md
@@ -235,6 +156,7 @@
 │   │   ├── movielens1m_profile.png
 │   │   ├── movielens20m_profile.png
 │   │   └── taobao_profile.png
+│   ├── experiments.db
 │   ├── formal_run_state.json
 │   ├── mlflow.db
 │   └── thesis_experiments.db
@@ -242,8 +164,6 @@
 │   ├── cleanup_experiment_artifacts.py
 │   ├── download_pyg_datasets.py
 │   ├── evaluate_scoring_modes.py
-│   ├── fix_nn_md.py
-│   ├── format_nn_md.py
 │   ├── __init__.py
 │   ├── query_results.py
 │   ├── quick_validate.py
@@ -257,11 +177,13 @@
 │   │   ├── __init__.py
 │   │   ├── loaders
 │   │   │   ├── amazonbook.py
+│   │   │   ├── _explicit_ratings.py
 │   │   │   ├── __init__.py
 │   │   │   ├── kuairand1k.py
 │   │   │   ├── kuairec_v2.py
 │   │   │   ├── movielens1m.py
 │   │   │   ├── movielens20m.py
+│   │   │   ├── _registry.py
 │   │   │   └── taobao.py
 │   │   ├── negative_sampler.py
 │   │   └── subgraph_sampler.py
@@ -296,6 +218,7 @@
 │       ├── experiment_logger.py
 │       ├── __init__.py
 │       ├── interaction_indexing.py
+│       ├── project_paths.py
 │       ├── reproducibility.py
 │       └── trainer_runtime.py
 ├── tests
