@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
-from pathlib import Path
 import sqlite3
-from tempfile import TemporaryDirectory
 import unittest
+from dataclasses import dataclass
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from src.profiling.gpu_profiler import StageMetrics
 from src.utils.experiment_logger import ExperimentLogger
@@ -18,7 +18,6 @@ class _DummyConfig:
     """Small dataclass config for logger serialization tests."""
 
     seed: int
-    graph_method: str = "cagra"
 
 
 class ExperimentLoggerTests(unittest.TestCase):
@@ -29,7 +28,7 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.temp_dir = TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.logger = ExperimentLogger(
-            db_path=str(Path(self.temp_dir.name) / "experiments.sqlite")
+            db_path=str(Path(self.temp_dir.name) / "experiments.sqlite"),
         )
         self.addCleanup(self.logger.close)
 
@@ -41,16 +40,15 @@ class ExperimentLoggerTests(unittest.TestCase):
         )
 
         row = self.logger.conn.execute(
-            "SELECT config_json, seed, graph_method FROM experiments WHERE id = ?",
+            "SELECT config_json, seed FROM experiments WHERE id = ?",
             (exp_id,),
         ).fetchone()
         assert row is not None
 
         self.assertEqual(row["seed"], 7)
-        self.assertEqual(row["graph_method"], "cagra")
         self.assertEqual(
             json.loads(row["config_json"]),
-            {"seed": 7, "graph_method": "cagra"},
+            {"seed": 7},
         )
 
     def test_log_epoch_aggregates_profiler_stages_by_name(self) -> None:
@@ -123,6 +121,115 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertAlmostEqual(forward_row["vram_peak_mb"], 132.0)
         self.assertEqual(forward_row["stage_call_count"], 2)
 
+    def test_log_experiment_persists_provenance_columns(self) -> None:
+        """Experiment rows should retain code-version provenance for quick diffs."""
+        exp_id = self.logger.log_experiment(
+            dataset="movielens1m",
+            config=_DummyConfig(seed=7),
+            profile_name="dev-ucagnn",
+            project_version="1.2.3",
+            git_commit="abc1234",
+            training_hash="trainhash",
+            evaluation_hash="evalhash",
+            change_note="sparse eval cache",
+        )
+
+        row = self.logger.conn.execute(
+            """
+            SELECT profile_name, project_version, git_commit, training_hash, evaluation_hash, change_note
+            FROM experiments
+            WHERE id = ?
+            """,
+            (exp_id,),
+        ).fetchone()
+        assert row is not None
+
+        self.assertEqual(row["profile_name"], "dev-ucagnn")
+        self.assertEqual(row["project_version"], "1.2.3")
+        self.assertEqual(row["git_commit"], "abc1234")
+        self.assertEqual(row["training_hash"], "trainhash")
+        self.assertEqual(row["evaluation_hash"], "evalhash")
+        self.assertEqual(row["change_note"], "sparse eval cache")
+
+    def test_log_experiment_accepts_training_mode(self) -> None:
+        """Training mode should be retained when provided explicitly."""
+        exp_id = self.logger.log_experiment(
+            dataset="movielens1m",
+            config=_DummyConfig(seed=42),
+            training_mode="mini_batch",
+        )
+
+        row = self.logger.conn.execute(
+            "SELECT training_mode FROM experiments WHERE id = ?",
+            (exp_id,),
+        ).fetchone()
+        assert row is not None
+
+        self.assertEqual(row["training_mode"], "mini_batch")
+
+    def test_experiment_summary_uses_peak_vram_metric_when_profiling_missing(self) -> None:
+        """The summary view should expose peak VRAM stored as a train metric."""
+        exp_id = self.logger.log_experiment(
+            dataset="movielens1m",
+            config=_DummyConfig(seed=15),
+        )
+        self.logger.log_metric(exp_id, "peak_vram_mb", 999.0, split="train")
+        self.logger.update_experiment_status(exp_id, status="completed")
+
+        row = self.logger.conn.execute(
+            "SELECT peak_vram_mb FROM experiment_summary WHERE id = ?",
+            (exp_id,),
+        ).fetchone()
+        assert row is not None
+
+        self.assertAlmostEqual(row["peak_vram_mb"], 999.0)
+
+    def test_comparison_view_exposes_metric_deltas_for_same_semantic_run(self) -> None:
+        """Comparison view should show deltas across repeated same-config runs."""
+        first_exp = self.logger.log_experiment(
+            dataset="movielens1m",
+            config=_DummyConfig(seed=7),
+            preset="ucagnn",
+            training_hash="trainhash",
+            evaluation_hash="evalhash",
+            git_commit="abc1234",
+            change_note="baseline",
+        )
+        self.logger.log_metric(first_exp, "NDCG@20", 0.1, split="test")
+        self.logger.log_metric(first_exp, "Recall@20", 0.2, split="test")
+        self.logger.log_metric(first_exp, "AveragePopularity@20", 0.3, split="test")
+        self.logger.update_experiment_status(first_exp, status="completed")
+
+        second_exp = self.logger.log_experiment(
+            dataset="movielens1m",
+            config=_DummyConfig(seed=7),
+            preset="ucagnn",
+            training_hash="trainhash",
+            evaluation_hash="evalhash",
+            git_commit="def5678",
+            change_note="new sampler",
+        )
+        self.logger.log_metric(second_exp, "NDCG@20", 0.15, split="test")
+        self.logger.log_metric(second_exp, "Recall@20", 0.25, split="test")
+        self.logger.log_metric(second_exp, "AveragePopularity@20", 0.28, split="test")
+        self.logger.update_experiment_status(second_exp, status="completed")
+
+        row = self.logger.conn.execute(
+            """
+            SELECT git_commit, change_note, delta_test_ndcg_20, delta_test_recall_20, delta_test_average_popularity_20
+            FROM experiment_code_comparison
+            WHERE id = ?
+            """,
+            (second_exp,),
+        ).fetchone()
+        assert row is not None
+
+        self.assertEqual(row["git_commit"], "def5678")
+        self.assertEqual(row["change_note"], "new sampler")
+        self.assertAlmostEqual(row["delta_test_ndcg_20"], 0.05)
+        self.assertAlmostEqual(row["delta_test_recall_20"], 0.05)
+        self.assertAlmostEqual(row["delta_test_average_popularity_20"], -0.02)
+
     def test_schema_mismatch_requires_current_tables(self) -> None:
         """ExperimentLogger should reject databases that predate the current schema."""
         db_path = Path(self.temp_dir.name) / "old-schema.sqlite"
@@ -137,17 +244,21 @@ class ExperimentLoggerTests(unittest.TestCase):
                 config_json TEXT,
                 seed INTEGER,
                 training_mode TEXT,
-                graph_method TEXT,
                 status TEXT NOT NULL DEFAULT 'unknown',
                 failure_reason TEXT,
                 oom_flag INTEGER NOT NULL DEFAULT 0,
                 batch_id TEXT,
                 profile_name TEXT,
+                project_version TEXT,
+                git_commit TEXT,
+                training_hash TEXT,
+                evaluation_hash TEXT,
+                change_note TEXT,
                 gpu_name TEXT,
                 gpu_vram_gb REAL,
                 timestamp TEXT NOT NULL
             )
-            """
+            """,
         )
         conn.commit()
         conn.close()

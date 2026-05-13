@@ -5,6 +5,11 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from experiments.ablation_configs import (
+    ABLATION_VARIANTS,
+    build_ablation_base_kwargs,
+    make_ablation_config,
+)
 from experiments.cli_parsers import (
     build_ablation_parser,
     build_benchmark_parser,
@@ -31,17 +36,24 @@ class ExperimentParserTests(unittest.TestCase):
         self.assertTrue(args.enable_mlflow)
         self.assertTrue(args.auto_resume)
         self.assertIsNone(args.use_features)
+        self.assertIsNone(args.change_note)
         self.assertFalse(args.list_recipes)
 
     def test_experiment_parser_disable_flags_override_defaults(self) -> None:
         """Explicit negative flags should flip the centralized bool pairs."""
         args = build_run_experiment_parser().parse_args(
-            ["--no-mlflow", "--no-auto-resume", "--no-features"]
+            ["--no-mlflow", "--no-auto-resume", "--no-features"],
         )
 
         self.assertFalse(args.enable_mlflow)
         self.assertFalse(args.auto_resume)
         self.assertFalse(args.use_features)
+
+    def test_experiment_parser_accepts_checkpoint_overwrite_flag(self) -> None:
+        """Single-run parser should expose explicit checkpoint replacement."""
+        args = build_run_experiment_parser().parse_args(["--overwrite-checkpoint"])
+
+        self.assertTrue(args.overwrite_checkpoint)
 
 
 class AblationParserTests(unittest.TestCase):
@@ -56,6 +68,52 @@ class AblationParserTests(unittest.TestCase):
         self.assertEqual(args.data_dir, "data")
         self.assertFalse(args.no_mlflow)
         self.assertFalse(args.resume_batch)
+        self.assertFalse(args.dry_run)
+        self.assertEqual(
+            args.variants,
+            ["mainline", "no_popularity_head", "no_independence", "no_features"],
+        )
+
+
+class AblationConfigTests(unittest.TestCase):
+    """Pin the minimal thesis-facing ablation surface."""
+
+    def test_ablation_variants_match_minimal_thesis_matrix(self) -> None:
+        """Only the reviewer-defensible ablations should remain public."""
+        self.assertEqual(
+            list(ABLATION_VARIANTS),
+            ["mainline", "no_popularity_head", "no_independence", "no_features"],
+        )
+
+    def test_no_popularity_head_ablation_disables_popularity_path(self) -> None:
+        """Popularity-head ablation should remove both scoring and supervision."""
+        config = make_ablation_config("no_popularity_head")
+
+        self.assertFalse(config.use_popularity_head)
+        self.assertEqual(config.gamma_popularity, 0.0)
+        self.assertEqual(config.lambda_pop, 0.0)
+
+    def test_no_features_ablation_disables_side_features(self) -> None:
+        """Feature ablation should switch off item/user side features entirely."""
+        config = make_ablation_config("no_features")
+
+        self.assertFalse(config.use_features)
+
+    def test_ablation_base_kwargs_omit_unset_optional_overrides(self) -> None:
+        """Shared ablation kwargs should keep required fields and skip unset optionals."""
+        kwargs = build_ablation_base_kwargs(
+            dataset="movielens1m",
+            data_dir="data",
+            device="cpu",
+            batch_size=64,
+        )
+
+        self.assertEqual(kwargs["dataset"], "movielens1m")
+        self.assertEqual(kwargs["data_dir"], "data")
+        self.assertEqual(kwargs["device"], "cpu")
+        self.assertEqual(kwargs["batch_size"], 64)
+        self.assertNotIn("epochs", kwargs)
+        self.assertNotIn("sample_interactions", kwargs)
 
 
 class FormalRunParserTests(unittest.TestCase):
@@ -68,8 +126,15 @@ class FormalRunParserTests(unittest.TestCase):
         self.assertIsNone(args.profile)
         self.assertIsNone(args.device)
         self.assertIsNone(args.data_dir)
+        self.assertIsNone(args.change_note)
         self.assertFalse(args.no_mlflow)
         self.assertFalse(args.dry_run)
+
+    def test_formal_run_parser_accepts_checkpoint_overwrite_flag(self) -> None:
+        """Formal-run parser should expose explicit checkpoint replacement."""
+        args = build_formal_run_parser().parse_args(["--overwrite-checkpoint"])
+
+        self.assertTrue(args.overwrite_checkpoint)
 
 
 class BenchmarkParserTests(unittest.TestCase):
@@ -79,10 +144,23 @@ class BenchmarkParserTests(unittest.TestCase):
         """Benchmark defaults should still expose the canonical matrix sweep."""
         args = build_benchmark_parser().parse_args([])
 
-        self.assertEqual(args.tier, "small")
-        self.assertEqual(args.graph_methods, ["cagra", "knn"])
+        self.assertEqual(args.datasets, "small,medium")
         self.assertEqual(args.scoring_weight_modes, ["learned"])
+        self.assertEqual(args.device, "cuda")
+        self.assertEqual(args.data_dir, "data")
+        self.assertFalse(args.no_mlflow)
+        self.assertFalse(args.resume_batch)
+        self.assertFalse(args.dry_run)
         self.assertIsNone(args.use_early_stopping)
+        self.assertIsNone(args.auto_batch_size)
+        self.assertIsNone(args.batch_size_candidates)
+        self.assertIsNone(args.change_note)
+
+    def test_benchmark_parser_accepts_checkpoint_overwrite_flag(self) -> None:
+        """Benchmark parser should expose explicit checkpoint replacement."""
+        args = build_benchmark_parser().parse_args(["--overwrite-checkpoint"])
+
+        self.assertTrue(args.overwrite_checkpoint)
 
 
 class UtilityParserTests(unittest.TestCase):
@@ -114,12 +192,13 @@ class UtilityParserTests(unittest.TestCase):
     def test_evaluate_scoring_modes_defaults(self) -> None:
         """Scoring-mode evaluation should preserve its public defaults."""
         args = build_evaluate_scoring_modes_parser().parse_args(
-            ["--checkpoint-path", "checkpoint.pt"]
+            ["--checkpoint-path", "checkpoint.pt"],
         )
 
         self.assertEqual(args.checkpoint_path, "checkpoint.pt")
         self.assertEqual(
-            args.modes, ["default", "interest_only", "conformity_suppressed"]
+            args.modes,
+            ["default", "interest_only", "conformity_suppressed"],
         )
         self.assertEqual(args.split, "test")
         self.assertEqual(args.batch_size, 512)
@@ -129,7 +208,7 @@ class UtilityParserTests(unittest.TestCase):
         """Query-results should default to the broadest exploration view."""
         args = build_query_results_parser().parse_args([])
 
-        self.assertEqual(args.view, "all")
+        self.assertIsNone(args.view)
         self.assertIsNone(args.batch_id)
         self.assertIsNone(args.status)
         self.assertIsNone(args.exp)

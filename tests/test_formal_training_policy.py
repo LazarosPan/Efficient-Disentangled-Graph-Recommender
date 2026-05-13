@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import argparse
-from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import experiments.run_benchmark as formal_main
-
-from experiments.run_benchmark import (
-    build_benchmark_plan,
-)
+import torch
 from experiments.cli_parsers import build_benchmark_parser
 from experiments.recipes import (
     default_formal_profile_name,
@@ -19,9 +17,26 @@ from experiments.recipes import (
     get_formal_profile,
     get_recipe,
 )
-from experiments.run_experiment import build_config
+from experiments.run_benchmark import (
+    _resolve_benchmark_num_neighbors_for_preset,
+    build_benchmark_plan,
+)
+from experiments.run_experiment import (
+    _auto_batch_probe_candidates,
+    _auto_batch_probe_interactions,
+    _build_canonical_name,
+    _build_evaluation_identity,
+    _build_training_identity,
+    _release_cuda_probe_memory,
+    build_benchmark_config_inputs,
+    build_config,
+    build_runtime_config_inputs,
+    normalize_benchmark_config_overrides,
+)
 from src.profiling.gpu_profiler import GPUProfiler
+from src.training.mini_batch_trainer import MiniBatchTrainer
 from src.utils.config import UCaGNNConfig
+from src.utils.reproducibility import build_torch_generator
 from src.utils.trainer_runtime import TrainerRuntime
 
 
@@ -36,6 +51,8 @@ def _experiment_args(**overrides: object) -> SimpleNamespace:
         "seed": 13,
         "epochs": None,
         "batch_size": None,
+        "auto_batch_size": None,
+        "batch_size_candidates": None,
         "embed_dim": None,
         "single_branch_gnn_layers": None,
         "interest_gnn_layers": None,
@@ -47,11 +64,10 @@ def _experiment_args(**overrides: object) -> SimpleNamespace:
         "scoring_weight_mode": None,
         "use_features": None,
         "feature_policy": None,
-        "graph_method": None,
         "num_neighbors": None,
         "hard_negative_ratio": None,
-        "curriculum_phase1_end": None,
-        "curriculum_phase2_end": None,
+        "auxiliary_losses_start_epoch": None,
+        "popularity_supervision_start_epoch": None,
         "loss_schedule": None,
         "sample_interactions": None,
         "loader_max_rows": None,
@@ -91,6 +107,13 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(len(config.num_neighbors), config.max_gnn_layers)
         self.assertEqual(config.dropout, 0.1)
 
+    def test_curriculum_aliases_match_threshold_fields(self) -> None:
+        """Semantic curriculum aliases should mirror the underlying thresholds."""
+        config = UCaGNNConfig()
+
+        self.assertEqual(config.auxiliary_losses_start_epoch, config.auxiliary_losses_start_epoch)
+        self.assertEqual(config.popularity_supervision_start_epoch, config.popularity_supervision_start_epoch)
+
     def test_build_config_respects_dropout_override(self) -> None:
         """Catalog/runtime plumbing should pass dropout through to the config."""
         config = build_config(_experiment_args(dropout=0.25))
@@ -104,8 +127,86 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.dropout, 0.25)
         self.assertEqual(config.scoring_weight_mode, "learned")
 
-    def test_ucagnn_preset_applies_wave1_fused_scoring_defaults(self) -> None:
-        """The ucagnn preset should target the fused-score wave-1 contract."""
+    def test_build_config_accepts_lr_scheduler_override(self) -> None:
+        """CLI/config plumbing should allow scheduler selection."""
+        config = build_config(
+            _experiment_args(
+                preset="ucagnn",
+                lr_scheduler="cosine",
+                lr_scheduler_factor=0.9,
+                lr_scheduler_patience=3,
+            ),
+        )
+
+        self.assertEqual(config.lr_scheduler, "cosine")
+        self.assertEqual(config.lr_scheduler_factor, 0.9)
+        self.assertEqual(config.lr_scheduler_patience, 3)
+
+    def test_canonical_name_includes_lr_scheduler(self) -> None:
+        """The canonical checkpoint name should expose the selected LR scheduler."""
+        config = build_config(
+            _experiment_args(
+                preset="ucagnn",
+                lr_scheduler="cosine",
+            ),
+        )
+        canonical = _build_canonical_name(config, "ucagnn", None)
+
+        self.assertIn("lr-cosine", canonical)
+
+    def test_build_config_rejects_invalid_lr_scheduler_override(self) -> None:
+        """Invalid scheduler names should be rejected by config validation."""
+        with self.assertRaises(ValueError):
+            build_config(
+                _experiment_args(
+                    preset="ucagnn",
+                    lr_scheduler="invalid_scheduler",
+                ),
+            )
+
+    def test_auto_batch_probe_candidates_follow_configured_ladder(self) -> None:
+        """Auto batch-size probing should use the configured candidate ladder."""
+        ml1m = UCaGNNConfig(dataset="movielens1m", device="cuda", auto_batch_size=True)
+        kuairand = UCaGNNConfig(dataset="kuairand1k", device="cuda", auto_batch_size=True)
+
+        expected = [16384, 8192, 4096, 2048, 1024, 512, 256]
+        self.assertEqual(_auto_batch_probe_candidates(ml1m), expected)
+        self.assertEqual(_auto_batch_probe_candidates(kuairand), expected)
+
+    def test_auto_batch_probe_interactions_match_epoch_zero_shuffle(self) -> None:
+        """Auto-batch probing should mirror the epoch-0 training shuffle."""
+        config = UCaGNNConfig(seed=13)
+        train_users = torch.arange(8, dtype=torch.long)
+        train_items = torch.arange(100, 108, dtype=torch.long)
+
+        shuffled_users, shuffled_items = _auto_batch_probe_interactions(
+            train_users,
+            train_items,
+            config,
+        )
+        perm = torch.randperm(
+            train_users.size(0),
+            generator=build_torch_generator(config.seed, train_users.device),
+            device=train_users.device,
+        )
+
+        self.assertTrue(torch.equal(shuffled_users, train_users[perm]))
+        self.assertTrue(torch.equal(shuffled_items, train_items[perm]))
+
+    def test_probe_cleanup_synchronizes_before_releasing_cuda_cache(self) -> None:
+        """Probe cleanup should flush pending CUDA work before emptying the cache."""
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.synchronize") as synchronize,
+            patch("torch.cuda.empty_cache") as empty_cache,
+        ):
+            _release_cuda_probe_memory()
+
+        synchronize.assert_called_once_with()
+        empty_cache.assert_called_once_with()
+
+    def test_ucagnn_preset_applies_fused_scoring_defaults(self) -> None:
+        """The ucagnn preset should target the fused-score contract."""
         config = build_config(_experiment_args(preset="ucagnn"))
 
         self.assertEqual(config.scoring_weight_mode, "learned")
@@ -121,6 +222,34 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertGreater(config.lambda_contrastive, 0.0)
         self.assertEqual(config.lambda_align, 0.0)
         self.assertEqual(config.lambda_uniform, 0.0)
+
+    def test_ucagnn_preset_keeps_explicit_branch_depth_and_neighbor_overrides(self) -> None:
+        """Explicit depth overrides must survive preset application for checkpoint identity."""
+        config = build_config(
+            _experiment_args(
+                preset="ucagnn",
+                interest_gnn_layers=2,
+                conformity_gnn_layers=3,
+                num_neighbors=[10, 5, 3],
+            ),
+        )
+
+        self.assertEqual(config.interest_gnn_layers, 2)
+        self.assertEqual(config.conformity_gnn_layers, 3)
+        self.assertEqual(config.max_gnn_layers, 3)
+        self.assertEqual(config.num_neighbors, [10, 5, 3])
+
+    def test_ucagnn_preset_rejects_short_neighbor_lists_after_depth_override(self) -> None:
+        """Invalid fan-out shapes should fail loudly instead of falling back to preset depths."""
+        with self.assertRaises(ValueError):
+            build_config(
+                _experiment_args(
+                    preset="ucagnn",
+                    interest_gnn_layers=2,
+                    conformity_gnn_layers=3,
+                    num_neighbors=[10, 5],
+                ),
+            )
 
     def test_removed_full_alias_is_rejected(self) -> None:
         """The public preset surface should no longer accept the removed full alias."""
@@ -148,10 +277,11 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 preset="lightgcn",
                 single_branch_gnn_layers=2,
                 num_neighbors=[10, 5],
-            )
+            ),
         )
 
         self.assertFalse(config.use_dual_branch)
+        self.assertFalse(config.use_features)
         self.assertEqual(config.single_branch_gnn_layers, 2)
         self.assertEqual(config.max_gnn_layers, 2)
 
@@ -163,13 +293,57 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 interest_gnn_layers=2,
                 conformity_gnn_layers=2,
                 num_neighbors=[10, 5],
-            )
+            ),
         )
 
         self.assertTrue(config.use_dual_branch)
+        self.assertFalse(config.use_sign_aware)
+        self.assertFalse(config.use_features)
+        self.assertEqual(config.scoring_weight_mode, "fixed")
+        self.assertEqual(config.alpha_interest, 1.0)
+        self.assertEqual(config.beta_conformity, 1.0)
+        self.assertEqual(config.train_scoring_mode, "default")
+        self.assertEqual(config.eval_scoring_mode, "default")
         self.assertEqual(config.interest_gnn_layers, 2)
         self.assertEqual(config.conformity_gnn_layers, 2)
         self.assertEqual(config.max_gnn_layers, 2)
+
+    def test_training_identity_ignores_eval_only_overrides(self) -> None:
+        """Resume compatibility should ignore evaluation-only config changes."""
+        base = build_config(_experiment_args(preset="ucagnn"))
+        eval_override = build_config(_experiment_args(preset="ucagnn"))
+        eval_override.eval_scoring_mode = "conformity_suppressed"
+
+        base_identity, base_hash = _build_training_identity(base, "ucagnn", None)
+        override_identity, override_hash = _build_training_identity(
+            eval_override,
+            "ucagnn",
+            None,
+        )
+        _, base_eval_hash = _build_evaluation_identity(base, base_hash)
+        _, override_eval_hash = _build_evaluation_identity(
+            eval_override,
+            override_hash,
+        )
+
+        self.assertEqual(base_identity, override_identity)
+        self.assertEqual(base_hash, override_hash)
+        self.assertNotEqual(base_eval_hash, override_eval_hash)
+
+    def test_training_identity_changes_when_training_config_changes(self) -> None:
+        """Resume compatibility should change with training-defining config fields."""
+        base = build_config(_experiment_args(preset="ucagnn"))
+        changed = build_config(
+            _experiment_args(
+                preset="ucagnn",
+                batch_size=2048,
+            ),
+        )
+
+        _, base_hash = _build_training_identity(base, "ucagnn", None)
+        _, changed_hash = _build_training_identity(changed, "ucagnn", None)
+
+        self.assertNotEqual(base_hash, changed_hash)
 
     def test_formal_profile_defaults_disable_early_stopping(self) -> None:
         """The default formal profile should own the formal support-parameter bundle."""
@@ -188,10 +362,15 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         )
 
         self.assertFalse(profile["config_overrides"]["use_early_stopping"])
+        self.assertEqual(profile["id"], "dev-ucagnn")
         self.assertEqual(profile["matrix"]["presets"], ["ucagnn"])
-        self.assertEqual(profile["matrix"]["graph_methods"], ["cagra", "knn"])
         self.assertEqual(profile["matrix"]["scoring_weight_modes"], ["learned"])
-        self.assertEqual(profile["config_overrides"]["batch_size"], 4096)
+        self.assertNotIn("batch_size", profile["config_overrides"])
+        self.assertTrue(profile["config_overrides"]["auto_batch_size"])
+        self.assertEqual(
+            profile["config_overrides"]["batch_size_candidates"],
+            [16384, 8192, 4096, 2048, 1024, 512, 256],
+        )
         self.assertEqual(profile["config_overrides"]["interest_gnn_layers"], 1)
         self.assertEqual(profile["config_overrides"]["conformity_gnn_layers"], 2)
         self.assertEqual(profile["config_overrides"]["dropout"], 0.1)
@@ -200,18 +379,97 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(profile["config_overrides"]["loss_schedule"], "baseline")
         self.assertFalse(benchmark_args["use_early_stopping"])
         self.assertEqual(benchmark_args["presets"], ["ucagnn"])
-        self.assertEqual(benchmark_args["graph_methods"], ["cagra", "knn"])
         self.assertEqual(benchmark_args["scoring_weight_modes"], ["learned"])
         self.assertEqual(benchmark_args["batch_size"], 4096)
+        self.assertTrue(benchmark_args["auto_batch_size"])
+        self.assertEqual(
+            benchmark_args["batch_size_candidates"],
+            [16384, 8192, 4096, 2048, 1024, 512, 256],
+        )
         self.assertIsNone(benchmark_args["single_branch_gnn_layers"])
         self.assertEqual(benchmark_args["interest_gnn_layers"], 1)
         self.assertEqual(benchmark_args["conformity_gnn_layers"], 2)
         self.assertEqual(benchmark_args["dropout"], 0.1)
         self.assertEqual(benchmark_args["num_neighbors"], [10, 5])
+        self.assertEqual(benchmark_args["num_neighbors_options"], [[10, 5]])
         self.assertEqual(benchmark_args["hard_negative_ratio"], 0.0)
         self.assertEqual(benchmark_args["loss_schedule"], "baseline")
-        self.assertEqual(benchmark_args["curriculum_phase1_end"], 15)
-        self.assertEqual(benchmark_args["curriculum_phase2_end"], 30)
+        self.assertEqual(benchmark_args["auxiliary_losses_start_epoch"], 15)
+        self.assertEqual(benchmark_args["popularity_supervision_start_epoch"], 30)
+
+    def test_benchmark_config_inputs_bridge_into_build_config(self) -> None:
+        """Formal benchmark args should rebuild one run through the shared config contract."""
+        profile_name = default_formal_profile_name()
+        benchmark_args = formal_main._build_new_run_args(
+            SimpleNamespace(
+                device=None,
+                data_dir=None,
+                no_mlflow=False,
+                mlflow_tracking_uri=None,
+                mlflow_experiment_name=None,
+                dry_run=True,
+            ),
+            profile_name,
+        )
+
+        config_inputs = build_benchmark_config_inputs(
+            benchmark_args,
+            dataset="movielens1m",
+            preset="ucagnn",
+            lr_scheduler="plateau",
+            scoring_weight_mode="learned",
+            num_neighbors=[10, 5],
+        )
+
+        self.assertEqual(config_inputs["dataset"], "movielens1m")
+        self.assertEqual(config_inputs["preset"], "ucagnn")
+        self.assertEqual(config_inputs["device"], "cuda")
+        self.assertEqual(config_inputs["data_dir"], "data")
+        self.assertNotIn("num_neighbors_options", config_inputs)
+
+        config = build_config(
+            config_inputs,
+        )
+
+        self.assertEqual(config.dataset, "movielens1m")
+        self.assertEqual(config.lr_scheduler, "plateau")
+        self.assertTrue(config.auto_batch_size)
+        self.assertFalse(config.use_early_stopping)
+        self.assertEqual(config.num_neighbors, [10, 5])
+
+    def test_runtime_config_inputs_bridge_into_build_config(self) -> None:
+        """Quick/runtime config mappings should reuse the shared config-input builder."""
+        config = build_config(
+            build_runtime_config_inputs(
+                dataset="movielens1m",
+                preset="ucagnn",
+                data_dir="data",
+                device="cpu",
+                epochs=2,
+                batch_size=64,
+                auto_batch_size=False,
+                eval_scoring_mode="interest_only",
+                sample_interactions=100,
+                loader_max_rows=100,
+            ),
+        )
+
+        self.assertEqual(config.dataset, "movielens1m")
+        self.assertEqual(config.device, "cpu")
+        self.assertEqual(config.epochs, 2)
+        self.assertEqual(config.batch_size, 64)
+        self.assertFalse(config.auto_batch_size)
+        self.assertEqual(config.eval_scoring_mode, "interest_only")
+        self.assertEqual(config.sample_interactions, 100)
+        self.assertEqual(config.loader_max_rows, 100)
+
+    def test_formal_profile_lookup_normalizes_user_facing_labels(self) -> None:
+        """Formal profile lookup should normalize user-facing aliases centrally."""
+        default_profile = get_formal_profile("DEFAULT")
+
+        self.assertEqual(default_profile["id"], default_formal_profile_name())
+        self.assertIn("abauto", default_profile["name"])
+        self.assertEqual(get_formal_profile("dev-ucagnn")["id"], "dev-ucagnn")
 
     def test_second_formal_profile_is_reserved_for_final_comparison(self) -> None:
         """The non-default profile should keep baselines out of day-to-day runs."""
@@ -230,16 +488,36 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            profile["matrix"]["presets"], ["ucagnn", "lightgcn", "dice_like"]
+            profile["matrix"]["presets"],
+            ["ucagnn", "lightgcn", "dice_like"],
         )
-        self.assertEqual(profile["matrix"]["graph_methods"], ["cagra"])
-        self.assertEqual(profile["matrix"]["scoring_weight_modes"], ["fixed"])
+        self.assertEqual(profile["id"], "dev-matched-comparison-i2-c3")
+        self.assertEqual(
+            profile["matrix"]["scoring_weight_modes"],
+            ["learned", "fixed"],
+        )
         self.assertEqual(profile["config_overrides"]["single_branch_gnn_layers"], 2)
+        self.assertNotIn("batch_size", profile["config_overrides"])
+        self.assertTrue(profile["config_overrides"]["auto_batch_size"])
         self.assertEqual(profile["config_overrides"]["interest_gnn_layers"], 2)
-        self.assertEqual(profile["config_overrides"]["conformity_gnn_layers"], 2)
+        self.assertEqual(profile["config_overrides"]["conformity_gnn_layers"], 3)
+        self.assertEqual(
+            profile["config_overrides"]["num_neighbors_options"],
+            [[10, 5, 3], [5, 3, 2]],
+        )
+        self.assertEqual(
+            benchmark_args["scoring_weight_modes"],
+            ["learned", "fixed"],
+        )
+        self.assertTrue(benchmark_args["auto_batch_size"])
         self.assertEqual(benchmark_args["single_branch_gnn_layers"], 2)
         self.assertEqual(benchmark_args["interest_gnn_layers"], 2)
-        self.assertEqual(benchmark_args["conformity_gnn_layers"], 2)
+        self.assertEqual(benchmark_args["conformity_gnn_layers"], 3)
+        self.assertEqual(benchmark_args["num_neighbors"], [10, 5, 3])
+        self.assertEqual(
+            benchmark_args["num_neighbors_options"],
+            [[10, 5, 3], [5, 3, 2]],
+        )
 
     def test_stale_saved_profile_falls_back_to_default_bundle(self) -> None:
         """Plain formal-run should survive a removed profile in saved state."""
@@ -256,13 +534,13 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             dry_run=True,
         )
 
-        with patch.object(
-            formal_main,
-            "_load_state",
-            return_value={"profile_name": "removed-profile"},
-        ):
+        state_path = Path(self.id().replace(".", "_") + "_state.json")
+        state_path.write_text('{"profile_name": "removed-profile"}')
+        self.addCleanup(lambda: state_path.unlink(missing_ok=True))
+
+        with patch.object(formal_main, "STATE_PATH", state_path):
             benchmark_args, profile_name, resumed = formal_main._resolve_benchmark_args(
-                cli_args
+                cli_args,
             )
 
         self.assertEqual(profile_name, default_formal_profile_name())
@@ -276,7 +554,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 {
                     "tier": "small",
                     "presets": ["ucagnn"],
-                    "graph_methods": ["cagra"],
                     "epochs": 60,
                     "batch_size": 4096,
                     "lr": 1e-3,
@@ -294,17 +571,42 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 fallback_profile_name="development",
             )
 
+    def test_normalize_benchmark_args_rejects_removed_graph_method_field(self) -> None:
+        """Saved formal-run state should reject the removed graph_method field."""
+        with self.assertRaises(ValueError):
+            formal_main._normalize_benchmark_args(
+                {
+                    "tier": "small",
+                    "presets": ["ucagnn"],
+                    "graph_method": "cagra",
+                    "epochs": 60,
+                    "batch_size": 4096,
+                    "lr": 1e-3,
+                    "num_neighbors": [10, 5],
+                    "device": "cuda",
+                    "data_dir": "data",
+                    "no_mlflow": False,
+                    "mlflow_tracking_uri": None,
+                    "mlflow_experiment_name": "ucagnn-formal",
+                    "batch_id": "formal-dev-batch",
+                    "resume_batch": True,
+                    "dry_run": False,
+                },
+                fallback_profile_name="development",
+            )
+
     def test_benchmark_plan_signature_ignores_runtime_overrides(self) -> None:
         """Resume matching should compare the semantic plan, not runtime routing flags."""
         base_args = argparse.Namespace(
-            tier="small",
+            datasets=["small"],
             presets=["ucagnn"],
-            graph_methods=["cagra", "knn"],
             scoring_weight_modes=["learned"],
             profile_name="development",
             epochs=60,
             use_early_stopping=False,
             batch_size=4096,
+            auto_batch_size=True,
+            batch_size_candidates=[16384, 8192, 4096, 2048, 1024, 512, 256],
             lr=1e-3,
             single_branch_gnn_layers=None,
             interest_gnn_layers=1,
@@ -312,8 +614,8 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             dropout=0.1,
             num_neighbors=[10, 5],
             hard_negative_ratio=0.0,
-            curriculum_phase1_end=15,
-            curriculum_phase2_end=30,
+            auxiliary_losses_start_epoch=15,
+            popularity_supervision_start_epoch=30,
             loss_schedule="baseline",
             loader_max_rows=None,
             sample_interactions=None,
@@ -336,7 +638,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 "mlflow_experiment_name": "scratch",
                 "batch_id": "formal-dev-b",
                 "dry_run": True,
-            }
+            },
         )
 
         self.assertEqual(
@@ -349,22 +651,39 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         config = build_config(
             _experiment_args(
                 hard_negative_ratio=0.25,
-                curriculum_phase1_end=3,
-                curriculum_phase2_end=7,
-            )
+                auxiliary_losses_start_epoch=3,
+                popularity_supervision_start_epoch=7,
+            ),
         )
 
         self.assertEqual(config.hard_negative_ratio, 0.25)
-        self.assertEqual(config.curriculum_phase1_end, 3)
-        self.assertEqual(config.curriculum_phase2_end, 7)
+        self.assertEqual(config.auxiliary_losses_start_epoch, 3)
+        self.assertEqual(config.popularity_supervision_start_epoch, 7)
+
+    def test_normalize_benchmark_config_overrides_uses_shared_defaults(self) -> None:
+        """Benchmark payload normalization should stay centralized and JSON-safe."""
+        normalized = normalize_benchmark_config_overrides(
+            {
+                "lr_scheduler": "plateau,cosine",
+                "num_neighbors_options": [[10, 5], [5, 3]],
+                "hard_negative_ratio": "0.25",
+            },
+        )
+
+        self.assertEqual(normalized["lr_scheduler"], ["plateau", "cosine"])
+        self.assertEqual(normalized["num_neighbors"], [10, 5])
+        self.assertEqual(normalized["num_neighbors_options"], [[10, 5], [5, 3]])
+        self.assertEqual(normalized["batch_size"], UCaGNNConfig().batch_size)
+        self.assertFalse(normalized["auto_batch_size"])
+        self.assertEqual(normalized["hard_negative_ratio"], 0.25)
 
     def test_runtime_does_not_stop_when_early_stopping_disabled(self) -> None:
         """TrainerRuntime should keep training when the stop policy is off."""
         runtime = TrainerRuntime.__new__(TrainerRuntime)
         runtime.config = SimpleNamespace(
             use_early_stopping=False,
-            curriculum_phase1_end=15,
-            curriculum_phase2_end=30,
+            auxiliary_losses_start_epoch=15,
+            popularity_supervision_start_epoch=30,
             patience=10,
         )
         runtime.best_ndcg = 0.5
@@ -383,9 +702,114 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertFalse(should_stop)
         self.assertEqual(runtime.patience_counter, 0)
 
+    def test_validation_eval_retries_after_cuda_oom_with_optimizer_offload(self) -> None:
+        """Validation should retry once after offloading optimizer state on CUDA OOM."""
+        runtime = TrainerRuntime.__new__(TrainerRuntime)
+        runtime.device = torch.device("cuda")
+        runtime.config = SimpleNamespace(use_amp=False)
+        runtime.use_amp = False
+        runtime.ema_model = None
+        runtime.model = object()
+        runtime.data = SimpleNamespace(val_mask="val-mask")
+        runtime.evaluator = Mock()
+        runtime.evaluator.evaluate.side_effect = [
+            torch.OutOfMemoryError("oom"),
+            {"NDCG@40": 0.5},
+        ]
+        runtime.optimizer = Mock()
+        runtime._move_optimizer_state = Mock()
+
+        with patch("torch.cuda.empty_cache") as empty_cache:
+            metrics = runtime._evaluate_validation_metrics()
+
+        self.assertEqual(metrics, {"NDCG@40": 0.5})
+        self.assertEqual(runtime.evaluator.evaluate.call_count, 2)
+        runtime._move_optimizer_state.assert_any_call(torch.device("cpu"))
+        runtime._move_optimizer_state.assert_any_call(runtime.device)
+        runtime.optimizer.zero_grad.assert_called_once_with(set_to_none=True)
+        self.assertGreaterEqual(empty_cache.call_count, 2)
+
+    def test_validation_eval_falls_back_to_cpu_after_second_cuda_oom(self) -> None:
+        """Validation should use a CPU retry when GPU evaluation still does not fit."""
+        runtime = TrainerRuntime.__new__(TrainerRuntime)
+        runtime.device = torch.device("cuda")
+        runtime.config = SimpleNamespace(use_amp=False)
+        runtime.use_amp = False
+        runtime.ema_model = None
+        runtime.data = SimpleNamespace(val_mask=torch.tensor([True, False]))
+        runtime.evaluator = Mock()
+        runtime.evaluator.evaluate.side_effect = [
+            torch.OutOfMemoryError("oom"),
+            torch.OutOfMemoryError("oom again"),
+            {"NDCG@40": 0.7},
+        ]
+        runtime.optimizer = Mock()
+        runtime._move_optimizer_state = Mock()
+        runtime.model = Mock()
+        runtime.model.embedding = Mock()
+        runtime.model.embedding.invalidate_feature_cache = Mock()
+
+        with patch("torch.cuda.empty_cache") as empty_cache:
+            metrics = runtime._evaluate_validation_metrics()
+
+        self.assertEqual(metrics, {"NDCG@40": 0.7})
+        self.assertEqual(runtime.evaluator.evaluate.call_count, 3)
+        runtime._move_optimizer_state.assert_any_call(torch.device("cpu"))
+        runtime._move_optimizer_state.assert_any_call(runtime.device)
+        runtime.model.to.assert_any_call(torch.device("cpu"))
+        runtime.model.to.assert_any_call(runtime.device)
+        self.assertGreaterEqual(
+            runtime.model.embedding.invalidate_feature_cache.call_count,
+            2,
+        )
+        self.assertGreaterEqual(empty_cache.call_count, 3)
+
+    def test_prepare_batch_falls_back_to_cpu_sampler_after_cuda_oom(self) -> None:
+        """Batch preparation should switch back to the CPU sampler after a CUDA OOM."""
+        trainer = MiniBatchTrainer.__new__(MiniBatchTrainer)
+        trainer.sampler_device = torch.device("cuda")
+        trainer.device = torch.device("cuda")
+        trainer.data = object()
+        trainer._force_cpu_sampler = False
+        trainer._build_subgraph_sampler = Mock(
+            return_value=(Mock(), torch.device("cpu")),
+        )
+        expected_batch = Mock()
+        trainer._prepare_batch_on_sampler_device = Mock(
+            side_effect=[torch.OutOfMemoryError("oom"), expected_batch],
+        )
+
+        with patch("torch.cuda.empty_cache") as empty_cache:
+            actual_batch = trainer._prepare_batch(
+                torch.tensor([0], dtype=torch.long),
+                torch.tensor([0], dtype=torch.long),
+                random_seed=13,
+            )
+
+        self.assertIs(actual_batch, expected_batch)
+        self.assertTrue(trainer._force_cpu_sampler)
+        self.assertEqual(trainer.sampler_device, torch.device("cpu"))
+        trainer._build_subgraph_sampler.assert_called_once_with(trainer.data)
+        self.assertEqual(trainer._prepare_batch_on_sampler_device.call_count, 2)
+        empty_cache.assert_called()
+
 
 class BenchmarkPlanTests(unittest.TestCase):
     """Pin the formal benchmark execution order and parser defaults."""
+
+    def test_lightgcn_uses_two_hop_prefix_from_deeper_profile_bundle(self) -> None:
+        """Benchmark wiring should truncate deeper profile fan-out for LightGCN."""
+        resolved = _resolve_benchmark_num_neighbors_for_preset(
+            {
+                "single_branch_gnn_layers": 2,
+                "interest_gnn_layers": 2,
+                "conformity_gnn_layers": 3,
+            },
+            "lightgcn",
+            [10, 5, 3],
+        )
+
+        self.assertEqual(resolved, [10, 5])
 
     def test_parser_defaults_use_canonical_preset_names(self) -> None:
         """Benchmark defaults should not duplicate the removed full alias."""
@@ -394,37 +818,95 @@ class BenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(args.presets, ["ucagnn", "lightgcn", "dice_like"])
         self.assertEqual(args.scoring_weight_modes, ["learned"])
 
+    def test_dice_like_score_mix_is_fixed_only(self) -> None:
+        """DICE-like should stay on the fixed score-mix path in formal sweeps."""
+        self.assertEqual(
+            formal_main._scoring_weight_modes_for_preset(
+                "dice_like",
+                ["fixed", "learned"],
+            ),
+            ["fixed"],
+        )
+
     def test_plan_sweeps_datasets_within_each_method_combo(self) -> None:
         """Datasets should be the innermost loop of the execution plan."""
         from types import SimpleNamespace
 
         args = SimpleNamespace(
-            tier="small",
+            datasets=["small"],
             presets=["ucagnn", "lightgcn"],
-            graph_methods=["cagra", "knn"],
             scoring_weight_modes=["fixed", "learned"],
+            num_neighbors=[10, 5],
+            num_neighbors_options=[[10, 5], [5, 3]],
         )
 
         plan = build_benchmark_plan(args)
 
         expected_prefix = [
-            ("amazonbook", "ucagnn", "cagra", "fixed"),
-            ("movielens1m", "ucagnn", "cagra", "fixed"),
-            ("amazonbook", "ucagnn", "cagra", "learned"),
-            ("movielens1m", "ucagnn", "cagra", "learned"),
-            ("amazonbook", "ucagnn", "knn", "fixed"),
-            ("movielens1m", "ucagnn", "knn", "fixed"),
+            ("amazonbook", "ucagnn", "fixed", "plateau", (10, 5)),
+            ("amazonbook", "ucagnn", "fixed", "plateau", (5, 3)),
+            ("movielens1m", "ucagnn", "fixed", "plateau", (10, 5)),
+            ("movielens1m", "ucagnn", "fixed", "plateau", (5, 3)),
+            ("amazonbook", "ucagnn", "learned", "plateau", (10, 5)),
+            ("amazonbook", "ucagnn", "learned", "plateau", (5, 3)),
         ]
 
         self.assertEqual(plan[: len(expected_prefix)], expected_prefix)
-        self.assertEqual(
-            plan[-2:],
-            [
-                ("amazonbook", "lightgcn", "knn", "fixed"),
-                ("movielens1m", "lightgcn", "knn", "fixed"),
-            ],
-        )
         self.assertEqual(len(plan), 12)
+
+    def test_build_benchmark_plan_accepts_explicit_dataset_names(self) -> None:
+        """Benchmark plan should accept explicit dataset names alongside tier labels."""
+        args = SimpleNamespace(
+            datasets=["movielens1m", "small"],
+            presets=["ucagnn"],
+            scoring_weight_modes=["learned"],
+            num_neighbors=[10, 5],
+            num_neighbors_options=[[10, 5]],
+            lr_scheduler="cosine",
+        )
+
+        plan = build_benchmark_plan(args)
+
+        self.assertIn(("movielens1m", "ucagnn", "learned", "cosine", (10, 5)), plan)
+        self.assertIn(("amazonbook", "ucagnn", "learned", "cosine", (10, 5)), plan)
+
+    def test_build_benchmark_plan_resolves_all_lr_schedulers(self) -> None:
+        """The lr_scheduler='all' shorthand should expand to all supported schedulers."""
+        args = SimpleNamespace(
+            datasets=["movielens1m"],
+            presets=["ucagnn"],
+            scoring_weight_modes=["learned"],
+            num_neighbors=[10, 5],
+            num_neighbors_options=[[10, 5]],
+            lr_scheduler="all",
+        )
+
+        plan = build_benchmark_plan(args)
+        schedulers = {entry[3] for entry in plan}
+
+        self.assertEqual(schedulers, set(formal_main.SUPPORTED_LR_SCHEDULERS))
+
+    def test_run_benchmark_reuses_pre_normalized_payload_for_dry_run(self) -> None:
+        """Dry-run benchmark execution should not renormalize an internal payload."""
+        normalized_args = formal_main._normalize_benchmark_args(
+            SimpleNamespace(
+                datasets=["movielens1m"],
+                presets=["ucagnn"],
+                scoring_weight_modes=["learned"],
+                num_neighbors=[10, 5],
+                num_neighbors_options=[[10, 5]],
+                dry_run=True,
+            ),
+        )
+
+        with patch.object(
+            formal_main,
+            "_normalize_benchmark_args",
+            side_effect=AssertionError("unexpected renormalization"),
+        ):
+            exit_code = formal_main.run_benchmark(normalized_args)
+
+        self.assertEqual(exit_code, 0)
 
 
 if __name__ == "__main__":
