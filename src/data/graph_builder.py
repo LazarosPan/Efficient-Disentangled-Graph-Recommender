@@ -1,26 +1,129 @@
-"""Graph builder: CanonicalInteractions → PyG Data with edge_index, masks, and sign weights.
+"""Graph builder: CanonicalInteractions -> PyG Data with edge_index, masks, and sign weights.
 
 Edge signs are aligned to edge_index so that edge_sign[i] corresponds to
-edge_index[:, i]. Edges without interaction semantics (kNN / CAGRA
-neighbors) receive a neutral sign of 0.0.
+edge_index[:, i]. Edges without interaction semantics (CAGRA neighbors)
+receive a neutral sign of 0.0.
 """
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import torch
 from torch_geometric.data import Data
-from torch_geometric.nn import knn_graph
-from torch_geometric.utils import coalesce
+from torch_geometric.utils import coalesce, degree
 
-from torch_geometric.utils import degree
-
-from .canonical import CanonicalInteractions
 from ..utils.config import UCaGNNConfig
 from ..utils.interaction_indexing import (
     compute_normalized_popularity,
     compute_time_windowed_popularity,
 )
+from .canonical import CanonicalInteractions
+
+_FLOAT_CANONICAL_FIELDS = frozenset(
+    {
+        "user_features",
+        "item_features",
+        "raw_target",
+        "repeat_priority_mean",
+        "repeat_priority_max",
+    },
+)
+_LONG_CANONICAL_FIELDS = frozenset(
+    {"repeat_count", "repeat_first_timestamp", "repeat_last_timestamp"},
+)
+_BOOL_CANONICAL_FIELDS = frozenset({"exposure_flag"})
+
+
+def _canonical_numpy_to_tensor(
+    field_name: str,
+    value: np.ndarray,
+) -> torch.Tensor:
+    """Convert one canonical NumPy field to its graph-boundary tensor form.
+
+    Args:
+        field_name: Canonical field name being transferred to ``Data``.
+        value: NumPy payload for the field.
+
+    Returns:
+        torch.Tensor: Converted tensor with the expected dtype.
+
+    """
+    if field_name in _FLOAT_CANONICAL_FIELDS:
+        return torch.from_numpy(value).float()
+    if field_name in _LONG_CANONICAL_FIELDS:
+        return torch.from_numpy(value).long()
+    if field_name in _BOOL_CANONICAL_FIELDS:
+        return torch.from_numpy(value.astype(np.bool_, copy=False))
+    raise KeyError(f"Unsupported canonical tensor field '{field_name}'.")
+
+
+def _resolve_training_popularity(
+    canonical: CanonicalInteractions,
+    train_mask: np.ndarray,
+    n_items: int,
+    popularity_window_seconds: int | None,
+) -> torch.Tensor:
+    """Compute train-only item popularity and return it as a float tensor.
+
+    Args:
+        canonical: Canonical dataset whose training rows define the popularity.
+        train_mask: Boolean mask selecting the training interactions.
+        n_items: Number of catalog items.
+        popularity_window_seconds: Optional trailing-window width in seconds.
+
+    Returns:
+        torch.Tensor: Float tensor of shape ``(n_items,)`` with train-only
+        popularity values.
+
+    """
+    popularity_array = compute_normalized_popularity(canonical.item_id[train_mask], n_items) if popularity_window_seconds is None else compute_time_windowed_popularity(canonical.item_id[train_mask], n_items, canonical.timestamp[train_mask], popularity_window_seconds)
+    return torch.from_numpy(popularity_array).float()
+
+
+def _attach_optional_canonical_fields(
+    data: Data,
+    canonical: CanonicalInteractions,
+) -> None:
+    """Copy optional canonical payloads onto the PyG ``Data`` object.
+
+    Args:
+        data: Graph payload being assembled.
+        canonical: Canonical dataset that may carry optional side information.
+
+    Returns:
+        None. ``data`` is updated in place.
+
+    """
+    tensor_field_names = (
+        "user_features",
+        "item_features",
+        "raw_target",
+        "exposure_flag",
+        "repeat_count",
+        "repeat_priority_mean",
+        "repeat_priority_max",
+        "repeat_first_timestamp",
+        "repeat_last_timestamp",
+    )
+    array_field_names = ("behavior_type", "source_domain")
+    passthrough_field_names = ("feedback_type", "preprocessing_preset", "metadata")
+
+    for field_name in tensor_field_names:
+        value = getattr(canonical, field_name)
+        if value is not None:
+            setattr(data, field_name, _canonical_numpy_to_tensor(field_name, value))
+
+    for field_name in array_field_names:
+        value = getattr(canonical, field_name)
+        if value is not None:
+            setattr(data, field_name, value.copy())
+
+    for field_name in passthrough_field_names:
+        value = getattr(canonical, field_name)
+        if value is not None:
+            setattr(data, field_name, value)
 
 
 def build_graph(
@@ -35,14 +138,15 @@ def build_graph(
 
     Args:
         canonical: The loaded dataset.
-        config: Model config (controls graph_method, split ratios, etc.).
+        config: Model config (controls split ratios, CAGRA settings, etc.).
         embeddings: Optional (n_users + n_items, D) node embeddings used to add
-            kNN/CAGRA similarity edges. When absent, the graph reduces to the
+            CAGRA similarity edges. When absent, the graph reduces to the
             train-interaction bipartite edges only.
 
     Returns:
         PyG Data with ``edge_index``, ``edge_sign``, ``train/val/test_mask``,
         ``popularity``, and ``n_users`` / ``n_items`` attributes.
+
     """
     n_users = canonical.n_users
     n_items = canonical.n_items
@@ -63,44 +167,25 @@ def build_graph(
     train_mask_t = torch.from_numpy(train_mask)
     val_mask_t = torch.from_numpy(val_mask)
     test_mask_t = torch.from_numpy(test_mask)
-
-    # Build edge_index + aligned edge_sign depending on method.
-    if config.graph_method == "knn":
-        edge_index, edge_sign = _build_knn(
-            user_nodes,
-            item_nodes,
-            train_mask_t,
-            all_signs,
-            embeddings,
-            config.knn_k,
-        )
-    elif config.graph_method == "cagra":
-        edge_index, edge_sign = _build_cagra(
-            user_nodes,
-            item_nodes,
-            train_mask_t,
-            all_signs,
-            embeddings,
-            config,
-        )
-    else:
-        raise ValueError(f"Unknown graph_method: {config.graph_method}")
+    edge_index, edge_sign = _build_cagra(
+        user_nodes,
+        item_nodes,
+        train_mask_t,
+        all_signs,
+        embeddings,
+        config,
+    )
 
     # Popularity must be derived from the final training split only so held-out
     # validation/test interactions never leak into training or evaluation.
-    if config.popularity_window_seconds is None:
-        popularity_array = compute_normalized_popularity(
-            canonical.item_id[train_mask],
-            n_items,
-        )
-    else:
-        popularity_array = compute_time_windowed_popularity(
-            canonical.item_id[train_mask],
-            n_items,
-            canonical.timestamp[train_mask],
-            config.popularity_window_seconds,
-        )
-    popularity = torch.from_numpy(popularity_array).float()
+    # Both the count-based and time-windowed paths receive item_id[train_mask]
+    # and timestamp[train_mask] respectively — no val/test rows contribute.
+    popularity = _resolve_training_popularity(
+        canonical,
+        train_mask,
+        n_items,
+        config.popularity_window_seconds,
+    )
 
     labels = torch.from_numpy(canonical.label).float()
 
@@ -125,28 +210,12 @@ def build_graph(
     data.test_mask = test_mask_t
     data.popularity = popularity
     data.labels = labels
+
     data.user_nodes = user_nodes
     data.item_nodes = item_nodes
     data.n_users = n_users
     data.n_items = n_items
-    if canonical.user_features is not None:
-        data.user_features = torch.from_numpy(canonical.user_features).float()
-    if canonical.item_features is not None:
-        data.item_features = torch.from_numpy(canonical.item_features).float()
-    if canonical.raw_target is not None:
-        data.raw_target = torch.from_numpy(canonical.raw_target).float()
-    if canonical.exposure_flag is not None:
-        data.exposure_flag = torch.from_numpy(canonical.exposure_flag.astype(np.bool_))
-    if canonical.behavior_type is not None:
-        data.behavior_type = canonical.behavior_type.copy()
-    if canonical.source_domain is not None:
-        data.source_domain = canonical.source_domain.copy()
-    if canonical.feedback_type is not None:
-        data.feedback_type = canonical.feedback_type
-    if canonical.preprocessing_preset is not None:
-        data.preprocessing_preset = canonical.preprocessing_preset
-    if canonical.metadata is not None:
-        data.metadata = canonical.metadata
+    _attach_optional_canonical_fields(data, canonical)
     data.derived_split_mode = config.derived_split_mode
 
     return data
@@ -175,46 +244,104 @@ def _build_interaction_graph(
         ],
         dim=0,
     )
-
-    # Duplicate signs for both directions (forward + backward)
     edge_sign = torch.cat([train_signs, train_signs])
 
     return edge_index, edge_sign
 
 
-def _build_knn(
-    user_nodes: torch.Tensor,
-    item_nodes: torch.Tensor,
-    train_mask: torch.Tensor,
-    all_signs: torch.Tensor,
-    embeddings: torch.Tensor | None,
-    k: int,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Bipartite edges + kNN edges in embedding space.
+def _to_cagra_array(embeddings: torch.Tensor) -> object:
+    """Convert torch embeddings to a cuVS-compatible array.
 
-    Falls back to the train-interaction graph if no embeddings are provided.
-    kNN edges receive a neutral sign of 0.0.
+    Args:
+        embeddings: Node embeddings used to build or query the ANN graph.
+
+    Returns:
+        A CUDA-array-interface object suitable for `cuvs.neighbors.cagra`.
+
+    Raises:
+        RuntimeError: If CuPy is unavailable for the conversion.
+
     """
-    # Always include bipartite interaction edges
-    bipartite_ei, bipartite_sign = _build_interaction_graph(
-        user_nodes,
-        item_nodes,
-        train_mask,
-        all_signs,
-    )
+    try:
+        import cupy as cp
+    except ImportError as exc:
+        raise RuntimeError("cupy is required for cagra graph construction") from exc
 
-    if embeddings is None:
-        return bipartite_ei, bipartite_sign
+    contiguous = embeddings.detach().contiguous()
+    if contiguous.is_cuda:
+        from_dlpack = getattr(cp, "from_dlpack", None)
+        if from_dlpack is not None:
+            return from_dlpack(contiguous)
 
-    # kNN on the embedding space
-    knn_edges = knn_graph(embeddings, k=k, loop=False)
-    knn_sign = torch.zeros(knn_edges.size(1))
+        from torch.utils import dlpack as torch_dlpack
 
-    # Combine and coalesce (keep signs aligned via attr parameter)
-    combined_ei = torch.cat([bipartite_ei, knn_edges], dim=1)
-    combined_sign = torch.cat([bipartite_sign, knn_sign])
-    edge_index, edge_sign = coalesce(combined_ei, combined_sign)
-    return edge_index, edge_sign
+        return cp.fromDlpack(torch_dlpack.to_dlpack(contiguous))
+
+    return cp.asarray(contiguous.float().cpu().numpy().astype("float32", copy=False))
+
+
+def _cagra_neighbors_to_tensor(neighbors: object) -> torch.Tensor:
+    """Materialize CAGRA neighbor results as a CPU ``torch.long`` tensor.
+
+    Args:
+        neighbors: cuVS neighbor output.
+
+    Returns:
+        torch.Tensor: CPU tensor with shape ``(n_nodes, k)``.
+
+    """
+    if isinstance(neighbors, torch.Tensor):
+        return neighbors.to(device="cpu", dtype=torch.long)
+    if isinstance(neighbors, np.ndarray):
+        return torch.from_numpy(neighbors).long()
+    if hasattr(neighbors, "copy_to_host"):
+        return torch.from_numpy(np.asarray(neighbors.copy_to_host())).long()
+
+    import cupy as cp
+
+    return torch.from_numpy(np.asarray(cp.asnumpy(neighbors))).long()
+
+
+def _build_cagra_edge_index(
+    neighbors: torch.Tensor,
+    n_nodes: int,
+) -> torch.Tensor:
+    """Build directed ANN edges from a dense neighbor table.
+
+    Args:
+        neighbors: Neighbor IDs with shape ``(n_nodes, k)`` on CPU.
+        n_nodes: Number of graph nodes represented by ``neighbors``.
+
+    Returns:
+        torch.Tensor: Directed edge index with invalid/self edges removed.
+
+    """
+    if neighbors.numel() == 0:
+        return torch.zeros((2, 0), dtype=torch.long)
+
+    k = neighbors.size(1)
+    src = torch.arange(n_nodes, dtype=torch.long).repeat_interleave(k)
+    dst = neighbors.reshape(-1)
+    valid = (src != dst) & (dst >= 0) & (dst < n_nodes)
+    return torch.stack((src[valid], dst[valid]), dim=0)
+
+
+def _make_undirected_zero_signed_edges(
+    directed_edges: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Mirror neutral ANN edges so the graph stays undirected.
+
+    Args:
+        directed_edges: Directed ANN edges with shape ``(2, E)``.
+
+    Returns:
+        Tuple of undirected edge index and aligned zero signs.
+
+    """
+    reverse_edges = directed_edges.flip(0)
+    undirected_edges = torch.cat([directed_edges, reverse_edges], dim=1)
+    edge_sign = torch.zeros(undirected_edges.size(1), dtype=torch.float32)
+    return undirected_edges, edge_sign
 
 
 def _build_cagra(
@@ -227,7 +354,7 @@ def _build_cagra(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Bipartite edges + CAGRA GPU-accelerated ANN graph.
 
-    Falls back to kNN if cuvs is not available.
+    Falls back to the train-interaction graph if CAGRA is unavailable or fails.
     CAGRA edges receive a neutral sign of 0.0.
     """
     bipartite_ei, bipartite_sign = _build_interaction_graph(
@@ -243,42 +370,37 @@ def _build_cagra(
     try:
         from cuvs.neighbors import cagra
 
-        emb_np = embeddings.detach().cpu().numpy().astype("float32")
+        cagra_embeddings = _to_cagra_array(embeddings)
         index_params = cagra.IndexParams(
             intermediate_graph_degree=config.cagra_initial_degree,
             graph_degree=config.cagra_out_degree,
+            metric=config.cagra_metric,
         )
-        index = cagra.build(index_params, emb_np)
+        index = cagra.build(index_params, cagra_embeddings)
 
-        search_params = cagra.SearchParams(team_size=config.cagra_team_size)
+        search_params = cagra.SearchParams(
+            team_size=config.cagra_team_size,
+            rand_xor_mask=int(config.seed),
+            itopk_size=config.cagra_itopk_size,
+        )
         _, neighbors = cagra.search(
             search_params,
             index,
-            emb_np,
-            k=config.knn_k,
+            cagra_embeddings,
+            k=config.cagra_k,
         )
 
-        neighbors_np = neighbors.copy_to_host()
+        neighbors_t = _cagra_neighbors_to_tensor(neighbors)
         n_nodes = embeddings.shape[0]
-        k = neighbors_np.shape[1]
-        src = np.repeat(np.arange(n_nodes), k)
-        dst = neighbors_np.ravel()
-        valid = (src != dst) & (dst >= 0) & (dst < n_nodes)
-        cagra_edges = torch.tensor(np.stack([src[valid], dst[valid]]), dtype=torch.long)
-        cagra_sign = torch.zeros(cagra_edges.size(1))
+        cagra_edges = _build_cagra_edge_index(neighbors_t, n_nodes)
+        cagra_edges, cagra_sign = _make_undirected_zero_signed_edges(cagra_edges)
 
         combined_ei = torch.cat([bipartite_ei, cagra_edges], dim=1)
         combined_sign = torch.cat([bipartite_sign, cagra_sign])
         edge_index, edge_sign = coalesce(combined_ei, combined_sign)
         return edge_index, edge_sign
 
-    except ImportError:
-        # Fallback to kNN if cuvs not available
-        return _build_knn(
-            user_nodes,
-            item_nodes,
-            train_mask,
-            all_signs,
-            embeddings,
-            config.knn_k,
-        )
+    except (ImportError, Exception) as exc:
+        msg = f"CAGRA graph construction unavailable; using train-interaction graph: {exc}" if isinstance(exc, ImportError) else f"CAGRA graph construction failed; using train-interaction graph: {exc}"
+        warnings.warn(msg, RuntimeWarning, stacklevel=2)
+        return bipartite_ei, bipartite_sign

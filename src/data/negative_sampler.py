@@ -26,9 +26,7 @@ class NegativeSampler:
 
         # Pre-compute popularity sampling weights
         pop = popularity.float()
-        self._pop_weights = (
-            pop / pop.sum() if pop.sum() > 0 else torch.ones(n_items) / n_items
-        )
+        self._pop_weights = pop / pop.sum() if pop.sum() > 0 else torch.ones(n_items) / n_items
 
     def sample(
         self,
@@ -47,13 +45,10 @@ class NegativeSampler:
 
         Returns:
             (B, n_negatives) tensor of negative item IDs.
+
         """
         if device is None:
-            device = (
-                positive_items.device
-                if positive_items is not None
-                else ("cuda" if torch.cuda.is_available() else "cpu")
-            )
+            device = positive_items.device if positive_items is not None else ("cuda" if torch.cuda.is_available() else "cpu")
 
         total = batch_size * self.n_negatives
         n_hard = int(total * self.hard_negative_ratio)

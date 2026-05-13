@@ -12,6 +12,7 @@ datasets such as MovieLens-20M where a full k-hop extraction from a batch of
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import torch
@@ -33,56 +34,65 @@ class SubgraphBatch:
     batch_pos_local: torch.Tensor  # local indices for batch pos items
     batch_neg_local: torch.Tensor  # local indices for batch neg items
 
+    def _map_tensors(
+        self,
+        fn: Callable[[torch.Tensor | None], torch.Tensor | None],
+    ) -> SubgraphBatch:
+        """Return a new SubgraphBatch with *fn* applied to every tensor field.
+
+        Args:
+            fn: Callable applied to each ``Tensor | None`` field; scalar fields
+                are forwarded unchanged.
+
+        Returns:
+            New SubgraphBatch with transformed tensors.
+
+        """
+        return SubgraphBatch(
+            sub_edge_index=fn(self.sub_edge_index),  # type: ignore[arg-type]
+            sub_edge_sign=fn(self.sub_edge_sign),
+            sub_edge_norm=fn(self.sub_edge_norm),
+            user_global_ids=fn(self.user_global_ids),  # type: ignore[arg-type]
+            item_global_ids=fn(self.item_global_ids),  # type: ignore[arg-type]
+            n_sub_users=self.n_sub_users,
+            n_sub_items=self.n_sub_items,
+            batch_user_local=fn(self.batch_user_local),  # type: ignore[arg-type]
+            batch_pos_local=fn(self.batch_pos_local),  # type: ignore[arg-type]
+            batch_neg_local=fn(self.batch_neg_local),  # type: ignore[arg-type]
+        )
+
     def to(
-        self, device: torch.device | str, non_blocking: bool = False
-    ) -> "SubgraphBatch":
+        self,
+        device: torch.device | str,
+        non_blocking: bool = False,
+    ) -> SubgraphBatch:
         """Return a new SubgraphBatch with all tensors moved to *device*.
 
         Args:
             device: Target device (e.g. ``torch.device("cuda:0")``).
             non_blocking: When True the host→device DMA transfer is issued
                 asynchronously so the caller can overlap it with GPU work.
+
+        Returns:
+            New SubgraphBatch on *device*.
+
         """
-
-        def _t(x: torch.Tensor | None) -> torch.Tensor | None:
-            return x.to(device, non_blocking=non_blocking) if x is not None else None
-
-        return SubgraphBatch(
-            sub_edge_index=_t(self.sub_edge_index),  # type: ignore[arg-type]
-            sub_edge_sign=_t(self.sub_edge_sign),
-            sub_edge_norm=_t(self.sub_edge_norm),
-            user_global_ids=_t(self.user_global_ids),  # type: ignore[arg-type]
-            item_global_ids=_t(self.item_global_ids),  # type: ignore[arg-type]
-            n_sub_users=self.n_sub_users,
-            n_sub_items=self.n_sub_items,
-            batch_user_local=_t(self.batch_user_local),  # type: ignore[arg-type]
-            batch_pos_local=_t(self.batch_pos_local),  # type: ignore[arg-type]
-            batch_neg_local=_t(self.batch_neg_local),  # type: ignore[arg-type]
+        return self._map_tensors(
+            lambda x: x.to(device, non_blocking=non_blocking) if x is not None else None,
         )
 
-    def pin_memory(self) -> "SubgraphBatch":
+    def pin_memory(self) -> SubgraphBatch:
         """Return a new SubgraphBatch with all CPU tensors in pinned memory.
 
         Pinned host memory enables asynchronous DMA transfers when combined
         with ``to(device, non_blocking=True)``, allowing the host→device copy
         to overlap with GPU compute on the previous batch.
+
+        Returns:
+            New SubgraphBatch with pinned tensors.
+
         """
-
-        def _p(x: torch.Tensor | None) -> torch.Tensor | None:
-            return x.pin_memory() if x is not None else None
-
-        return SubgraphBatch(
-            sub_edge_index=_p(self.sub_edge_index),  # type: ignore[arg-type]
-            sub_edge_sign=_p(self.sub_edge_sign),
-            sub_edge_norm=_p(self.sub_edge_norm),
-            user_global_ids=_p(self.user_global_ids),  # type: ignore[arg-type]
-            item_global_ids=_p(self.item_global_ids),  # type: ignore[arg-type]
-            n_sub_users=self.n_sub_users,
-            n_sub_items=self.n_sub_items,
-            batch_user_local=_p(self.batch_user_local),  # type: ignore[arg-type]
-            batch_pos_local=_p(self.batch_pos_local),  # type: ignore[arg-type]
-            batch_neg_local=_p(self.batch_neg_local),  # type: ignore[arg-type]
-        )
+        return self._map_tensors(lambda x: x.pin_memory() if x is not None else None)
 
 
 class SubgraphSampler:
@@ -104,6 +114,7 @@ class SubgraphSampler:
         num_hops: Number of GNN layers (k-hop neighbourhood).
         max_neighbors_per_hop: Per-hop fan-out limits (list of length num_hops).
             None means no fan-out limit (use full k-hop subgraph).
+
     """
 
     def __init__(
@@ -140,15 +151,15 @@ class SubgraphSampler:
         node u (outgoing edges from u in the undirected bipartite graph).
         """
         device = self.edge_index.device
-        E = self.edge_index.size(1)
+        num_edges = self.edge_index.size(1)
         src = self.edge_index[0]
 
         sort_order = src.argsort()
-        self._csr_col = self.edge_index[1][sort_order]  # (E,) destination nodes
-        self._csr_edge_id = sort_order  # (E,) original edge indices
+        self._csr_col = self.edge_index[1][sort_order]  # (num_edges,) destination nodes
+        self._csr_edge_id = sort_order  # (num_edges,) original edge indices
 
         ptr = torch.zeros(self._num_nodes + 1, dtype=torch.long, device=device)
-        ptr.scatter_add_(0, src + 1, torch.ones(E, dtype=torch.long, device=device))
+        ptr.scatter_add_(0, src + 1, torch.ones(num_edges, dtype=torch.long, device=device))
         ptr.cumsum_(0)
         self._csr_ptr = ptr  # (N+1,)
 
@@ -175,6 +186,7 @@ class SubgraphSampler:
             Tuple of ``(sampled_edge_orig_ids, sampled_neighbor_nodes)``
             where both tensors are 1-D and contain the kept edges / the
             neighbour endpoints (with duplicates; deduplicated by the caller).
+
         """
         device = frontier.device
         if frontier.numel() == 0:
@@ -192,18 +204,18 @@ class SubgraphSampler:
 
         a_starts = ptr_start[has_nb]
         a_degrees = degrees[has_nb]
-        F_a = a_starts.size(0)
+        n_active = a_starts.size(0)
         total = int(a_degrees.sum().item())
 
         # Build a flat index of all CSR positions for every active frontier node.
         # flat_e[i] is the i-th edge across all active nodes, ordered by node then offset.
-        cum = torch.zeros(F_a + 1, dtype=torch.long, device=device)
+        cum = torch.zeros(n_active + 1, dtype=torch.long, device=device)
         cum[1:] = a_degrees.cumsum(0)
 
         flat_e = torch.arange(total, device=device)
-        # owner_idx: which active-frontier node (0..F_a-1) owns flat_e[i]
+        # owner_idx: which active-frontier node (0..n_active-1) owns flat_e[i]
         owner_idx = torch.searchsorted(cum[1:].contiguous(), flat_e, right=True)
-        owner_idx.clamp_(max=F_a - 1)
+        owner_idx.clamp_(max=n_active - 1)
         flat_csr = a_starts[owner_idx] + (flat_e - cum[owner_idx])
 
         all_edge_ids = self._csr_edge_id[flat_csr]  # (total,)
@@ -212,14 +224,14 @@ class SubgraphSampler:
         # Fan-out: for nodes with degree > max_nb keep a random max_nb.
         if (a_degrees > max_nb).any():
             rand_keys = torch.rand(total, device=device, generator=generator)
-            overcrowded = a_degrees > max_nb  # (F_a,)
+            overcrowded = a_degrees > max_nb  # (n_active,)
             rand_keys[~overcrowded[owner_idx]] = 2.0  # always keep uncrowded
 
             sort_key = owner_idx.float() * 4.0 + rand_keys
             sorted_idx = sort_key.argsort()
             sorted_owner = owner_idx[sorted_idx]
 
-            grp_cnt = torch.zeros(F_a + 1, dtype=torch.long, device=device)
+            grp_cnt = torch.zeros(n_active + 1, dtype=torch.long, device=device)
             grp_cnt.scatter_add_(
                 0,
                 sorted_owner + 1,
@@ -246,6 +258,7 @@ class SubgraphSampler:
             ``all_nodes`` are global node IDs in discovery order,
             ``sub_ei`` is the (2, E) edge index with local node indices, and
             ``all_edge_orig_ids`` are the original edge indices (for sign lookup).
+
         """
         assert self.max_neighbors_per_hop is not None
         device = seed_nodes.device
@@ -287,7 +300,10 @@ class SubgraphSampler:
 
         # Relabel nodes to local indices
         node_to_local = torch.full(
-            (self._num_nodes,), -1, dtype=torch.long, device=device
+            (self._num_nodes,),
+            -1,
+            dtype=torch.long,
+            device=device,
         )
         node_to_local[all_nodes] = torch.arange(all_nodes.size(0), device=device)
 
@@ -295,7 +311,8 @@ class SubgraphSampler:
             orig_src = self.edge_index[0][all_edge_ids]
             orig_dst = self.edge_index[1][all_edge_ids]
             sub_ei = torch.stack(
-                [node_to_local[orig_src], node_to_local[orig_dst]], dim=0
+                [node_to_local[orig_src], node_to_local[orig_dst]],
+                dim=0,
             )
         else:
             sub_ei = torch.zeros((2, 0), dtype=torch.long, device=device)
@@ -323,6 +340,7 @@ class SubgraphSampler:
 
         Returns:
             SubgraphBatch with users-first layout and local indices.
+
         """
         pos_global = batch_pos_items + self.n_users
         neg_global = batch_neg_items + self.n_users
@@ -334,16 +352,8 @@ class SubgraphSampler:
                 seed_nodes,
                 generator=generator,
             )
-            sub_sign = (
-                self.edge_sign[all_edge_ids]
-                if self.edge_sign is not None and all_edge_ids.numel() > 0
-                else None
-            )
-            sub_norm = (
-                self.edge_norm[all_edge_ids]
-                if self.edge_norm is not None and all_edge_ids.numel() > 0
-                else None
-            )
+            sub_sign = self.edge_sign[all_edge_ids] if self.edge_sign is not None and all_edge_ids.numel() > 0 else None
+            sub_norm = self.edge_norm[all_edge_ids] if self.edge_norm is not None and all_edge_ids.numel() > 0 else None
         else:
             # Full k-hop subgraph (original path, no sampling).
             subset, sub_ei, _mapping, edge_mask = k_hop_subgraph(
@@ -368,6 +378,8 @@ class SubgraphSampler:
 
         user_global_ids = subset[user_positions]
         item_global_ids = subset[item_positions] - self.n_users
+        sorted_user_ids, user_sort_idx = self._sorted_local_index(user_global_ids)
+        sorted_item_ids, item_sort_idx = self._sorted_local_index(item_global_ids)
 
         return SubgraphBatch(
             sub_edge_index=sub_ei_reordered,
@@ -377,21 +389,59 @@ class SubgraphSampler:
             item_global_ids=item_global_ids,
             n_sub_users=user_positions.size(0),
             n_sub_items=item_positions.size(0),
-            batch_user_local=self._map_to_local(batch_users, user_global_ids),
-            batch_pos_local=self._map_to_local(batch_pos_items, item_global_ids),
-            batch_neg_local=self._map_to_local(batch_neg_items, item_global_ids),
+            batch_user_local=self._map_to_local(
+                batch_users,
+                sorted_ids=sorted_user_ids,
+                sort_idx=user_sort_idx,
+            ),
+            batch_pos_local=self._map_to_local(
+                batch_pos_items,
+                sorted_ids=sorted_item_ids,
+                sort_idx=item_sort_idx,
+            ),
+            batch_neg_local=self._map_to_local(
+                batch_neg_items,
+                sorted_ids=sorted_item_ids,
+                sort_idx=item_sort_idx,
+            ),
         )
+
+    @staticmethod
+    def _sorted_local_index(
+        subgraph_global_ids: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return one reusable sorted index for a subgraph-local ID space.
+
+        Args:
+            subgraph_global_ids: Global IDs present in one local node partition.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: Sorted IDs and the permutation back
+            to local-order indices.
+
+        """
+        return subgraph_global_ids.sort()
 
     @staticmethod
     def _map_to_local(
         global_ids: torch.Tensor,
-        subgraph_global_ids: torch.Tensor,
+        *,
+        sorted_ids: torch.Tensor,
+        sort_idx: torch.Tensor,
     ) -> torch.Tensor:
         """Map global IDs to local indices within the subgraph.
 
         Uses a searchsorted-based approach for efficiency.
+
+        Args:
+            global_ids: Global IDs to remap.
+            sorted_ids: Sorted subgraph IDs from ``_sorted_local_index``.
+            sort_idx: Permutation from sorted order back to local order.
+
+        Returns:
+            torch.Tensor: Local indices for ``global_ids``.
+
         """
-        sorted_ids, sort_idx = subgraph_global_ids.sort()
         positions = torch.searchsorted(sorted_ids, global_ids)
         positions = positions.clamp(max=sort_idx.size(0) - 1)
         return sort_idx[positions]

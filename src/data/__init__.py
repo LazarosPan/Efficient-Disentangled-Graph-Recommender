@@ -1,11 +1,13 @@
 from .canonical import CanonicalInteractions
 
+# Heavy modules (graph_builder, negative_sampler, subgraph_sampler) are
+# imported lazily via __getattr__ to avoid loading PyG/CUDA at package import.
 __all__ = [
     "CanonicalInteractions",
-    "build_graph",
     "NegativeSampler",
-    "SubgraphSampler",
     "SubgraphBatch",
+    "SubgraphSampler",
+    "build_graph",
 ]
 
 
@@ -21,7 +23,5 @@ def __getattr__(name: str):
     if name in {"SubgraphSampler", "SubgraphBatch"}:
         from .subgraph_sampler import SubgraphBatch, SubgraphSampler
 
-        return {"SubgraphSampler": SubgraphSampler, "SubgraphBatch": SubgraphBatch}[
-            name
-        ]
+        return {"SubgraphSampler": SubgraphSampler, "SubgraphBatch": SubgraphBatch}[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
