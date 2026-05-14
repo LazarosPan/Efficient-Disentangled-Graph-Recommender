@@ -718,10 +718,7 @@ def _dataset_note(name: str, requirements: dict[str, Any]) -> str:
             "Likely off-scope for phase 1 because the structure is not a "
             "simple user-item recommendation table."
         )
-    return (
-        "Potentially usable if transformed into the unified U-CaGNN "
-        "ingestion contract."
-    )
+    return "Potentially usable if transformed into the unified U-CaGNN ingestion contract."
 
 
 def summarize_dataset(name: str) -> dict[str, Any]:

@@ -16,9 +16,9 @@ class ScoringModule(nn.Module):
     """Compute fused recommendation scores from propagated embeddings.
 
     The mainline path combines interest, conformity, and popularity scores into a
-    fused ranking score. Counterfactual scores remain available for diagnostics
-    and evaluation-only interventions, but they are no longer part of the default
-    score mixture.
+    fused ranking score. A branch-contrast diagnostic remains available for
+    diagnostics, but it is no longer framed as a counterfactual quantity or part
+    of the default score mixture.
     """
 
     def __init__(self, config: UCaGNNConfig) -> None:
@@ -347,13 +347,13 @@ class ScoringModule(nn.Module):
             pairwise: ``True`` → pairwise (B,) path; ``False`` → matrix (B, I) path.
 
         Returns:
-            Dict with interest, conformity, popularity, counterfactual, gate_weights,
-            and fused final scores.
+            Dict with interest, conformity, popularity, branch contrast,
+            gate_weights, and fused final scores.
 
         """
-        cf_score = (
+        branch_contrast_score = (
             (interest_score - conformity_score)
-            if self.config.use_counterfactual
+            if self.config.use_dual_branch
             else torch.zeros_like(interest_score)
         )
         if pairwise:
@@ -374,7 +374,7 @@ class ScoringModule(nn.Module):
             "interest_score": interest_score,
             "conformity_score": conformity_score,
             "popularity_score": pop_for_dict,
-            "counterfactual_score": cf_score,
+            "branch_contrast_score": branch_contrast_score,
             "gate_weights": gate_weights,
             "final_score": final_score,
         }
@@ -398,7 +398,7 @@ class ScoringModule(nn.Module):
                 mode.
 
         Returns:
-            Dict with interest, conformity, popularity, counterfactual, gate,
+            Dict with interest, conformity, popularity, branch contrast, gate,
             and fused final scores.
 
         """

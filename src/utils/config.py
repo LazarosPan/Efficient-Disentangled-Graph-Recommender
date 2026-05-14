@@ -42,7 +42,6 @@ PresetOverrides = dict[str, PresetOverrideValue]
 
 _NON_CAUSAL_PRESET_OVERRIDES: PresetOverrides = {
     "use_sign_aware": False,
-    "use_counterfactual": False,
     "use_ipw": False,
     "use_popularity_head": False,
     "use_popularity_emb": False,
@@ -79,7 +78,6 @@ _DICE_LIKE_PRESET_OVERRIDES: PresetOverrides = _NON_CAUSAL_PRESET_OVERRIDES | {
 _FULL_PRESET_OVERRIDES: PresetOverrides = {
     "use_dual_branch": True,
     "use_sign_aware": True,
-    "use_counterfactual": True,
     "use_ipw": True,
     "use_popularity_head": True,
     "use_popularity_emb": True,
@@ -114,7 +112,6 @@ class UCaGNNConfig:
     # ── Architecture toggles ─────────────────────────────────────────────
     use_dual_branch: bool = True
     use_sign_aware: bool = True
-    use_counterfactual: bool = True
     use_ipw: bool = True
     use_popularity_head: bool = True
     use_popularity_emb: bool = True

@@ -331,12 +331,9 @@ def build_benchmark_parser() -> argparse.ArgumentParser:
         no_mlflow_help="Disable MLflow tracking for all benchmark runs",
         tracking_uri_help="Override MLflow tracking URI for all benchmark runs",
         experiment_name_help="MLflow experiment name for benchmark runs",
-        batch_id_help=(
-            "Optional batch identifier for grouping and resuming benchmark runs"
-        ),
+        batch_id_help=("Optional batch identifier for grouping and resuming benchmark runs"),
         resume_batch_help=(
-            "Skip benchmark items already recorded with a terminal status "
-            "for this batch id"
+            "Skip benchmark items already recorded with a terminal status for this batch id"
         ),
         dry_run_help="Print plan without running",
         device_default="cuda",
@@ -384,8 +381,8 @@ def build_formal_run_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Optional semantic formal profile slug. Supported profiles: "
-        + ", ".join(profiles)
-        + "."
+            + ", ".join(profiles)
+            + "."
         ),
     )
     parser.add_argument(
@@ -452,10 +449,7 @@ def build_formal_run_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--overwrite-checkpoint",
         action="store_true",
-        help=(
-            "Delete any existing checkpoint for each resolved run and "
-            "force fresh training."
-        ),
+        help=("Delete any existing checkpoint for each resolved run and force fresh training."),
     )
     return parser
 
@@ -497,8 +491,7 @@ def build_ablation_parser() -> argparse.ArgumentParser:
         experiment_name_help="MLflow experiment name for ablation runs",
         batch_id_help="Optional batch identifier for grouping and resuming ablation runs",
         resume_batch_help=(
-            "Skip ablation variants already recorded with a terminal status "
-            "for this batch id"
+            "Skip ablation variants already recorded with a terminal status for this batch id"
         ),
         dry_run_help="Print plan without running",
         device_default="cuda",

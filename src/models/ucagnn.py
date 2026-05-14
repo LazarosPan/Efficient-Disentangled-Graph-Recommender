@@ -153,7 +153,8 @@ class UCaGNN(nn.Module):
 
         Returns:
             Dict containing:
-            - pos_scores: dict with interest/conformity/cf/final scores for positives
+            - pos_scores: dict with interest/conformity/branch-contrast/final scores
+              for positives
             - neg_scores: dict with scores for negatives
             - embeddings: dict of initial embeddings (pre-GNN)
             - propagated: dict of propagated embeddings (post-GNN)

@@ -692,7 +692,6 @@ class CausalTrainingContractTests(unittest.TestCase):
         config.use_torch_compile = False
         config.use_ipw = False
         config.use_dual_branch = True
-        config.use_counterfactual = True
         config.use_popularity_head = False
         config.train_scoring_mode = "interest_only"
         return config
@@ -741,7 +740,6 @@ class CausalTrainingContractTests(unittest.TestCase):
         config = UCaGNNConfig(device="cuda", embed_dim=2)
         config.use_dual_branch = True
         config.use_ipw = False
-        config.use_counterfactual = True
         config.use_popularity_head = False
         config.scoring_weight_mode = "fixed"
         model = UCaGNN(n_users=1, n_items=2, config=config)
@@ -805,8 +803,8 @@ class CausalTrainingContractTests(unittest.TestCase):
             places=6,
         )
 
-    def test_scoring_exports_popularity_score_and_simplex_gate(self) -> None:
-        """The fused scorer should expose popularity scores and simplex gate weights."""
+    def test_scoring_exports_popularity_score_gate_and_branch_contrast(self) -> None:
+        """The fused scorer should expose popularity scores, simplex gates, and branch contrast."""
         config = UCaGNNConfig(device="cuda", embed_dim=2).preset_full()
         model = UCaGNN(
             n_users=1,
@@ -834,8 +832,9 @@ class CausalTrainingContractTests(unittest.TestCase):
         self.assertIn("gate_weights", scores)
         self.assertEqual(tuple(scores["gate_weights"].shape), (1, 3))
         self.assertAlmostEqual(scores["gate_weights"].sum().item(), 1.0, places=6)
+        self.assertIn("branch_contrast_score", scores)
         self.assertAlmostEqual(
-            scores["counterfactual_score"].item(),
+            scores["branch_contrast_score"].item(),
             scores["interest_score"].item() - scores["conformity_score"].item(),
             places=6,
         )

@@ -682,14 +682,13 @@ def describe_feature_support(dataset_name: str, aspect: str) -> str | None:
             f"{aspect_label} from {summarize_registered_paths(thesis_default_sources)}"
         )
         if optional_only_sources:
-            support += (
-                "; additional all_optional-only sources: "
-                + summarize_registered_paths(optional_only_sources)
+            support += "; additional all_optional-only sources: " + summarize_registered_paths(
+                optional_only_sources
             )
         return support
     if all_optional_sources:
         return (
-            "available only under all_optional in {aspect_label} from "
+            f"available only under all_optional in {aspect_label} from "
             f"{summarize_registered_paths(all_optional_sources)}"
         )
     return None
