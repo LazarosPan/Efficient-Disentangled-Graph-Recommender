@@ -321,7 +321,10 @@ class ScoringModule(nn.Module):
         scoring_mode: str = "default",
     ) -> dict[str, float]:
         weights = self.get_score_weight_tensor(scoring_mode=scoring_mode).detach().cpu().tolist()
-        return {f"score_weight_{name}": float(weight) for name, weight in zip(self.component_names, weights, strict=True)}
+        return {
+            f"score_weight_{name}": float(weight)
+            for name, weight in zip(self.component_names, weights, strict=True)
+        }
 
     def _build_score_dict(
         self,
@@ -348,12 +351,24 @@ class ScoringModule(nn.Module):
             and fused final scores.
 
         """
-        cf_score = (interest_score - conformity_score) if self.config.use_counterfactual else torch.zeros_like(interest_score)
+        cf_score = (
+            (interest_score - conformity_score)
+            if self.config.use_counterfactual
+            else torch.zeros_like(interest_score)
+        )
         if pairwise:
-            final_score = gate_weights[:, 0] * interest_score + gate_weights[:, 1] * conformity_score + gate_weights[:, 2] * popularity
+            final_score = (
+                gate_weights[:, 0] * interest_score
+                + gate_weights[:, 1] * conformity_score
+                + gate_weights[:, 2] * popularity
+            )
             pop_for_dict = popularity
         else:
-            final_score = gate_weights[:, 0:1] * interest_score + gate_weights[:, 1:2] * conformity_score + gate_weights[:, 2:3] * popularity.unsqueeze(0)
+            final_score = (
+                gate_weights[:, 0:1] * interest_score
+                + gate_weights[:, 1:2] * conformity_score
+                + gate_weights[:, 2:3] * popularity.unsqueeze(0)
+            )
             pop_for_dict = popularity.unsqueeze(0).expand_as(interest_score)
         return {
             "interest_score": interest_score,

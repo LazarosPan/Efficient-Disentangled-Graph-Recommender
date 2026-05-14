@@ -311,7 +311,9 @@ def inspect_text_file(
         parser = "normalized_double_colon"
     elif detected_delimiter == " ":
         # Normalise runs of whitespace to a single tab so polars can parse it.
-        normalized_ws = "\n".join("\t".join(token for token in line.split()) for line in sample.splitlines())
+        normalized_ws = "\n".join(
+            "\t".join(token for token in line.split()) for line in sample.splitlines()
+        )
         frame = pl.read_csv(
             normalized_ws.encode(),
             separator="\t",
@@ -379,7 +381,9 @@ def inspect_interaction_list_file(
         "schema_source": "interaction_list",
         "columns": ["user_id", "item_ids..."],
         "dtypes": {"user_id": "Int64", "item_ids...": "list[Int64]"},
-        "avg_items_per_preview_row": float(np.mean(interaction_counts)) if interaction_counts else 0.0,
+        "avg_items_per_preview_row": float(np.mean(interaction_counts))
+        if interaction_counts
+        else 0.0,
         "sample_rows": rows,
     }
 
@@ -453,7 +457,10 @@ def inspect_mat_file(path: str | Path) -> dict[str, Any]:
         return {
             "path": str(file_path.relative_to(REPO_ROOT)),
             "type": "mat",
-            "variables": [{"name": name, "shape": list(shape), "dtype": dtype} for name, shape, dtype in whosmat(file_path)],
+            "variables": [
+                {"name": name, "shape": list(shape), "dtype": dtype}
+                for name, shape, dtype in whosmat(file_path)
+            ],
         }
     except Exception as exc:
         return {
@@ -502,7 +509,11 @@ def inspect_file(path: str | Path, **kwargs: Any) -> dict[str, Any]:
     if suffix == ".json":
         return inspect_json_file(file_path)
     if suffix == ".dat":
-        dat_kwargs = {key: value for key, value in kwargs.items() if key in {"separator", "n_rows", "column_names", "schema_overrides", "encoding"}}
+        dat_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key in {"separator", "n_rows", "column_names", "schema_overrides", "encoding"}
+        }
         return inspect_dat_file(file_path, **dat_kwargs)
     return inspect_text_file(file_path, **kwargs)
 
@@ -556,7 +567,10 @@ def inspect_dataset_file(
 def schema_overview(inspection: dict[str, Any]) -> dict[str, Any]:
     """Build a compact schema summary from a file inspection payload."""
     columns = [str(column).replace("\n", " ").strip() for column in inspection.get("columns", [])]
-    dtypes = {str(column).replace("\n", " ").strip(): str(dtype) for column, dtype in inspection.get("dtypes", {}).items()}
+    dtypes = {
+        str(column).replace("\n", " ").strip(): str(dtype)
+        for column, dtype in inspection.get("dtypes", {}).items()
+    }
     return {
         "schema_type": inspection.get("type", "unknown"),
         "column_count": len(columns) if columns else None,
@@ -636,10 +650,21 @@ def _derive_ucagnn_requirements(summary: dict[str, Any]) -> dict[str, Any]:
             "social_network",
         )
     )
-    multimodal_support = any(marker in lower_columns for marker in ["feat", "caption", "genre", "category", "author", "music_id"]) or has_feature_files or summary["kind"] in {"graph_binary", "heterogeneous_txt_npz"}
+    multimodal_support = (
+        any(
+            marker in lower_columns
+            for marker in ["feat", "caption", "genre", "category", "author", "music_id"]
+        )
+        or has_feature_files
+        or summary["kind"] in {"graph_binary", "heterogeneous_txt_npz"}
+    )
 
-    supports_predefined_split = any(file_name.startswith(("train", "valid", "test")) for file_name in summary["present_files"])
-    supports_pairwise_triplets = fields["user_field"] is not None and fields["item_field"] is not None
+    supports_predefined_split = any(
+        file_name.startswith(("train", "valid", "test")) for file_name in summary["present_files"]
+    )
+    supports_pairwise_triplets = (
+        fields["user_field"] is not None and fields["item_field"] is not None
+    )
 
     preprocessing_cost = "low"
     if summary["kind"] in {"heterogeneous_txt_npz", "graph_binary", "mat_only"}:
@@ -665,18 +690,38 @@ def _derive_ucagnn_requirements(summary: dict[str, Any]) -> dict[str, Any]:
 
 def _dataset_note(name: str, requirements: dict[str, Any]) -> str:
     if name == "MovieLens1M":
-        return "Strong baseline for fairness, timestamps, and rating-derived positive-negative splits."
+        return (
+            "Strong baseline for fairness, timestamps, and rating-derived positive-negative splits."
+        )
     if name == "Taobao":
-        return "Large-scale multi-behavior dataset; good for implicit sign derivation and scaling experiments."
+        return (
+            "Large-scale multi-behavior dataset; good for implicit sign derivation "
+            "and scaling experiments."
+        )
     if name == "KuaiRec_v2":
-        return "Strong candidate for richer feedback and side features; likely easiest Kuai dataset to adapt to U-CaGNN."
+        return (
+            "Strong candidate for richer feedback and side features; likely "
+            "easiest Kuai dataset to adapt to U-CaGNN."
+        )
     if name == "KuaiRand-1K":
-        return "Most valuable for randomized exposure, but heavier than KuaiRec because of sequential logs and large feature tables."
+        return (
+            "Most valuable for randomized exposure, but heavier than KuaiRec "
+            "because of sequential logs and large feature tables."
+        )
     if name == "KuaiSAR_v2":
-        return "Rich dataset, but search and recommendation are mixed, which makes it less aligned with the first U-CaGNN benchmark phase."
+        return (
+            "Rich dataset, but search and recommendation are mixed, which "
+            "makes it less aligned with the first U-CaGNN benchmark phase."
+        )
     if requirements["preprocessing_cost"] == "high":
-        return "Likely off-scope for phase 1 because the structure is not a simple user-item recommendation table."
-    return "Potentially usable if transformed into the unified U-CaGNN ingestion contract."
+        return (
+            "Likely off-scope for phase 1 because the structure is not a "
+            "simple user-item recommendation table."
+        )
+    return (
+        "Potentially usable if transformed into the unified U-CaGNN "
+        "ingestion contract."
+    )
 
 
 def summarize_dataset(name: str) -> dict[str, Any]:

@@ -159,7 +159,11 @@ class ExperimentLogger:
             if current_columns == expected_columns and fk_targets == expected_fks:
                 return
             raise RuntimeError(
-                f"{table_name} must already use the current schema. Expected columns {expected_columns} with foreign keys {sorted(expected_fks)}, found columns {current_columns} with foreign keys {sorted(fk_targets)}.",
+                (
+                    f"{table_name} must already use the current schema. Expected "
+                    f"columns {expected_columns} with foreign keys {sorted(expected_fks)}, "
+                    f"found columns {current_columns} with foreign keys {sorted(fk_targets)}."
+                ),
             )
         if current_columns == expected_columns:
             return
@@ -169,7 +173,10 @@ class ExperimentLogger:
             if current_columns == expected_columns:
                 return
         raise RuntimeError(
-            f"{table_name} must already use the current schema. Expected columns {expected_columns}, found {current_columns}.",
+            (
+                f"{table_name} must already use the current schema. Expected "
+                f"columns {expected_columns}, found {current_columns}."
+            ),
         )
 
     def _table_exists(self, table_name: str) -> bool:
@@ -455,15 +462,18 @@ class ExperimentLogger:
                 s.avg_epoch_time_s,
                 s.peak_vram_mb,
                 s.test_ndcg_20 - LAG(s.test_ndcg_20) OVER (
-                    PARTITION BY s.dataset, s.preset, COALESCE(s.intervention, ''), s.training_hash, s.evaluation_hash
+                    PARTITION BY s.dataset, s.preset, COALESCE(s.intervention, ''),
+                    s.training_hash, s.evaluation_hash
                     ORDER BY s.updated_at, s.id
                 ) AS delta_test_ndcg_20,
                 s.test_recall_20 - LAG(s.test_recall_20) OVER (
-                    PARTITION BY s.dataset, s.preset, COALESCE(s.intervention, ''), s.training_hash, s.evaluation_hash
+                    PARTITION BY s.dataset, s.preset, COALESCE(s.intervention, ''),
+                    s.training_hash, s.evaluation_hash
                     ORDER BY s.updated_at, s.id
                 ) AS delta_test_recall_20,
                 s.test_average_popularity_20 - LAG(s.test_average_popularity_20) OVER (
-                    PARTITION BY s.dataset, s.preset, COALESCE(s.intervention, ''), s.training_hash, s.evaluation_hash
+                    PARTITION BY s.dataset, s.preset, COALESCE(s.intervention, ''),
+                    s.training_hash, s.evaluation_hash
                     ORDER BY s.updated_at, s.id
                 ) AS delta_test_average_popularity_20
             FROM experiment_summary s
@@ -589,7 +599,10 @@ class ExperimentLogger:
 
         """
         self.conn.execute(
-            "UPDATE experiments SET status = ?, failure_reason = ?, oom_flag = COALESCE(?, oom_flag), updated_at = ? WHERE id = ?",
+            (
+                "UPDATE experiments SET status = ?, failure_reason = ?, "
+                "oom_flag = COALESCE(?, oom_flag), updated_at = ? WHERE id = ?"
+            ),
             (
                 status,
                 failure_reason,
@@ -632,7 +645,11 @@ class ExperimentLogger:
                 where_clauses.append("config_json LIKE ?")
                 params.append(f'%"{field_name}": {json.dumps(value)}%')
 
-        sql = "SELECT * FROM experiments WHERE " + " AND ".join(where_clauses) + " ORDER BY id DESC LIMIT 1"
+        sql = (
+            "SELECT * FROM experiments WHERE "
+            + " AND ".join(where_clauses)
+            + " ORDER BY id DESC LIMIT 1"
+        )
         return self.conn.execute(sql, params).fetchone()
 
     def get_metrics_for_split(
@@ -673,7 +690,11 @@ class ExperimentLogger:
         per-batch StageMetrics into one row per (epoch, stage).
         """
         self.conn.execute(
-            "INSERT INTO profiling (experiment_id, epoch, stage, duration_ms, vram_before_mb, vram_after_mb, vram_peak_mb, stage_call_count, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "INSERT INTO profiling (experiment_id, epoch, stage, duration_ms, "
+                "vram_before_mb, vram_after_mb, vram_peak_mb, stage_call_count, "
+                "timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ),
             (
                 exp_id,
                 epoch,
@@ -698,10 +719,16 @@ class ExperimentLogger:
         """Log a single metric value."""
         if not math.isfinite(float(value)):
             raise ValueError(
-                f"Cannot log non-finite metric value for experiment_id={exp_id}, split={split}, epoch={epoch}, metric={metric_name}: {value!r}",
+                (
+                    f"Cannot log non-finite metric value for experiment_id={exp_id}, "
+                    f"split={split}, epoch={epoch}, metric={metric_name}: {value!r}"
+                ),
             )
         self.conn.execute(
-            "INSERT INTO metrics (experiment_id, epoch, split, metric_name, metric_value, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "INSERT INTO metrics (experiment_id, epoch, split, metric_name, "
+                "metric_value, timestamp) VALUES (?, ?, ?, ?, ?, ?)"
+            ),
             (
                 exp_id,
                 epoch,
@@ -755,19 +782,39 @@ class ExperimentLogger:
             stage_summary["stage_call_count"] = int(stage_summary["stage_call_count"]) + 1
 
         for stage_name, stage_values in sorted(aggregated_stages.items()):
-            vram_before_values = [float(value) for value in stage_values["vram_before_mb"] if value is not None]
-            vram_after_values = [float(value) for value in stage_values["vram_after_mb"] if value is not None]
+            vram_before_values = [
+                float(value) for value in stage_values["vram_before_mb"] if value is not None
+            ]
+            vram_after_values = [
+                float(value) for value in stage_values["vram_after_mb"] if value is not None
+            ]
             self.conn.execute(
-                "INSERT INTO profiling (experiment_id, epoch, stage, duration_ms, vram_before_mb, vram_after_mb, vram_peak_mb, stage_call_count, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "INSERT INTO profiling (experiment_id, epoch, stage, duration_ms, "
+                    "vram_before_mb, vram_after_mb, vram_peak_mb, stage_call_count, "
+                    "timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                ),
                 (
                     exp_id,
                     epoch,
                     stage_name,
                     float(stage_values["duration_ms"]),
-                    (sum(vram_before_values) / len(vram_before_values) if vram_before_values else None),
-                    (sum(vram_after_values) / len(vram_after_values) if vram_after_values else None),
+                    (
+                        sum(vram_before_values) / len(vram_before_values)
+                        if vram_before_values
+                        else None
+                    ),
+                    (
+                        sum(vram_after_values) / len(vram_after_values)
+                        if vram_after_values
+                        else None
+                    ),
                     max(
-                        (float(value) for value in stage_values["vram_peak_mb"] if value is not None),
+                        (
+                            float(value)
+                            for value in stage_values["vram_peak_mb"]
+                            if value is not None
+                        ),
                         default=None,
                     ),
                     int(stage_values["stage_call_count"]),

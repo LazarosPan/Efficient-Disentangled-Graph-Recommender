@@ -672,15 +672,26 @@ def describe_feature_support(dataset_name: str, aspect: str) -> str | None:
         dataset_name,
         aspect,
     )
-    optional_only_sources = tuple(source for source in all_optional_sources if source not in thesis_default_sources)
+    optional_only_sources = tuple(
+        source for source in all_optional_sources if source not in thesis_default_sources
+    )
     aspect_label = f"canonical {aspect}"
     if thesis_default_sources:
-        support = f"thesis-default {aspect_label} from {summarize_registered_paths(thesis_default_sources)}"
+        support = (
+            "thesis-default "
+            f"{aspect_label} from {summarize_registered_paths(thesis_default_sources)}"
+        )
         if optional_only_sources:
-            support += "; additional all_optional-only sources: " + summarize_registered_paths(optional_only_sources)
+            support += (
+                "; additional all_optional-only sources: "
+                + summarize_registered_paths(optional_only_sources)
+            )
         return support
     if all_optional_sources:
-        return f"available only under all_optional in {aspect_label} from {summarize_registered_paths(all_optional_sources)}"
+        return (
+            "available only under all_optional in {aspect_label} from "
+            f"{summarize_registered_paths(all_optional_sources)}"
+        )
     return None
 
 
@@ -1008,10 +1019,15 @@ def build_causal_audit(record: DatasetRecord) -> dict[str, Any]:
 
     if RANDOMIZATION_MARKERS & metadata_columns:
         priority = "highest"
-        next_step = "audit randomized vs non-random exposure slices before adding new causal objectives"
+        next_step = (
+            "audit randomized vs non-random exposure slices before adding new causal objectives"
+        )
     elif aspects["user_features"] or aspects["item_features"]:
         priority = "high"
-        next_step = "separate pre-treatment descriptors from post-treatment aggregates and promote only safe features"
+        next_step = (
+            "separate pre-treatment descriptors from post-treatment aggregates "
+            "and promote only safe features"
+        )
     elif coverage.get("loader_name"):
         priority = "medium"
         next_step = "use as an interaction-only baseline unless new covariates are engineered"
@@ -1238,7 +1254,12 @@ def infer_causal_role(
         "long_view",
     }:
         return "post_treatment"
-    if normalized.endswith("_cnt") or normalized.endswith("_user_num") or normalized.endswith("_duration") or normalized.endswith("_progress"):
+    if (
+        normalized.endswith("_cnt")
+        or normalized.endswith("_user_num")
+        or normalized.endswith("_duration")
+        or normalized.endswith("_progress")
+    ):
         return "post_treatment"
     if normalized.startswith("onehot_feat") or normalized.endswith("_range"):
         return "pre_treatment"
@@ -1532,7 +1553,9 @@ def infer_graph_info(data_obj: Any, source_path: str) -> dict[str, Any]:
         # homogeneous Data objects store them as attributes
         if hasattr(obj, "__dict__"):
             for k, v in obj.__dict__.items():
-                if isinstance(v, torch.Tensor) and any(prefix in k for prefix in ["train", "val", "test"]):
+                if isinstance(v, torch.Tensor) and any(
+                    prefix in k for prefix in ["train", "val", "test"]
+                ):
                     splits[k] = list(v.size())
         # hetero stores have dict-like semantics
         if hasattr(obj, "node_types") and hasattr(obj, "edge_types"):
@@ -1540,7 +1563,9 @@ def infer_graph_info(data_obj: Any, source_path: str) -> dict[str, Any]:
                 getattr(obj, "edge_stores", []),
             ):
                 for k, v in store.items():
-                    if isinstance(v, torch.Tensor) and any(prefix in k for prefix in ["train", "val", "test"]):
+                    if isinstance(v, torch.Tensor) and any(
+                        prefix in k for prefix in ["train", "val", "test"]
+                    ):
                         keyname = f"{store._key}.{k}"
                         splits[keyname] = list(v.size())
         return splits
@@ -1585,7 +1610,9 @@ def infer_graph_info(data_obj: Any, source_path: str) -> dict[str, Any]:
             "node_counts": node_counts,
             "edge_counts": edge_counts,
             "node_feature_dims": node_features,
-            "edge_layouts": "sparse" if any(hasattr(data_obj[et], "adj_t") for et in edge_types) else "dense",
+            "edge_layouts": "sparse"
+            if any(hasattr(data_obj[et], "adj_t") for et in edge_types)
+            else "dense",
         }
         if splits_info:
             result["splits"] = splits_info
@@ -1688,7 +1715,11 @@ def scan_dataset(dataset_root: Path) -> DatasetRecord:
 
 def schema_file_records(record: DatasetRecord) -> list[FileRecord]:
     """Return files that expose a structured schema."""
-    return [file_record for file_record in record.file_records if (file_record.schema or {}).get("column_count") is not None]
+    return [
+        file_record
+        for file_record in record.file_records
+        if (file_record.schema or {}).get("column_count") is not None
+    ]
 
 
 def format_delimiter(delimiter: Any) -> str:
@@ -1728,12 +1759,19 @@ def format_schema_pairs(
 
 def count_schema_sources(record: DatasetRecord, *sources: str) -> int:
     """Count structured files that use the provided schema sources."""
-    return sum(1 for file_record in schema_file_records(record) if (file_record.schema or {}).get("schema_source") in sources)
+    return sum(
+        1
+        for file_record in schema_file_records(record)
+        if (file_record.schema or {}).get("schema_source") in sources
+    )
 
 
 def max_schema_columns(record: DatasetRecord) -> int | None:
     """Return the widest structured schema found in a dataset."""
-    column_counts = [int((file_record.schema or {}).get("column_count") or 0) for file_record in schema_file_records(record)]
+    column_counts = [
+        int((file_record.schema or {}).get("column_count") or 0)
+        for file_record in schema_file_records(record)
+    ]
     return max(column_counts) if column_counts else None
 
 

@@ -117,7 +117,11 @@ def build_run_experiment_parser() -> argparse.ArgumentParser:
         "--feature-policy",
         choices=["thesis_default", "all_optional"],
         default=None,
-        help=("Feature-loading policy: thesis_default enforces the safe thesis allowlist; all_optional restores the full optional side-feature scans."),
+        help=(
+            "Feature-loading policy: thesis_default enforces the safe thesis "
+            "allowlist; all_optional restores the full optional side-feature "
+            "scans."
+        ),
     )
 
     dg = parser.add_argument_group("data and graph")
@@ -233,7 +237,11 @@ def build_benchmark_parser() -> argparse.ArgumentParser:
     mx.add_argument(
         "--datasets",
         default="small,medium",
-        help=(f"Comma-separated dataset tiers to run (choices: {', '.join(BENCHMARK_TIER_CHOICES)}). Use 'all' as a shorthand for all tiers."),
+        help=(
+            "Comma-separated dataset tiers to run (choices: "
+            f"{', '.join(BENCHMARK_TIER_CHOICES)}). Use 'all' as a shorthand "
+            "for all tiers."
+        ),
     )
     mx.add_argument(
         "--presets",
@@ -247,7 +255,10 @@ def build_benchmark_parser() -> argparse.ArgumentParser:
         nargs="*",
         default=["learned"],
         choices=SCORING_WEIGHT_MODE_CHOICES,
-        help=("Score-mixture modes to run. LightGCN stays fixed-only because learned weights are inapplicable without dual branches."),
+        help=(
+            "Score-mixture modes to run. LightGCN stays fixed-only because "
+            "learned weights are inapplicable without dual branches."
+        ),
     )
 
     ov = parser.add_argument_group("runtime overrides")
@@ -320,8 +331,13 @@ def build_benchmark_parser() -> argparse.ArgumentParser:
         no_mlflow_help="Disable MLflow tracking for all benchmark runs",
         tracking_uri_help="Override MLflow tracking URI for all benchmark runs",
         experiment_name_help="MLflow experiment name for benchmark runs",
-        batch_id_help="Optional batch identifier for grouping and resuming benchmark runs",
-        resume_batch_help="Skip benchmark items already recorded with a terminal status for this batch id",
+        batch_id_help=(
+            "Optional batch identifier for grouping and resuming benchmark runs"
+        ),
+        resume_batch_help=(
+            "Skip benchmark items already recorded with a terminal status "
+            "for this batch id"
+        ),
         dry_run_help="Print plan without running",
         device_default="cuda",
         data_dir_default="data",
@@ -357,19 +373,28 @@ def build_formal_run_parser() -> argparse.ArgumentParser:
     """
     profiles = formal_profile_names()
     parser = argparse.ArgumentParser(
-        description=("Run the formal U-CaGNN experiment matrix with semantic profile-based resume."),
+        description=(
+            "Run the formal U-CaGNN experiment matrix with semantic profile-based resume."
+        ),
     )
     parser.add_argument(
         "--profile",
         "--version",
         dest="profile",
         default=None,
-        help=("Optional semantic formal profile slug. Supported profiles: " + ", ".join(profiles) + "."),
+        help=(
+            "Optional semantic formal profile slug. Supported profiles: "
+        + ", ".join(profiles)
+        + "."
+        ),
     )
     parser.add_argument(
         "--list-profiles",
         action="store_true",
-        help=("Print the predefined formal profiles from experiments/experiment_catalog.json and exit."),
+        help=(
+            "Print the predefined formal profiles from "
+            "experiments/experiment_catalog.json and exit."
+        ),
     )
     parser.add_argument(
         "--resume-latest",
@@ -407,7 +432,12 @@ def build_formal_run_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--datasets",
         default=None,
-        help=(f"Override the profile's dataset tiers. Comma-separated tier names (choices: {', '.join(BENCHMARK_TIER_CHOICES)}) or explicit dataset names like movielens1m. Use 'all' for all tiers. Example: --datasets movielens1m,taobao"),
+        help=(
+            "Override the profile's dataset tiers. Comma-separated tier names "
+            f"(choices: {', '.join(BENCHMARK_TIER_CHOICES)}) or explicit dataset "
+            "names like movielens1m. Use 'all' for all tiers. Example: "
+            "--datasets movielens1m,taobao"
+        ),
     )
     parser.add_argument(
         "--dry-run",
@@ -422,7 +452,10 @@ def build_formal_run_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--overwrite-checkpoint",
         action="store_true",
-        help="Delete any existing checkpoint for each resolved run and force fresh training.",
+        help=(
+            "Delete any existing checkpoint for each resolved run and "
+            "force fresh training."
+        ),
     )
     return parser
 
@@ -463,7 +496,10 @@ def build_ablation_parser() -> argparse.ArgumentParser:
         tracking_uri_help="Override MLflow tracking URI for all ablation runs",
         experiment_name_help="MLflow experiment name for ablation runs",
         batch_id_help="Optional batch identifier for grouping and resuming ablation runs",
-        resume_batch_help="Skip ablation variants already recorded with a terminal status for this batch id",
+        resume_batch_help=(
+            "Skip ablation variants already recorded with a terminal status "
+            "for this batch id"
+        ),
         dry_run_help="Print plan without running",
         device_default="cuda",
         data_dir_default="data",

@@ -48,7 +48,11 @@ class NegativeSampler:
 
         """
         if device is None:
-            device = positive_items.device if positive_items is not None else ("cuda" if torch.cuda.is_available() else "cpu")
+            device = (
+                positive_items.device
+                if positive_items is not None
+                else ("cuda" if torch.cuda.is_available() else "cpu")
+            )
 
         total = batch_size * self.n_negatives
         n_hard = int(total * self.hard_negative_ratio)

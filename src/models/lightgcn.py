@@ -202,7 +202,11 @@ class DualBranchGCN(nn.Module):
             torch.Tensor: Coalesced COO sparse adjacency matrix.
 
         """
-        values = edge_weight if edge_weight is not None else torch.ones(edge_index.size(1), device=edge_index.device, dtype=dtype)
+        values = (
+            edge_weight
+            if edge_weight is not None
+            else torch.ones(edge_index.size(1), device=edge_index.device, dtype=dtype)
+        )
         return torch.sparse_coo_tensor(
             edge_index,
             values,

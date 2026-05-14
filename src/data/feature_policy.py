@@ -305,7 +305,9 @@ def supports_feature_utility(dataset_name: str) -> bool:
 
     """
     dataset_policy = _FEATURE_ROLE_REGISTRY.get(normalize_dataset_name(dataset_name), {})
-    return any(enabled_feature_sources("thesis_default", dataset_name, aspect) for aspect in dataset_policy)
+    return any(
+        enabled_feature_sources("thesis_default", dataset_name, aspect) for aspect in dataset_policy
+    )
 
 
 def feature_role_for_column(

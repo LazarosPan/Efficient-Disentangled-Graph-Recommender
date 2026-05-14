@@ -118,7 +118,11 @@ def _is_categorical_feature(column_name: str, dtype: pl.DataType) -> bool:
     if _is_temporal_feature(column_name):
         return False
     normalized = _normalize_feature_name(column_name)
-    return _is_string_dtype(dtype) or normalized in _CATEGORICAL_COLUMN_NAMES or normalized.endswith(_CATEGORICAL_COLUMN_SUFFIXES)
+    return (
+        _is_string_dtype(dtype)
+        or normalized in _CATEGORICAL_COLUMN_NAMES
+        or normalized.endswith(_CATEGORICAL_COLUMN_SUFFIXES)
+    )
 
 
 def _encode_temporal_series(series: pl.Series) -> np.ndarray:
@@ -162,7 +166,9 @@ def _encode_categorical_series(series: pl.Series) -> np.ndarray:
 
     """
     frame = pl.DataFrame({"value": series})
-    unique_values = frame.select(pl.col("value").drop_nulls().unique().sort().alias("value"))["value"]
+    unique_values = frame.select(pl.col("value").drop_nulls().unique().sort().alias("value"))[
+        "value"
+    ]
     if unique_values.is_empty():
         return np.zeros(len(series), dtype=np.int32)
     lut = pl.DataFrame(
@@ -185,7 +191,13 @@ def _encode_numeric_series(series: pl.Series) -> np.ndarray:
         Float32 values aligned to the input series.
 
     """
-    return pl.DataFrame({"value": series}).select(pl.col("value").cast(pl.Float32, strict=False).fill_null(0.0).alias("value"))["value"].to_numpy()
+    return (
+        pl.DataFrame({"value": series})
+        .select(pl.col("value").cast(pl.Float32, strict=False).fill_null(0.0).alias("value"))[
+            "value"
+        ]
+        .to_numpy()
+    )
 
 
 def _encode_feature_series(column_name: str, series: pl.Series) -> np.ndarray:
@@ -258,7 +270,9 @@ def load_csv_features(
         return None
 
     mapped_ids = df["_mapped_id"].to_numpy()
-    encoded_columns = [_encode_feature_series(column_name, df[column_name]) for column_name in feat_cols]
+    encoded_columns = [
+        _encode_feature_series(column_name, df[column_name]) for column_name in feat_cols
+    ]
     feat_matrix = np.column_stack(encoded_columns)
 
     features = np.zeros((n_entities, len(feat_cols)), dtype=feat_matrix.dtype)

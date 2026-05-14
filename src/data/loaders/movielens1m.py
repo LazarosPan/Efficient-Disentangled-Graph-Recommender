@@ -114,7 +114,10 @@ def _resolve_raw_dir(data_dir: str) -> Path:
             Path(data_dir) / "ml-1m",
         ],
         required_files=["ratings.dat", "users.dat", "movies.dat"],
-        missing_message=(f"MovieLens1M raw files not found in the local data directory. Checked under {raw_base}."),
+        missing_message=(
+            "MovieLens1M raw files not found in the local data directory. "
+            f"Checked under {raw_base}."
+        ),
     )
 
 

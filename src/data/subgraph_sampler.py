@@ -352,8 +352,16 @@ class SubgraphSampler:
                 seed_nodes,
                 generator=generator,
             )
-            sub_sign = self.edge_sign[all_edge_ids] if self.edge_sign is not None and all_edge_ids.numel() > 0 else None
-            sub_norm = self.edge_norm[all_edge_ids] if self.edge_norm is not None and all_edge_ids.numel() > 0 else None
+            sub_sign = (
+                self.edge_sign[all_edge_ids]
+                if self.edge_sign is not None and all_edge_ids.numel() > 0
+                else None
+            )
+            sub_norm = (
+                self.edge_norm[all_edge_ids]
+                if self.edge_norm is not None and all_edge_ids.numel() > 0
+                else None
+            )
         else:
             # Full k-hop subgraph (original path, no sampling).
             subset, sub_ei, _mapping, edge_mask = k_hop_subgraph(

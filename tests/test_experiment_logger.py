@@ -136,7 +136,8 @@ class ExperimentLoggerTests(unittest.TestCase):
 
         row = self.logger.conn.execute(
             """
-            SELECT profile_name, project_version, git_commit, training_hash, evaluation_hash, change_note
+            SELECT profile_name, project_version, git_commit, training_hash,
+                evaluation_hash, change_note
             FROM experiments
             WHERE id = ?
             """,
@@ -216,7 +217,8 @@ class ExperimentLoggerTests(unittest.TestCase):
 
         row = self.logger.conn.execute(
             """
-            SELECT git_commit, change_note, delta_test_ndcg_20, delta_test_recall_20, delta_test_average_popularity_20
+            SELECT git_commit, change_note, delta_test_ndcg_20,
+                delta_test_recall_20, delta_test_average_popularity_20
             FROM experiment_code_comparison
             WHERE id = ?
             """,

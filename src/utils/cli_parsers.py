@@ -102,7 +102,10 @@ def resolve_benchmark_datasets(tiers: list[str] | str) -> list[str]:
             seen[tier] = None
         else:
             raise ValueError(
-                f"Unknown dataset or tier '{tier}'. Expected one of {sorted(list(BENCHMARK_DATASET_TIERS) + list(known_datasets))}.",
+                (
+                    "Unknown dataset or tier '{tier}'. Expected one of "
+                    f"{sorted(list(BENCHMARK_DATASET_TIERS) + list(known_datasets))}."
+                ),
             )
     return list(seen)
 
@@ -427,7 +430,11 @@ def build_query_results_parser() -> argparse.ArgumentParser:
         "--view",
         choices=["all", "completed", "attention", "errors", "comparison"],
         default=None,
-        help=("Select a convenience exploration view before applying any extra filters. Omit all flags to show the top-20 completed runs by NDCG@20."),
+        help=(
+            "Select a convenience exploration view before applying any extra "
+            "filters. Omit all flags to show the top-20 completed runs by "
+            "NDCG@20."
+        ),
     )
     parser.add_argument(
         "--batch-id",

@@ -45,7 +45,9 @@ def recipe_names(include_aliases: bool = True) -> list[str]:
 
 def _slugify_fragment(raw: object) -> str:
     """Return a filesystem-safe slug fragment for profile identifiers."""
-    normalized = "".join(character.lower() if str(character).isalnum() else "-" for character in str(raw))
+    normalized = "".join(
+        character.lower() if str(character).isalnum() else "-" for character in str(raw)
+    )
     return "-".join(part for part in normalized.split("-") if part)
 
 
@@ -141,17 +143,33 @@ def _formal_profile_name(profile: dict[str, Any]) -> str:
     matrix = _resolved_profile_matrix(profile)
     overrides = _resolved_profile_overrides(profile)
     scoring_modes = matrix["scoring_weight_modes"]
-    scoring_mode_slug = "both" if set(scoring_modes) == {"fixed", "learned"} and len(scoring_modes) == 2 else "-".join(_slugify_fragment(mode) for mode in scoring_modes)
+    scoring_mode_slug = (
+        "both"
+        if set(scoring_modes) == {"fixed", "learned"} and len(scoring_modes) == 2
+        else "-".join(_slugify_fragment(mode) for mode in scoring_modes)
+    )
     neighbor_options = overrides.get("num_neighbors_options") or []
-    neighbor_slug = "+".join("x".join(str(value) for value in neighbors) for neighbors in neighbor_options) if neighbor_options else "na"
-    batch_slug = "abauto" if overrides.get("auto_batch_size") else f"bs{_slugify_fragment(overrides.get('batch_size', 'na'))}"
+    neighbor_slug = (
+        "+".join("x".join(str(value) for value in neighbors) for neighbors in neighbor_options)
+        if neighbor_options
+        else "na"
+    )
+    batch_slug = (
+        "abauto"
+        if overrides.get("auto_batch_size")
+        else f"bs{_slugify_fragment(overrides.get('batch_size', 'na'))}"
+    )
     signature = json.dumps(
         {"matrix": matrix, "config_overrides": overrides},
         sort_keys=True,
     )
     digest = hashlib.sha1(signature.encode("utf-8")).hexdigest()[:8]
     lr_value = str(overrides.get("lr", "na")).replace(".", "p")
-    return f"e{_slugify_fragment(overrides.get('epochs', 'na'))}-lr{_slugify_fragment(lr_value)}-{batch_slug}-n{neighbor_slug}-sw{scoring_mode_slug}-{digest}"
+    return (
+        f"e{_slugify_fragment(overrides.get('epochs', 'na'))}-lr"
+        f"{_slugify_fragment(lr_value)}-{batch_slug}-n{neighbor_slug}-sw{scoring_mode_slug}-"
+        f"{digest}"
+    )
 
 
 def _formal_profile_id(profile: dict[str, Any]) -> str:

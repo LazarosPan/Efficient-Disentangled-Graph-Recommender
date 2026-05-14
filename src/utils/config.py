@@ -238,7 +238,10 @@ class UCaGNNConfig:
             raise ValueError("conformity_gnn_layers must be >= 1")
         if len(self.num_neighbors) != self.max_gnn_layers:
             raise ValueError(
-                f"num_neighbors length ({len(self.num_neighbors)}) must equal max_gnn_layers ({self.max_gnn_layers})",
+                (
+                    f"num_neighbors length ({len(self.num_neighbors)}) must equal "
+                    f"max_gnn_layers ({self.max_gnn_layers})"
+                ),
             )
         if self.sample_interactions is not None and self.sample_interactions <= 0:
             raise ValueError("sample_interactions must be > 0 when provided")

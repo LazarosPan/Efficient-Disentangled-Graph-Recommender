@@ -76,7 +76,10 @@ def _resolve_raw_dir(data_dir: str) -> Path:
             Path(data_dir) / "AmazonBook" / "raw" / "amazon-book",
         ],
         required_files=["train.txt", "test.txt", "user_list.txt", "item_list.txt"],
-        missing_message=("AmazonBook raw files not found under data/AmazonBook/raw. Expected train.txt, test.txt, user_list.txt, and item_list.txt."),
+        missing_message=(
+            "AmazonBook raw files not found under data/AmazonBook/raw. "
+            "Expected train.txt, test.txt, user_list.txt, and item_list.txt."
+        ),
     )
 
 

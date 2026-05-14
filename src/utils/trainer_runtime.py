@@ -400,7 +400,8 @@ class TrainerRuntime:
                 raise
 
         logger.warning(
-            "Evaluation hit CUDA OOM; retrying after temporarily offloading optimizer state to CPU.",
+            "Evaluation hit CUDA OOM; retrying after temporarily offloading "
+            "optimizer state to CPU.",
         )
         self.optimizer.zero_grad(set_to_none=True)
         self._invalidate_eval_feature_cache(eval_model)
@@ -506,7 +507,9 @@ class TrainerRuntime:
                 self.model,
             )
         if self.mlflow_module is not None:
-            mlflow_metrics = {f"val_{m}".replace("@", "_at_"): float(v) for m, v in val_metrics.items()}
+            mlflow_metrics = {
+                f"val_{m}".replace("@", "_at_"): float(v) for m, v in val_metrics.items()
+            }
             mlflow_metrics["train_loss"] = avg_loss
             self.mlflow_module.log_metrics(mlflow_metrics, step=epoch)
 
@@ -534,10 +537,13 @@ class TrainerRuntime:
             if self.ema_model is not None:
                 prefix = "module."
                 self.best_state = {
-                    (k.removeprefix(prefix)): v.cpu().clone() for k, v in self.ema_model.state_dict().items()
+                    (k.removeprefix(prefix)): v.cpu().clone()
+                    for k, v in self.ema_model.state_dict().items()
                 }
             else:
-                self.best_state = {key: value.cpu().clone() for key, value in self.model.state_dict().items()}
+                self.best_state = {
+                    key: value.cpu().clone() for key, value in self.model.state_dict().items()
+                }
             return False
 
         if not self.config.use_early_stopping:
@@ -594,7 +600,9 @@ class TrainerRuntime:
             "model_state": self.model.state_dict(),
             "loss_suite_state": self.loss_suite.state_dict(),
             "optimizer_state": self.optimizer.state_dict(),
-            "scheduler_state": (self.scheduler.state_dict() if self.scheduler is not None else None),
+            "scheduler_state": (
+                self.scheduler.state_dict() if self.scheduler is not None else None
+            ),
             "ema_state": (self.ema_model.state_dict() if self.ema_model is not None else None),
             "config": self.config,
             "best_ndcg": self.best_ndcg,

@@ -83,7 +83,11 @@ def main() -> int:
             seed=DEFAULT_SEED,
             training_mode=None,
         )
-        if args.resume_batch and existing is not None and existing["status"] in ExperimentLogger.TERMINAL_STATUSES:
+        if (
+            args.resume_batch
+            and existing is not None
+            and existing["status"] in ExperimentLogger.TERMINAL_STATUSES
+        ):
             skipped += 1
             logger.info(
                 "Skipping existing batch ablation (exp_id=%s, status=%s)",
@@ -168,7 +172,9 @@ def main() -> int:
 
         print("Note: AvgPop@20 and AvgPop@40 are lower-is-better.")
         print(
-            f"\n{'Variant':<20} | {'NDCG@20':>8} | {'Recall@20':>10} | {'AvgPop@20':>10} | {'NDCG@40':>8} | {'Recall@40':>10} | {'AvgPop@40':>10} | Time",
+            ""
+            f"\n{'Variant':<20} | {'NDCG@20':>8} | {'Recall@20':>10} | {'AvgPop@20':>10} | "
+            f"{'NDCG@40':>8} | {'Recall@40':>10} | {'AvgPop@40':>10} | Time",
         )
         print("-" * 117)
         for r in results:

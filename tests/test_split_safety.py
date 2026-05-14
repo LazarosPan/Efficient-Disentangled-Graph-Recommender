@@ -254,10 +254,13 @@ class SplitSafetyTests(unittest.TestCase):
             exposure_flag=np.array([False, True]),
             source_domain=np.array(["standard", "random"]),
             repeat_count=np.array([2, 1], dtype=np.uint8),
-            repeat_priority_mean=np.array([1.5, 4.0], dtype=np.float32),
-            repeat_priority_max=np.array([3.0, 4.0], dtype=np.float32),
+            repeat_mean_target=np.array([1.5, 4.0], dtype=np.float32),
+            repeat_max_target=np.array([3.0, 4.0], dtype=np.float32),
+            repeat_latest_target=np.array([2.0, 4.0], dtype=np.float32),
             repeat_first_timestamp=np.array([1, 2], dtype=np.uint8),
             repeat_last_timestamp=np.array([3, 4], dtype=np.uint8),
+            repeat_behavior_counts=np.array([[1, 1], [0, 1]], dtype=np.uint8),
+            repeat_behavior_labels=np.array(["pv", "buy"]),
             feedback_type="multi-behavior",
             preprocessing_preset="taobao_multibehavior",
             n_users=1,
@@ -287,14 +290,20 @@ class SplitSafetyTests(unittest.TestCase):
         self.assertTrue(torch.equal(data.repeat_count.cpu(), torch.tensor([2, 1])))
         self.assertTrue(
             torch.equal(
-                data.repeat_priority_mean.cpu(),
+                data.repeat_mean_target.cpu(),
                 torch.tensor([1.5, 4.0]),
             ),
         )
         self.assertTrue(
             torch.equal(
-                data.repeat_priority_max.cpu(),
+                data.repeat_max_target.cpu(),
                 torch.tensor([3.0, 4.0]),
+            ),
+        )
+        self.assertTrue(
+            torch.equal(
+                data.repeat_latest_target.cpu(),
+                torch.tensor([2.0, 4.0]),
             ),
         )
         self.assertTrue(
@@ -303,9 +312,44 @@ class SplitSafetyTests(unittest.TestCase):
         self.assertTrue(
             torch.equal(data.repeat_last_timestamp.cpu(), torch.tensor([3, 4])),
         )
+        self.assertTrue(
+            torch.equal(
+                data.repeat_behavior_counts.cpu(),
+                torch.tensor([[1, 1], [0, 1]]),
+            ),
+        )
+        np.testing.assert_array_equal(data.repeat_behavior_labels, np.array(["pv", "buy"]))
         self.assertEqual(data.feedback_type, "multi-behavior")
         self.assertEqual(data.preprocessing_preset, "taobao_multibehavior")
         self.assertEqual(data.metadata, metadata)
+
+    def test_build_graph_copies_read_only_numpy_fields_before_torch_conversion(self) -> None:
+        """Graph boundary conversion should not alias read-only NumPy payloads."""
+        raw_target = np.array([3.0, 4.0], dtype=np.float32)
+        raw_target.setflags(write=False)
+        canonical = CanonicalInteractions(
+            user_id=np.array([0, 0], dtype=np.int64),
+            item_id=np.array([0, 1], dtype=np.int64),
+            label=np.ones(2, dtype=np.float32),
+            timestamp=np.array([1, 2], dtype=np.int64),
+            sign=np.ones(2, dtype=np.float32),
+            popularity=np.ones(2, dtype=np.float32),
+            raw_target=raw_target,
+            n_users=1,
+            n_items=2,
+            user_map={0: 0},
+            item_map={0: 0, 1: 1},
+            train_mask=np.array([True, False]),
+            val_mask=np.array([False, False]),
+            test_mask=np.array([False, True]),
+        )
+        config = UCaGNNConfig(device="cuda")
+
+        data = build_graph(canonical, config)
+        data.raw_target[0] = 9.0
+
+        np.testing.assert_array_equal(raw_target, np.array([3.0, 4.0], dtype=np.float32))
+        self.assertEqual(float(data.raw_target[0]), 9.0)
 
     def test_cagra_runtime_failure_falls_back_to_interaction_graph(self) -> None:
         """CAGRA runtime failures should warn once and keep the train-interaction graph."""

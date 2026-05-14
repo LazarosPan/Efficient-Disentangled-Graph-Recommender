@@ -73,7 +73,9 @@ def build_movie_genre_features(
         mapped_item_id = item_map.get(raw_item_id)
         if mapped_item_id is None:
             continue
-        mapped_genres[mapped_item_id] = [genre.strip() for genre in raw_genres.split("|") if genre.strip()]
+        mapped_genres[mapped_item_id] = [
+            genre.strip() for genre in raw_genres.split("|") if genre.strip()
+        ]
     return build_multi_hot_features(mapped_genres, n_items), len(mapped_genres)
 
 

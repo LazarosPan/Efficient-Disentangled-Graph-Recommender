@@ -58,7 +58,9 @@ def downcast_numeric_array(
         return values
 
     finite_values = values[np.isfinite(values)]
-    candidate_dtypes: tuple[type[np.floating], ...] = (np.float16, np.float32, np.float64) if allow_float16 else (np.float32, np.float64)
+    candidate_dtypes: tuple[type[np.floating], ...] = (
+        (np.float16, np.float32, np.float64) if allow_float16 else (np.float32, np.float64)
+    )
     if finite_values.size == 0:
         return values.astype(candidate_dtypes[0], copy=False)
 

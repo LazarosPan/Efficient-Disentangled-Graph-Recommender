@@ -87,7 +87,9 @@ NORMALIZED_BENCHMARK_FIELDS = (
     "dry_run",
 )
 PLAN_COMPARISON_FIELDS = tuple(
-    field_name for field_name in NORMALIZED_BENCHMARK_FIELDS if field_name not in RUNTIME_ONLY_BENCHMARK_FIELDS
+    field_name
+    for field_name in NORMALIZED_BENCHMARK_FIELDS
+    if field_name not in RUNTIME_ONLY_BENCHMARK_FIELDS
 )
 
 
@@ -107,10 +109,15 @@ def _normalize_benchmark_args(
     unexpected_fields = sorted(set(benchmark_args) - set(NORMALIZED_BENCHMARK_FIELDS))
     if unexpected_fields:
         raise ValueError(
-            f"Formal-run state contains unexpected fields {unexpected_fields}. Start a fresh formal run.",
+            (
+                f"Formal-run state contains unexpected fields {unexpected_fields}. "
+                "Start a fresh formal run."
+            ),
         )
 
-    normalized_args = {field_name: benchmark_args.get(field_name) for field_name in BENCHMARK_MATRIX_FIELDS}
+    normalized_args = {
+        field_name: benchmark_args.get(field_name) for field_name in BENCHMARK_MATRIX_FIELDS
+    }
     normalized_args.update(normalize_benchmark_config_overrides(benchmark_args))
     normalized_args["change_note"] = benchmark_args.get("change_note")
     normalized_args["no_mlflow"] = bool(benchmark_args.get("no_mlflow", False))
@@ -296,8 +303,9 @@ def _resolve_benchmark_args(
             if cli_args.resume_latest:
                 raise ValueError(
                     (
-                        "The saved formal-run state references a profile that is no longer "
-                        "defined. Use --new-run or --restart to start a fresh batch."
+                        "The saved formal-run state references a profile that is no "
+                        "longer defined. Use --new-run or --restart to start a fresh "
+                        "batch."
                     ),
                 )
             profile_name = requested_profile or DEFAULT_PROFILE_NAME
@@ -313,9 +321,9 @@ def _resolve_benchmark_args(
             if cli_args.resume_latest:
                 raise ValueError(
                     (
-                        "The saved formal-run state no longer matches the current profile "
-                        "bundle. Use --new-run or --restart to start a fresh "
-                        "mini-batch-only batch."
+                        "The saved formal-run state no longer matches the current "
+                        "profile bundle. Use --new-run or --restart to start a "
+                        "fresh mini-batch-only batch."
                     ),
                 )
             benchmark_args = expected_args
@@ -375,7 +383,8 @@ def _resolve_benchmark_num_neighbors_for_preset(
     default_config = UCaGNNConfig()
     if preset == "lightgcn":
         required_hops = int(
-            benchmark_args.get("single_branch_gnn_layers") or default_config.single_branch_gnn_layers,
+            benchmark_args.get("single_branch_gnn_layers")
+            or default_config.single_branch_gnn_layers,
         )
     else:
         required_hops = max(
@@ -388,7 +397,10 @@ def _resolve_benchmark_num_neighbors_for_preset(
         )
     if len(num_neighbors) < required_hops:
         raise ValueError(
-            f"num_neighbors length ({len(num_neighbors)}) must cover the active {preset} depth ({required_hops}).",
+            (
+                f"num_neighbors length ({len(num_neighbors)}) must cover the active "
+                f"{preset} depth ({required_hops})."
+            ),
         )
     return list(num_neighbors[:required_hops])
 
@@ -484,7 +496,9 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
 
     if benchmark_args["dry_run"]:
         print(
-            f"\n{'#':>4} | {'Dataset':<15} | {'Preset':<12} | {'ScoreMix':<8} | {'Scheduler':<12} | {'Neighbors':<10}",
+            "\n"
+            f"{'#':>4} | {'Dataset':<15} | {'Preset':<12} | {'ScoreMix':<8} | "
+            f"{'Scheduler':<12} | {'Neighbors':<10}",
         )
         print("-" * 106)
         for i, (ds, pr, swm, scheduler, neighbors) in enumerate(experiments, 1):
@@ -503,7 +517,9 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
     results = []
     failure_notes: list[str] = []
 
-    for i, (dataset, preset, scoring_weight_mode, lr_scheduler, num_neighbors) in enumerate(experiments, 1):
+    for i, (dataset, preset, scoring_weight_mode, lr_scheduler, num_neighbors) in enumerate(
+        experiments, 1
+    ):
         neighbor_list = list(num_neighbors)
         effective_neighbor_list = list(neighbor_list)
         raw_neighbor_label = "-".join(str(value) for value in neighbor_list)
@@ -520,8 +536,8 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             failed += 1
             failure_notes.append(
                 (
-                    f"{dataset} / {preset} / {scoring_weight_mode} / {lr_scheduler} / "
-                    f"nbr{neighbor_label}: {type(e).__name__}: {e}"
+                    f"{dataset} / {preset} / {scoring_weight_mode} / {lr_scheduler} "
+                    f" / nbr{neighbor_label}: {type(e).__name__}: {e}"
                 ),
             )
             logger.error(f"FAILED: {e}")
@@ -530,7 +546,9 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
 
         print(f"\n{'=' * 70}")
         print(
-            f"[{i}/{len(experiments)}] {dataset} / {preset} / {scoring_weight_mode} / nbr{neighbor_label}",
+            "["
+            f"{i}/{len(experiments)}] {dataset} / {preset} / {scoring_weight_mode} "
+            f"/ nbr{neighbor_label}",
         )
         print("=" * 70)
 
@@ -624,7 +642,10 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
         except Exception as e:
             failed += 1
             failure_notes.append(
-                f"{dataset} / {preset} / {scoring_weight_mode} / nbr{neighbor_label}: {type(e).__name__}: {e}",
+                (
+                    f"{dataset} / {preset} / {scoring_weight_mode} / nbr{neighbor_label}: "
+                    f"{type(e).__name__}: {e}"
+                ),
             )
             logger.error(f"FAILED: {e}")
             traceback.print_exc()
@@ -680,9 +701,13 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                 ),
             )
             neighbor_label = "-".join(str(value) for value in r["num_neighbors"])
-            epochs = str(r.get("epochs_stopped_at")) if r.get("epochs_stopped_at") is not None else "-"
+            epochs = (
+                str(r.get("epochs_stopped_at")) if r.get("epochs_stopped_at") is not None else "-"
+            )
             peak_vram = f"{r['peak_vram_mb']:.0f}MB" if r.get("peak_vram_mb") is not None else "-"
-            checkpoint_label = Path(r["checkpoint_path"]).name if r.get("checkpoint_path") else f"exp{r['exp_id']}"
+            checkpoint_label = (
+                Path(r["checkpoint_path"]).name if r.get("checkpoint_path") else f"exp{r['exp_id']}"
+            )
             print(
                 (
                     f"{r['dataset']:<15} | {r['preset']:<12} | "

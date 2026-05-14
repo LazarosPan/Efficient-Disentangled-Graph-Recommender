@@ -93,6 +93,7 @@ def list_experiments(
     profile_width = 28
     print(
         (
+            ""
             f"{'ID':>4} | {'Status':<10} | {'Dataset':<14} | {'Preset':<12} | "
             f"{'Profile':<{profile_width}} | {'Mode':<18} | {'Batch':<22} | Seed"
         ),
@@ -141,7 +142,9 @@ def _build_canonical_name_from_config(
     interest_layers = int(config.get("interest_gnn_layers", 0))
     conformity_layers = int(config.get("conformity_gnn_layers", 0))
     single_branch_layers = int(config.get("single_branch_gnn_layers", 0))
-    max_gnn_layers = single_branch_layers if not use_dual_branch else max(interest_layers, conformity_layers)
+    max_gnn_layers = (
+        single_branch_layers if not use_dual_branch else max(interest_layers, conformity_layers)
+    )
 
     parts = [
         dataset,
@@ -259,7 +262,9 @@ def show_metrics(conn: sqlite3.Connection, exp_id: int) -> None:
             for row in rows:
                 epoch_str = str(row["epoch"]) if row["epoch"] is not None else "final"
                 print(
-                    f"  {epoch_str:>5} | {row['metric_name']:<20} | {row['metric_value']:>10.4f} | {row['timestamp']}",
+                    ""
+                    f"  {epoch_str:>5} | {row['metric_name']:<20} | "
+                    f"{row['metric_value']:>10.4f} | {row['timestamp']}",
                 )
 
 
@@ -299,9 +304,9 @@ def show_profiling(conn: sqlite3.Connection, exp_id: int) -> None:
 
     print(
         (
-            f"\n{'Stage':<15} | {'Total/Epoch':>11} | {'Avg/Call':>10} | "
-            f"{'Calls':>6} | {'Epochs':>6} | {'%':>6} | Peak VRAM | "
-            f"Last Logged"
+            ""
+            f"\n{'Stage':<15} | {'Total/Epoch':>11} | {'Avg/Call':>10} | {'Calls':>6} | "
+            f"{'Epochs':>6} | {'%':>6} | Peak VRAM | Last Logged"
         ),
     )
     print("-" * 150)
@@ -389,12 +394,16 @@ def show_bottleneck(conn: sqlite3.Connection, exp_id: int) -> None:
         stage_total_ms = float(row["total_ms"])
         pct = (stage_total_ms / grand_total * 100) if grand_total > 0 else 0
         print(
-            f"{i:>4} | {row['stage']:<15} | {stage_total_ms:>12.1f} | {row['n_calls']:>6} | {pct:>9.1f}%",
+            ""
+            f"{i:>4} | {row['stage']:<15} | {stage_total_ms:>12.1f} | "
+            f"{row['n_calls']:>6} | {pct:>9.1f}%",
         )
 
     print("-" * 60)
     print(
-        f"\nBottleneck: {rows[0]['stage']} ({float(rows[0]['total_ms']) / grand_total * 100:.1f}% of total time)",
+        ""
+        f"\nBottleneck: {rows[0]['stage']} ({float(rows[0]['total_ms']) / grand_total * 100:.1f}% "
+        "of total time)",
     )
 
 
@@ -462,7 +471,11 @@ def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
         config = _load_config_json(row["config_json"])
         intervention = row["intervention"]
         canonical_name = _build_canonical_name_from_config(config, row["preset"], intervention)
-        experiment_label = f"{canonical_name}_train-{row['training_hash']}" if row["training_hash"] else canonical_name
+        experiment_label = (
+            f"{canonical_name}_train-{row['training_hash']}"
+            if row["training_hash"]
+            else canonical_name
+        )
         scoremix = str(config.get("scoring_weight_mode", "-"))
         num_neighbors = config.get("num_neighbors")
         neighbor_label = "-"
@@ -474,10 +487,18 @@ def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
         peak_vram = f"{row['peak_vram_mb']:.0f}MB" if row["peak_vram_mb"] is not None else "-"
         ndcg20 = f"{row['test_ndcg_20']:.4f}" if row["test_ndcg_20"] is not None else "-"
         recall20 = f"{row['test_recall_20']:.4f}" if row["test_recall_20"] is not None else "-"
-        avgpop20 = f"{row['test_average_popularity_20']:.4f}" if row["test_average_popularity_20"] is not None else "-"
+        avgpop20 = (
+            f"{row['test_average_popularity_20']:.4f}"
+            if row["test_average_popularity_20"] is not None
+            else "-"
+        )
         ndcg40 = f"{row['test_ndcg_40']:.4f}" if row["test_ndcg_40"] is not None else "-"
         recall40 = f"{row['test_recall_40']:.4f}" if row["test_recall_40"] is not None else "-"
-        avgpop40 = f"{row['test_average_popularity_40']:.4f}" if row["test_average_popularity_40"] is not None else "-"
+        avgpop40 = (
+            f"{row['test_average_popularity_40']:.4f}"
+            if row["test_average_popularity_40"] is not None
+            else "-"
+        )
         time_s = f"{row['avg_epoch_time_s']:.1f}s" if row["avg_epoch_time_s"] is not None else "-"
         print(
             (

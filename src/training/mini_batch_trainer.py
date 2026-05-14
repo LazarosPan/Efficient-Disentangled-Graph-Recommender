@@ -71,7 +71,9 @@ class MiniBatchTrainer(TrainerRuntime):
     def _build_subgraph_sampler(self, data) -> tuple[SubgraphSampler, torch.device]:
         """Stage the full graph on CUDA when possible, else keep the CPU path."""
         cpu_device = torch.device("cpu")
-        target_device = cpu_device if self._force_cpu_sampler or self.device.type != "cuda" else self.device
+        target_device = (
+            cpu_device if self._force_cpu_sampler or self.device.type != "cuda" else self.device
+        )
 
         def _sampler_for(device: torch.device) -> SubgraphSampler:
             edge_index, edge_sign, edge_norm = stage_graph_tensors_for_device(

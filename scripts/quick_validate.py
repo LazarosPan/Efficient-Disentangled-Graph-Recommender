@@ -223,7 +223,11 @@ def _run_single_case(
     expect_metrics: bool = False,
     expect_mlflow_db_touch: bool = False,
 ) -> tuple[dict, float]:
-    mlflow_mtime_before = MLFLOW_DB_PATH.stat().st_mtime_ns if expect_mlflow_db_touch and MLFLOW_DB_PATH.exists() else None
+    mlflow_mtime_before = (
+        MLFLOW_DB_PATH.stat().st_mtime_ns
+        if expect_mlflow_db_touch and MLFLOW_DB_PATH.exists()
+        else None
+    )
     started = time.perf_counter()
     result = run_experiment(
         config,
@@ -261,7 +265,9 @@ def _run_recipe_category(args: argparse.Namespace, results: list[dict]) -> None:
         "recipe names",
     )
     print(
-        f"Recipe coverage: {len(args.datasets)} datasets x {len(selected_recipe_names)} canonical recipes",
+        ""
+        f"Recipe coverage: {len(args.datasets)} datasets x "
+        f"{len(selected_recipe_names)} canonical recipes",
     )
     for dataset in args.datasets:
         for recipe_name in selected_recipe_names:
@@ -374,7 +380,9 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
     profiling_recipe = "ucagnn"
     feature_datasets = [dataset for dataset in args.datasets if supports_feature_utility(dataset)]
     print(
-        f"Observability coverage: {len(args.datasets)} datasets x 1 profiling probe, {len(feature_datasets)} feature probes, {len(args.datasets)} resume probes",
+        ""
+        f"Observability coverage: {len(args.datasets)} datasets x 1 profiling probe, "
+        f"{len(feature_datasets)} feature probes, {len(args.datasets)} resume probes",
     )
     if not torch.cuda.is_available():
         for dataset in args.datasets:
@@ -624,7 +632,9 @@ def _print_summary(results: list[dict], total_elapsed: float) -> None:
         failed = sum(1 for row in subset if row["status"] == "fail")
         skipped = sum(1 for row in subset if row["status"] == "skip")
         print(
-            f"{category:<13} pass={passed:<4} fail={failed:<4} skip={skipped:<4} total={len(subset)}",
+            ""
+            f"{category:<13} pass={passed:<4} fail={failed:<4} "
+            f"skip={skipped:<4} total={len(subset)}",
         )
 
     if failures:

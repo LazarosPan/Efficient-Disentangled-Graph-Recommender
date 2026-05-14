@@ -23,7 +23,9 @@ def _register_bf16_buffer(
         n: Size of the fallback zero tensor (used only when *tensor* is ``None``).
 
     """
-    resolved = tensor.to(torch.bfloat16) if tensor is not None else torch.zeros(n, dtype=torch.bfloat16)
+    resolved = (
+        tensor.to(torch.bfloat16) if tensor is not None else torch.zeros(n, dtype=torch.bfloat16)
+    )
     module.register_buffer(name, resolved, persistent=False)
 
 
@@ -108,7 +110,10 @@ class EmbeddingModule(nn.Module):
         """Cast only floating-point tensors, preserving integer index tensors."""
         if dtype is None:
             return tensors
-        return {key: value.to(dtype=dtype) if torch.is_floating_point(value) else value for key, value in tensors.items()}
+        return {
+            key: value.to(dtype=dtype) if torch.is_floating_point(value) else value
+            for key, value in tensors.items()
+        }
 
     @staticmethod
     def _module_dtype(module: nn.Module) -> torch.dtype:
@@ -265,7 +270,11 @@ class EmbeddingModule(nn.Module):
         Uses interest embeddings for users when dual_branch is active.
         """
         user_embeddings = self._build_user_embeddings()
-        user_emb = user_embeddings["user_interest"] if self.config.use_dual_branch else user_embeddings["user"]
+        user_emb = (
+            user_embeddings["user_interest"]
+            if self.config.use_dual_branch
+            else user_embeddings["user"]
+        )
         item_embs = self._build_item_embeddings()
         item_emb = item_embs.get("item_interest", item_embs["item"])
         return torch.cat([user_emb, item_emb], dim=0)

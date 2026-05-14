@@ -23,7 +23,11 @@ class StageMetrics:
         return self.vram_after_mb - self.vram_before_mb
 
     def __repr__(self) -> str:
-        return f"{self.name}: {self.elapsed_ms:.1f}ms | VRAM: {self.vram_before_mb:.0f} -> {self.vram_after_mb:.0f} MB (peak {self.vram_peak_mb:.0f} MB, delta {self.vram_delta_mb:+.0f} MB)"
+        return (
+            f"{self.name}: {self.elapsed_ms:.1f}ms | VRAM: {self.vram_before_mb:.0f} -> "
+            f"{self.vram_after_mb:.0f} MB (peak {self.vram_peak_mb:.0f} MB, "
+            f"delta {self.vram_delta_mb:+.0f} MB)"
+        )
 
 
 @dataclass
@@ -94,7 +98,9 @@ class GPUProfiler:
         for s in self.stages:
             pct = (s.elapsed_ms / total_ms * 100) if total_ms > 0 else 0
             lines.append(
-                f"  {s.name:20s} {s.elapsed_ms:8.1f}ms ({pct:5.1f}%) | VRAM peak {s.vram_peak_mb:.0f} MB",
+                ""
+                f"  {s.name:20s} {s.elapsed_ms:8.1f}ms ({pct:5.1f}%) | "
+                f"VRAM peak {s.vram_peak_mb:.0f} MB",
             )
         lines.append(f"  {'TOTAL':20s} {total_ms:8.1f}ms")
         if self.epoch_elapsed_ms > 0:
