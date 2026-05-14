@@ -42,12 +42,12 @@ Before each implementation iteration read the following files:
 - Target system / development tracking files (not source of truth):
 
 1. `.github/skills/ucagnn-implementation/`.
-2. `docs/ucagnn_implementation/ucagnn_full.md`.
+2. `.github/skills/ucagnn-implementation/ucagnn_full.md`.
 
 After each iteration, update the target system files so they match the code; do not treat them as the primary theory source:
 
 - `.github/skills/ucagnn-implementation/`
-- `docs/ucagnn_implementation/ucagnn_full.md`
+- `.github/skills/ucagnn-implementation/ucagnn_full.md`
 - `pyproject.toml` (for dependencies and versioning if applicable)
 
 ## Project Rules

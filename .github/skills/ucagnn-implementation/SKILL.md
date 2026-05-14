@@ -16,6 +16,7 @@ Prefer changing an existing routed file before adding a new script or module; ad
 - [ucagnn-data-pipeline.md](ucagnn-data-pipeline.md) — Dataset loading, canonical interaction format, graph construction methods, and negative sampling.
 - [ucagnn-losses.md](ucagnn-losses.md) — Loss components, total loss formula, lambda defaults, IPW weighting, and curriculum activation.
 - [ucagnn-training.md](ucagnn-training.md) — Training loop, evaluation, checkpointing, profiling, and experiment logging.
+- [ucagnn_full.md](ucagnn_full.md) — Full end-to-end implementation details, including all of the above plus integration notes and engineering best practices.
 
 ## Quick Routing Guide
 
@@ -24,3 +25,4 @@ Prefer changing an existing routed file before adding a new script or module; ad
 - Use [ucagnn-data-pipeline.md](ucagnn-data-pipeline.md) when modifying graph building, splits, or samplers.
 - Use [ucagnn-losses.md](ucagnn-losses.md) when adjusting objectives or curriculum phases.
 - Use [ucagnn-training.md](ucagnn-training.md) when working on trainer behavior, metrics, or logging.
+- Use [ucagnn_full.md](ucagnn_full.md) for a comprehensive view of the entire implementation, including integration notes and engineering best practices.
