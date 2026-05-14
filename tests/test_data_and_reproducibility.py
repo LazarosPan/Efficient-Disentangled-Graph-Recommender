@@ -18,6 +18,7 @@ from src.data.feature_policy import (
     registered_feature_sources,
     thesis_default_columns,
 )
+from src.data.loaders import load_dataset
 from src.data.loaders.kuairand1k import load_kuairand1k
 from src.data.loaders.kuairec_v2 import load_kuairec_v2
 from src.data.loaders.movielens1m import load_movielens1m
@@ -108,7 +109,9 @@ class DataContractTests(unittest.TestCase):
             data_root = Path(tmp_dir) / "KuaiRand-1K" / "data"
             data_root.mkdir(parents=True)
             (data_root / "log_standard_quality.csv").write_text(
-                ("user_id,video_id,play_time_ms,duration_ms,is_click,is_rand,time_ms\n1,10,nan,20,0,0,1000\nbad,11,3,10,1,0,1001\n"),
+                (
+                    "user_id,video_id,play_time_ms,duration_ms,is_click,is_rand,time_ms\n1,10,nan,20,0,0,1000\nbad,11,3,10,1,0,1001\n"
+                ),
                 encoding="utf-8",
             )
 
@@ -300,7 +303,9 @@ class DataContractTests(unittest.TestCase):
         with TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "video_features_basic_1k.csv"
             path.write_text(
-                ("video_id,video_type,upload_dt,server_width,music_id\n10,NORMAL,2022-04-10,720,77\n11,AD,2022-04-11,1080,88\n"),
+                (
+                    "video_id,video_type,upload_dt,server_width,music_id\n10,NORMAL,2022-04-10,720,77\n11,AD,2022-04-11,1080,88\n"
+                ),
                 encoding="utf-8",
             )
             features = load_csv_features(
@@ -353,7 +358,9 @@ class DataContractTests(unittest.TestCase):
             basic_path = root / "video_features_basic_1k.csv"
             stats_path = root / "video_features_statistic_1k.csv"
             basic_path.write_text(
-                ("video_id,author_id,video_type,upload_dt,upload_type,visible_status,server_width,server_height,music_id,music_type\n10,33,NORMAL,2022-04-10,Web,1,720,1280,77,4\n11,44,AD,2022-04-11,LongImport,3,1080,1920,88,7\n"),
+                (
+                    "video_id,author_id,video_type,upload_dt,upload_type,visible_status,server_width,server_height,music_id,music_type\n10,33,NORMAL,2022-04-10,Web,1,720,1280,77,4\n11,44,AD,2022-04-11,LongImport,3,1080,1920,88,7\n"
+                ),
                 encoding="utf-8",
             )
             stats_path.write_text(
@@ -473,7 +480,9 @@ class DataContractTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (data_root / "item_daily_features.csv").write_text(
-                ("video_id,author_id,music_id,video_type,upload_dt,upload_type,visible_status\n10,33,77,NORMAL,2020-03-30,Web,public\n11,44,88,AD,2020-03-31,LongImport,private\n"),
+                (
+                    "video_id,author_id,music_id,video_type,upload_dt,upload_type,visible_status\n10,33,77,NORMAL,2020-03-30,Web,public\n11,44,88,AD,2020-03-31,LongImport,private\n"
+                ),
                 encoding="utf-8",
             )
 
@@ -503,7 +512,9 @@ class DataContractTests(unittest.TestCase):
             root = Path(tmp_dir)
             item_daily_path = root / "item_daily_features.csv"
             item_daily_path.write_text(
-                ("video_id,author_id,music_id,video_type,upload_dt,upload_type,visible_status,show_cnt,play_cnt,like_cnt,share_cnt\n10,33,77,NORMAL,2020-03-30,Web,public,90,80,70,60\n11,44,88,AD,2020-03-31,LongImport,private,50,40,30,20\n"),
+                (
+                    "video_id,author_id,music_id,video_type,upload_dt,upload_type,visible_status,show_cnt,play_cnt,like_cnt,share_cnt\n10,33,77,NORMAL,2020-03-30,Web,public,90,80,70,60\n11,44,88,AD,2020-03-31,LongImport,private,50,40,30,20\n"
+                ),
                 encoding="utf-8",
             )
 
@@ -656,6 +667,10 @@ class DataContractTests(unittest.TestCase):
             summary.priority_max,
             np.array([3.0, 2.0], dtype=np.float32),
         )
+        np.testing.assert_allclose(
+            summary.latest_priority,
+            np.array([3.0, 2.0], dtype=np.float32),
+        )
         np.testing.assert_array_equal(
             summary.first_timestamp,
             np.array([100, 150], dtype=np.int64),
@@ -701,7 +716,7 @@ class DataContractTests(unittest.TestCase):
             raw_dir = Path(tmp_dir) / "Taobao" / "raw"
             raw_dir.mkdir(parents=True)
             (raw_dir / "UserBehavior.csv").write_text(
-                "1,10,100,pv,1\n1,10,100,buy,2\n2,11,101,pv,3\n",
+                "1,10,100,buy,1\n1,10,100,pv,2\n2,11,101,pv,3\n",
                 encoding="utf-8",
             )
 
@@ -716,12 +731,24 @@ class DataContractTests(unittest.TestCase):
         np.testing.assert_allclose(canonical.raw_target, np.array([3.0, 0.0], dtype=np.float32))
         np.testing.assert_array_equal(canonical.repeat_count, np.array([2, 1], dtype=np.uint8))
         np.testing.assert_allclose(
-            canonical.repeat_priority_mean,
+            canonical.repeat_mean_target,
             np.array([1.5, 0.0], dtype=np.float32),
         )
         np.testing.assert_allclose(
-            canonical.repeat_priority_max,
+            canonical.repeat_max_target,
             np.array([3.0, 0.0], dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            canonical.repeat_latest_target,
+            np.array([0.0, 0.0], dtype=np.float32),
+        )
+        np.testing.assert_array_equal(
+            canonical.repeat_behavior_labels,
+            np.array(["pv", "fav", "cart", "buy"]),
+        )
+        np.testing.assert_array_equal(
+            canonical.repeat_behavior_counts,
+            np.array([[1, 0, 0, 1], [1, 0, 0, 0]], dtype=np.uint8),
         )
         self.assertEqual(canonical.metadata["repeat_collapse"]["dropped_rows"], 1)
         self.assertTrue(canonical.metadata["repeat_collapse"]["preserves_repeat_stats"])
@@ -731,33 +758,79 @@ class DataContractTests(unittest.TestCase):
             canonical.metadata["repeat_collapse"]["reason"],
         )
 
-    def test_kuairec_default_preset_clips_targets_and_collapses_pairs(self) -> None:
-        """KuaiRec thesis-default preprocessing should stabilize watch-ratio tails."""
+    def test_kuairec_defaults_prefer_small_matrix_fullobs(self) -> None:
+        """KuaiRec defaults should prefer the nearly fully observed small matrix."""
+        with TemporaryDirectory() as tmp_dir:
+            data_root = Path(tmp_dir) / "KuaiRec_v2" / "data"
+            data_root.mkdir(parents=True)
+            (data_root / "small_matrix.csv").write_text(
+                ("user_id,video_id,watch_ratio,timestamp\n1,10,573.4572,100\n2,11,0.8,300\n"),
+                encoding="utf-8",
+            )
+
+            direct_canonical = load_kuairec_v2(
+                data_dir=tmp_dir,
+                include_optional_features=False,
+            )
+            registry_canonical = load_dataset(
+                "kuairec_v2",
+                data_dir=tmp_dir,
+                include_optional_features=False,
+            )
+
+        for canonical in (direct_canonical, registry_canonical):
+            self.assertEqual(canonical.preprocessing_preset, "kuairec_fullobs")
+            self.assertEqual(canonical.metadata["matrix_variant"], "small_matrix")
+            self.assertEqual(canonical.metadata["watch_ratio_policy"], "raw")
+            np.testing.assert_array_equal(
+                canonical.source_domain,
+                np.array(["small_matrix", "small_matrix"]),
+            )
+            np.testing.assert_allclose(
+                canonical.raw_target,
+                np.array([573.4572, 0.8], dtype=np.float32),
+            )
+            self.assertFalse(canonical.metadata["repeat_collapse"]["applied"])
+
+    def test_kuairec_watchratio_preset_clips_targets_and_collapses_pairs(self) -> None:
+        """Explicit KuaiRec watch-ratio runs should keep the clipped big-matrix path."""
         with TemporaryDirectory() as tmp_dir:
             data_root = Path(tmp_dir) / "KuaiRec_v2" / "data"
             data_root.mkdir(parents=True)
             (data_root / "big_matrix.csv").write_text(
-                ("user_id,video_id,watch_ratio,timestamp\n1,10,0.2,100\n1,10,573.4572,200\n2,11,0.8,300\n"),
+                (
+                    "user_id,video_id,watch_ratio,timestamp\n1,10,573.4572,100\n1,10,0.2,200\n2,11,0.8,300\n"
+                ),
                 encoding="utf-8",
             )
 
-            canonical = load_kuairec_v2(data_dir=tmp_dir)
+            canonical = load_kuairec_v2(
+                data_dir=tmp_dir,
+                matrix_variant="big_matrix",
+                preprocessing_preset="kuairec_watchratio",
+            )
             raw_canonical = load_kuairec_v2(
                 data_dir=tmp_dir,
+                matrix_variant="big_matrix",
                 preprocessing_preset="kuairec_watchratio_raw",
             )
 
         self.assertEqual(len(canonical), 2)
         self.assertEqual(len(raw_canonical), 3)
+        self.assertEqual(canonical.preprocessing_preset, "kuairec_watchratio")
         np.testing.assert_allclose(canonical.raw_target, np.array([5.0, 0.8], dtype=np.float32))
         np.testing.assert_array_equal(canonical.repeat_count, np.array([2, 1], dtype=np.uint8))
         np.testing.assert_allclose(
-            canonical.repeat_priority_mean,
+            canonical.repeat_mean_target,
             np.array([2.6, 0.8], dtype=np.float32),
         )
         np.testing.assert_allclose(
-            canonical.repeat_priority_max,
+            canonical.repeat_max_target,
             np.array([5.0, 0.8], dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            canonical.repeat_latest_target,
+            np.array([0.2, 0.8], dtype=np.float32),
         )
         self.assertEqual(canonical.metadata["watch_ratio_policy"], "clipped_to_5")
         self.assertEqual(canonical.metadata["repeat_collapse"]["dropped_rows"], 1)
@@ -774,7 +847,9 @@ class DataContractTests(unittest.TestCase):
             data_root = Path(tmp_dir) / "KuaiRand-1K" / "data"
             data_root.mkdir(parents=True)
             (data_root / "log_standard_pairs.csv").write_text(
-                ("user_id,video_id,is_click,is_like,is_hate,is_follow,is_comment,long_view,play_time_ms,duration_ms,is_rand,time_ms\n1,10,1,0,0,0,0,0,1000,1000,0,10\n1,10,1,1,0,0,0,1,5000,1000,0,20\n"),
+                (
+                    "user_id,video_id,is_click,is_like,is_hate,is_follow,is_comment,long_view,play_time_ms,duration_ms,is_rand,time_ms\n1,10,1,1,0,0,0,1,5000,1000,0,10\n1,10,1,0,0,0,0,0,1000,1000,0,20\n"
+                ),
                 encoding="utf-8",
             )
 
@@ -782,8 +857,19 @@ class DataContractTests(unittest.TestCase):
 
         self.assertEqual(len(canonical), 1)
         np.testing.assert_array_equal(canonical.repeat_count, np.array([2], dtype=np.uint8))
-        np.testing.assert_allclose(canonical.repeat_priority_mean, np.array([3.0], dtype=np.float32))
-        np.testing.assert_allclose(canonical.repeat_priority_max, np.array([5.0], dtype=np.float32))
+        np.testing.assert_allclose(canonical.repeat_mean_target, np.array([3.0], dtype=np.float32))
+        np.testing.assert_allclose(canonical.repeat_max_target, np.array([5.0], dtype=np.float32))
+        np.testing.assert_allclose(
+            canonical.repeat_latest_target, np.array([1.0], dtype=np.float32)
+        )
+        np.testing.assert_array_equal(
+            canonical.repeat_behavior_labels,
+            np.array(["click", "like", "follow", "comment", "hate", "long_view"]),
+        )
+        np.testing.assert_array_equal(
+            canonical.repeat_behavior_counts,
+            np.array([[2, 1, 0, 0, 0, 1]], dtype=np.uint8),
+        )
         self.assertEqual(canonical.metadata["repeat_collapse"]["dropped_rows"], 1)
         self.assertTrue(canonical.metadata["repeat_collapse"]["preserves_repeat_stats"])
         self.assertEqual(canonical.metadata["repeat_collapse"]["stage"], "pre_split")
@@ -798,11 +884,15 @@ class DataContractTests(unittest.TestCase):
             data_root = Path(tmp_dir) / "KuaiRand-1K" / "data"
             data_root.mkdir(parents=True)
             (data_root / "log_standard_4_08_to_4_21_1k.csv").write_text(
-                ("user_id,video_id,is_click,is_like,is_hate,is_follow,is_comment,long_view,play_time_ms,duration_ms,is_rand,time_ms\n1,10,1,0,0,0,0,1,1000,1000,0,10\n"),
+                (
+                    "user_id,video_id,is_click,is_like,is_hate,is_follow,is_comment,long_view,play_time_ms,duration_ms,is_rand,time_ms\n1,10,1,0,0,0,0,1,1000,1000,0,10\n"
+                ),
                 encoding="utf-8",
             )
             (data_root / "log_random_4_22_to_5_08_1k.csv").write_text(
-                ("user_id,video_id,is_click,is_like,is_hate,is_follow,is_comment,long_view,play_time_ms,duration_ms,is_rand,time_ms\n2,11,1,1,0,0,0,1,1000,1000,1,20\n"),
+                (
+                    "user_id,video_id,is_click,is_like,is_hate,is_follow,is_comment,long_view,play_time_ms,duration_ms,is_rand,time_ms\n2,11,1,1,0,0,0,1,1000,1000,1,20\n"
+                ),
                 encoding="utf-8",
             )
 
@@ -910,7 +1000,9 @@ class DataContractTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (data_root / "item_daily_features.csv").write_text(
-                ("video_id,date,author_id,video_type,upload_dt,upload_type,visible_status,music_id\n10,20200705,33,NORMAL,2020-03-30,ShortImport,public,77\n11,20200705,44,NORMAL,2020-03-30,ShortImport,private,88\n"),
+                (
+                    "video_id,date,author_id,video_type,upload_dt,upload_type,visible_status,music_id\n10,20200705,33,NORMAL,2020-03-30,ShortImport,public,77\n11,20200705,44,NORMAL,2020-03-30,ShortImport,private,88\n"
+                ),
                 encoding="utf-8",
             )
             (data_root / "item_categories.csv").write_text(
@@ -955,7 +1047,9 @@ class DataContractTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (data_root / "item_daily_features.csv").write_text(
-                ("video_id,date,author_id,video_type,upload_dt,upload_type,visible_status,music_id\n10,20200705,33,NORMAL,2020-03-30,ShortImport,public,77\n"),
+                (
+                    "video_id,date,author_id,video_type,upload_dt,upload_type,visible_status,music_id\n10,20200705,33,NORMAL,2020-03-30,ShortImport,public,77\n"
+                ),
                 encoding="utf-8",
             )
             (data_root / "item_categories.csv").write_text(
@@ -963,7 +1057,9 @@ class DataContractTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (data_root / "kuairec_caption_category.csv").write_text(
-                ("video_id,manual_cover_text,caption,topic_tag,first_level_category_id,first_level_category_name,second_level_category_id,second_level_category_name,third_level_category_id,third_level_category_name\n10,UNKNOWN,,[],27,HighTech,124,Sub\n"),
+                (
+                    "video_id,manual_cover_text,caption,topic_tag,first_level_category_id,first_level_category_name,second_level_category_id,second_level_category_name,third_level_category_id,third_level_category_name\n10,UNKNOWN,,[],27,HighTech,124,Sub\n"
+                ),
                 encoding="utf-8",
             )
 

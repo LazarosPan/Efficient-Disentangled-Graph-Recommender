@@ -162,11 +162,13 @@ def load_kuairec_v2(
     include_optional_features: bool = True,
     feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY,
     preprocessing_preset: str | None = None,
-    matrix_variant: str = "big_matrix",
+    matrix_variant: str = "small_matrix",
 ) -> CanonicalInteractions:
     """Load KuaiRec v2 from ``data_dir/KuaiRec_v2/data/<matrix_variant>.csv``.
 
     Expected columns: user_id, video_id, watch_ratio, timestamp
+    The default view uses ``small_matrix`` / ``kuairec_fullobs`` so the
+    repository favors the nearly fully observed benchmark split by default.
     Label: watch_ratio >= 0.5 -> positive
     Sign:  (watch_ratio clipped to [0,2] - 1) -> [-1, 1]
     """
@@ -210,10 +212,20 @@ def load_kuairec_v2(
         df["video_id"].to_numpy(),
     )
     raw_watch_ratio = df["watch_ratio"].to_numpy()
-    timestamps_arr = downcast_numeric_arrays(df["timestamp"].to_numpy())[0] if "timestamp" in df.columns else np.zeros(len(df), dtype=np.int32)
+    timestamps_arr = (
+        downcast_numeric_arrays(df["timestamp"].to_numpy())[0]
+        if "timestamp" in df.columns
+        else np.zeros(len(df), dtype=np.int32)
+    )
 
-    effective_preset = preprocessing_preset or ("kuairec_fullobs" if matrix_variant == "small_matrix" else "kuairec_watchratio")
-    stabilized_watch_ratio = raw_watch_ratio if effective_preset == "kuairec_watchratio_raw" else np.clip(raw_watch_ratio, 0.0, 5.0)
+    effective_preset = preprocessing_preset or (
+        "kuairec_fullobs" if matrix_variant == "small_matrix" else "kuairec_watchratio"
+    )
+    stabilized_watch_ratio = (
+        raw_watch_ratio
+        if effective_preset in {"kuairec_fullobs", "kuairec_watchratio_raw"}
+        else np.clip(raw_watch_ratio, 0.0, 5.0)
+    )
     collapsed_rows = 0
     repeat_summary = None
     if effective_preset == "kuairec_watchratio":
@@ -332,10 +344,18 @@ def load_kuairec_v2(
             repeat_summary,
             applied=effective_preset == "kuairec_watchratio",
             dropped_rows=collapsed_rows,
-            reason=("Collapse repeated raw user-item pairs before splitting so the same pair cannot span train/val/test; keep the strongest watch-ratio observation with timestamp tie-breaks."),
+            reason=(
+                "Collapse repeated raw user-item pairs before splitting so the "
+                "same pair cannot span train/val/test; keep the strongest "
+                "watch-ratio observation with timestamp tie-breaks."
+            ),
             metadata={
                 "matrix_variant": matrix_variant,
-                "watch_ratio_policy": ("raw" if effective_preset == "kuairec_watchratio_raw" else "clipped_to_5"),
+                "watch_ratio_policy": (
+                    "raw"
+                    if effective_preset in {"kuairec_fullobs", "kuairec_watchratio_raw"}
+                    else "clipped_to_5"
+                ),
             },
         ),
         feedback_type="implicit",

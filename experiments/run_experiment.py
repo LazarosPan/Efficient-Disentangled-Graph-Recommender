@@ -30,7 +30,7 @@ import numpy as np
 import torch
 from scripts._workflow_helpers import configure_cli_logging
 from src.data.graph_builder import build_graph
-from src.data.loaders import load_dataset
+from src.data.loaders import default_preprocessing_preset, load_dataset
 from src.losses.loss_suite import LossSuite
 from src.models.ucagnn import UCaGNN
 from src.profiling.gpu_profiler import GPUProfiler
@@ -128,7 +128,11 @@ _BENCHMARK_SHARED_CONFIG_FIELD_SET = frozenset(
     },
 )
 BENCHMARK_CONFIG_FIELDS = (
-    *(field_name for field_name in CONFIG_OVERRIDE_FIELDS if field_name in _BENCHMARK_SHARED_CONFIG_FIELD_SET),
+    *(
+        field_name
+        for field_name in CONFIG_OVERRIDE_FIELDS
+        if field_name in _BENCHMARK_SHARED_CONFIG_FIELD_SET
+    ),
     "num_neighbors_options",
     "device",
     "data_dir",
@@ -294,7 +298,9 @@ def _build_training_identity(
         "preset": preset or "custom",
         "intervention": intervention,
         "training_mode": "mini_batch",
-        "config": {field_name: config_values[field_name] for field_name in _TRAINING_IDENTITY_FIELDS},
+        "config": {
+            field_name: config_values[field_name] for field_name in _TRAINING_IDENTITY_FIELDS
+        },
     }
     return identity, _stable_identity_hash(identity)
 
@@ -309,7 +315,9 @@ def _build_evaluation_identity(
         "identity_version": _CHECKPOINT_IDENTITY_VERSION,
         "identity_kind": "evaluation",
         "training_hash": training_hash,
-        "config": {field_name: config_values[field_name] for field_name in _EVALUATION_IDENTITY_FIELDS},
+        "config": {
+            field_name: config_values[field_name] for field_name in _EVALUATION_IDENTITY_FIELDS
+        },
     }
     return identity, _stable_identity_hash(identity)
 
@@ -434,10 +442,16 @@ def _sample_canonical_interactions(
     for indices, count in zip(split_indices, sample_counts, strict=True):
         if count <= 0:
             continue
-        chosen = indices if count >= len(indices) else np.sort(rng.choice(indices, size=count, replace=False))
+        chosen = (
+            indices
+            if count >= len(indices)
+            else np.sort(rng.choice(indices, size=count, replace=False))
+        )
         chosen_parts.append(chosen)
 
-    selected = np.sort(np.concatenate(chosen_parts)) if chosen_parts else np.array([], dtype=np.int64)
+    selected = (
+        np.sort(np.concatenate(chosen_parts)) if chosen_parts else np.array([], dtype=np.int64)
+    )
     selected_train = np.isin(selected, split_indices[0])
     selected_val = np.isin(selected, split_indices[1])
     selected_test = np.isin(selected, split_indices[2])
@@ -490,8 +504,14 @@ def _sample_canonical_interactions(
         popularity=sampled_popularity,
         n_users=len(selected_users),
         n_items=len(selected_items),
-        user_map={reverse_user_map[int(old_id)]: new_id for new_id, old_id in enumerate(selected_users.tolist())},
-        item_map={reverse_item_map[int(old_id)]: new_id for new_id, old_id in enumerate(selected_items.tolist())},
+        user_map={
+            reverse_user_map[int(old_id)]: new_id
+            for new_id, old_id in enumerate(selected_users.tolist())
+        },
+        item_map={
+            reverse_item_map[int(old_id)]: new_id
+            for new_id, old_id in enumerate(selected_items.tolist())
+        },
         user_features=_slice_optional(canonical.user_features, selected_users),
         item_features=_slice_optional(canonical.item_features, selected_items),
         train_mask=selected_train,
@@ -575,7 +595,10 @@ def _validate_resume_identity(
         saved_training_hash,
         str,
     ):
-        message = f"Checkpoint at {checkpoint_path} lacks training identity metadata and cannot be auto-resumed safely."
+        message = (
+            f"Checkpoint at {checkpoint_path} lacks training identity metadata "
+            "and cannot be auto-resumed safely."
+        )
         if explicit_checkpoint_path:
             raise ValueError(message)
         logger.warning(message)
@@ -583,8 +606,9 @@ def _validate_resume_identity(
 
     if saved_training_hash != training_hash or saved_training_identity != training_identity:
         message = (
-            f"Checkpoint training identity mismatch for {checkpoint_path}. A "
-            "checkpoint only resumes when every training-defining parameter matches."
+            f"Checkpoint training identity mismatch for {checkpoint_path}. "
+            "A checkpoint only resumes when every training-defining parameter "
+            "matches."
         )
         if explicit_checkpoint_path:
             raise ValueError(message)
@@ -942,7 +966,8 @@ def _verify_selected_auto_batch_size(
 
         if candidate != selected_batch_size:
             logger.info(
-                "Auto batch-size verification corrected %s from %d to %d on the final runtime state.",
+                "Auto batch-size verification corrected %s from %d to %d "
+                "on the final runtime state.",
                 config.dataset,
                 selected_batch_size,
                 candidate,
@@ -951,7 +976,7 @@ def _verify_selected_auto_batch_size(
 
     raise RuntimeError(
         (
-            f"Auto batch-size verification exhausted all candidates for "
+            "Auto batch-size verification exhausted all candidates for "
             f"{config.dataset} starting from {selected_batch_size}."
         ),
     )
@@ -1243,10 +1268,14 @@ def normalize_benchmark_config_overrides(
 ) -> dict[str, object]:
     """Normalize the config-bearing portion of a benchmark or formal-run payload."""
     default_config = UCaGNNConfig()
-    normalized: dict[str, object] = {field_name: raw_config.get(field_name) for field_name in BENCHMARK_CONFIG_FIELDS}
+    normalized: dict[str, object] = {
+        field_name: raw_config.get(field_name) for field_name in BENCHMARK_CONFIG_FIELDS
+    }
     normalized["use_early_stopping"] = raw_config.get("use_early_stopping", True)
     batch_size = raw_config.get("batch_size")
-    normalized["batch_size"] = int(batch_size) if batch_size is not None else default_config.batch_size
+    normalized["batch_size"] = (
+        int(batch_size) if batch_size is not None else default_config.batch_size
+    )
     normalized["auto_batch_size"] = bool(raw_config.get("auto_batch_size", False))
     batch_size_candidates = raw_config.get("batch_size_candidates")
     normalized["batch_size_candidates"] = (
@@ -1258,15 +1287,25 @@ def normalize_benchmark_config_overrides(
         raw_config.get("lr_scheduler"),
     )
     lr_scheduler_factor = raw_config.get("lr_scheduler_factor")
-    normalized["lr_scheduler_factor"] = float(lr_scheduler_factor) if lr_scheduler_factor is not None else None
+    normalized["lr_scheduler_factor"] = (
+        float(lr_scheduler_factor) if lr_scheduler_factor is not None else None
+    )
     lr_scheduler_patience = raw_config.get("lr_scheduler_patience")
-    normalized["lr_scheduler_patience"] = int(lr_scheduler_patience) if lr_scheduler_patience is not None else None
+    normalized["lr_scheduler_patience"] = (
+        int(lr_scheduler_patience) if lr_scheduler_patience is not None else None
+    )
     single_branch_layers = raw_config.get("single_branch_gnn_layers")
-    normalized["single_branch_gnn_layers"] = int(single_branch_layers) if single_branch_layers is not None else None
+    normalized["single_branch_gnn_layers"] = (
+        int(single_branch_layers) if single_branch_layers is not None else None
+    )
     interest_layers = raw_config.get("interest_gnn_layers")
-    normalized["interest_gnn_layers"] = int(interest_layers) if interest_layers is not None else None
+    normalized["interest_gnn_layers"] = (
+        int(interest_layers) if interest_layers is not None else None
+    )
     conformity_layers = raw_config.get("conformity_gnn_layers")
-    normalized["conformity_gnn_layers"] = int(conformity_layers) if conformity_layers is not None else None
+    normalized["conformity_gnn_layers"] = (
+        int(conformity_layers) if conformity_layers is not None else None
+    )
     dropout = raw_config.get("dropout")
     normalized["dropout"] = float(dropout) if dropout is not None else None
     resolved_num_neighbors, num_neighbors_options = resolve_profile_num_neighbors(
@@ -1296,7 +1335,9 @@ def normalize_benchmark_config_overrides(
     loader_max_rows = raw_config.get("loader_max_rows")
     normalized["loader_max_rows"] = int(loader_max_rows) if loader_max_rows is not None else None
     sample_interactions = raw_config.get("sample_interactions")
-    normalized["sample_interactions"] = int(sample_interactions) if sample_interactions is not None else None
+    normalized["sample_interactions"] = (
+        int(sample_interactions) if sample_interactions is not None else None
+    )
     return normalized
 
 
@@ -1320,8 +1361,8 @@ def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfi
             raise ValueError(
                 (
                     f"preset={cli_preset!r} conflicts with recipe preset={recipe_preset!r}. "
-                    "Use the recipe as-is, choose a different recipe alias, or drop "
-                    "--recipe and pass --preset directly."
+                    "Use the recipe as-is, choose a different recipe alias, or "
+                    "drop --recipe and pass --preset directly."
                 ),
             )
         recipe_overrides.update(recipe.get("overrides", {}))
@@ -1345,7 +1386,7 @@ def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfi
         conflict_preview = ", ".join(conflicting_recipe_fields)
         raise ValueError(
             (
-                f"Explicit overrides conflict with recipe-owned fields: "
+                "Explicit overrides conflict with recipe-owned fields: "
                 f"{conflict_preview}. Use the recipe as-is or drop --recipe."
             ),
         )
@@ -1367,6 +1408,9 @@ def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfi
     for override_group in (recipe_overrides, explicit_overrides):
         for key, val in override_group.items():
             setattr(config, key, val)
+
+    if config.preprocessing_preset is None:
+        config.preprocessing_preset = default_preprocessing_preset(config.dataset)
 
     config.validate()
     return config
@@ -1488,7 +1532,8 @@ def run_experiment(
     logger.info("  %r", canonical)
     logger.info(f"  Nodes: {data.num_nodes:,}, Edges: {data.edge_index.size(1):,}")
     logger.info(
-        f"  Train: {data.train_mask.sum():,}, Val: {data.val_mask.sum():,}, Test: {data.test_mask.sum():,}",
+        f"  Train: {data.train_mask.sum():,}, Val: {data.val_mask.sum():,}, "
+        f"Test: {data.test_mask.sum():,}",
     )
 
     model = build_runtime_model(config, canonical, data)
@@ -1650,7 +1695,9 @@ def run_experiment(
                         history = trainer.train(
                             start_epoch=start_epoch,
                             history=history,
-                            checkpoint_path=current_checkpoint_path if should_persist_checkpoint else None,
+                            checkpoint_path=current_checkpoint_path
+                            if should_persist_checkpoint
+                            else None,
                             checkpoint_every=checkpoint_every,
                         )
                         resolved_checkpoint_path = current_checkpoint_path
@@ -1668,7 +1715,10 @@ def run_experiment(
                                         "updated_at = ? WHERE id = ?"
                                     ),
                                     (
-                                        json.dumps(dataclasses.asdict(config), default=str),
+                                        json.dumps(
+                                            dataclasses.asdict(config),
+                                            default=str,
+                                        ),
                                         training_hash,
                                         evaluation_hash,
                                         datetime.now(UTC).isoformat(),
@@ -1697,9 +1747,8 @@ def run_experiment(
                 else:
                     raise RuntimeError(
                         (
-                            f"Auto batch-size training fallback exhausted all "
-                            f"candidates for {config.dataset} starting from "
-                            f"{config.batch_size}."
+                            "Auto batch-size training fallback exhausted all "
+                            f"candidates for {config.dataset} starting from {config.batch_size}."
                         ),
                     )
             else:
@@ -1732,7 +1781,9 @@ def run_experiment(
             )
         total_training_time_s = time.perf_counter() - train_start_
         peak_vram_mb = torch.cuda.max_memory_allocated() / 1024**2 if cuda_ else 0.0
-        experiment_logger.log_metric(exp_id, "training_time_s", total_training_time_s, split="train")
+        experiment_logger.log_metric(
+            exp_id, "training_time_s", total_training_time_s, split="train"
+        )
         if cuda_:
             experiment_logger.log_metric(exp_id, "peak_vram_mb", peak_vram_mb, split="train")
         if history["train_loss"]:
@@ -1792,7 +1843,9 @@ def run_experiment(
             "exp_id": exp_id,
             "test_metrics": test_metrics,
             "history": history,
-            "checkpoint_path": str(final_checkpoint_path) if final_checkpoint_path is not None else None,
+            "checkpoint_path": str(final_checkpoint_path)
+            if final_checkpoint_path is not None
+            else None,
             "canonical_name": canonical_name,
             "resumed": checkpoint_state is not None,
             "peak_vram_mb": peak_vram_mb,

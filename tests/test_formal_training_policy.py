@@ -112,7 +112,9 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         config = UCaGNNConfig()
 
         self.assertEqual(config.auxiliary_losses_start_epoch, config.auxiliary_losses_start_epoch)
-        self.assertEqual(config.popularity_supervision_start_epoch, config.popularity_supervision_start_epoch)
+        self.assertEqual(
+            config.popularity_supervision_start_epoch, config.popularity_supervision_start_epoch
+        )
 
     def test_build_config_respects_dropout_override(self) -> None:
         """Catalog/runtime plumbing should pass dropout through to the config."""
@@ -126,6 +128,16 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertEqual(config.dropout, 0.25)
         self.assertEqual(config.scoring_weight_mode, "learned")
+
+    def test_build_config_resolves_kuairec_default_preprocessing_preset(self) -> None:
+        """Default config assembly should pin the causal-ready KuaiRec view."""
+        config = build_config(_experiment_args(dataset="kuairec_v2"))
+
+        self.assertEqual(config.preprocessing_preset, "kuairec_fullobs")
+        self.assertIn(
+            "ppresetkuairec_fullobs",
+            _build_canonical_name(config, None, None),
+        )
 
     def test_build_config_accepts_lr_scheduler_override(self) -> None:
         """CLI/config plumbing should allow scheduler selection."""

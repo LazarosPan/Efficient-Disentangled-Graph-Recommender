@@ -13,6 +13,7 @@ from ...utils.interaction_indexing import (
     build_repeat_collapse_canonical_payload,
     collapse_pairwise_max_priority_rows_with_stats,
     remap_interaction_ids,
+    summarize_pairwise_aligned_counts,
 )
 from ..canonical import (
     CanonicalInteractions,
@@ -28,6 +29,7 @@ from ..feature_policy import (
 _BEHAVIOR_SIGN = {"buy": 1.0, "cart": 0.5, "fav": 0.25, "pv": -0.25}
 _BEHAVIOR_LABEL = {"buy": 1.0, "cart": 1.0, "fav": 1.0, "pv": 0.0}
 _BEHAVIOR_TARGET = {"buy": 3.0, "cart": 2.0, "fav": 1.0, "pv": 0.0}
+_REPEAT_BEHAVIOR_LABELS = ("pv", "fav", "cart", "buy")
 
 logger = logging.getLogger(__name__)
 
@@ -97,9 +99,18 @@ def load_taobao(
 
     effective_preset = preprocessing_preset or "taobao_multibehavior"
     df = df.with_columns(
-        pl.col("behavior").replace(_BEHAVIOR_LABEL, default=0.0).cast(pl.Float32).alias("label"),
-        pl.col("behavior").replace(_BEHAVIOR_SIGN, default=0.0).cast(pl.Float32).alias("sign"),
-        pl.col("behavior").replace(_BEHAVIOR_TARGET, default=0.0).cast(pl.Float32).alias("raw_target"),
+        pl.col("behavior")
+        .replace_strict(_BEHAVIOR_LABEL, default=0.0)
+        .cast(pl.Float32)
+        .alias("label"),
+        pl.col("behavior")
+        .replace_strict(_BEHAVIOR_SIGN, default=0.0)
+        .cast(pl.Float32)
+        .alias("sign"),
+        pl.col("behavior")
+        .replace_strict(_BEHAVIOR_TARGET, default=0.0)
+        .cast(pl.Float32)
+        .alias("raw_target"),
     )
     behavior_type = np.asarray(df["behavior"].to_list(), dtype="<U16")
     label = df["label"].to_numpy()
@@ -107,7 +118,22 @@ def load_taobao(
     raw_target = df["raw_target"].to_numpy()
     collapsed_rows = 0
     repeat_summary = None
+    repeat_behavior_counts = None
+    repeat_behavior_labels = None
     if effective_preset == "taobao_multibehavior":
+        repeat_behavior_counts = summarize_pairwise_aligned_counts(
+            raw_users_arr,
+            raw_items_arr,
+            raw_target,
+            np.column_stack(
+                [
+                    (behavior_type == behavior_label).astype(np.uint8)
+                    for behavior_label in _REPEAT_BEHAVIOR_LABELS
+                ],
+            ),
+            timestamp=timestamps_arr,
+        )
+        repeat_behavior_labels = np.asarray(_REPEAT_BEHAVIOR_LABELS, dtype="<U16")
         # Collapse repeated user-item pairs before split construction so one
         # raw pair cannot leak across train/val/test boundaries. The strongest
         # observed behavior wins, with timestamp as the tie-breaker.
@@ -171,7 +197,13 @@ def load_taobao(
             repeat_summary,
             applied=effective_preset == "taobao_multibehavior",
             dropped_rows=collapsed_rows,
-            reason=("Collapse repeated raw user-item pairs before splitting so the same pair cannot span train/val/test; keep the strongest behavior with timestamp tie-breaks."),
+            reason=(
+                "Collapse repeated raw user-item pairs before splitting so the "
+                "same pair cannot span train/val/test; keep the strongest "
+                "behavior with timestamp tie-breaks."
+            ),
+            repeat_behavior_counts=repeat_behavior_counts,
+            repeat_behavior_labels=repeat_behavior_labels,
         ),
         feedback_type="multi-behavior",
         preprocessing_preset=effective_preset,

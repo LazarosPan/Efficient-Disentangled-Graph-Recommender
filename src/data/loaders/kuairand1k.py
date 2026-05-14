@@ -17,6 +17,7 @@ from ...utils.interaction_indexing import (
     build_repeat_collapse_canonical_payload,
     collapse_pairwise_max_priority_rows_with_stats,
     remap_interaction_ids,
+    summarize_pairwise_aligned_counts,
 )
 from ..canonical import (
     CanonicalInteractions,
@@ -40,6 +41,14 @@ _OPTIONAL_UINT_COLS = (
     "is_rand",
 )
 _OPTIONAL_FLOAT_COLS = ("play_time_ms", "duration_ms")
+_REPEAT_BEHAVIOR_LABELS = (
+    "click",
+    "like",
+    "follow",
+    "comment",
+    "hate",
+    "long_view",
+)
 
 
 def load_kuairand1k(
@@ -117,17 +126,31 @@ def load_kuairand1k(
 
     # Fill missing optional columns with 0
     for col in _OPTIONAL_UINT_COLS:
-        df = df.with_columns(pl.lit(0, dtype=pl.UInt8).alias(col)) if col not in df.columns else df.with_columns(pl.col(col).fill_null(0).cast(pl.UInt8))
+        df = (
+            df.with_columns(pl.lit(0, dtype=pl.UInt8).alias(col))
+            if col not in df.columns
+            else df.with_columns(pl.col(col).fill_null(0).cast(pl.UInt8))
+        )
     for col in _OPTIONAL_FLOAT_COLS:
-        df = df.with_columns(pl.lit(0.0, dtype=pl.Float32).alias(col)) if col not in df.columns else df.with_columns(pl.col(col).fill_nan(0.0).fill_null(0.0).cast(pl.Float32))
-    df = df.with_columns(pl.lit(0, dtype=pl.Int64).alias("time_ms")) if "time_ms" not in df.columns else df.with_columns(pl.col("time_ms").fill_null(0).cast(pl.Int64))
+        df = (
+            df.with_columns(pl.lit(0.0, dtype=pl.Float32).alias(col))
+            if col not in df.columns
+            else df.with_columns(pl.col(col).fill_nan(0.0).fill_null(0.0).cast(pl.Float32))
+        )
+    df = (
+        df.with_columns(pl.lit(0, dtype=pl.Int64).alias("time_ms"))
+        if "time_ms" not in df.columns
+        else df.with_columns(pl.col("time_ms").fill_null(0).cast(pl.Int64))
+    )
 
-    raw_users_arr, raw_items_arr, play_times_arr, durations_arr, timestamps_arr = downcast_numeric_arrays(
-        df["user_id"].to_numpy(),
-        df["video_id"].to_numpy(),
-        df["play_time_ms"].to_numpy(),
-        df["duration_ms"].to_numpy(),
-        df["time_ms"].to_numpy(),
+    raw_users_arr, raw_items_arr, play_times_arr, durations_arr, timestamps_arr = (
+        downcast_numeric_arrays(
+            df["user_id"].to_numpy(),
+            df["video_id"].to_numpy(),
+            df["play_time_ms"].to_numpy(),
+            df["duration_ms"].to_numpy(),
+            df["time_ms"].to_numpy(),
+        )
     )
     clicks_arr = df["is_click"].to_numpy()
     likes_arr = df["is_like"].to_numpy()
@@ -167,6 +190,22 @@ def load_kuairand1k(
         0.0,
         5.0,
     ).astype(np.float32)
+    repeat_behavior_counts = summarize_pairwise_aligned_counts(
+        raw_users_arr,
+        raw_items_arr,
+        raw_target,
+        np.column_stack(
+            (
+                clicks_arr > 0,
+                likes_arr > 0,
+                follows_arr > 0,
+                comments_arr > 0,
+                hates_arr > 0,
+                long_views_arr > 0,
+            ),
+        ).astype(np.uint8, copy=False),
+        timestamp=timestamps_arr,
+    )
 
     (
         (
@@ -287,7 +326,13 @@ def load_kuairand1k(
             repeat_summary,
             applied=True,
             dropped_rows=collapsed_rows,
-            reason=("Collapse repeated raw user-item pairs before splitting so the same pair cannot span train/val/test; keep the strongest watch-ratio outcome with timestamp tie-breaks."),
+            reason=(
+                "Collapse repeated raw user-item pairs before splitting so the "
+                "same pair cannot span train/val/test; keep the strongest "
+                "watch-ratio outcome with timestamp tie-breaks."
+            ),
+            repeat_behavior_counts=repeat_behavior_counts,
+            repeat_behavior_labels=np.asarray(_REPEAT_BEHAVIOR_LABELS, dtype="<U12"),
             metadata={
                 "is_rand": is_rand_arr.astype(bool, copy=False),
                 "exposure_summary": {

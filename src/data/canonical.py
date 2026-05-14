@@ -41,10 +41,19 @@ class CanonicalInteractions:
     exposure_flag: np.ndarray | None = None  # (N,) optional randomized-exposure mask
     source_domain: np.ndarray | None = None  # (N,) optional interaction-domain labels
     repeat_count: np.ndarray | None = None  # (N,) optional raw rows aggregated per pair
-    repeat_priority_mean: np.ndarray | None = None  # (N,) optional mean collapse priority
-    repeat_priority_max: np.ndarray | None = None  # (N,) optional max collapse priority
+    repeat_mean_target: np.ndarray | None = None  # (N,) optional mean target across repeated rows
+    repeat_max_target: np.ndarray | None = None  # (N,) optional max target across repeated rows
+    repeat_latest_target: np.ndarray | None = (
+        None  # (N,) optional latest target across repeated rows
+    )
     repeat_first_timestamp: np.ndarray | None = None  # (N,) optional earliest repeated timestamp
     repeat_last_timestamp: np.ndarray | None = None  # (N,) optional latest repeated timestamp
+    repeat_behavior_counts: np.ndarray | None = (
+        None  # (N, B) optional behavior-count matrix across repeated rows
+    )
+    repeat_behavior_labels: np.ndarray | None = (
+        None  # (B,) optional labels for repeat_behavior_counts columns
+    )
     feedback_type: str | None = None  # dataset-level feedback semantics descriptor
     preprocessing_preset: str | None = None  # dataset-specific preprocessing preset label
 
@@ -64,8 +73,14 @@ class CanonicalInteractions:
         itf = f", item_feat={self.item_features.shape}" if self.item_features is not None else ""
         splits = ", predefined_splits=True" if self.train_mask is not None else ""
         feedback = f", feedback={self.feedback_type}" if self.feedback_type else ""
-        preset = f", preset={self.preprocessing_preset}" if self.preprocessing_preset is not None else ""
-        return f"CanonicalInteractions(n_users={self.n_users}, n_items={self.n_items}, interactions={len(self):,}, pos_rate={self.label.mean():.2%}{uf}{itf}{feedback}{preset}{splits})"
+        preset = (
+            f", preset={self.preprocessing_preset}" if self.preprocessing_preset is not None else ""
+        )
+        return (
+            "CanonicalInteractions(n_users={self.n_users}, n_items={self.n_items}, "
+            f"interactions={len(self):,}, pos_rate={self.label.mean():.2%}{uf}{itf}{feedback}"
+            f"{preset}{splits})"
+        )
 
     def temporal_split(
         self,
@@ -297,12 +312,24 @@ class CanonicalInteractions:
             )
             test_mask = self.test_mask
         else:
-            split_fn = self.per_user_temporal_split if derived_split_mode == "per_user_temporal" else self.temporal_split
+            split_fn = (
+                self.per_user_temporal_split
+                if derived_split_mode == "per_user_temporal"
+                else self.temporal_split
+            )
             train_mask, val_mask, test_mask = split_fn(train_ratio, val_ratio)
 
-        if np.any(train_mask & val_mask) or np.any(train_mask & test_mask) or np.any(val_mask & test_mask):
+        if (
+            np.any(train_mask & val_mask)
+            or np.any(train_mask & test_mask)
+            or np.any(val_mask & test_mask)
+        ):
             raise ValueError(
-                "Data integrity violation: train, val, and test splits must be mutually exclusive. Check that the dataset loader assigns each interaction to exactly one split.",
+                (
+                    "Data integrity violation: train, val, and test splits must "
+                    "be mutually exclusive. Check that the dataset loader assigns "
+                    "each interaction to exactly one split."
+                ),
             )
 
         return train_mask, val_mask, test_mask
@@ -366,10 +393,13 @@ def build_indexed_canonical_interactions(
     exposure_flag: np.ndarray | None = None,
     source_domain: np.ndarray | None = None,
     repeat_count: np.ndarray | None = None,
-    repeat_priority_mean: np.ndarray | None = None,
-    repeat_priority_max: np.ndarray | None = None,
+    repeat_mean_target: np.ndarray | None = None,
+    repeat_max_target: np.ndarray | None = None,
+    repeat_latest_target: np.ndarray | None = None,
     repeat_first_timestamp: np.ndarray | None = None,
     repeat_last_timestamp: np.ndarray | None = None,
+    repeat_behavior_counts: np.ndarray | None = None,
+    repeat_behavior_labels: np.ndarray | None = None,
     feedback_type: str | None = None,
     preprocessing_preset: str | None = None,
     train_mask: np.ndarray | None = None,
@@ -393,10 +423,13 @@ def build_indexed_canonical_interactions(
         exposure_flag: Optional exposure indicator aligned to the interactions.
         source_domain: Optional domain/view labels aligned to the interactions.
         repeat_count: Optional repeated-pair aggregate counts.
-        repeat_priority_mean: Optional repeated-pair mean priority values.
-        repeat_priority_max: Optional repeated-pair max priority values.
+        repeat_mean_target: Optional repeated-pair mean target values.
+        repeat_max_target: Optional repeated-pair max target values.
+        repeat_latest_target: Optional repeated-pair latest target values.
         repeat_first_timestamp: Optional earliest timestamp per collapsed pair.
         repeat_last_timestamp: Optional latest timestamp per collapsed pair.
+        repeat_behavior_counts: Optional repeated-pair behavior-count matrix.
+        repeat_behavior_labels: Optional labels for the behavior-count columns.
         feedback_type: Dataset-level feedback descriptor.
         preprocessing_preset: Dataset preprocessing preset label.
         train_mask: Optional predefined train split mask.
@@ -435,10 +468,13 @@ def build_indexed_canonical_interactions(
         exposure_flag=exposure_flag,
         source_domain=source_domain,
         repeat_count=repeat_count,
-        repeat_priority_mean=repeat_priority_mean,
-        repeat_priority_max=repeat_priority_max,
+        repeat_mean_target=repeat_mean_target,
+        repeat_max_target=repeat_max_target,
+        repeat_latest_target=repeat_latest_target,
         repeat_first_timestamp=repeat_first_timestamp,
         repeat_last_timestamp=repeat_last_timestamp,
+        repeat_behavior_counts=repeat_behavior_counts,
+        repeat_behavior_labels=repeat_behavior_labels,
         feedback_type=feedback_type,
         preprocessing_preset=preprocessing_preset,
         train_mask=train_mask,

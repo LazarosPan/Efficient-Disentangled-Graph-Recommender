@@ -43,6 +43,7 @@ class PairwisePriorityCollapse:
         repeat_count: Number of raw rows aggregated into each kept pair.
         priority_mean: Mean priority value across each repeated pair.
         priority_max: Maximum priority value for each repeated pair.
+        latest_priority: Latest priority value per pair when timestamps are provided.
         first_timestamp: Earliest timestamp per pair when timestamps are provided.
         last_timestamp: Latest timestamp per pair when timestamps are provided.
 
@@ -55,8 +56,20 @@ class PairwisePriorityCollapse:
     repeat_count: np.ndarray
     priority_mean: np.ndarray
     priority_max: np.ndarray
+    latest_priority: np.ndarray | None = None
     first_timestamp: np.ndarray | None = None
     last_timestamp: np.ndarray | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _PairwisePriorityGrouping:
+    """Internal ordering metadata shared by repeat-aware collapse helpers."""
+
+    order: np.ndarray
+    pair_starts: np.ndarray
+    pair_ends: np.ndarray
+    selected: np.ndarray
+    encounter_order: np.ndarray
 
 
 def remap_interaction_ids(
@@ -181,7 +194,8 @@ def _validate_pairwise_collapse_inputs(
     if timestamp is not None and timestamp.size != n_rows:
         raise ValueError("Timestamp tie-breakers must align with the interaction rows.")
     for values in aligned_arrays:
-        if values.size != n_rows:
+        row_count = int(values.shape[0]) if values.ndim > 0 else int(values.size)
+        if row_count != n_rows:
             raise ValueError("Aligned arrays must share the interaction-row length.")
     return n_rows
 
@@ -217,18 +231,28 @@ def pairwise_collapse_summary_to_canonical_fields(
     if summary is None:
         return {
             "repeat_count": None,
-            "repeat_priority_mean": None,
-            "repeat_priority_max": None,
+            "repeat_mean_target": None,
+            "repeat_max_target": None,
+            "repeat_latest_target": None,
             "repeat_first_timestamp": None,
             "repeat_last_timestamp": None,
         }
 
     return {
         "repeat_count": downcast_numeric_array(summary.repeat_count),
-        "repeat_priority_mean": summary.priority_mean,
-        "repeat_priority_max": summary.priority_max,
-        "repeat_first_timestamp": (downcast_numeric_array(summary.first_timestamp) if summary.first_timestamp is not None else None),
-        "repeat_last_timestamp": (downcast_numeric_array(summary.last_timestamp) if summary.last_timestamp is not None else None),
+        "repeat_mean_target": summary.priority_mean,
+        "repeat_max_target": summary.priority_max,
+        "repeat_latest_target": summary.latest_priority,
+        "repeat_first_timestamp": (
+            downcast_numeric_array(summary.first_timestamp)
+            if summary.first_timestamp is not None
+            else None
+        ),
+        "repeat_last_timestamp": (
+            downcast_numeric_array(summary.last_timestamp)
+            if summary.last_timestamp is not None
+            else None
+        ),
     }
 
 
@@ -265,6 +289,8 @@ def build_repeat_collapse_canonical_payload(
     dropped_rows: int,
     reason: str,
     metadata: dict[str, object] | None = None,
+    repeat_behavior_counts: np.ndarray | None = None,
+    repeat_behavior_labels: np.ndarray | None = None,
 ) -> dict[str, object]:
     """Build canonical repeat fields plus merged repeat-collapse metadata.
 
@@ -274,6 +300,9 @@ def build_repeat_collapse_canonical_payload(
         dropped_rows: Number of raw rows removed by the collapse.
         reason: Human-readable explanation of the collapse policy.
         metadata: Optional existing metadata to preserve and extend.
+        repeat_behavior_counts: Optional per-pair summed behavior counts aligned to
+            the collapsed rows.
+        repeat_behavior_labels: Optional labels describing the behavior-count columns.
 
     Returns:
         dict[str, object]: Keyword arguments for canonical construction containing
@@ -288,8 +317,129 @@ def build_repeat_collapse_canonical_payload(
     )
     return {
         **pairwise_collapse_summary_to_canonical_fields(summary),
+        "repeat_behavior_counts": (
+            downcast_numeric_array(repeat_behavior_counts)
+            if repeat_behavior_counts is not None
+            else None
+        ),
+        "repeat_behavior_labels": repeat_behavior_labels,
         "metadata": merged_metadata,
     }
+
+
+def _pairwise_group_boundaries(
+    raw_user_ids: np.ndarray,
+    raw_item_ids: np.ndarray,
+    order: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return inclusive pair starts and exclusive ends for one sorted row order."""
+    if order.size == 0:
+        empty = np.zeros(0, dtype=np.int64)
+        return empty, empty
+    ordered_users = raw_user_ids[order]
+    ordered_items = raw_item_ids[order]
+    pair_start = np.ones(order.size, dtype=bool)
+    if order.size > 1:
+        pair_start[1:] = (ordered_users[1:] != ordered_users[:-1]) | (
+            ordered_items[1:] != ordered_items[:-1]
+        )
+    pair_starts = np.flatnonzero(pair_start).astype(np.int64, copy=False)
+    pair_ends = np.concatenate(
+        [pair_starts[1:], np.array([order.size], dtype=np.int64)],
+    )
+    return pair_starts, pair_ends
+
+
+def _build_pairwise_priority_grouping(
+    raw_user_ids: np.ndarray,
+    raw_item_ids: np.ndarray,
+    priority: np.ndarray,
+    timestamp: np.ndarray | None,
+) -> _PairwisePriorityGrouping:
+    """Build the shared pair-group ordering used by repeat-aware helpers."""
+    timestamp_values = (
+        timestamp.astype(np.int64, copy=False)
+        if timestamp is not None
+        else np.zeros(raw_user_ids.size, dtype=np.int64)
+    )
+    priority_values = priority.astype(np.float64, copy=False)
+    row_index = np.arange(raw_user_ids.size, dtype=np.int64)
+    order = np.lexsort(
+        (
+            row_index,
+            timestamp_values,
+            priority_values,
+            raw_item_ids,
+            raw_user_ids,
+        ),
+    )
+    pair_starts, pair_ends = _pairwise_group_boundaries(
+        raw_user_ids,
+        raw_item_ids,
+        order,
+    )
+    selected = order[pair_ends - 1]
+    encounter_order = np.argsort(selected)
+    return _PairwisePriorityGrouping(
+        order=order,
+        pair_starts=pair_starts,
+        pair_ends=pair_ends,
+        selected=selected,
+        encounter_order=encounter_order,
+    )
+
+
+def summarize_pairwise_aligned_counts(
+    raw_user_ids: np.ndarray,
+    raw_item_ids: np.ndarray,
+    priority: np.ndarray,
+    row_counts: np.ndarray,
+    timestamp: np.ndarray | None = None,
+) -> np.ndarray:
+    """Sum row-aligned count columns per raw user-item pair.
+
+    Args:
+        raw_user_ids: Raw user IDs aligned to interactions.
+        raw_item_ids: Raw item IDs aligned to interactions.
+        priority: Scalar priority per interaction; larger values win.
+        row_counts: Two-dimensional count matrix aligned to the raw interaction rows.
+        timestamp: Optional timestamps used as a secondary tie-breaker so the output
+            order matches ``summarize_pairwise_max_priority_collapse(...)``.
+
+    Returns:
+        np.ndarray: Per-pair summed counts aligned to the collapsed-row encounter
+        order used by the repeat-collapse summary.
+
+    Raises:
+        ValueError: If ``row_counts`` is not a 2D array or does not align to the
+            interaction rows.
+
+    """
+    if row_counts.ndim != 2:
+        raise ValueError("row_counts must be a 2D array aligned to the interaction rows.")
+    _validate_pairwise_collapse_inputs(
+        raw_user_ids,
+        raw_item_ids,
+        priority,
+        aligned_arrays=(row_counts,),
+        timestamp=timestamp,
+    )
+    if raw_user_ids.size == 0:
+        return np.zeros((0, row_counts.shape[1]), dtype=np.int64)
+
+    grouping = _build_pairwise_priority_grouping(
+        raw_user_ids,
+        raw_item_ids,
+        priority,
+        timestamp,
+    )
+    ordered_counts = row_counts[grouping.order].astype(np.int64, copy=False)
+    summed_counts = np.add.reduceat(
+        ordered_counts,
+        grouping.pair_starts,
+        axis=0,
+    )
+    return summed_counts[grouping.encounter_order]
 
 
 def select_pairwise_max_priority_indices(
@@ -361,51 +511,59 @@ def summarize_pairwise_max_priority_collapse(
             repeat_count=empty_int,
             priority_mean=empty_float,
             priority_max=empty_float,
+            latest_priority=(empty_float.copy() if timestamp is not None else None),
             first_timestamp=(empty_int.copy() if timestamp is not None else None),
             last_timestamp=(empty_int.copy() if timestamp is not None else None),
         )
 
-    timestamp_values = timestamp.astype(np.int64, copy=False) if timestamp is not None else np.zeros(n_rows, dtype=np.int64)
     priority_values = priority.astype(np.float64, copy=False)
-    row_index = np.arange(n_rows, dtype=np.int64)
-    order = np.lexsort(
-        (
-            row_index,
-            timestamp_values,
-            priority_values,
-            raw_item_ids,
-            raw_user_ids,
-        ),
+    grouping = _build_pairwise_priority_grouping(
+        raw_user_ids,
+        raw_item_ids,
+        priority,
+        timestamp,
     )
-    ordered_users = raw_user_ids[order]
-    ordered_items = raw_item_ids[order]
-    pair_start = np.ones(order.size, dtype=bool)
-    if order.size > 1:
-        pair_start[1:] = (ordered_users[1:] != ordered_users[:-1]) | (ordered_items[1:] != ordered_items[:-1])
-    pair_starts = np.flatnonzero(pair_start)
-    pair_ends = np.concatenate(
-        [pair_starts[1:], np.array([order.size], dtype=np.int64)],
+    repeat_count = grouping.pair_ends - grouping.pair_starts
+    priority_sum = np.add.reduceat(
+        priority_values[grouping.order],
+        grouping.pair_starts,
     )
-    selected = order[pair_ends - 1]
-    repeat_count = pair_ends - pair_starts
-    priority_sum = np.add.reduceat(priority_values[order], pair_starts)
     priority_mean = (priority_sum / repeat_count).astype(np.float32, copy=False)
-    priority_max = priority_values[order][pair_ends - 1].astype(np.float32, copy=False)
+    priority_max = priority_values[grouping.order][grouping.pair_ends - 1].astype(
+        np.float32,
+        copy=False,
+    )
+    latest_priority = None
     first_timestamp = None
     last_timestamp = None
     if timestamp is not None:
-        ordered_timestamps = timestamp_values[order]
-        first_timestamp = np.minimum.reduceat(ordered_timestamps, pair_starts)
-        last_timestamp = np.maximum.reduceat(ordered_timestamps, pair_starts)
+        timestamp_values = timestamp.astype(np.int64, copy=False)
+        row_index = np.arange(n_rows, dtype=np.int64)
+        ordered_timestamps = timestamp_values[grouping.order]
+        first_timestamp = np.minimum.reduceat(ordered_timestamps, grouping.pair_starts)
+        last_timestamp = np.maximum.reduceat(ordered_timestamps, grouping.pair_starts)
+        latest_order = np.lexsort(
+            (row_index, timestamp_values, raw_item_ids, raw_user_ids),
+        )
+        latest_priority = priority_values[latest_order[grouping.pair_ends - 1]].astype(
+            np.float32,
+            copy=False,
+        )
 
-    encounter_order = np.argsort(selected)
     return PairwisePriorityCollapse(
-        keep_idx=selected[encounter_order],
-        repeat_count=repeat_count[encounter_order],
-        priority_mean=priority_mean[encounter_order],
-        priority_max=priority_max[encounter_order],
-        first_timestamp=(first_timestamp[encounter_order] if first_timestamp is not None else None),
-        last_timestamp=(last_timestamp[encounter_order] if last_timestamp is not None else None),
+        keep_idx=grouping.selected[grouping.encounter_order],
+        repeat_count=repeat_count[grouping.encounter_order],
+        priority_mean=priority_mean[grouping.encounter_order],
+        priority_max=priority_max[grouping.encounter_order],
+        latest_priority=(
+            latest_priority[grouping.encounter_order] if latest_priority is not None else None
+        ),
+        first_timestamp=(
+            first_timestamp[grouping.encounter_order] if first_timestamp is not None else None
+        ),
+        last_timestamp=(
+            last_timestamp[grouping.encounter_order] if last_timestamp is not None else None
+        ),
     )
 
 

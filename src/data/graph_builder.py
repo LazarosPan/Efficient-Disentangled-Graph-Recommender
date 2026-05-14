@@ -26,14 +26,33 @@ _FLOAT_CANONICAL_FIELDS = frozenset(
         "user_features",
         "item_features",
         "raw_target",
-        "repeat_priority_mean",
-        "repeat_priority_max",
+        "repeat_mean_target",
+        "repeat_max_target",
+        "repeat_latest_target",
     },
 )
 _LONG_CANONICAL_FIELDS = frozenset(
-    {"repeat_count", "repeat_first_timestamp", "repeat_last_timestamp"},
+    {
+        "repeat_count",
+        "repeat_first_timestamp",
+        "repeat_last_timestamp",
+        "repeat_behavior_counts",
+    },
 )
 _BOOL_CANONICAL_FIELDS = frozenset({"exposure_flag"})
+
+
+def _ensure_writable_numpy(value: np.ndarray) -> np.ndarray:
+    """Return a writable NumPy array for safe Torch conversion.
+
+    Args:
+        value: Source NumPy array.
+
+    Returns:
+        np.ndarray: The original array when writable, otherwise a copy.
+
+    """
+    return value if value.flags.writeable else value.copy()
 
 
 def _canonical_numpy_to_tensor(
@@ -50,12 +69,13 @@ def _canonical_numpy_to_tensor(
         torch.Tensor: Converted tensor with the expected dtype.
 
     """
+    writable_value = _ensure_writable_numpy(value)
     if field_name in _FLOAT_CANONICAL_FIELDS:
-        return torch.from_numpy(value).float()
+        return torch.from_numpy(writable_value).float()
     if field_name in _LONG_CANONICAL_FIELDS:
-        return torch.from_numpy(value).long()
+        return torch.from_numpy(writable_value).long()
     if field_name in _BOOL_CANONICAL_FIELDS:
-        return torch.from_numpy(value.astype(np.bool_, copy=False))
+        return torch.from_numpy(_ensure_writable_numpy(writable_value.astype(np.bool_, copy=False)))
     raise KeyError(f"Unsupported canonical tensor field '{field_name}'.")
 
 
@@ -78,7 +98,16 @@ def _resolve_training_popularity(
         popularity values.
 
     """
-    popularity_array = compute_normalized_popularity(canonical.item_id[train_mask], n_items) if popularity_window_seconds is None else compute_time_windowed_popularity(canonical.item_id[train_mask], n_items, canonical.timestamp[train_mask], popularity_window_seconds)
+    popularity_array = (
+        compute_normalized_popularity(canonical.item_id[train_mask], n_items)
+        if popularity_window_seconds is None
+        else compute_time_windowed_popularity(
+            canonical.item_id[train_mask],
+            n_items,
+            canonical.timestamp[train_mask],
+            popularity_window_seconds,
+        )
+    )
     return torch.from_numpy(popularity_array).float()
 
 
@@ -102,12 +131,14 @@ def _attach_optional_canonical_fields(
         "raw_target",
         "exposure_flag",
         "repeat_count",
-        "repeat_priority_mean",
-        "repeat_priority_max",
+        "repeat_mean_target",
+        "repeat_max_target",
+        "repeat_latest_target",
         "repeat_first_timestamp",
         "repeat_last_timestamp",
+        "repeat_behavior_counts",
     )
-    array_field_names = ("behavior_type", "source_domain")
+    array_field_names = ("behavior_type", "source_domain", "repeat_behavior_labels")
     passthrough_field_names = ("feedback_type", "preprocessing_preset", "metadata")
 
     for field_name in tensor_field_names:
@@ -401,6 +432,10 @@ def _build_cagra(
         return edge_index, edge_sign
 
     except (ImportError, Exception) as exc:
-        msg = f"CAGRA graph construction unavailable; using train-interaction graph: {exc}" if isinstance(exc, ImportError) else f"CAGRA graph construction failed; using train-interaction graph: {exc}"
+        msg = (
+            f"CAGRA graph construction unavailable; using train-interaction graph: {exc}"
+            if isinstance(exc, ImportError)
+            else f"CAGRA graph construction failed; using train-interaction graph: {exc}"
+        )
         warnings.warn(msg, RuntimeWarning, stacklevel=2)
         return bipartite_ei, bipartite_sign

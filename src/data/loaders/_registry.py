@@ -27,6 +27,14 @@ LOADERS: dict[str, Callable[..., CanonicalInteractions]] = {
     "amazonbook": load_amazonbook,
     "kuairand1k": load_kuairand1k,
 }
+_DEFAULT_PREPROCESSING_PRESETS: dict[str, str] = {
+    "movielens1m": "movielens_explicit",
+    "movielens20m": "movielens_explicit",
+    "taobao": "taobao_multibehavior",
+    "kuairec_v2": "kuairec_fullobs",
+    "amazonbook": "amazonbook_graph_only",
+    "kuairand1k": "kuairand_causal",
+}
 
 _PREPROCESSING_PRESETS: dict[str, dict[str, dict[str, object]]] = {
     "movielens1m": {
@@ -63,6 +71,22 @@ _PREPROCESSING_PRESETS: dict[str, dict[str, dict[str, object]]] = {
 }
 
 
+# TODO: use directly _DEFAULT_PREPROCESSING_PRESETS.get(name) in load_dataset
+# when preprocessing_preset is None, and remove this helper function.
+def default_preprocessing_preset(name: str) -> str | None:
+    """Return the repository default preprocessing preset for one dataset.
+
+    Args:
+        name: Loader registry dataset name.
+
+    Returns:
+        Default preprocessing preset for the dataset, or ``None`` when the
+        dataset intentionally has no separate preset layer.
+
+    """
+    return _DEFAULT_PREPROCESSING_PRESETS.get(name)
+
+
 def resolve_preprocessing_preset(
     name: str,
     preprocessing_preset: str | None,
@@ -86,7 +110,10 @@ def resolve_preprocessing_preset(
     if preprocessing_preset not in dataset_presets:
         available = ", ".join(sorted(dataset_presets)) or "none"
         raise ValueError(
-            f"Unknown preprocessing_preset '{preprocessing_preset}' for dataset '{name}'. Available presets: {available}",
+            (
+                f"Unknown preprocessing_preset '{preprocessing_preset}' for "
+                f"dataset '{name}'. Available presets: {available}"
+            ),
         )
     return dict(dataset_presets[preprocessing_preset])
 
@@ -100,8 +127,14 @@ def _load_dataset(
     preprocessing_preset: str | None,
 ) -> CanonicalInteractions:
     """Load a dataset once after resolving preset-specific loader kwargs."""
-    loader_kwargs = resolve_preprocessing_preset(name, preprocessing_preset)
-    loader_kwargs.setdefault("preprocessing_preset", preprocessing_preset)
+    effective_preprocessing_preset = preprocessing_preset or default_preprocessing_preset(
+        name,
+    )
+    loader_kwargs = resolve_preprocessing_preset(
+        name,
+        effective_preprocessing_preset,
+    )
+    loader_kwargs.setdefault("preprocessing_preset", effective_preprocessing_preset)
     return LOADERS[name](
         data_dir,
         max_rows=max_rows,
@@ -151,7 +184,8 @@ def load_dataset(
         max_rows: Optional row cap; enables caching when set.
         include_optional_features: Whether to load optional side-features.
         feature_policy: Feature-policy preset name.
-        preprocessing_preset: Optional named preprocessing preset.
+        preprocessing_preset: Optional named preprocessing preset. When omitted,
+            the repository default for the dataset is used automatically.
 
     Returns:
         Fully preprocessed ``CanonicalInteractions`` for the requested dataset.
