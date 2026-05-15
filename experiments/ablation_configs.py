@@ -12,13 +12,25 @@ from src.utils.config import DEFAULT_SEED, UCaGNNConfig
 # Variants beyond this set require a thesis rationale; do not extend casually.
 ABLATION_VARIANTS: dict[str, dict] = {
     "mainline": {},
+    "fixed_score_mix": {"scoring_weight_mode": "fixed"},
     "no_popularity_head": {
         "use_popularity_head": False,
         "gamma_popularity": 0.0,
         "lambda_pop": 0.0,
     },
+    "no_ipw": {"use_ipw": False},
+    "no_contrastive": {"lambda_contrastive": 0.0},
     "no_independence": {"lambda_independence": 0.0},
     "no_features": {"use_features": False},
+}
+_ABLATION_RECOMMENDED_DEFAULTS: dict[str, object] = {
+    "epochs": 300,
+    "use_early_stopping": True,
+    "patience": 20,
+    "lr_scheduler": "cosine",
+    "interest_gnn_layers": 1,
+    "conformity_gnn_layers": 2,
+    "num_neighbors": [20, 10],
 }
 
 
@@ -85,7 +97,12 @@ def make_ablation_config(variant: str, **base_kwargs) -> UCaGNNConfig:
     config = UCaGNNConfig(**base_kwargs)
     config.preset_full()
 
+    for key, value in _ABLATION_RECOMMENDED_DEFAULTS.items():
+        if key not in base_kwargs:
+            setattr(config, key, list(value) if isinstance(value, list) else value)
+
     for key, value in ABLATION_VARIANTS[variant].items():
         setattr(config, key, value)
 
+    config.validate()
     return config

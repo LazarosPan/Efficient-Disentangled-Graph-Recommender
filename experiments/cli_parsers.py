@@ -465,7 +465,20 @@ def build_ablation_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run U-CaGNN ablation study")
 
     sel = parser.add_argument_group("ablation selection")
-    sel.add_argument("--dataset", required=True, help="Dataset name")
+    sel.add_argument(
+        "--dataset",
+        default=None,
+        help="Single dataset name (backwards-compatible shorthand)",
+    )
+    sel.add_argument(
+        "--datasets",
+        nargs="*",
+        default=None,
+        help=(
+            "Dataset names or benchmark tiers to run, e.g. amazonbook kuairec_v2 "
+            f"or small medium (choices: {', '.join(BENCHMARK_TIER_CHOICES)})"
+        ),
+    )
     sel.add_argument(
         "--variants",
         nargs="*",

@@ -125,6 +125,11 @@ _BENCHMARK_SHARED_CONFIG_FIELD_SET = frozenset(
         "loss_schedule",
         "loader_max_rows",
         "sample_interactions",
+        "use_features",
+        "feature_policy",
+        "preprocessing_preset",
+        "derived_split_mode",
+        "popularity_window_seconds",
     },
 )
 BENCHMARK_CONFIG_FIELDS = (
@@ -1270,6 +1275,22 @@ def normalize_benchmark_config_overrides(
         field_name: raw_config.get(field_name) for field_name in BENCHMARK_CONFIG_FIELDS
     }
     normalized["use_early_stopping"] = raw_config.get("use_early_stopping", True)
+    use_features = raw_config.get("use_features")
+    normalized["use_features"] = bool(use_features) if use_features is not None else None
+    feature_policy = raw_config.get("feature_policy")
+    normalized["feature_policy"] = str(feature_policy) if feature_policy is not None else None
+    preprocessing_preset = raw_config.get("preprocessing_preset")
+    normalized["preprocessing_preset"] = (
+        str(preprocessing_preset) if preprocessing_preset is not None else None
+    )
+    derived_split_mode = raw_config.get("derived_split_mode")
+    normalized["derived_split_mode"] = (
+        str(derived_split_mode) if derived_split_mode is not None else None
+    )
+    popularity_window_seconds = raw_config.get("popularity_window_seconds")
+    normalized["popularity_window_seconds"] = (
+        int(popularity_window_seconds) if popularity_window_seconds is not None else None
+    )
     batch_size = raw_config.get("batch_size")
     normalized["batch_size"] = (
         int(batch_size) if batch_size is not None else default_config.batch_size
