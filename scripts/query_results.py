@@ -178,13 +178,16 @@ def _build_canonical_name_from_config(
         parts.append("feat")
     if config.get("feature_policy") not in (None, "thesis_default"):
         parts.append(f"fpolicy{config['feature_policy']}")
-    if config.get("scoring_weight_mode") != "fixed":
-        parts.append(f"scoremix{config['scoring_weight_mode']}")
-    parts.append(f"lr-{config.get('lr_scheduler')}")
-    if config.get("train_scoring_mode") != "default":
-        parts.append(f"trainscore{config['train_scoring_mode']}")
-    if config.get("eval_scoring_mode") != "default":
-        parts.append(f"score{config['eval_scoring_mode']}")
+    scoring_weight_mode = str(config.get("scoring_weight_mode", "fixed"))
+    if scoring_weight_mode != "fixed":
+        parts.append(f"scoremix{scoring_weight_mode}")
+    parts.append(f"lr-{config.get('lr_scheduler', 'none')}")
+    train_scoring_mode = str(config.get("train_scoring_mode", "default"))
+    if train_scoring_mode != "default":
+        parts.append(f"trainscore{train_scoring_mode}")
+    eval_scoring_mode = str(config.get("eval_scoring_mode", "default"))
+    if eval_scoring_mode != "default":
+        parts.append(f"score{eval_scoring_mode}")
     if intervention:
         parts.append(intervention)
     parts.append(f"seed{int(config.get('seed', 0))}")
@@ -426,7 +429,8 @@ def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
                s.test_hit_ratio_20, s.test_hit_ratio_40,
                s.test_personalization_20, s.test_personalization_40,
                s.test_average_popularity_20, s.test_average_popularity_40,
-               s.avg_epoch_time_s, s.training_mode, s.training_hash, s.peak_vram_mb,
+               s.training_time_s, s.completed_train_epochs,
+               s.training_mode, s.training_hash, s.peak_vram_mb,
                e.intervention,
                e.config_json
         FROM experiment_completed_summary s
@@ -462,11 +466,11 @@ def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
             f"{'Dataset':<14} | {'Preset':<12} | {'ScoreMix':<8} | "
             f"{'Neighbors':<10} | {'NDCG@20':>8} | {'Recall@20':>10} | "
             f"{'AvgPop@20':>10} | {'NDCG@40':>8} | {'Recall@40':>10} | "
-            f"{'AvgPop@40':>10} | {'Time':>8} | {'Epochs':>6} | "
+            f"{'AvgPop@40':>10} | {'Training Time':>13} | {'Epochs':>6} | "
             f"{'PeakVRAM':>8} | {'Experiment':<40}"
         ),
     )
-    print("-" * 232)
+    print("-" * 237)
     for row in top_rows:
         config = _load_config_json(row["config_json"])
         intervention = row["intervention"]
@@ -483,7 +487,11 @@ def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
             neighbor_label = "-".join(str(value) for value in num_neighbors)
         elif num_neighbors is not None:
             neighbor_label = str(num_neighbors)
-        epochs = str(int(config.get("epochs", 0))) if config.get("epochs") is not None else "-"
+        epochs = (
+            str(int(row["completed_train_epochs"]))
+            if row["completed_train_epochs"] is not None
+            else "-"
+        )
         peak_vram = f"{row['peak_vram_mb']:.0f}MB" if row["peak_vram_mb"] is not None else "-"
         ndcg20 = f"{row['test_ndcg_20']:.4f}" if row["test_ndcg_20"] is not None else "-"
         recall20 = f"{row['test_recall_20']:.4f}" if row["test_recall_20"] is not None else "-"
@@ -499,13 +507,15 @@ def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
             if row["test_average_popularity_40"] is not None
             else "-"
         )
-        time_s = f"{row['avg_epoch_time_s']:.1f}s" if row["avg_epoch_time_s"] is not None else "-"
+        training_time_s = (
+            f"{row['training_time_s']:.1f}s" if row["training_time_s"] is not None else "-"
+        )
         print(
             (
                 f"{row['dataset'] or '-':<14} | {row['preset'] or '-':<12} | "
                 f"{scoremix:<8} | {neighbor_label:<10} | {ndcg20:>8} | "
                 f"{recall20:>10} | {avgpop20:>10} | {ndcg40:>8} | "
-                f"{recall40:>10} | {avgpop40:>10} | {time_s:>8} | "
+                f"{recall40:>10} | {avgpop40:>10} | {training_time_s:>13} | "
                 f"{epochs:>6} | {peak_vram:>8} | {experiment_label:<40}"
             ),
         )

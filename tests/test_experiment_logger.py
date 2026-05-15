@@ -5,10 +5,14 @@ from __future__ import annotations
 import json
 import sqlite3
 import unittest
+from contextlib import redirect_stdout
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+from scripts import query_results
 from src.profiling.gpu_profiler import StageMetrics
 from src.utils.experiment_logger import ExperimentLogger
 
@@ -185,6 +189,56 @@ class ExperimentLoggerTests(unittest.TestCase):
 
         self.assertAlmostEqual(row["peak_vram_mb"], 999.0)
 
+    def test_experiment_summary_tracks_total_training_time_and_completed_epochs(self) -> None:
+        """The summary view should expose total training time and stopped epochs."""
+        exp_id = self.logger.log_experiment(
+            dataset="amazonbook",
+            config={
+                "dataset": "amazonbook",
+                "epochs": 200,
+                "batch_size": 8192,
+                "embed_dim": 64,
+                "use_dual_branch": False,
+                "single_branch_gnn_layers": 2,
+                "lr_scheduler": "plateau",
+                "seed": 13,
+            },
+            preset="lightgcn",
+        )
+        self.logger.log_epoch(
+            exp_id=exp_id,
+            epoch=0,
+            train_loss=1.0,
+            epoch_time_s=0.2,
+            val_metrics={"NDCG@20": 0.1},
+            profiler_stages=[],
+            model=None,
+        )
+        self.logger.log_epoch(
+            exp_id=exp_id,
+            epoch=1,
+            train_loss=0.8,
+            epoch_time_s=0.25,
+            val_metrics={"NDCG@20": 0.15},
+            profiler_stages=[],
+            model=None,
+        )
+        self.logger.log_metric(exp_id, "training_time_s", 7.9, split="train")
+        self.logger.update_experiment_status(exp_id, status="completed")
+
+        row = self.logger.conn.execute(
+            """
+            SELECT training_time_s, completed_train_epochs
+            FROM experiment_summary
+            WHERE id = ?
+            """,
+            (exp_id,),
+        ).fetchone()
+        assert row is not None
+
+        self.assertAlmostEqual(row["training_time_s"], 7.9)
+        self.assertEqual(row["completed_train_epochs"], 2)
+
     def test_comparison_view_exposes_metric_deltas_for_same_semantic_run(self) -> None:
         """Comparison view should show deltas across repeated same-config runs."""
         first_exp = self.logger.log_experiment(
@@ -231,6 +285,86 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertAlmostEqual(row["delta_test_ndcg_20"], 0.05)
         self.assertAlmostEqual(row["delta_test_recall_20"], 0.05)
         self.assertAlmostEqual(row["delta_test_average_popularity_20"], -0.02)
+
+    def test_query_results_top_completed_uses_training_time_and_actual_epochs(self) -> None:
+        """Top-results output should show total training time and stopped epochs."""
+        completed_exp = self.logger.log_experiment(
+            dataset="amazonbook",
+            config={
+                "dataset": "amazonbook",
+                "epochs": 200,
+                "batch_size": 8192,
+                "embed_dim": 64,
+                "use_dual_branch": False,
+                "single_branch_gnn_layers": 2,
+                "num_neighbors": [10, 5],
+                "lr_scheduler": "plateau",
+                "seed": 13,
+            },
+            preset="lightgcn",
+        )
+        self.logger.log_epoch(
+            exp_id=completed_exp,
+            epoch=0,
+            train_loss=1.0,
+            epoch_time_s=0.4,
+            val_metrics={"NDCG@20": 0.1},
+            profiler_stages=[],
+            model=None,
+        )
+        self.logger.log_metric(completed_exp, "training_time_s", 7.9, split="train")
+        self.logger.log_metric(completed_exp, "NDCG@20", 0.1, split="test")
+        self.logger.log_metric(completed_exp, "Recall@20", 0.2, split="test")
+        self.logger.log_metric(completed_exp, "AveragePopularity@20", 0.3, split="test")
+        self.logger.update_experiment_status(completed_exp, status="completed")
+
+        failed_exp = self.logger.log_experiment(
+            dataset="amazonbook",
+            config={
+                "dataset": "amazonbook",
+                "epochs": 200,
+                "batch_size": 8192,
+                "embed_dim": 64,
+                "use_dual_branch": False,
+                "single_branch_gnn_layers": 2,
+                "lr_scheduler": "plateau",
+                "seed": 13,
+            },
+            preset="ucagnn",
+        )
+        self.logger.log_epoch(
+            exp_id=failed_exp,
+            epoch=0,
+            train_loss=0.5,
+            epoch_time_s=0.3,
+            val_metrics={"NDCG@20": 0.9},
+            profiler_stages=[],
+            model=None,
+        )
+        self.logger.log_metric(failed_exp, "training_time_s", 2.0, split="train")
+        self.logger.log_metric(failed_exp, "NDCG@20", 0.9, split="test")
+        self.logger.update_experiment_status(
+            failed_exp,
+            status="failed",
+            failure_reason="synthetic failure",
+        )
+
+        buffer = StringIO()
+        temp_db_path = Path(self.temp_dir.name) / "experiments.sqlite"
+        with patch.object(query_results, "DB_PATH", temp_db_path), redirect_stdout(buffer):
+            query_results.list_top_completed(self.logger.conn, n=20)
+
+        output = buffer.getvalue()
+        self.assertIn("Training Time", output)
+        self.assertIn("lightgcn", output)
+        self.assertNotIn("ucagnn", output)
+
+        completed_line = next(
+            line for line in output.splitlines() if line.strip().startswith("amazonbook")
+        )
+        columns = [column.strip() for column in completed_line.split("|")]
+        self.assertEqual(columns[10], "7.9s")
+        self.assertEqual(columns[11], "1")
 
     def test_schema_mismatch_requires_current_tables(self) -> None:
         """ExperimentLogger should reject databases that predate the current schema."""

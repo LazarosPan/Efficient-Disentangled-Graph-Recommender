@@ -1521,6 +1521,8 @@ Keep one-use logger write-path details local to the public methods that own them
 
 Because `scripts/query_results.py` already opts into `sqlite3.Row`, its detail and profiling renderers should read named columns rather than positional indexes so query column reordering does not silently break the CLI.
 
+`experiment_summary` now distinguishes between `avg_epoch_time_s` (average per-epoch wall clock) and `training_time_s` (total training wall clock), and it also derives `completed_train_epochs` from the logged training epochs. Keep the top completed-runs table in `scripts/query_results.py` aligned with those semantics: show **Training Time** from `training_time_s`, and show the actual stopped epoch count from `completed_train_epochs` instead of echoing the configured epoch budget from `config_json`.
+
 ---
 
 ## Quick Validation Workflow

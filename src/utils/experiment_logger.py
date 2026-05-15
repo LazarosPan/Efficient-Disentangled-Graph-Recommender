@@ -324,6 +324,20 @@ class ExperimentLogger:
                     THEN m.metric_value
                 END) AS avg_epoch_time_s,
                 MAX(CASE
+                    WHEN m.metric_name = 'training_time_s' AND m.split = 'train'
+                    THEN m.metric_value
+                END) AS training_time_s,
+                COALESCE(
+                    MAX(CASE
+                        WHEN m.metric_name = 'loss' AND m.split = 'train'
+                        THEN m.epoch + 1
+                    END),
+                    MAX(CASE
+                        WHEN m.metric_name = 'epoch_time_s' AND m.split = 'train'
+                        THEN m.epoch + 1
+                    END)
+                ) AS completed_train_epochs,
+                MAX(CASE
                     WHEN m.metric_name = 'Recall@20' AND m.split = 'val'
                     THEN m.metric_value
                 END) AS best_recall_20,
@@ -460,6 +474,8 @@ class ExperimentLogger:
                 s.test_recall_40,
                 s.test_average_popularity_40,
                 s.avg_epoch_time_s,
+                s.training_time_s,
+                s.completed_train_epochs,
                 s.peak_vram_mb,
                 s.test_ndcg_20 - LAG(s.test_ndcg_20) OVER (
                     PARTITION BY s.dataset, s.preset, COALESCE(s.intervention, ''),
