@@ -34,29 +34,23 @@ U-CaGNN (Unified Causal Graph Neural Network) is a recommendation system that di
 
 | I want to understand... | Read |
 |------------------------|------|
-| System overview, data flow, tensor shapes | [architecture.md](architecture.md) |
-| Embedding, GCN, scoring, propensity, orchestrator | [models.md](models.md) |
-| Fused BPR, branch BPR, independence, within-branch contrastive, optional DirectAU, popularity losses | [losses.md](losses.md) |
-| Dataset loaders, canonical format, graph builder, negative sampler | [data-pipeline.md](data-pipeline.md) |
-| Training loop, evaluation metrics, GPU profiling | [training.md](training.md) |
-| Validation and formal run entry points | [training.md#quick-validation-workflow](training.md#quick-validation-workflow) |
-| Mini-batch training runtime | [training.md#minibatchtrainer](training.md#minibatchtrainer) |
-| Every config parameter with defaults | [config-reference.md](config-reference.md) |
-| How to switch between LightGCN / DICE / full U-CaGNN | [config-reference.md#presets](config-reference.md#presets) |
-| Which config toggle controls which module | [architecture.md#ablation-map](architecture.md#ablation-map) |
-| Design decision justifications | [theoretical_justifications.md](theoretical_justifications.md) |
+| System overview, model structure, scoring, and public surfaces | [ucagnn-architecture.md](ucagnn-architecture.md) |
+| Dataset loaders, canonical format, graph builder, and sampler | [ucagnn-data-pipeline.md](ucagnn-data-pipeline.md) |
+| Loss names, defaults, and curriculum behavior | [ucagnn-losses.md](ucagnn-losses.md) |
+| Training loop, evaluation, checkpoints, and experiment logging | [ucagnn-training.md](ucagnn-training.md) |
+| Config presets, defaults, and score-mode policy | [ucagnn-config.md](ucagnn-config.md) |
+| End-to-end implementation context | [ucagnn_full.md](ucagnn_full.md) |
 
 ---
 
 ## Recommended Reading Order
 
-1. **architecture.md** -- System overview, data flow, tensor shapes, ablation map
-2. **data-pipeline.md** -- Loaders, canonical format, graph builder, negative sampler, subgraph sampler
-3. **models.md** -- Neural network modules (A-F) and UCaGNN orchestrator
-4. **losses.md** -- Fused BPR, branch BPR, independence, within-branch contrastive, optional DirectAU, popularity losses
-5. **training.md** -- Mini-batch training loop, evaluation, GPU profiling, and validation workflow
-6. **config-reference.md** -- Every config parameter with defaults and paper evidence
-7. **theoretical_justifications.md** -- Formal reasoning for design choices
+1. **ucagnn-architecture.md** -- System overview, propagation, scoring, and evaluator-facing public surfaces
+2. **ucagnn-data-pipeline.md** -- Loaders, canonical format, graph builder, negative sampler, and subgraph sampler
+3. **ucagnn-config.md** -- Presets, defaults, score modes, curriculum, and config assembly
+4. **ucagnn-losses.md** -- Fused BPR, branch BPR, independence, contrastive, optional DirectAU, and popularity losses
+5. **ucagnn-training.md** -- Mini-batch training loop, evaluation, checkpointing, profiling, and experiment logging
+6. **ucagnn_full.md** -- Cross-cutting integration notes, source map, and implementation-wide contracts
 
 Implementation preference: extend existing entry points and collapse duplication before adding parallel scripts or public surfaces.
 
@@ -64,7 +58,7 @@ Depth ownership is now explicit in `UCaGNNConfig`: `single_branch_gnn_layers` co
 
 Current data defaults are no longer purely incidental: derived splits default to `per_user_temporal`, loaders may record a `preprocessing_preset`, and graph-time popularity can optionally be restricted with `popularity_window_seconds` while remaining train-split-only. Mechanical loader downcasting now also has one shared bulk helper in `src/utils/dataset_loader_utils.py`, so repeated array extraction can reuse the same narrowing policy without duplicating one-call-per-column boilerplate. The graph-boundary tensor conversion in `src/data/graph_builder.py` also guards against read-only NumPy payloads by copying only when needed before `torch.from_numpy(...)`, which keeps Polars-backed canonical arrays from emitting non-writable-tensor warnings during validation runs.
 
-The graph builder now keeps ANN augmentation explicitly aligned with the reproducibility contract: kNN/CAGRA edges are mirrored so the graph remains undirected, the CAGRA path converts embeddings through CuPy/CUDA-array inputs, threads `config.seed` into `SearchParams.rand_xor_mask`, and falls back to kNN when CAGRA import, build, or search fails at runtime.
+The graph builder supports optional ANN augmentation while keeping the default runtime graph split-safe and simple: `experiments/run_experiment.py::load_runtime_data()` currently calls `build_graph(..., embeddings=None)`, so thesis runs use the train-interaction bipartite graph unless a separate caller explicitly passes embeddings for CAGRA. When that optional path is used, ANN edges are mirrored so the graph remains undirected, the CAGRA path converts embeddings through CuPy/CUDA-array inputs, threads `config.seed` into `SearchParams.rand_xor_mask`, and falls back to the train-interaction graph when import, build, or search fails.
 
 ---
 
@@ -80,7 +74,7 @@ Each U-CaGNN component traces to a specific paper. This table maps every major d
 | Adaptive fusion gate | MGCE / repository synthesis | User-conditioned mixing over interest, conformity, and popularity scores |
 | Within-branch contrastive | Contrastive causal-recys synthesis | Batch-safe branch-local InfoNCE on aligned positive user-item pairs |
 | DirectAU alignment/uniformity | DirectAU (2023) | Optional branch-local geometry regularization without replacing BPR |
-| Counterfactual scoring | CausE (2018) / MCLN (2023) | Treatment effect = interest - conformity; kept as a diagnostic score |
+| Counterfactual caution | CausE (2018) / MCLN (2023) | Motivates careful causal terminology, but the repository does not implement formal treatment/control or factual-vs-counterfactual score estimators |
 | Popularity loss + recency metadata | DICE (2020) / DDCE (2023) / repository synthesis | Anchor popularity-aware scoring with train-split item popularity and recency summaries |
 | Curriculum scheduling | CaDCR (2025) | Phase in losses progressively by difficulty; multi-task curriculum learning |
 | IPW debiasing | Survey consensus (S1-S4, 2023-2025) | Propensity reweighting with clipping to address high-variance instability |
@@ -103,7 +97,7 @@ src/
     __init__.py              Exports CanonicalInteractions, build_graph, NegativeSampler, SubgraphSampler, SubgraphBatch
     canonical.py             CanonicalInteractions dataclass (universal dataset format, split helpers, causal descriptors)
     feature_policy.py        Structured feature-safety registry plus thesis-default/all-optional policy helpers
-    graph_builder.py         build_graph(): canonical -> PyG Data (dense/knn/cagra)
+    graph_builder.py         build_graph(): canonical -> PyG Data (train bipartite edges + optional CAGRA ANN augmentation)
     negative_sampler.py      NegativeSampler: uniform + popularity-weighted sampling
     subgraph_sampler.py      SubgraphSampler + SubgraphBatch: k-hop subgraph extraction for mini-batch training
     loaders/
@@ -126,7 +120,7 @@ src/
 
   losses/
     __init__.py              Exports LossSuite
-    loss_suite.py            LossSuite: fused BPR + branch-local auxiliary losses, within-branch contrastive, optional DirectAU, and popularity supervision
+    loss_suite.py            LossSuite: fused BPR + branch-local auxiliary losses, DCCL-style contrastive, optional DirectAU, and popularity supervision
 
   training/
     __init__.py              Exports MiniBatchTrainer, Evaluator, thesis metric constants
@@ -191,7 +185,7 @@ The runtime continues to log the full PyG link-prediction bundle, but thesis-fac
 - `AveragePopularity@40` tracks whether debiasing survives deeper into the ranked list.
 - Formal score-mix sweeps should keep `lightgcn` and `dice_like` on the fixed path, while `ucagnn` may run both learned and fixed mixing as an explicit ablation of the proposed model.
 
-Mechanism checks should compare the same checkpoint under `default`, `interest_only`, and `conformity_suppressed` scoring. This is the repository's main causal-behavior evaluation path. PropCare-style causal-uplift metrics remain optional future work unless a separate treatment/propensity/effect evaluation contract is added.
+Mechanism checks should compare the same checkpoint under `default`, `interest_only`, and `conformity_suppressed` scoring. This is the repository's main branch-behavior evaluation path. PropCare-style causal-uplift metrics remain optional future work unless a separate treatment/propensity/effect evaluation contract is added.
 
 
 # Architecture
@@ -275,7 +269,7 @@ U-CaGNN is not a single paper's method -- it deliberately synthesizes techniques
 - **SIGformer (2024)** provides the insight that negative edge information is critical (-21.5% Recall@20 without it). U-CaGNN extracts this as lightweight sign-aware edge weighting (2 learnable scalars) without SIGformer's expensive spectral eigendecomposition.
 - **DCCL (2023)** provides the contrastive regularization (NT-Xent) for separating semantic intents, ensuring dual branches encode distinct but user-consistent signals.
 - **CaDCR (2025)** provides the curriculum scheduling framework -- progressive multi-task learning that phases in losses by difficulty.
-- **CausE (2018) / MCLN (2023)** provide counterfactual scoring: the treatment effect `Y_interest - Y_conformity` measures genuine causal preference.
+- **CausE (2018) / MCLN (2023)** motivate counterfactual reasoning, but the repository does **not** implement their formal treatment/control or factual-vs-counterfactual estimators.
 - **CAGRA (2024)** provides GPU-accelerated approximate nearest neighbor graph construction (33-77x speedups over HNSW) for scalable embedding-space edge building.
 
 The thesis contribution is the *unified architecture* that combines these techniques under a single config-driven framework, enabling controlled ablation of each component.
@@ -287,16 +281,16 @@ The thesis contribution is the *unified architecture* that combines these techni
 1. **Batch construction** -- `MiniBatchTrainer` shuffles training interactions, slices a batch of `(user_ids, pos_item_ids)`, then calls `NegativeSampler.sample()` to get `neg_item_ids`.
 
 2. **Forward pass** (`UCaGNN.forward`):
-      - **A: Embeddings** -- `EmbeddingModule.get_all_embeddings()` returns a dict of raw embedding weight matrices (pre-GNN). When `use_features=True` and `item_features` exist, this stage also builds `item_interest` and `item_conformity` from projected canonical item features and popularity-conditioned modulation.
+      - **A: Embeddings** -- `EmbeddingModule.get_embeddings()` returns a dict of raw embedding tables and item metadata (pre-GNN). When `use_features=True` and `item_features` exist, this stage also builds `item_interest` and `item_conformity` from projected canonical item features and popularity-conditioned modulation.
    - **B: GCN** -- `DualBranchGCN.forward()` concatenates user + item embeddings, builds one sparse normalized adjacency matrix from `edge_index` + optional sign-aware weights, propagates through repeated sparse adjacency matmuls, then splits the output back into user/item tensors. Returns `propagated` dict.
-   - **C: Scoring** -- `ScoringModule.forward()` looks up user/item embeddings from `propagated`, computes dot-product scores: `interest`, `conformity`, `cf`, `final`.
+   - **C: Scoring** -- `ScoringModule.forward()` looks up user/item embeddings from `propagated`, computes `interest_score`, `conformity_score`, `popularity_score`, and the fused `final_score`.
    - **F: Propensity** -- `PropensityEstimator.forward()` maps item embeddings through a 2-layer MLP to produce propensity scores; `UCaGNN` computes `1 / propensity` inline as IPW weights.
 
 3. **Loss computation** (`LossSuite.forward`):
-   - Computes up to 5 loss terms (L_rec, L_ortho, L_contr, L_cf, L_pop), each gated by config lambdas and curriculum phase.
+   - Computes the fused ranking loss plus the currently enabled auxiliaries (`interest_bpr`, `conformity_bpr`, `independence`, `contrastive`, optional `align` / `uniform`, and `pop`), each gated by config lambdas and the active auxiliary schedule.
    - Returns weighted sum as `total`.
 
-4. **Backward + optimizer step** -- standard PyTorch `loss.backward()` + `Adam.step()`.
+4. **Backward + optimizer step** -- standard PyTorch `loss.backward()` + `AdamW.step()`.
 
 5. **Evaluation** -- after each epoch, `Evaluator.evaluate()` propagates the full graph once, scores all items for validation users in batches, masks observed non-target items, and computes Recall@K and NDCG@K via PyG metrics.
 
@@ -334,7 +328,6 @@ Symbols: `U` = n_users, `I` = n_items, `N = U + I`, `B` = batch_size, `D` = embe
 | Edge weights (B) | `edge_weight` | `(E,)` or `None` | float32 | sign-aware weighting |
 | Scoring (C) | `interest_score` | `(B,)` | float32 | dot product |
 | Scoring (C) | `conformity_score` | `(B,)` | float32 | dot product (dual only) |
-| Scoring (C) | `counterfactual_score` | `(B,)` | float32 | interest - conformity |
 | Scoring (C) | `final_score` | `(B,)` | float32 | weighted sum |
 | Propensity (F) | `ipw_weights` | `(B,)` | float32 | 1/P(exposure) |
 | Eval matrix | `score_users_from_propagated` output | `(B_eval, I)` | float32 | cached full-catalog scoring |
@@ -347,23 +340,24 @@ Each config toggle enables/disables specific modules and losses. Setting a toggl
 
 | Config Toggle | Modules Affected | Losses Affected | Default |
 |--------------|------------------|-----------------|---------|
-| `use_dual_branch` | A (dual user embs), B (two GCN branches), C (dual scoring) | L_ortho, L_contr, L_cf, L_pop | `True` |
+| `use_dual_branch` | A (dual user embs), B (two GCN branches), C (dual scoring) | `L_interest_bpr`, `L_conformity_bpr`, `L_independence`, `L_contrastive`, optional `L_align` / `L_uniform`, `L_pop` | `True` |
 | `use_sign_aware` | B (alpha_pos/alpha_neg edge weights) | -- | `True` |
-| `use_counterfactual` | C (counterfactual_score = interest - conformity) | L_cf | `True` |
 | `use_ipw` | F (PropensityEstimator) | L_rec (IPW-weighted BPR) | `True` |
-| `use_popularity_emb` | A (item_pop embedding) | -- | `True` |
-| `lambda_ortho > 0` | -- | L_ortho | `0.02` |
-| `lambda_contr > 0` | -- | L_contr | `0.1` |
-| `lambda_cf > 0` | -- | L_cf | `0.08` |
-| `lambda_pop > 0` | D (PopularityPredictor MLP) | L_pop | `0.15` |
+| `use_popularity_emb` | A (item_pop embedding), C (extra popularity-head input block) | -- | `True` |
+| `use_popularity_head` | C (scorer-owned popularity head) | `L_pop` | `True` |
+| `lambda_interest_bpr > 0` | -- | `L_interest_bpr` | `0.02` |
+| `lambda_conformity_bpr > 0` | -- | `L_conformity_bpr` | `0.02` |
+| `lambda_independence > 0` | -- | `L_independence` | `0.005` |
+| `lambda_contrastive > 0` | -- | `L_contrastive` | `0.02` |
+| `lambda_pop > 0` | C (scorer-owned popularity head) | `L_pop` | `0.02` |
 
 ### Presets
 
 | Preset | Equivalent to | Paper Baseline | Graph | Losses |
 |--------|---------------|----------------|-------|--------|
-| `preset_lightgcn()` | Non-causal LightGCN baseline | He et al. 2020 vanilla LightGCN | dense | L_rec only |
-| `preset_dice_like()` | DICE-inspired dual-branch | Zheng et al. 2020 GCN-DICE | knn | L_rec + L_ortho + L_pop |
-| `preset_full()` | Full U-CaGNN | U-CaGNN thesis contribution | knn | All 5 losses |
+| `preset_lightgcn()` | Non-causal LightGCN baseline | He et al. 2020 vanilla LightGCN | Train-interaction bipartite graph | L_rec only |
+| `preset_dice_like()` | DICE-inspired dual-branch | Zheng et al. 2020 GCN-DICE | Train-interaction bipartite graph (optional CAGRA support exists, but the runtime default stays interaction-only) | `L_rec + L_interest_bpr + L_conformity_bpr + L_independence` |
+| `preset_full()` | Full U-CaGNN | U-CaGNN thesis contribution | Train-interaction bipartite graph (optional CAGRA support exists, but the runtime default stays interaction-only) | `L_rec + L_interest_bpr + L_conformity_bpr + L_independence + L_contrastive + L_pop` |
 
 ---
 
@@ -372,12 +366,11 @@ Each config toggle enables/disables specific modules and losses. Setting a toggl
 | Feature | PyG Built-in | Custom Code | Why |
 |---------|-------------|-------------|-----|
 | GCN layer | Sparse adjacency matmul over PyTorch COO tensors | `LightGCNBranch` wraps repeated propagation + alpha combination | The branch uses the same LightGCN normalized adjacency update as `LGConv`, but avoids gather-scatter message materialization by reusing one sparse adjacency matrix across all propagation layers. Self-connections remain omitted because alpha layer combination captures their effect. |
-| BPR loss | `BPRLoss` from `torch_geometric.nn.models.lightgcn` | `bpr_loss()` wraps it + adds IPW extension | IPW weighting is U-CaGNN-specific |
-| kNN graph | `knn_graph` from `torch_geometric.nn` | `_build_knn()` combines bipartite + kNN | Need bipartite interaction edges always present |
+| BPR loss | -- | `_bpr_loss()` uses `F.logsigmoid` with optional IPW weights | IPW weighting is U-CaGNN-specific |
 | Metrics | `LinkPredRecall`, `LinkPredNDCG` | `Evaluator` orchestrates batched eval | PyG metric API does the heavy math |
 | Profiling | `count_parameters`, `get_model_size`, `get_data_size` | `GPUProfiler` adds stage timing + VRAM tracking | PyG gives static summaries; we need per-stage dynamics |
 | Data object | `torch_geometric.data.Data` | `build_graph()` constructs it with custom attributes | Standard PyG Data, extended with sign/mask/popularity attrs |
-| CAGRA ANN | -- (uses `cuvs.neighbors.cagra`) | `_build_cagra()` with fallback to kNN | GPU-accelerated ANN; not part of PyG |
+| CAGRA ANN | -- (uses `cuvs.neighbors.cagra`) | `_build_cagra()` with fallback to the train-interaction graph | GPU-accelerated ANN; optional support path, not the default runtime graph |
 
 # Models
 
@@ -432,11 +425,10 @@ EmbeddingModule(
 
 | Method | Returns | Used by |
 |--------|---------|---------|
-| `get_all_embeddings()` | `dict[str, Tensor]` of raw weight matrices | `UCaGNN.forward()` -- fed into GCN |
-| `get_subgraph_embeddings()` | `dict[str, Tensor]` restricted to sampled node IDs | `UCaGNN.forward_subgraph()` |
-| `get_stacked_embeddings()` | `(U+I, D)` concatenated node embeddings | `build_graph()` for kNN/CAGRA construction |
+| `get_embeddings()` | `dict[str, Tensor]` of raw embedding tables plus item metadata | `UCaGNN.forward()` and `UCaGNN.forward_subgraph()` |
+| `get_stacked_embeddings()` | `(U+I, D)` concatenated node embeddings | Optional ANN graph augmentation helpers |
 
-Internally, branch-aware user selection and optional popularity-embedding selection now flow through shared private helpers, so `get_all_embeddings()`, `get_subgraph_embeddings()`, and `get_stacked_embeddings()` stay aligned when the branch contract changes.
+Internally, branch-aware user selection and optional popularity-embedding selection now flow through shared private helpers, so `get_embeddings()` and `get_stacked_embeddings()` stay aligned when the branch contract changes.
 
 ### Feature-Aware Item Fusion
 
@@ -567,7 +559,7 @@ LightGCN's update is exactly repeated multiplication by a normalized adjacency m
 
 **File:** `src/models/scoring.py`
 
-**Purpose:** Compute recommendation scores from propagated embeddings via dot products. Combines interest and conformity signals with a diagnostic counterfactual term.
+**Purpose:** Compute recommendation scores from propagated embeddings via dot products. Combines interest and conformity signals with an optional popularity head and fusion gate.
 
 ### Constructor
 
@@ -592,7 +584,6 @@ def forward(
 ```
 interest_score        = dot(user_interest[u], item_interest[i])
 conformity_score      = dot(user_conformity[u], item_conformity[i])
-counterfactual_score  = interest_score - conformity_score      (if use_counterfactual)
 final_score           = alpha * interest + beta * conformity + gamma * popularity
 ```
 
@@ -610,7 +601,8 @@ All other scores are set to zero tensors for API compatibility.
 |-----|-------|-------------|
 | `interest_score` | `(B,)` | Interest branch dot product |
 | `conformity_score` | `(B,)` | Conformity branch dot product |
-| `counterfactual_score` | `(B,)` | Counterfactual difference |
+| `popularity_score` | `(B,)` | Scorer-owned popularity component |
+| `gate_weights` | `(B, 3)` | Active mixture weights over interest / conformity / popularity |
 | `final_score` | `(B,)` | Weighted combination for ranking |
 
 ### Config Toggles
@@ -621,8 +613,6 @@ All other scores are set to zero tensors for API compatibility.
 | `alpha_interest` | 0.5 | Weight on interest score |
 | `beta_conformity` | 0.3 | Weight on conformity score |
 | `gamma_popularity` | 0.2 | Weight on popularity score |
-| `use_counterfactual` | True | Enables `counterfactual_score = interest - conformity` diagnostics |
-
 ### Evaluation-Time Intervention Modes
 
 `ScoringModule` now exposes evaluation-time scoring modes without changing the training objective:
@@ -636,9 +626,9 @@ All other scores are set to zero tensors for API compatibility.
 
 These modes are used by the cached evaluation path (`UCaGNN.score_users_from_propagated()` -> `ScoringModule.score_final_all_items()`) during validation and test evaluation through `config.eval_scoring_mode`. The model also accepts `config.train_scoring_mode`: `preset_lightgcn()` keeps the default score, `preset_dice_like()` trains and evaluates on the fixed `default` interest+conformity score, and `preset_full()` trains and evaluates on the fused `default` score unless a same-checkpoint evaluation script overrides `eval_scoring_mode`.
 
-For semantic diagnostics, `UCaGNN.get_all_score_components()` exposes the full-catalog interest, conformity, counterfactual, and final score matrices, along with the selected user-side propagated embeddings needed for branch-separation analysis.
+For semantic diagnostics, `UCaGNN.get_all_score_components()` exposes the full-catalog interest, conformity, popularity, and final score matrices, along with the selected user-side propagated embeddings needed for branch-separation analysis.
 
-`ScoringModule` now owns both score paths: pairwise batch scoring for training via `forward()` and full-catalog component assembly for evaluation via `score_all_items()`. Both routes reuse the same internal branch-selection and component-composition helpers so counterfactual and score-mixing semantics stay identical across training and evaluation.
+`ScoringModule` now owns both score paths: pairwise batch scoring for training via `forward()` and full-catalog component assembly for evaluation via `score_all_items()`. Both routes reuse the same internal branch-selection and component-composition helpers so component-score and score-mixing semantics stay identical across training and evaluation.
 
 ---
 
@@ -646,7 +636,7 @@ For semantic diagnostics, `UCaGNN.get_all_score_components()` exposes the full-c
 
 **File:** `src/models/propensity.py`
 
-**Purpose:** Estimate item exposure probability P(exposure | item) for inverse propensity weighting (IPW). Debiases the BPR loss by upweighting rare items and downweighting popular ones.
+**Purpose:** Estimate an item-side exposure-propensity proxy for inverse propensity weighting (IPW). In practice this acts as a learned reweighting signal that upweights rare items and downweights popular ones, rather than a fully identified treatment/exposure model.
 
 ### Constructor
 
@@ -670,11 +660,11 @@ item_embedding (D) -> Linear(D, hidden) -> ReLU -> Linear(hidden, 1) -> Sigmoid 
 
 | Method | Input | Output | Description |
 |--------|-------|--------|-------------|
-| `forward(item_emb)` | `(B, D)` | `(B,)` | Propensity scores in `[clip_min, clip_max]`; caller computes `1 / forward(...)` for IPW weights |
+| `forward(item_emb)` | `(B, D)` | `(B,)` | Propensity-proxy scores in `[clip_min, clip_max]`; caller computes `1 / forward(...)` for IPW weights |
 
 ### Design Decision: Why a Learned Estimator?
 
-Simple heuristics (e.g., `1/count`) are noisy and don't account for how popularity interacts with item content. A learned MLP conditioned on the item embedding captures richer propensity patterns. Clamping prevents extreme weights that destabilize training.
+Simple heuristics (e.g., `1/count`) are noisy and don't account for how popularity interacts with item content. A learned MLP conditioned on the item embedding captures richer item-side exposure patterns. Clamping prevents extreme weights that destabilize training.
 
 **Survey evidence:** Inverse Propensity Weighting (IPW) is identified by all 4 causal inference surveys (S1-S4, 2023-2025) as a foundational debiasing technique. The consensus finding is that IPW suffers from "high variance when propensities near 0 or 1" -- the clamping to `[clip_min, clip_max]` directly addresses this. Recommended mitigations across surveys include clipping (implemented here), trimming, and doubly robust learning.
 
@@ -780,10 +770,13 @@ All loss functions and the multi-task orchestrator. Each section covers one file
 | Loss | Symbol | File | Role | Paper Origin | Config Lambda |
 |------|--------|------|------|-------------|---------------|
 | BPR | L_rec | `loss_suite.py` | Pairwise ranking (positive > negative) | LightGCN (He et al., 2020) | `lambda_rec` (1.0) |
-| Orthogonality | L_ortho | `loss_suite.py` | Decorrelate interest/conformity | DICE (Zheng et al., 2020); similar to FMMRec orthogonality constraint | `lambda_ortho` (0.01) |
-| Contrastive | L_contr | `loss_suite.py` | Pull same-user views together, push others apart | DCCL (2023) NT-Xent for semantic intent separation | `lambda_contr` (0.05) |
-| Counterfactual | L_cf | `loss_suite.py` | Score-scale regularizer: keeps branch magnitudes comparable | CausalEmbed (Bonner & Vasile, 2018) Ω(θ_treat − θ_control) | `lambda_cf` (0.05) |
-| Popularity | L_pop | `loss_suite.py` | Conformity branch predicts item popularity | DICE (2020) / DDCE (2023) conformity-predicts-popularity | `lambda_pop` (0.1) |
+| Interest branch BPR | L_interest_bpr | `loss_suite.py` | Keep the interest branch rankable on its own | Repository auxiliary ranking contract | `lambda_interest_bpr` (0.02 in `preset_full`) |
+| Conformity branch BPR | L_conformity_bpr | `loss_suite.py` | Keep the conformity branch rankable on its own | Repository auxiliary ranking contract | `lambda_conformity_bpr` (0.02 in `preset_full`) |
+| Independence | L_independence | `loss_suite.py` | Decorrelate interest/conformity user embeddings | DICE (Zheng et al., 2020); cosine-squared implementation chosen for tractability | `lambda_independence` (0.005 in `preset_full`) |
+| Contrastive | L_contrastive | `loss_suite.py` | Sum of popularity-aware branch-specific contrastive losses over batch-local other-user negatives | DCCL-style interest/conformity regularization | `lambda_contrastive` (0.02 in `preset_full`) |
+| DirectAU alignment | L_align | `loss_suite.py` | Optional branch-local alignment regularizer | DirectAU (2023) | `lambda_align` (0.0 in `preset_full`) |
+| DirectAU uniformity | L_uniform | `loss_suite.py` | Optional branch-local uniformity regularizer | DirectAU (2023) | `lambda_uniform` (0.0 in `preset_full`) |
+| Popularity | L_pop | `loss_suite.py` | Supervise the scorer-owned popularity head on train-split popularity targets | DICE / DDCE-style popularity anchoring | `lambda_pop` (0.02 in `preset_full`) |
 | **Total** | L_total | `loss_suite.py` | Weighted sum with curriculum scheduling | CaDCR (2025) multi-task curriculum | -- |
 
 ---
@@ -812,8 +805,8 @@ def bpr_loss(
 
 ### Implementation Notes
 
-- **Unweighted case**: delegates to PyG's `BPRLoss` (from `torch_geometric.nn.models.lightgcn`) for maximum efficiency.
-- **Weighted case**: custom implementation using `F.logsigmoid` + element-wise multiplication with IPW weights.
+- Uses `F.logsigmoid(pos_scores - neg_scores)` directly for both weighted and unweighted cases.
+- IPW weighting is applied as an element-wise multiplier before the batch mean when `use_ipw=True`.
 - Always active (not gated by curriculum).
 
 ### Role in Training
@@ -824,18 +817,18 @@ Encourages the model to rank positive items higher than negative items. The IPW 
 
 ---
 
-## L_ortho: Orthogonality Loss
+## L_independence: Independence Loss
 
 **File:** `src/losses/loss_suite.py`
 
 ### Formula
 
-$$L_{ortho} = \frac{1}{B} \sum_{b=1}^{B} \cos(z_{int}^{(b)}, z_{conf}^{(b)})^2$$
+$$L_{independence} = \frac{1}{B} \sum_{b=1}^{B} \cos(z_{int}^{(b)}, z_{conf}^{(b)})^2$$
 
 ### Function Signature
 
 ```python
-def orthogonality_loss(
+def independence_loss(
     interest: Tensor,      # (B, D)
     conformity: Tensor,    # (B, D)
 ) -> Tensor                # scalar
@@ -854,69 +847,63 @@ Decorrelates interest and conformity user embeddings so they capture distinct si
 
 ---
 
-## L_contr: Contrastive Loss (NT-Xent)
+## L_contrastive: DCCL-Style Branch Contrastive Loss
 
 **File:** `src/losses/loss_suite.py`
 
 ### Formula
 
-$$L_{contr} = -\frac{1}{2B} \sum_{k=1}^{B} \left[ \log \frac{e^{sim(z_i^{(k)}, z_j^{(k)})/\tau}}{\sum_{m \neq k} e^{sim(z_i^{(k)}, z_m)/\tau}} + \log \frac{e^{sim(z_j^{(k)}, z_i^{(k)})/\tau}}{\sum_{m \neq k} e^{sim(z_j^{(k)}, z_m)/\tau}} \right]$$
-
-where $sim$ = cosine similarity, $\tau$ = temperature.
+`LossSuite` computes explicit `L_interest_contrastive` and `L_conformity_contrastive` terms, then exposes `L_contrastive` as their sum.
 
 ### Function Signature
 
 ```python
-def contrastive_loss(
-    z_i: Tensor,        # (B, D) - first view (interest)
-    z_j: Tensor,        # (B, D) - second view (conformity)
-    tau: float = 0.1,   # temperature
-) -> Tensor             # scalar
+def interest_contrastive_loss(
+    user_embeddings: Tensor,   # (B, D)
+    item_embeddings: Tensor,   # (B, D)
+    item_popularity: Tensor,   # (I,)
+    pos_item_ids: Tensor,      # (B,)
+    temperature: float,        # config.contrastive_temperature
+    max_pairs: int,            # config.contrastive_max_pairs
+) -> Tensor
+
+def conformity_contrastive_loss(
+    user_embeddings: Tensor,   # (B, D)
+    item_embeddings: Tensor,   # (B, D)
+    item_popularity: Tensor,   # (I,)
+    pos_item_ids: Tensor,      # (B,)
+    temperature: float,        # config.contrastive_temperature
+    max_pairs: int,            # config.contrastive_max_pairs
+) -> Tensor
 ```
 
 ### Implementation Notes
 
-- Both views are L2-normalized before similarity computation.
-- Concatenates views to form a `(2B, 2B)` similarity matrix.
-- Self-similarity is masked out via identity matrix exclusion.
-- Log-sum-exp for numerical stability.
-- Returns zero (with grad) for batch size <= 1 (edge case).
+- Similarity uses batch-local dot products, matching the DCCL theory notes carried in the repository summaries.
+- Positive pairs are capped by `contrastive_max_pairs` to keep the quadratic similarity matrix bounded.
+- `L_interest_contrastive` weights each positive by `exp(-popularity)` and uses other users' batch items as negatives.
+- `L_conformity_contrastive` weights each positive by `1 - exp(-popularity)` and keeps only higher-popularity batch negatives.
+- Anchors without any eligible negatives are skipped for that branch.
 - The O(B^2) similarity matrix is the same bottleneck identified in DCCL and Survey S2 (which quantifies contrastive learning at O(B^2*d) per batch). At batch dimension 2048, this remains manageable. CaDCR (2025) suggests curriculum phasing to introduce contrastive loss only after initial embedding stabilization, which is supported by the curriculum scheduling in LossSuite.
 
 ### Role in Training
 
-Pulls the two views of the same user together while pushing views of different users apart. This ensures that while interest and conformity are *orthogonal* (L_ortho), they still encode information about the *same* user (not random noise).
+Pulls aligned positive user-item pairs together within each branch while assigning different causal semantics to the two branches: interest emphasizes niche positives, while conformity compares a positive item against more-popular alternatives from the same batch.
 
 ### Config
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `contrastive_tau` | 0.1 | Temperature -- lower = sharper distinctions |
+| `contrastive_temperature` | 0.2 | Temperature applied to branch contrastive dot-product logits |
+| `contrastive_max_pairs` | 256 | Hard cap on aligned positive pairs used by the loss |
 
 ---
 
-## L_cf: Counterfactual Divergence Loss
+## Optional DirectAU Geometry
 
 **File:** `src/losses/loss_suite.py`
 
-### Formula
-
-$$L_{cf} = \frac{1}{B} \sum_{b=1}^{B} (Y_{int}^{(b)} - Y_{conf}^{(b)})^2$$
-
-### Function Signature
-
-```python
-def counterfactual_loss(
-    interest_scores: Tensor,     # (B,)
-    conformity_scores: Tensor,   # (B,)
-) -> Tensor                      # scalar
-```
-
-### Role in Training
-
-Regularizes interest and conformity *score magnitudes* to remain comparable, so the counterfactual contrast `interest − conformity` stays interpretable as embeddings diverge.  Embedding divergence itself is driven by L_ortho (orthogonality) and L_contr (contrastive separation); L_cf acts as a score-scale calibrator that prevents the two branches from drifting to incompatible magnitude ranges.
-
-**Causal theory connection:** This implements the CausalEmbed (Bonner & Vasile, 2018) regularization Ω(θ_treat − θ_control), which penalizes parameter-space distance between treatment and control branches to keep the causal contrast well-conditioned.  CausE (2018) established product-level treatment effect estimation with domain-adapted parameters; MCLN (2023) extended counterfactual reasoning to multimodal content.
+DirectAU-style alignment (`L_align`) and uniformity (`L_uniform`) are still implemented as optional branch-local auxiliaries. They operate on the current batch's positive user-item pairs and are guarded by `lambda_align`, `lambda_uniform`, and `use_conformity_au`. The base dataclass exposes both lambdas at `0.02`, but `preset_full()` overrides them to `0.0`, so the current mainline does not use them unless you opt in explicitly.
 
 ---
 
@@ -928,17 +915,9 @@ Regularizes interest and conformity *score magnitudes* to remain comparable, so 
 
 $$L_{pop} = \frac{1}{B} \sum_{b=1}^{B} (\hat{p}^{(b)} - p^{(b)})^2$$
 
-where $\hat{p}$ = predicted popularity from conformity embeddings, $p$ = ground-truth normalized popularity.
+where $\hat{p}$ = scorer-owned popularity prediction and $p$ = train-split normalized popularity target.
 
-### Classes and Functions
-
-**PopularityPredictor** (nn.Module):
-
-```python
-PopularityPredictor(embed_dim: int)
-```
-
-Architecture: `Linear(D, 1) -> squeeze(-1)` -- projects conformity embeddings to a scalar popularity prediction.
+### Function
 
 **popularity_loss** (function):
 
@@ -946,11 +925,11 @@ Architecture: `Linear(D, 1) -> squeeze(-1)` -- projects conformity embeddings to
 def popularity_loss(pop_pred: Tensor, pop_target: Tensor) -> Tensor
 ```
 
-Standard MSE loss.
+Standard MSE loss. The popularity predictor itself now lives inside `ScoringModule` as a scorer-owned MLP over item-conformity anchors, scalar popularity/recency features, and the optional popularity embedding.
 
 ### Role in Training
 
-Anchors the conformity branch to the popularity signal. By training the conformity embeddings to predict item popularity, the interest branch is freed to capture genuine user preference -- the causal signal we actually want for recommendations.
+Anchors the popularity-aware scoring path to split-safe item popularity. By supervising that scorer-owned head, the model keeps a dedicated popularity component instead of forcing all popularity structure into the interest branch.
 
 **Paper lineage:** This follows DICE's core principle that conformity embeddings should predict popularity, since conformity *is* the popularity-following behavior. DDCE (2023) validates this with ablation results: removing the popularity disentanglement component (DDCE w/o i) drops HR from 0.0507 to 0.0485 on KuaiRec. MGCE (2024) further refines this with asymmetric GCN depth -- 1 layer for interest, 2 layers for conformity -- arguing that conformity requires deeper propagation to capture group homogeneity effects.
 
@@ -966,7 +945,7 @@ Anchors the conformity branch to the popularity signal. By training the conformi
 LossSuite(config: UCaGNNConfig)
 ```
 
-Creates `PopularityPredictor` if `use_dual_branch=True` and `lambda_pop > 0`.
+`LossSuite` itself has no extra learnable predictor modules; it consumes the score bundle produced by `UCaGNN.build_training_output()`.
 
 ### Forward
 
@@ -982,31 +961,31 @@ def forward(
 ### Total Loss Formula
 
 ```
-L_total = lambda_rec   * L_rec
-        + lambda_ortho * L_ortho
-        + lambda_contr * L_contr
-        + lambda_cf    * L_cf
-        + lambda_pop   * L_pop
+L_total = lambda_rec * L_rec
+        + w_interest_bpr   * L_interest_bpr
+        + w_conformity_bpr * L_conformity_bpr
+        + w_independence   * L_independence
+        + w_contrastive    * L_contrastive
+        + w_align          * L_align
+        + w_uniform        * L_uniform
+        + w_pop            * L_pop
 ```
 
 ### Curriculum Scheduling
 
-Losses are phased in based on epoch thresholds to stabilize early training:
+Losses activate through one of two schedules:
 
-| Phase | Epochs | Active Losses | Rationale |
-|-------|--------|--------------|-----------|
-| 1 | `[0, phase1_end)` | L_rec only | Learn basic ranking first |
-| 2 | `[phase1_end, phase2_end)` | + L_ortho, L_contr | Begin disentangling branches |
-| 3 | `[phase2_end, ...)` | + L_cf, L_pop | Add counterfactual + popularity once branches are separated |
+- `phased` (base dataclass default): branch BPR starts immediately, independence/contrastive/optional DirectAU activate at `auxiliary_losses_start_epoch`, and popularity supervision activates at `popularity_supervision_start_epoch`.
+- `linear_ramp` (`preset_full()`): effective auxiliary weights ramp from 0 using `auxiliary_ramp_rate` or `independence_ramp_rate`, while fused BPR stays on from epoch 0.
 
-**Default:** `auxiliary_losses_start_epoch = 15`, `popularity_supervision_start_epoch = 30` (CaDCR-inspired staged curriculum -- Phase 1: ranking only, Phase 2: + branch separation, Phase 3: + full causal disentanglement).
+**Base phased defaults:** `auxiliary_losses_start_epoch = 15`, `popularity_supervision_start_epoch = 30`.
 
 ### Gating Logic
 
-Each loss requires:
-1. `use_dual_branch = True` (ortho, contr, cf, pop all need two branches)
+Each auxiliary loss requires:
+1. Any needed architecture toggle (`use_dual_branch`, `use_popularity_head`, optional `use_conformity_au`)
 2. Its lambda > 0
-3. Current epoch >= phase threshold
+3. A non-zero effective weight under the active schedule
 
 If any condition fails, the loss is set to a zero tensor (no gradient contribution).
 
@@ -1015,9 +994,12 @@ If any condition fails, the loss is set to a zero tensor (no gradient contributi
 | Key | Description |
 |-----|-------------|
 | `"rec"` | BPR loss value |
-| `"ortho"` | Orthogonality loss value |
-| `"contr"` | Contrastive loss value |
-| `"cf"` | Counterfactual loss value |
+| `"interest_bpr"` | Interest-branch auxiliary BPR |
+| `"conformity_bpr"` | Conformity-branch auxiliary BPR |
+| `"independence"` | Cosine-squared branch decorrelation |
+| `"contrastive"` | Within-branch contrastive loss |
+| `"align"` | Optional DirectAU alignment |
+| `"uniform"` | Optional DirectAU uniformity |
 | `"pop"` | Popularity loss value |
 | `"total"` | Weighted sum |
 
@@ -1151,7 +1133,7 @@ Use the terminology consistently:
 | Name | Function | Source Format | Size | Label Logic | Sign Logic | Side Features |
 |------|----------|--------------|------|-------------|------------|---------------|
 | `movielens1m` | `load_movielens1m` | local `ratings.dat` raw files | ~1M ratings | rating >= 4 -> positive | (rating - 3) / 2 | user features, movie genres, raw rating retained |
-| `movielens20m` | `load_movielens20m` | `ratings.csv` (manual) | ~20M ratings | rating >= 4 -> positive | (rating - 3) / 2 | movie genres by default; dense genome relevance only under `all_optional` / dense preset |
+| `movielens20m` | `load_movielens20m` | `ratings.csv` (manual) | ~20M ratings | rating >= 4 -> positive | (rating - 3) / 2 | movie genres by default; genome relevance only under `all_optional` / `movielens_explicit_dense_genome` |
 | `amazonbook` | `load_amazonbook` | local LightGCN split files | ~2.9M implicit | all positive (implicit) | 0.0 (neutral) | none; preset recorded as graph-only |
 | `taobao` | `load_taobao` | `UserBehavior.csv` (manual) | ~100M behaviors | buy/cart/fav -> pos, pv -> neg | buy=1, cart=0.5, fav=0.25, pv=-0.25 | item categories |
 | `kuairec_v2` | `load_kuairec_v2` | `small_matrix.csv` by default; `big_matrix.csv` for explicit watch-ratio runs | dual-matrix watch logs | watch_ratio >= 0.5 -> pos | clip(wr, 0, 2) - 1 | thesis-default: 6 daily descriptors + multi-hot categories = **40 item features**; `all_optional` restores user features + full item scans |
@@ -1239,7 +1221,7 @@ All strategies add edges in **both directions** (undirected graph).
 | Attribute | Shape | Description |
 |-----------|-------|-------------|
 | `edge_index` | `(2, E)` | Graph edges (bipartite + optional CAGRA ANN augmentation) |
-| `edge_sign` | `(E,)` | Aligned to `edge_index`; train signs duplicated for undirected edges; kNN/CAGRA edges get 0.0 |
+| `edge_sign` | `(E,)` | Aligned to `edge_index`; train signs duplicated for undirected edges; optional CAGRA ANN edges get 0.0 |
 | `train_mask` | `(N_interactions,)` bool | Training split |
 | `val_mask` | `(N_interactions,)` bool | Validation split |
 | `test_mask` | `(N_interactions,)` bool | Test split |
@@ -1266,7 +1248,7 @@ That distinction matters for audit interpretation: a field can be present in raw
 Uses NVIDIA `cuvs.neighbors.cagra` for GPU-accelerated approximate nearest neighbor graph construction:
 - Keeps CUDA embeddings on-device through the CuPy/DLPack path when available, materializes the returned neighbor table once as a CPU `torch.long` tensor, and builds the ANN edge index in Torch to avoid extra NumPy host-array churn.
 - Configurable via `cagra_out_degree`, `cagra_initial_degree`, `cagra_team_size`, `cagra_metric`, `cagra_itopk_size`.
-- Falls back gracefully to kNN on machines without CUDA/cuvs.
+- Falls back gracefully to the train-interaction graph on machines without CUDA/cuvs or when ANN build/search fails.
 
 **Default configuration:** `out_degree=32`, `initial_degree=64` (2× out_degree, thesis-speed defaults; cuVS library defaults are 64/128), `team_size=0` (auto), `metric="inner_product"` (matches dot-product scoring used by LightGCN), `itopk_size=64` (search-time only, no build cost). Increase `out_degree`/`initial_degree` for higher-quality ANN recall at the cost of longer graph build time.
 
@@ -1420,7 +1402,7 @@ MiniBatchTrainer(
 ```
 
 Inherits from `TrainerRuntime` which sets up:
-- Adam optimizer over both model and loss_suite parameters (the `PopularityPredictor` in `LossSuite` has learnable weights).
+- AdamW optimizer over both model and loss-suite parameters, with sign-aware scalars kept in a zero-weight-decay parameter group.
 - `NegativeSampler` configured from `config.n_negatives` and `config.hard_negative_ratio`.
 - `Evaluator` for validation metrics.
 - Early stopping state: `best_ndcg`, `patience_counter`, `best_state`.
@@ -1430,7 +1412,7 @@ Inherits from `TrainerRuntime` which sets up:
 
 **Gradient clipping:** `torch.nn.utils.clip_grad_norm_` with `max_norm=1.0` (configurable via `config.grad_clip_norm`) is applied after `loss.backward()` and before `optimizer.step()`. This follows DICE's recommendation to prevent gradient explosions, which is especially important with 5 loss terms and IPW weights that can reach 100x.
 
-**Curriculum scheduling (CaDCR connection):** The epoch-based curriculum follows CaDCR's multi-task approach: progressive tasks with increasing difficulty. Phase 1 keeps fused BPR and the branch BPR auxiliaries on from the start, Phase 2 adds independence, within-branch contrastive, and optional DirectAU geometry, and Phase 3 adds popularity supervision once the branch structure is stable. The runtime defaults are `auxiliary_losses_start_epoch=15` / `auxiliary_losses_start_epoch` and `popularity_supervision_start_epoch=30` / `popularity_supervision_start_epoch`. Those thresholds remain configurable for local sensitivity checks, but the public thesis ablation matrix is intentionally limited to `mainline`, `no_popularity_head`, `no_independence`, and `no_features`.
+**Curriculum scheduling (CaDCR connection):** The code supports both phased and linear-ramp auxiliary schedules. The base config keeps the phased thresholds `auxiliary_losses_start_epoch=15` and `popularity_supervision_start_epoch=30`, while `preset_full()` switches to `linear_ramp`, keeping fused BPR active from epoch 0 and ramping the auxiliary weights in smoothly. Those thresholds remain configurable for local sensitivity checks, but the public thesis ablation matrix is intentionally limited to `mainline`, `no_popularity_head`, `no_independence`, and `no_features`.
 
 **Loss schedule:** supported runs keep `config.loss_schedule="baseline"`. Fused BPR stays active throughout the curriculum, and only the auxiliary terms phase in via `auxiliary_loss_schedule`, `auxiliary_losses_start_epoch`, and `popularity_supervision_start_epoch`.
 
@@ -1445,8 +1427,8 @@ The training loop now has two execution modes:
 2. **Sample subgraph** -- `SubgraphSampler.sample()` extracts a k-hop subgraph around the batch's user and item nodes (via `_prepare_batch()`).
 3. **Forward on subgraph** -- `UCaGNN.forward_subgraph()` indexes into full embedding tables using subgraph node IDs, runs GCN on the local `sub_edge_index`, and scores with local indices. Profiled as `"forward"`.
 4. **Local popularity** -- popularity values are indexed from the global `data.popularity` tensor using the subgraph's item mapping.
-5. **Loss + backward** -- standard loss computation and optimizer step on the subgraph outputs. The branch-alignment losses (`L_ortho`, `L_contr`) are evaluated on the current batch users, not every context user in the sampled subgraph, so mini-batch memory stays tied to the training batch rather than growing quadratically with subgraph size. Profiled as `"loss"` and `"backward"`.
-6. **Validation** -- shared `_finalize_epoch()` handles evaluation (using EMA weights when available), early stopping, checkpointing.
+5. **Loss + backward** -- standard loss computation and optimizer step on the subgraph outputs. The branch-local auxiliaries (`L_independence`, `L_contrastive`, optional `L_align` / `L_uniform`) operate on the current batch users/items, not every context node in the sampled subgraph, so mini-batch memory stays tied to the training batch rather than growing quadratically with subgraph size. Profiled as `"loss"` and `"backward"`.
+6. **Validation** -- the shared runtime end-of-epoch helpers handle evaluation (using EMA weights when available), early stopping, scheduler updates, and checkpointing.
 
 ### Batch Structure
 
@@ -1462,7 +1444,7 @@ Mini-batch training extracts a k-hop subgraph around batch nodes via `SubgraphSa
 
 `batch_size` controls both the number of interactions per loss/optimizer step and the size of the extracted subgraph. Fixed-batch runs still default to `4096`, but CUDA runs can now enable `auto_batch_size` so the runtime mirrors the real epoch-0 shuffle, probes several representative mini-batches, synchronizes CUDA before releasing probe allocations, and picks the largest surviving candidate before checkpoint identity, canonical naming, and logging are frozen. The experiment entry also defaults `PYTORCH_ALLOC_CONF=expandable_segments:True` so the allocator can reuse segments more safely across probe/train handoff. The built-in candidate ladders are dataset-aware support defaults rather than thesis axes and now extend down to `256`, which matters for dense sampled subgraphs such as Amazon-Book. `num_neighbors` limits per-hop fan-out to control subgraph density and VRAM; the current default is `[10, 5]`, and formal profiles can optionally expand several such shapes through `num_neighbors_options`.
 
-When running on CUDA, the shared runtime wraps the forward/loss path in autocast so the batch loop benefits from Tensor Core acceleration without changing the trainer API. `TrainerRuntime` now also enables cuDNN autotuning plus TF32 matmul mode (`torch.set_float32_matmul_precision("high")`, `torch.backends.cuda.matmul.allow_tf32=True`) so the scoring and feature-projection MLPs can use the faster Tensor Core kernels on modern NVIDIA GPUs. The epoch progress bar reports batch progress for the active epoch while leaving the existing log summary at epoch boundaries.
+When running on CUDA, the shared runtime wraps the forward/loss path in bfloat16 autocast so the batch loop benefits from Tensor Core acceleration without changing the trainer API. The reproducibility contract keeps deterministic algorithms enabled and disables cuDNN benchmarking / TF32 shortcuts, so throughput-oriented Tensor Core use comes from AMP rather than relaxed backend determinism. The epoch progress bar reports batch progress for the active epoch while leaving the existing log summary at epoch boundaries.
 
 ### Early Stopping
 
@@ -1472,14 +1454,14 @@ When running on CUDA, the shared runtime wraps the forward/loss path in autocast
 - Default patience: 10 epochs, but patience counting is deferred until `max(auxiliary_losses_start_epoch, popularity_supervision_start_epoch)` so staged training is not terminated before later loss phases activate.
 - Disabling early stopping does not disable best-model tracking. The trainer still records the best validation checkpoint and restores it after the full epoch budget completes.
 
-Validation and test metrics are computed with `config.eval_scoring_mode`, so early stopping can now be driven by the default score mixture or by an intervention-style evaluation view such as `interest_only` or `conformity_suppressed`.
+Validation and test metrics are computed with `config.eval_scoring_mode`, so early stopping can now be driven by the default score mixture or by a branch-isolation evaluation view such as `interest_only` or `conformity_suppressed`.
 `config.train_scoring_mode` now follows the preset contract explicitly: `preset_lightgcn()` keeps the default score, `preset_dice_like()` uses the fixed default interest+conformity score, and `preset_full()` keeps the fused default score unless a same-checkpoint evaluation script overrides `config.eval_scoring_mode`.
 Validation/test output is intentionally restricted to the thesis-facing PyG metrics: `NDCG@20`, `Recall@20`, `AveragePopularity@20`, `HitRatio@20`, `Personalization@20`, `NDCG@40`, `Recall@40`, `AveragePopularity@40`, `HitRatio@40`, and `Personalization@40`.
 The evaluator builds those metrics as a PyG `LinkPredMetricCollection` keyed by metric name. MetricCollection removes per-metric runtime update loops, but it still needs one metric instance per metric and cutoff at construction time.
 The evaluator now rematerializes `edge_index`, `edge_sign`, `edge_norm`, and `popularity` on the active evaluation device for each validation/test call instead of holding a persistent device-side full-graph cache across epochs. On CUDA it also runs the full-graph propagation and scoring path under bf16 autocast, explicitly casts the evaluation embedding bundle to bf16, and reclaims the CUDA-resident sampler before validation so full-graph propagation has the VRAM budget back on large datasets such as MovieLens20M.
 `src/training/evaluator.py` is also the single source of truth for the thesis-primary metric tuple and lower-is-better metric polarity, so downstream benchmark, ablation, reporting, and scoring-mode scripts import those constants instead of re-declaring them.
 Treat both AveragePopularity metrics as lower-is-better.
-The main mechanism check should reuse the same checkpoint under `default`, `interest_only`, and `conformity_suppressed` scoring. This keeps the causal analysis aligned with the current runtime contract: branch-sensitive ranking behavior is tested directly, while PropCare-style `CPrec` and `CDCG` remain out of scope unless a separate treatment/propensity/effect evaluation table is introduced.
+The main mechanism check should reuse the same checkpoint under `default`, `interest_only`, and `conformity_suppressed` scoring. This keeps the mechanism analysis aligned with the current runtime contract: branch-sensitive ranking behavior is tested directly, while PropCare-style `CPrec` and `CDCG` remain out of scope unless a separate treatment/propensity/effect evaluation table is introduced.
 Use `uv run evaluate-scoring-modes --checkpoint-path ...` when you want the thesis mechanism table from one trained checkpoint without retraining separate runs under different evaluation modes. The command reuses `run_experiment.py` helpers for checkpoint validation and runtime dataset/graph/model reconstruction instead of carrying a parallel copy of that logic.
 PyG 2.7 also exposes Diversity and Personalization. The runtime evaluator now keeps `Personalization@20/40` as part of the thesis-facing metric set and defines the degenerate tiny-split case with fewer than two evaluated users as `0.0` so smoke validation stays finite. Diversity remains audit-only until the runtime contract grows category metadata for it.
 External implementation audits may discuss non-PyG causal-uplift evaluators such as PropCare's semi-simulated `CPrec` or `CDCG` pipeline, but those are documentation-only reference analyses unless the runtime data contract is extended with treatment, propensity, and causal-effect labels.
@@ -1768,7 +1750,6 @@ Public experiment naming note: use `ucagnn` as the main CLI preset/recipe name. 
 |-----------|------|---------|-------------|
 | `use_dual_branch` | `bool` | `True` | Separate interest/conformity user embeddings and GCN branches |
 | `use_sign_aware` | `bool` | `True` | Learnable alpha_pos/alpha_neg edge weights in GCN |
-| `use_counterfactual` | `bool` | `True` | Enable `counterfactual_score = interest - conformity` diagnostics |
 | `use_ipw` | `bool` | `True` | Enable PropensityEstimator for inverse propensity weighting |
 | `use_popularity_emb` | `bool` | `True` | Additional item popularity embedding table |
 | `use_torch_compile` | `bool` | `False` | Opt-in only. Dynamic mini-batch subgraphs currently hit Dynamo recompiles often enough that compile is not the default training path. |
@@ -1842,17 +1823,26 @@ final_score = alpha * interest + beta * conformity + gamma * cf
 Control the weight of each loss term in the total loss. Setting a lambda to `0.0` disables that loss entirely.
 
 ```
-L_total = lambda_rec * L_rec + lambda_ortho * L_ortho + lambda_contr * L_contr
-        + lambda_cf * L_cf + lambda_pop * L_pop
+L_total = lambda_rec * L_rec
+        + lambda_interest_bpr * L_interest_bpr
+        + lambda_conformity_bpr * L_conformity_bpr
+        + lambda_independence * L_independence
+        + lambda_contrastive * L_contrastive
+        + lambda_align * L_align
+        + lambda_uniform * L_uniform
+        + lambda_pop * L_pop
 ```
 
 | Parameter | Type | Default | Loss Term |
 |-----------|------|---------|-----------|
 | `lambda_rec` | `float` | `1.0` | L_rec (BPR ranking) |
-| `lambda_ortho` | `float` | `0.01` | L_ortho (orthogonality) |
-| `lambda_contr` | `float` | `0.05` | L_contr (NT-Xent contrastive) |
-| `lambda_cf` | `float` | `0.05` | L_cf (counterfactual divergence) |
-| `lambda_pop` | `float` | `0.1` | L_pop (popularity prediction) |
+| `lambda_interest_bpr` | `float` | `0.02` | L_interest_bpr |
+| `lambda_conformity_bpr` | `float` | `0.02` | L_conformity_bpr |
+| `lambda_independence` | `float` | `0.005` | L_independence |
+| `lambda_contrastive` | `float` | `0.02` | L_contrastive |
+| `lambda_align` | `float` | `0.02` | L_align (base config; `preset_full()` overrides to `0.0`) |
+| `lambda_uniform` | `float` | `0.02` | L_uniform (base config; `preset_full()` overrides to `0.0`) |
+| `lambda_pop` | `float` | `0.02` | L_pop |
 
 ---
 
@@ -1860,9 +1850,10 @@ L_total = lambda_rec * L_rec + lambda_ortho * L_ortho + lambda_contr * L_contr
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `contrastive_tau` | `float` | `0.1` | NT-Xent temperature (lower = sharper) |
+| `contrastive_temperature` | `float` | `0.2` | Within-branch contrastive temperature |
+| `contrastive_max_pairs` | `int` | `256` | Maximum aligned positive pairs used by L_contrastive |
 
-**Note:** Default tau=0.1 is standard (SimCLR uses the range 0.1-0.5). DCCL does not report a specific tau value. Should be tuned per dataset -- lower tau produces sharper intent distinctions but increases gradient magnitude.
+**Note:** The repository default is `contrastive_temperature=0.2`. Lower values produce sharper distinctions but also larger gradients; treat this as a support hyperparameter rather than a thesis axis.
 
 ---
 
@@ -1939,11 +1930,11 @@ The formal bundle now also forwards support parameters such as `hard_negative_ra
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `auxiliary_losses_start_epoch` | `int` | `15` | Epoch when independence, within-branch contrastive, and optional DirectAU auxiliaries activate (0 = from start) |
+| `auxiliary_losses_start_epoch` | `int` | `15` | Epoch when independence, DCCL-style contrastive, and optional DirectAU auxiliaries activate (0 = from start) |
 | `popularity_supervision_start_epoch` | `int` | `30` | Epoch when popularity supervision activates (0 = from start) |
 | `loss_schedule` | `"baseline"` | `"baseline"` | Fused BPR is active throughout the curriculum; this field remains baseline-only for supported runs. |
 
-**Default behavior:** CaDCR-inspired staged curriculum: Phase 1 (epochs 0-14) fused BPR + branch BPR, Phase 2 (epochs 15-29) adds independence, within-branch contrastive, and optional DirectAU geometry, Phase 3 (epochs 30+) adds popularity supervision. Set both thresholds to 0 for joint training from epoch 0.
+**Default behavior:** CaDCR-inspired staged curriculum: Phase 1 (epochs 0-14) fused BPR + branch BPR, Phase 2 (epochs 15-29) adds independence, DCCL-style contrastive, and optional DirectAU geometry, Phase 3 (epochs 30+) adds popularity supervision. Set both thresholds to 0 for joint training from epoch 0.
 
 **Ablation note:** Curriculum thresholds remain configurable for local sensitivity checks, but the public thesis ablation matrix is intentionally limited to `mainline`, `no_popularity_head`, `no_independence`, and `no_features`.
 
@@ -1992,29 +1983,40 @@ Non-causal LightGCN baseline. Disables all causal components:
 |-------------------|-------|
 | `use_dual_branch` | `False` |
 | `use_sign_aware` | `False` |
-| `use_counterfactual` | `False` |
 | `use_ipw` | `False` |
 | `use_popularity_emb` | `False` |
-| `lambda_ortho/contr/cf/pop` | `0.0` |
+| `lambda_interest_bpr` | `0.0` |
+| `lambda_conformity_bpr` | `0.0` |
+| `lambda_independence` | `0.0` |
+| `lambda_contrastive` | `0.0` |
+| `lambda_pop` | `0.0` |
 | `beta_conformity` | `0.0` |
-| `gamma_counterfactual` | `0.0` |
+| `gamma_popularity` | `0.0` |
 
 ### `preset_dice_like()`
 
-DICE-inspired dual-branch with orthogonality only:
+DICE-inspired dual-branch with fixed interest+conformity scoring:
 
 | Changed Parameter | Value |
 |-------------------|-------|
 | `use_dual_branch` | `True` |
-| `use_counterfactual` | `False` |
 | `use_ipw` | `False` |
-| `lambda_contr` | `0.0` |
-| `lambda_cf` | `0.0` |
-| `gamma_counterfactual` | `0.0` |
+| `use_popularity_head` | `False` |
+| `use_popularity_emb` | `False` |
+| `use_sign_aware` | `False` |
+| `use_features` | `False` |
+| `lambda_interest_bpr` | `0.1` |
+| `lambda_conformity_bpr` | `0.1` |
+| `lambda_independence` | `0.01` |
+| `lambda_contrastive` | `0.0` |
+| `lambda_pop` | `0.0` |
+| `alpha_interest` | `1.0` |
+| `beta_conformity` | `1.0` |
+| `gamma_popularity` | `0.0` |
 
 ### `preset_full()`
 
-Wave-1 U-CaGNN mainline with learned fused scoring, asymmetric branch depth, BPR active from epoch 0, and ramped auxiliary regularization.
+U-CaGNN mainline with learned fused scoring, asymmetric branch depth, BPR active from epoch 0, and ramped auxiliary regularization.
 
 Public experiment naming note: this internal preset method is exposed at the CLI and in the catalog as `ucagnn`.
 
@@ -2082,10 +2084,10 @@ The graded sign hierarchy for KuaiRand-1K reflects engagement depth:
 | neutral (click only) | 0.0 | Clicked but didn't engage further |
 | hate | -1.0 | Explicit negative feedback |
 
-**Why is `is_rand` preserved as metadata?** The `is_rand` flag indicates whether the item was shown through randomized exposure (vs. algorithmic recommendation). This is critical for causal analysis because randomized exposure satisfies the "no confounding" assumption, enabling unbiased estimation of treatment effects. The flag enables:
-1. Evaluating on random exposure only (debiased metrics)
-2. Training the propensity estimator with known exposure probabilities
-3. Validating IPW effectiveness by comparing random vs. algorithmic subsets
+**Why is `is_rand` preserved as metadata?** The `is_rand` flag indicates whether the item was shown through randomized exposure (vs. algorithmic recommendation). This matters for causal analysis because randomized exposure is the closest thing in these logs to an observed low-confounding slice. In the current repository it mainly enables:
+1. Auditing random-only versus standard subsets during dataset exploration
+2. Building causal-only preprocessing presets such as `kuairand_random_only`
+3. Keeping exposure information available for future evaluators or debiasing studies
 
 **Implementation**: `src/data/loaders/kuairand1k.py`.
 
@@ -2094,48 +2096,46 @@ The graded sign hierarchy for KuaiRand-1K reflects engagement depth:
 Sign assignment is a *preprocessing heuristic*, not a learned parameter. However, the model adapts to sign quality through two mechanisms:
 
 1. **Learnable `alpha_pos` / `alpha_neg`**: The DualBranchGCN learns separate aggregation weights for positive and negative edges, effectively learning how much to trust the sign assignments.
-2. **IPW handles exposure bias dynamically**: The PropensityEstimator learns P(exposure|item) and reweights the loss, compensating for systematic biases in sign assignment.
+2. **IPW adds a learned exposure-bias proxy**: The PropensityEstimator produces an item-side propensity proxy and reweights the loss, partially compensating for systematic popularity/exposure bias in the observed interactions.
 
 Making signs fully learnable would require a differentiable sign predictor, which adds complexity without clear benefit -- the current approach works because sign assignment errors are bounded (misclassifying neutral as mildly positive/negative has limited impact due to the graded scale).
 
 ---
 
-## 2. Counterfactual Scoring: Why INT - CONF?
+## 2. Legacy Branch-Contrast Diagnostic: Why INT - CONF?
 
 ### 2.1 The Scoring Formula
 
 The final prediction score is:
 
 ```
-score = alpha * INT + beta * CONF + gamma * (INT - CONF)
+score = alpha * INT + beta * CONF + gamma * POP
 ```
 
 Where:
 - `INT` = interest branch score (user's intrinsic preference)
 - `CONF` = conformity branch score (popularity-driven preference)
-- `INT - CONF` = Individual Treatment Effect (ITE) from causal inference
+- `POP` = scorer-owned popularity component
 
 ### 2.2 Causal Interpretation
 
-In the potential outcomes framework:
-- `INT` approximates Y(1) -- the outcome if the user's interest drives the interaction
-- `CONF` approximates Y(0) -- the outcome if conformity/popularity drives the interaction
-- `INT - CONF` = Y(1) - Y(0) = ITE -- the causal effect of genuine interest
+The theory summaries reserve counterfactual quantities such as `Y(1) - Y(0)` for explicit treatment/control or factual-vs-counterfactual comparisons. The current U-CaGNN runtime does **not** identify such treatment variables or estimate ITE/ATE-style quantities.
 
-This decomposition comes from CausE (Bonner & Vasile, 2018), which established that separating interest from conformity requires:
-1. Two separate representation branches
-2. A counterfactual contrast term to measure the *difference* between branches
+Accordingly:
+- `INT` and `CONF` should be read as disentangled score components, not literal `Y(1)` and `Y(0)` outcomes.
+- The runtime exposes `INT`, `CONF`, and `POP` component scores plus the fused score; it does not derive an extra causal score from simple algebraic combinations of those components.
+- CausE and MCLN contribute the intuition that contrasting two views can be useful; they do **not** justify labeling the repository's branch difference as a true causal effect.
 
 ### 2.3 Why Not Just Set CONF = 0?
 
 Setting `CONF = 0` (ignoring conformity) would:
 - Kill the conformity branch's gradient signal (no loss flows through it)
 - Prevent the model from learning to *disentangle* interest from conformity
-- Reduce the model to a standard GCN with no causal debiasing
+- Reduce the model to a standard GCN with no explicit branch-based debiasing mechanism
 
 The conformity branch *must* receive gradient signal to learn what conformity looks like, so that the interest branch can learn what it is *not*.
 
-**Implementation**: `src/models/scoring.py` (CounterfactualScoring class).
+**Implementation**: `src/models/scoring.py` (`ScoringModule`).
 
 ---
 
@@ -2160,7 +2160,7 @@ U-CaGNN implements IPW as a *toggleable* component (`use_ipw` flag in config). T
 
 ### 3.3 Architecture: MLP, Not GNN
 
-The PropensityEstimator uses a 2-layer MLP (input -> 128 hidden -> 1 output) rather than a GNN because propensity P(exposure|item) is a *per-item* property:
+The PropensityEstimator uses a 2-layer MLP (input -> 128 hidden -> 1 output) rather than a GNN because the repository treats propensity as an *item-side proxy*:
 - An item's exposure probability depends on its popularity, recency, and platform-level factors
 - These are item-level statistics, not graph-relational properties
 - A GNN would be over-parameterized for this task (and add unnecessary computation)
@@ -2195,30 +2195,31 @@ Popularity is a low-dimensional signal (single scalar per item, bucketed). A 16-
 
 ### 5.1 Source
 
-The default loss weights come from ablation studies in DICE and MGCE:
+The current code exposes both base dataclass defaults and preset-level overrides. For the thesis mainline (`preset_full()`), the effective weights are:
 
 | Lambda | Default | Source | Role |
 |--------|---------|--------|------|
 | `lambda_rec` | 1.0 | Standard | Primary BPR loss weight |
-| `lambda_ortho` | 0.02 | DICE | Orthogonality between INT/CONF branches |
-| `lambda_contr` | 0.1 | MGCE | Contrastive loss for embedding quality |
-| `lambda_cf` | 0.08 | CausE | Counterfactual regularization |
-| `lambda_pop` | 0.15 | U-CaGNN | Popularity prediction auxiliary loss |
+| `lambda_interest_bpr` | 0.02 | Repository mainline | Keep the interest branch rankable |
+| `lambda_conformity_bpr` | 0.02 | Repository mainline | Keep the conformity branch rankable |
+| `lambda_independence` | 0.005 | DICE-inspired | Branch disentanglement |
+| `lambda_contrastive` | 0.02 | DCCL-style | Within-branch contrastive regularization |
+| `lambda_pop` | 0.02 | Repository mainline | Popularity-head supervision |
 
 ### 5.2 Sensitivity
 
 These values are *not* universal. Each dataset has different characteristics (density, sign distribution, popularity skew) that affect optimal lambda values. The experiment infrastructure supports systematic sensitivity sweeps:
 
 ```bash
-# Example: sweep lambda_ortho on MovieLens1M
+# Example: sweep lambda_independence on MovieLens1M
 for val in 0.0 0.01 0.02 0.05 0.1; do
     uv run experiment \
     --dataset movielens1m --preset ucagnn \
-        --override lambda_ortho=$val
+        --override lambda_independence=$val
 done
 ```
 
-**Implementation**: `src/utils/config.py`, lines 37-41.
+**Implementation**: `src/utils/config.py` preset overrides plus `LossSuite.forward()` in `src/losses/loss_suite.py`.
 
 ---
 
@@ -2289,16 +2290,16 @@ The thesis runtime keeps the semantic experiment matrix on `dataset × preset` a
 
 For each batch, the trainer extracts a k-hop subgraph around the batch users plus positive and negative items. Key design choices:
 
-- **CPU-side preparation**: negative sampling and subgraph extraction stay on CPU in a background thread.
-- **Pinned transfer path**: the sampled `SubgraphBatch` is pinned and moved to CUDA with `non_blocking=True` immediately before the forward pass.
+- **CUDA-first preparation**: on GPU runs the trainer prefers a CUDA-resident sampler; it falls back to the background-thread CPU path only when graph staging or later batch preparation OOMs.
+- **Pinned transfer path**: when the sampler falls back to CPU, the sampled `SubgraphBatch` is pinned and moved to CUDA with `non_blocking=True` immediately before the forward pass.
 - **Users-first layout**: `SubgraphSampler` rearranges the local node set so `DualBranchGCN` can treat subgraphs exactly like the full graph layout.
-- **Batch-scoped disentanglement losses**: `L_ortho` and `L_contr` operate on the current batch users, not every context user in the sampled subgraph.
+- **Batch-scoped auxiliaries**: `L_independence`, `L_contrastive`, and optional DirectAU terms operate on the current batch users/items, not every context node in the sampled subgraph.
 
 ### 8.3 Practical Tuning Guidance
 
 - **Batch size**: increase batch size first when GPU memory allows; it improves both hardware utilization and the representativeness of the sampled subgraph.
-- **Fan-out**: use `num_neighbors` as the main VRAM/throughput knob. The current formal default `[15, 10]` keeps a denser first hop without letting the second hop explode.
-- **Contrastive cost**: `L_contr` remains an `O(B^2 d)` term, so batch size and fan-out should be tuned together rather than independently.
+- **Fan-out**: use `num_neighbors` as the main VRAM/throughput knob. The current base dual-branch default is `[10, 5]`, and formal profiles may expand alternate vectors through `num_neighbors_options`.
+- **Contrastive cost**: `L_contrastive` remains an `O(B^2 d)` term, so batch size and fan-out should be tuned together rather than independently.
 
 This is the only training path reflected in the current implementation and experiment orchestration.
 

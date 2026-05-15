@@ -3,17 +3,18 @@
 Use this skill when working on training loop, evaluation, checkpoints, profiling, or experiment logging.
 
 ## Key Files
-- `docs/ucagnn_implementation/training.md` - Training pipeline with paper cross-references
+- `.github/skills/ucagnn-implementation/ucagnn-training.md` - Routed training/runtime summary for the current implementation
 - `src/utils/trainer_runtime.py` - Shared trainer setup, checkpointing, profiling helpers, and early-stopping state
 - `src/training/mini_batch_trainer.py` - MiniBatchTrainer class (sole trainer)
 - `src/training/evaluator.py` - Evaluator (PyG link-prediction metrics at K)
 - `src/profiling/gpu_profiler.py` - GPUProfiler and profile_stage
 - `src/utils/experiment_logger.py` - SQLite ExperimentLogger
+- `experiments/run_experiment.py` - Supported single-run entry point plus checkpoint identity assembly
 
 ## Paper Sources
 | Feature | Source |
 |---------|--------|
-| Adam lr=1e-3 (fused on CUDA) | LightGCN |
+| AdamW lr=1e-3 (fused on CUDA) | LightGCN-inspired optimizer baseline with repository-specific decay policy |
 | `set_to_none=True` in zero_grad | PyTorch performance guide |
 | Deterministic seeded runtime + bf16 AMP | PyTorch reproducibility guide + CUDA best practices |
 | ReduceLROnPlateau (optional) | PyTorch |
@@ -49,6 +50,8 @@ experiment_logger.close()
 trainer.save_checkpoint("results/checkpoints/ucagnn_best.pt")
 ```
 
+For day-to-day usage, prefer the supported entry points (`uv run experiment`, `uv run formal-run`, `uv run quick-validate`) over constructing the runtime stack by hand.
+
 ## Device Transfer Helpers
 
 All tensor device transfers during training and evaluation route through shared helpers in `src/utils/trainer_runtime.py` to enforce a consistent non-blocking policy, and CUDA AMP context selection now reuses the same module-level helper there as well:
@@ -81,7 +84,7 @@ This centralization ensures that device transfers, device lookup, CUDA cache cle
 ## Ownership Notes
 - `src/training/mini_batch_trainer.py` is the sole trainer; it keeps its mode-specific epoch loop for readability and behavior isolation.
 - **Sampler path**: `MiniBatchTrainer.train()` now prefers a CUDA-resident `SubgraphSampler` when training on GPU. The full graph is staged on the accelerator once, negative sampling plus sampled-BFS subgraph extraction run on-device, and the trainer falls back to the original four-worker CPU prefetch path both when staging the full graph would exhaust VRAM and when a later CUDA batch-preparation step OOMs on a dense sampled frontier. Right before full-graph validation, the trainer drops that CUDA sampler copy. If validation still hits a CUDA OOM because the optimizer state plus full-graph propagation do not fit together, `TrainerRuntime` now retries once after temporarily offloading optimizer state tensors to CPU. If the feature-enabled full-graph U-CaGNN path still does not fit, evaluation falls back to CPU for that split, then restores the model and optimizer state to CUDA before training continues. The CPU fallback keeps prepared `SubgraphBatch` instances pinned and transfers them with `non_blocking=True` right before the forward pass. Epoch shuffling now uses a seeded `torch.randperm(...)`, and each prepared batch keeps its own deterministic RNG seed.
-- `src/utils/trainer_runtime.py` owns only duplicated lifecycle machinery through `TrainerRuntime`: module/device setup, optimizer creation (fused Adam on CUDA, `set_to_none=True`), optional CUDA AMP/autocast (fixed to bfloat16), cached device-side popularity, reusable epoch progress bars, on-device epoch-loss accumulation, optional LR scheduler, checkpoint save/load (including scheduler and EMA state), profiling toggles, resume history, shared end-of-epoch evaluation/logging/checkpointing, small scalar/lifecycle helpers, and early-stopping helpers. `TrainerRuntime._get_train_interactions()` now returns CPU index-space tensors; the CUDA sampler path moves only the current batch users/items onto the sampler device so the runtime does not keep a second full interaction copy on GPU.
+- `src/utils/trainer_runtime.py` owns only duplicated lifecycle machinery through `TrainerRuntime`: module/device setup, optimizer creation (fused `AdamW` on CUDA, `set_to_none=True`), optional CUDA AMP/autocast (fixed to bfloat16), cached device-side popularity, reusable epoch progress bars, on-device epoch-loss accumulation, optional LR scheduler, checkpoint save/load (including scheduler and EMA state), profiling toggles, resume history, shared end-of-epoch evaluation/logging/checkpointing, small scalar/lifecycle helpers, and early-stopping helpers. `TrainerRuntime` also keeps sign-aware scalar parameters in a zero-weight-decay optimizer group so datasets without negative edges do not numerically collapse `alpha_pos` / `alpha_neg`. `TrainerRuntime._get_train_interactions()` returns CPU index-space tensors; the CUDA sampler path moves only the current batch users/items onto the sampler device so the runtime does not keep a second full interaction copy on GPU.
 - **EMA support**: When `config.use_ema=True`, `TrainerRuntime` creates an `AveragedModel` with `get_ema_multi_avg_fn(config.ema_decay)`. EMA weights are updated after each optimizer step, used for validation evaluation, and captured as `best_state` for model restoration. EMA state is saved/loaded with checkpoints. The `module.` key prefix is stripped when capturing best_state so `load_state_dict()` into the base model works directly.
 - Reproducibility contract: experiment entry now seeds Python, NumPy, and PyTorch once per run, sets deterministic torch algorithms, disables cuDNN benchmarking/TF32, and keeps that backend policy centralized in `src/utils/reproducibility.py`. The experiment entry path also defaults `PYTORCH_ALLOC_CONF=expandable_segments:True` unless the user has already set an allocator policy explicitly.
 - `config.use_amp`, fixed `config.amp_dtype="bfloat16"`, `config.show_progress_bar`, and `config.progress_bar_loss_cadence` control the CUDA mixed-precision path and the epoch-level tqdm bar. Keep AMP enabled by default for interactive training; `progress_bar_loss_cadence` exists specifically to avoid syncing a loss scalar every batch just to refresh tqdm.
@@ -89,9 +92,10 @@ This centralization ensures that device transfers, device lookup, CUDA cache cle
 - The isfinite check uses `torch.isfinite(total_loss).all()` instead of `.item()` to avoid a GPU-CPU synchronization point every batch.
 - Early stopping and plateau LR scheduling both defer their patience logic until `max(config.auxiliary_losses_start_epoch, config.popularity_supervision_start_epoch)`, so staged CaDCR-style losses can activate before the run decays LR or terminates. When `config.use_early_stopping=False`, the trainer still tracks/restores the best validation state but never terminates before the configured epoch budget.
 - `config.enable_profiling` now defaults to `False`; enable it explicitly for observability or profiling-focused runs so throughput-oriented training does not pay for synchronized stage timing by default. `GPUProfiler` instances also start disabled and are enabled only when the runtime opts in for a profiled epoch. `GPUProfiler.epoch_timer()` is a lightweight wall-clock context manager (no CUDA sync) that records `epoch_elapsed_ms` regardless of profiling state — use it to track total epoch duration without stage-level overhead.
+- `ExperimentLogger.log_epoch()` aggregates repeated profiler stage calls into one SQLite row per `(experiment_id, epoch, stage)`, records `stage_call_count`, and also logs sign-aware scalars (`alpha_pos`, `alpha_neg`) when they exist.
 - LR scheduler: When `config.lr_scheduler == "plateau"`, the shared runtime delays `ReduceLROnPlateau` updates until the curriculum warmup has completed, so LR decay uses the same post-curriculum validation window as early stopping. Scheduler state is saved/restored with checkpoints.
 - Treat `batch_size` as both an interaction-loss knob and a VRAM knob in mini-batch training: it controls how many interactions contribute per step and (via `SubgraphSampler`) the size of the extracted subgraph. The stable config default remains `4096` for fixed-batch runs, but CUDA auto-batch probing now mirrors the real epoch-0 shuffle and tests several representative training batches before freezing the resolved size into checkpoint identity, SQLite, and MLflow. The candidate ladders now extend down to `256` so dense sampled subgraphs such as Amazon-Book can still converge to a feasible size instead of failing at an overly optimistic floor. Non-CUDA runs and quick validation keep the fixed path.
-- In mini-batch mode, the branch-local auxiliary losses (`L_independence`, `L_align`, `L_uniform`) should operate on the current batch users/items rather than every propagated context node from the sampled subgraph.
+- In mini-batch mode, the branch-local auxiliary losses (`L_independence`, `L_contrastive`, `L_align`, `L_uniform`) operate on the current batch users/items rather than every propagated context node from the sampled subgraph.
 - `num_neighbors` controls `SubgraphSampler` per-hop fan-out and is the primary tool for managing subgraph density and VRAM. The current base dual-branch default is `[10, 5]`, matching the default `interest_gnn_layers=1` / `conformity_gnn_layers=2` contract.
 - Named recipes own the matrix-defining fields they declare; conflicting CLI flags should be rejected rather than silently treated as an auto-scaling mechanism.
 - Formal batch runners expose `--batch-id` and `--resume-batch` so benchmark and ablation sweeps can skip terminal rows (`completed`, `oom`, `failed`) without hiding failed feasibility cases.
@@ -134,12 +138,13 @@ This centralization ensures that device transfers, device lookup, CUDA cache cle
 | PyG link-prediction metrics | metrics | val/test |
 
 ## Evaluation Notes
-- Validation and test metrics now honor `config.eval_scoring_mode`, so the thesis metric suite can be computed under intervention-style scoring without changing the checkpointed model weights.
+- Validation and test metrics now honor `config.eval_scoring_mode`, so the thesis metric suite can be computed under alternate branch-isolation score views without changing the checkpointed model weights.
 - Dual-branch presets now align training and evaluation with the intended score contract: `preset_full()` optimizes and reports the fused `default` score, while `preset_dice_like()` keeps a fixed `default` interest+conformity score to stay closer to the reference DICE repository.
 - Formal score-mix sweeps should keep `lightgcn` and `dice_like` on the fixed path; learned-vs-fixed mixing is a U-CaGNN ablation rather than a baseline-default comparison.
 - Validation and test evaluation logs the thesis-facing PyG metrics: `NDCG@20`, `Recall@20`, `AveragePopularity@20`, `HitRatio@20`, `Personalization@20`, `NDCG@40`, `Recall@40`, `AveragePopularity@40`, `HitRatio@40`, and `Personalization@40`.
 - Validation and test ranking must mask all observed non-target interactions before `topk`; otherwise train/val positives can occupy the ranked list and collapse held-out Recall/NDCG.
 - The evaluator builds those six metrics via `LinkPredMetricCollection`. MetricCollection removes per-metric runtime update loops; construction still needs one metric instance per metric and cutoff.
+- The evaluator caches per-split ground-truth and seen-item dictionaries by mask identity, so repeated epoch-level validation does not rebuild the same Python-side split structures every time.
 - The evaluator rematerializes `edge_index`, `edge_sign`, `edge_norm`, and `popularity` on the evaluation device for each validation/test call instead of holding a persistent full-graph cache across epochs. When AMP is enabled on CUDA, the full-graph propagation and scoring path also runs under bf16 autocast and casts the evaluation embedding bundle to bf16 to reduce validation memory pressure on large datasets.
 - `src/training/evaluator.py` is also the source of truth for the thesis-primary metric subset and lower-is-better metric polarity, so downstream benchmark, ablation, reporting, and scoring-mode scripts should import those constants instead of re-declaring them.
 - Treat `AveragePopularity@20` and `AveragePopularity@40` as debiasing readouts where lower values are better. Summary aggregation, delta interpretation, and heatmap colors should reflect that polarity.
