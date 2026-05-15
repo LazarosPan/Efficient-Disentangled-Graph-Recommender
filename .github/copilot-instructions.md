@@ -101,6 +101,8 @@ Read the SKILL.md files and choose which files that they point to are relevant f
 - `.github/skills/pytorch-geometric/SKILL.md` - PyG reference and performance tips.
 - `.github/skills/memory-optimizations/SKILL.md` - memory optimization techniques for Python and PyTorch.
 - `.github/skills/numba/SKILL.md` - Numba JIT compilation guide and best practices.
+- `.github/skills/causal-inference/SKILL.md` - key causal inference techniques and their implementation mechanics.
+- `.github/skills/recsys/SKILL.md` - key recommendation techniques and their implementation mechanics.
 - `.github/skills/ucagnn-implementation/SKILL.md` - U-CaGNN implementation guide.
 
 ### Core project folders:
