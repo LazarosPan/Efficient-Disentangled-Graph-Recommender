@@ -30,36 +30,151 @@ def _independence_loss(
     return (cos_sim**2).mean()
 
 
-def _within_branch_contrastive_loss(
+def _prepare_contrastive_pairs(
     user_embeddings: torch.Tensor,
     item_embeddings: torch.Tensor,
-    temperature: float,
+    item_popularity: torch.Tensor,
+    pos_item_ids: torch.Tensor,
     max_pairs: int,
-) -> torch.Tensor:
-    """Compute a sampled within-branch contrastive loss on positive pairs.
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Cap and cast aligned positive pairs for contrastive loss computation.
 
     Args:
         user_embeddings: Positive-pair user embeddings of shape ``(B, D)``.
         item_embeddings: Positive-pair item embeddings of shape ``(B, D)``.
-        temperature: Softmax temperature for the similarity logits.
+        item_popularity: Item-popularity tensor used for positive-pair lookup.
+        pos_item_ids: Positive item ids aligned with the batch users.
         max_pairs: Maximum number of aligned positive pairs used for the loss.
 
     Returns:
-        Scalar symmetric InfoNCE loss. Returns zero if fewer than two pairs are
-        available.
+        Tuple of capped ``(users, items, item_ids, popularity)`` tensors.
 
     """
     pair_count = min(user_embeddings.size(0), item_embeddings.size(0), max_pairs)
-    if pair_count <= 1:
+    return (
+        user_embeddings[:pair_count].float(),
+        item_embeddings[:pair_count].float(),
+        pos_item_ids[:pair_count],
+        item_popularity[pos_item_ids[:pair_count]].float(),
+    )
+
+
+def _branch_contrastive_loss(
+    user_embeddings: torch.Tensor,
+    item_embeddings: torch.Tensor,
+    positive_weights: torch.Tensor,
+    negative_mask: torch.Tensor,
+    temperature: float,
+) -> torch.Tensor:
+    """Compute one DCCL-style branch contrastive loss over batch-local negatives.
+
+    Args:
+        user_embeddings: Capped user embeddings of shape ``(B, D)``.
+        item_embeddings: Capped positive-item embeddings of shape ``(B, D)``.
+        positive_weights: Per-pair positive weights of shape ``(B,)``.
+        negative_mask: Eligibility mask over batch-local negative items with
+            shape ``(B, B)``.
+        temperature: Softmax temperature applied to the dot-product logits.
+
+    Returns:
+        Scalar loss averaged over anchors with at least one eligible negative.
+
+    """
+    if user_embeddings.size(0) <= 1:
         return user_embeddings.new_zeros(())
 
-    user_view = functional.normalize(user_embeddings[:pair_count].float(), dim=-1)
-    item_view = functional.normalize(item_embeddings[:pair_count].float(), dim=-1)
-    logits = user_view @ item_view.t()
-    logits = logits / temperature
-    labels = torch.arange(pair_count, device=logits.device)
-    ce = functional.cross_entropy
-    return 0.5 * (ce(logits, labels) + ce(logits.t(), labels))
+    valid_rows = negative_mask.any(dim=1)
+    if not valid_rows.any():
+        return user_embeddings.new_zeros(())
+
+    logits = (user_embeddings @ item_embeddings.t()) / temperature
+    positive_logits = logits.diag()
+    negative_logits = logits.masked_fill(~negative_mask, float("-inf"))
+    negative_logsumexp = torch.logsumexp(negative_logits[valid_rows], dim=1)
+    log_denom = torch.logaddexp(positive_logits[valid_rows], negative_logsumexp)
+    log_positive_weights = torch.log(positive_weights[valid_rows].clamp_min(1e-8))
+    return -(log_positive_weights + positive_logits[valid_rows] - log_denom).mean()
+
+
+def _interest_contrastive_loss(
+    user_embeddings: torch.Tensor,
+    item_embeddings: torch.Tensor,
+    item_popularity: torch.Tensor,
+    pos_item_ids: torch.Tensor,
+    temperature: float,
+    max_pairs: int,
+) -> torch.Tensor:
+    """Compute the interest contrastive loss with inverse-popularity weighting.
+
+    Args:
+        user_embeddings: Positive-pair user embeddings of shape ``(B, D)``.
+        item_embeddings: Positive-pair item embeddings of shape ``(B, D)``.
+        item_popularity: Item-popularity tensor used for positive-pair lookup.
+        pos_item_ids: Positive item ids aligned with the batch users.
+        temperature: Softmax temperature applied to the dot-product logits.
+        max_pairs: Maximum number of aligned positive pairs used for the loss.
+
+    Returns:
+        Scalar interest contrastive loss.
+
+    """
+    users, items, pair_item_ids, pair_popularity = _prepare_contrastive_pairs(
+        user_embeddings,
+        item_embeddings,
+        item_popularity,
+        pos_item_ids,
+        max_pairs,
+    )
+    distinct_item_mask = pair_item_ids.unsqueeze(1) != pair_item_ids.unsqueeze(0)
+    positive_weights = torch.exp(-pair_popularity)
+    return _branch_contrastive_loss(
+        users,
+        items,
+        positive_weights,
+        distinct_item_mask,
+        temperature,
+    )
+
+
+def _conformity_contrastive_loss(
+    user_embeddings: torch.Tensor,
+    item_embeddings: torch.Tensor,
+    item_popularity: torch.Tensor,
+    pos_item_ids: torch.Tensor,
+    temperature: float,
+    max_pairs: int,
+) -> torch.Tensor:
+    """Compute the conformity contrastive loss with popularity-aware negatives.
+
+    Args:
+        user_embeddings: Positive-pair user embeddings of shape ``(B, D)``.
+        item_embeddings: Positive-pair item embeddings of shape ``(B, D)``.
+        item_popularity: Item-popularity tensor used for positive-pair lookup.
+        pos_item_ids: Positive item ids aligned with the batch users.
+        temperature: Softmax temperature applied to the dot-product logits.
+        max_pairs: Maximum number of aligned positive pairs used for the loss.
+
+    Returns:
+        Scalar conformity contrastive loss.
+
+    """
+    users, items, pair_item_ids, pair_popularity = _prepare_contrastive_pairs(
+        user_embeddings,
+        item_embeddings,
+        item_popularity,
+        pos_item_ids,
+        max_pairs,
+    )
+    distinct_item_mask = pair_item_ids.unsqueeze(1) != pair_item_ids.unsqueeze(0)
+    higher_popularity_mask = pair_popularity.unsqueeze(0) > pair_popularity.unsqueeze(1)
+    positive_weights = 1.0 - torch.exp(-pair_popularity)
+    return _branch_contrastive_loss(
+        users,
+        items,
+        positive_weights,
+        distinct_item_mask & higher_popularity_mask,
+        temperature,
+    )
 
 
 def _directau_alignment_loss(
@@ -201,7 +316,7 @@ class LossSuite(nn.Module):
 
         # Resolve all auxiliary weights from a single spec table.
         # Each entry: (lambda_val, ramp_rate, active_in_phased_schedule)
-        _aux_specs = [
+        aux_specs_ = [
             (cfg.lambda_interest_bpr, cfg.auxiliary_ramp_rate, True),
             (cfg.lambda_conformity_bpr, cfg.auxiliary_ramp_rate, True),
             (cfg.lambda_independence, cfg.independence_ramp_rate, auxiliary_losses_active),
@@ -220,7 +335,7 @@ class LossSuite(nn.Module):
             popularity_weight,
         ) = [
             self._resolve_auxiliary_weight(lmax, epoch, ramp_rate=rr, active_in_phased_schedule=act)
-            for lmax, rr, act in _aux_specs
+            for lmax, rr, act in aux_specs_
         ]
 
         # Branch-local BPR auxiliaries keep each branch predictive on its own.
@@ -249,24 +364,30 @@ class LossSuite(nn.Module):
         else:
             losses["independence"] = zero
 
-        # Branch-local contrastive regularization on aligned positive pairs.
+        # DCCL-style branch-local contrastive losses on aligned positive pairs.
         if use_dual_branch and contrastive_weight > 0:
-            branch_losses = [
-                _within_branch_contrastive_loss(
-                    propagated["user_interest"][loss_user_ids],
-                    propagated["item_interest"][pos_item_ids],
-                    temperature=cfg.contrastive_temperature,
-                    max_pairs=cfg.contrastive_max_pairs,
-                ),
-                _within_branch_contrastive_loss(
-                    propagated["user_conformity"][loss_user_ids],
-                    propagated["item_conformity"][pos_item_ids],
-                    temperature=cfg.contrastive_temperature,
-                    max_pairs=cfg.contrastive_max_pairs,
-                ),
-            ]
-            losses["contrastive"] = torch.stack(branch_losses).mean()
+            losses["interest_contrastive"] = _interest_contrastive_loss(
+                propagated["user_interest"][loss_user_ids],
+                propagated["item_interest"][pos_item_ids],
+                item_popularity,
+                pos_item_ids,
+                temperature=cfg.contrastive_temperature,
+                max_pairs=cfg.contrastive_max_pairs,
+            )
+            losses["conformity_contrastive"] = _conformity_contrastive_loss(
+                propagated["user_conformity"][loss_user_ids],
+                propagated["item_conformity"][pos_item_ids],
+                item_popularity,
+                pos_item_ids,
+                temperature=cfg.contrastive_temperature,
+                max_pairs=cfg.contrastive_max_pairs,
+            )
+            losses["contrastive"] = (
+                losses["interest_contrastive"] + losses["conformity_contrastive"]
+            )
         else:
+            losses["interest_contrastive"] = zero
+            losses["conformity_contrastive"] = zero
             losses["contrastive"] = zero
 
         # DirectAU-style branch-local geometry lives on positive user-item pairs.

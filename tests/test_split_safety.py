@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 import unittest
 from types import ModuleType
@@ -422,8 +423,8 @@ class SplitSafetyTests(unittest.TestCase):
                 strict=True,
             )
         }
-        self.assertEqual(edge_signs[(0, 1)], 1.0)
-        self.assertEqual(edge_signs[(1, 0)], 1.0)
+        self.assertEqual(edge_signs[0, 1], 1.0)
+        self.assertEqual(edge_signs[1, 0], 1.0)
         self.assertEqual(len(edge_signs), 2)
 
     def test_cagra_uses_seeded_search_params(self) -> None:
@@ -803,8 +804,8 @@ class CausalTrainingContractTests(unittest.TestCase):
             places=6,
         )
 
-    def test_scoring_exports_popularity_score_gate_and_branch_contrast(self) -> None:
-        """The fused scorer should expose popularity scores, simplex gates, and branch contrast."""
+    def test_scoring_exports_popularity_score_gate_and_components(self) -> None:
+        """The fused scorer should expose its raw components and simplex gates."""
         config = UCaGNNConfig(device="cuda", embed_dim=2).preset_full()
         model = UCaGNN(
             n_users=1,
@@ -830,14 +831,10 @@ class CausalTrainingContractTests(unittest.TestCase):
 
         self.assertIn("popularity_score", scores)
         self.assertIn("gate_weights", scores)
+        self.assertIn("interest_score", scores)
+        self.assertIn("conformity_score", scores)
         self.assertEqual(tuple(scores["gate_weights"].shape), (1, 3))
         self.assertAlmostEqual(scores["gate_weights"].sum().item(), 1.0, places=6)
-        self.assertIn("branch_contrast_score", scores)
-        self.assertAlmostEqual(
-            scores["branch_contrast_score"].item(),
-            scores["interest_score"].item() - scores["conformity_score"].item(),
-            places=6,
-        )
 
     def test_embedding_feature_projection_accepts_cpu_fallback_inputs(self) -> None:
         """CPU fallback paths should project bf16 feature buffers without dtype errors."""
@@ -965,9 +962,9 @@ class CausalTrainingContractTests(unittest.TestCase):
         self.assertIsNotNone(model.alpha_pos.grad)
         self.assertIsNotNone(model.alpha_neg.grad)
 
-    def test_loss_suite_supports_within_branch_contrastive_mainline(self) -> None:
-        """LossSuite should expose a ramped within-branch contrastive auxiliary."""
-        config = UCaGNNConfig(device="cuda", embed_dim=2)
+    def test_loss_suite_supports_popularity_aware_branch_contrastive_mainline(self) -> None:
+        """LossSuite should expose DCCL-style interest and conformity contrastive losses."""
+        config = UCaGNNConfig(device="cuda", embed_dim=3)
         config.use_dual_branch = True
         config.use_ipw = False
         config.use_popularity_head = False
@@ -981,41 +978,73 @@ class CausalTrainingContractTests(unittest.TestCase):
         config.lambda_contrastive = 1.0
         config.auxiliary_loss_schedule = "linear_ramp"
         config.auxiliary_ramp_rate = 1.0
-        config.contrastive_max_pairs = 2
+        config.contrastive_temperature = 1.0
+        config.contrastive_max_pairs = 3
         loss_suite = LossSuite(config)
 
         model_output = {
             "pos_scores": {
-                "final_score": torch.zeros(2),
-                "interest_score": torch.zeros(2),
-                "conformity_score": torch.zeros(2),
-                "popularity_score": torch.zeros(2),
+                "final_score": torch.zeros(3),
+                "interest_score": torch.zeros(3),
+                "conformity_score": torch.zeros(3),
+                "popularity_score": torch.zeros(3),
             },
             "neg_scores": {
-                "final_score": torch.zeros(2),
-                "interest_score": torch.zeros(2),
-                "conformity_score": torch.zeros(2),
-                "popularity_score": torch.zeros(2),
+                "final_score": torch.zeros(3),
+                "interest_score": torch.zeros(3),
+                "conformity_score": torch.zeros(3),
+                "popularity_score": torch.zeros(3),
             },
             "propagated": {
-                "user_interest": torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
-                "item_interest": torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
-                "user_conformity": torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
-                "item_conformity": torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+                "user_interest": torch.eye(3),
+                "item_interest": torch.eye(3),
+                "user_conformity": torch.eye(3),
+                "item_conformity": torch.eye(3),
             },
-            "ipw_weights": torch.ones(2),
-            "loss_user_ids": torch.tensor([0, 1]),
+            "ipw_weights": torch.ones(3),
+            "loss_user_ids": torch.tensor([0, 1, 2]),
         }
 
         losses = loss_suite(
             model_output,
-            item_popularity=torch.zeros(2),
-            pos_item_ids=torch.tensor([0, 1]),
+            item_popularity=torch.tensor([0.1, 0.4, 0.9]),
+            pos_item_ids=torch.tensor([0, 1, 2]),
             epoch=1,
         )
 
+        pos_logit = 1.0
+        interest_log_denom = math.log(math.exp(pos_logit) + 2.0)
+        expected_interest = (
+            (0.1 - pos_logit + interest_log_denom)
+            + (0.4 - pos_logit + interest_log_denom)
+            + (0.9 - pos_logit + interest_log_denom)
+        ) / 3.0
+        conformity_loss_0 = -(
+            math.log(1.0 - math.exp(-0.1)) + pos_logit - math.log(math.exp(pos_logit) + 2.0)
+        )
+        conformity_loss_1 = -(
+            math.log(1.0 - math.exp(-0.4)) + pos_logit - math.log(math.exp(pos_logit) + 1.0)
+        )
+        expected_conformity = 0.5 * (conformity_loss_0 + conformity_loss_1)
+
+        self.assertIn("interest_contrastive", losses)
+        self.assertIn("conformity_contrastive", losses)
         self.assertIn("contrastive", losses)
-        self.assertGreater(losses["contrastive"].item(), 0.0)
+        self.assertAlmostEqual(
+            losses["interest_contrastive"].item(),
+            expected_interest,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            losses["conformity_contrastive"].item(),
+            expected_conformity,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            losses["contrastive"].item(),
+            losses["interest_contrastive"].item() + losses["conformity_contrastive"].item(),
+            places=6,
+        )
         self.assertAlmostEqual(
             losses["total"].item(),
             losses["contrastive"].item(),

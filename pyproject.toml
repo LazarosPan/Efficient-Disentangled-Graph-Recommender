@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "causal-embeddings-for-recommendations"
-version = "0.3.1"
+version = "0.3.2"
 description = "GPU-Efficient Causal Disentanglement: A Unified Embedding Pipeline with ANN-Accelerated Graph Construction and Memory-Aware Optimization"
 readme = "README.md"
 # PyG only supports Python 3.10–3.13, so constrain the interpreter accordingly.
