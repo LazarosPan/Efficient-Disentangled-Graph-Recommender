@@ -14,7 +14,7 @@ Use this skill when working on loss functions, multi-task learning, curriculum s
 - The base dataclass keeps `lambda_align=lambda_uniform=0.02`, but `preset_full()` overrides both to `0.0`; DirectAU is currently present as an optional diagnostic path, not part of the mainline preset.
 - Keep popularity supervision attached to the scorer-owned popularity head rather than reintroducing a separate predictor inside the loss suite.
 - `LossSuite` receives scores from `UCaGNN.build_training_output()`, which now respects `config.train_scoring_mode`; keep the ranking loss semantics aligned with that model-owned scoring contract.
-- Keep the public ablation matrix small: `mainline`, `no_popularity_head`, `no_independence`, and `no_features`. Treat curriculum or geometry toggles as local diagnostics, not thesis headline ablations.
+- Keep the public ablation matrix focused on headline U-CaGNN components: `mainline`, `fixed_score_mix`, `no_popularity_head`, `no_ipw`, `no_contrastive`, `no_independence`, and `no_features`. Treat curriculum or DirectAU geometry toggles as local diagnostics, not thesis headline ablations.
 
 ## Loss Formula
 ```
