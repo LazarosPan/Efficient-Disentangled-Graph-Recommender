@@ -2,7 +2,7 @@
 """Query experiment results from SQLite database.
 
 Usage:
-    python scripts/query_results.py                    # Top-20 completed runs by NDCG@20
+    python scripts/query_results.py                    # Formal top runs + full-data ablations
     python scripts/query_results.py --view all         # Show all experiments
     python scripts/query_results.py --view completed   # Show only completed runs
     python scripts/query_results.py --view attention   # Show failed, OOM, running, or unknown runs
@@ -22,13 +22,22 @@ import json
 import sqlite3
 import sys
 from collections import defaultdict
+from contextlib import redirect_stdout
+from io import StringIO
 
+from experiments.ablation_configs import ABLATION_VARIANTS
 from src.utils.cli_parsers import build_query_results_parser
 from src.utils.experiment_logger import ExperimentLogger
-from src.utils.project_paths import THESIS_DB_PATH
+from src.utils.project_paths import RESULTS_DIR, THESIS_DB_PATH
 
 DB_PATH = THESIS_DB_PATH
+QUERY_RESULTS_MARKDOWN_PATH = RESULTS_DIR / "query_results.md"
 VIEW_TABLES = ExperimentLogger.VIEW_TABLES
+FORMAL_BATCH_PREFIX = "formal-"
+ABLATION_BATCH_PREFIX = "ablation-"
+ABLATION_VARIANT_ORDER = {
+    variant_name: index for index, variant_name in enumerate(ABLATION_VARIANTS)
+}
 
 
 def connect() -> sqlite3.Connection:
@@ -39,7 +48,8 @@ def connect() -> sqlite3.Connection:
             "Run a real experiment first to create the persistent database in results/.",
         )
         print(
-            "The verify scripts use temporary .db files and remove them when they finish.",
+            "Quick-validate uses the same database, but its smoke runs are filtered "
+            "out of the default summary via sample_interactions/loader_max_rows.",
         )
         sys.exit(1)
 
@@ -170,8 +180,9 @@ def _build_canonical_name_from_config(
         parts.append(f"loadrows{int(config['loader_max_rows'])}")
     if config.get("preprocessing_preset") is not None:
         parts.append(f"ppreset{config['preprocessing_preset']}")
-    if config.get("derived_split_mode") != "per_user_temporal":
-        parts.append(f"split{config.get('derived_split_mode')}")
+    derived_split_mode = str(config.get("derived_split_mode", "per_user_temporal"))
+    if derived_split_mode != "per_user_temporal":
+        parts.append(f"split{derived_split_mode}")
     if config.get("popularity_window_seconds") is not None:
         parts.append(f"popwin{int(config['popularity_window_seconds'])}")
     if config.get("use_features"):
@@ -192,6 +203,255 @@ def _build_canonical_name_from_config(
         parts.append(intervention)
     parts.append(f"seed{int(config.get('seed', 0))}")
     return "_".join(parts)
+
+
+def _format_metric_value(value: float | None) -> str:
+    """Return a consistent display string for a metric cell."""
+    return f"{value:.4f}" if value is not None else "-"
+
+
+def _format_neighbors(config: dict[str, object]) -> str:
+    """Return the configured neighborhood fan-out as a compact label."""
+    num_neighbors = config.get("num_neighbors")
+    if isinstance(num_neighbors, list):
+        return "-".join(str(value) for value in num_neighbors)
+    if num_neighbors is not None:
+        return str(num_neighbors)
+    return "-"
+
+
+def _format_scoremix(config: dict[str, object]) -> str:
+    """Return the stored scoring-weight mode, defaulting to the fixed thesis path."""
+    return str(config.get("scoring_weight_mode", "fixed"))
+
+
+def _truncate_label(value: str | None, width: int) -> str:
+    """Trim a long display label so table columns remain readable."""
+    if not value:
+        return "-"
+    if len(value) <= width:
+        return value
+    return f"{value[: width - 3]}..."
+
+
+def _query_report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Return completed full-data formal and ablation rows with test metrics."""
+    return conn.execute(
+        """
+        SELECT s.id, s.dataset, s.preset, s.updated_at,
+               s.training_time_s, s.completed_train_epochs, s.peak_vram_mb,
+               s.test_ndcg_20, s.test_ndcg_40,
+               s.test_recall_20, s.test_recall_40,
+               s.test_hit_ratio_20, s.test_hit_ratio_40,
+               s.test_personalization_20, s.test_personalization_40,
+               s.test_average_popularity_20, s.test_average_popularity_40,
+               e.intervention, e.batch_id, e.profile_name, e.config_json
+        FROM experiment_completed_summary s
+        JOIN experiments e ON s.id = e.id
+        WHERE s.test_ndcg_20 IS NOT NULL
+          AND json_extract(e.config_json, '$.sample_interactions') IS NULL
+          AND json_extract(e.config_json, '$.loader_max_rows') IS NULL
+          AND (
+              e.batch_id LIKE 'formal-%'
+              OR e.batch_id LIKE 'ablation-%'
+          )
+        ORDER BY s.dataset ASC, s.id DESC
+        """,
+    ).fetchall()
+
+
+def _is_formal_row(row: sqlite3.Row) -> bool:
+    """Return whether a report row came from the formal-run workflow."""
+    batch_id = row["batch_id"]
+    return isinstance(batch_id, str) and batch_id.startswith(FORMAL_BATCH_PREFIX)
+
+
+def _is_ablation_row(row: sqlite3.Row) -> bool:
+    """Return whether a report row came from the ablation workflow."""
+    batch_id = row["batch_id"]
+    return isinstance(batch_id, str) and batch_id.startswith(ABLATION_BATCH_PREFIX)
+
+
+def _select_top_formal_rows(rows: list[sqlite3.Row], n: int) -> list[sqlite3.Row]:
+    """Return the top completed formal rows per dataset ranked by test metrics."""
+    ranked_rows = sorted(
+        (row for row in rows if _is_formal_row(row)),
+        key=lambda row: (
+            row["dataset"] or "-",
+            -(float(row["test_ndcg_20"]) if row["test_ndcg_20"] is not None else float("-inf")),
+            -(float(row["test_ndcg_40"]) if row["test_ndcg_40"] is not None else float("-inf")),
+            -(float(row["test_recall_20"]) if row["test_recall_20"] is not None else float("-inf")),
+            -(float(row["test_recall_40"]) if row["test_recall_40"] is not None else float("-inf")),
+            int(row["id"]),
+        ),
+    )
+
+    top_rows: list[sqlite3.Row] = []
+    dataset_counts: dict[str, int] = {}
+    for row in ranked_rows:
+        dataset = row["dataset"] or "-"
+        if dataset_counts.get(dataset, 0) >= n:
+            continue
+        dataset_counts[dataset] = dataset_counts.get(dataset, 0) + 1
+        top_rows.append(row)
+    return top_rows
+
+
+def _select_best_ablation_rows(rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
+    """Return one completed full-data ablation row per dataset and variant."""
+    best_by_variant: dict[tuple[str, str], sqlite3.Row] = {}
+    ranked_rows = sorted(
+        (row for row in rows if _is_ablation_row(row)),
+        key=lambda row: (
+            row["dataset"] or "-",
+            row["intervention"] or "",
+            -(float(row["test_ndcg_20"]) if row["test_ndcg_20"] is not None else float("-inf")),
+            -(float(row["test_ndcg_40"]) if row["test_ndcg_40"] is not None else float("-inf")),
+            -(float(row["test_recall_20"]) if row["test_recall_20"] is not None else float("-inf")),
+            -(float(row["test_recall_40"]) if row["test_recall_40"] is not None else float("-inf")),
+            int(row["id"]),
+        ),
+    )
+    for row in ranked_rows:
+        dataset = row["dataset"] or "-"
+        variant = row["intervention"] or "-"
+        best_by_variant.setdefault((dataset, variant), row)
+
+    return sorted(
+        best_by_variant.values(),
+        key=lambda row: (
+            row["dataset"] or "-",
+            ABLATION_VARIANT_ORDER.get(row["intervention"] or "", len(ABLATION_VARIANT_ORDER)),
+            -(float(row["test_ndcg_20"]) if row["test_ndcg_20"] is not None else float("-inf")),
+            int(row["id"]),
+        ),
+    )
+
+
+def _print_result_row_experiment(
+    *,
+    profile_name: str | None = None,
+    canonical_name: str,
+    training_time_s: float | None = None,
+    completed_train_epochs: float | None = None,
+    peak_vram_mb: float | None = None,
+) -> None:
+    """Print the full profile, resource, and experiment labels under a metric row."""
+    if profile_name:
+        print(f"  Profile:    {profile_name}")
+    training_time = f"{training_time_s:.1f}s" if training_time_s is not None else "-"
+    epochs = str(int(completed_train_epochs)) if completed_train_epochs is not None else "-"
+    peak_vram = f"{peak_vram_mb:.0f}MB" if peak_vram_mb is not None else "-"
+    print(f"  Resources:  time={training_time} | epochs={epochs} | peak_vram={peak_vram}")
+    print(f"  Experiment: {canonical_name}")
+
+
+def _print_formal_rows(rows: list[sqlite3.Row]) -> None:
+    """Print the formal-run ranking table."""
+    print("=" * 80)
+    print("FORMAL FULL-DATA TEST RUNS — top runs per dataset ranked by NDCG@20")
+    print("=" * 80)
+    if not rows:
+        print("No completed formal full-data runs with test metrics found.")
+        print()
+        return
+
+    print(
+        (
+            f"{'Dataset':<14} | {'Preset':<12} | {'ScoreMix':<8} | {'Neighbors':<10} | "
+            f"{'NDCG@20':>8} | {'Recall@20':>10} | {'Hit@20':>8} | {'Pers@20':>9} | "
+            f"{'AvgPop@20':>10} | {'NDCG@40':>8} | {'Recall@40':>10} | {'Hit@40':>8} | "
+            f"{'Pers@40':>9} | {'AvgPop@40':>10}"
+        ),
+    )
+    print("-" * 184)
+    previous_dataset: str | None = None
+    for row in rows:
+        dataset = row["dataset"] or "-"
+        if previous_dataset is not None and dataset != previous_dataset:
+            print()
+        previous_dataset = dataset
+        config = _load_config_json(row["config_json"])
+        canonical_name = _build_canonical_name_from_config(config, row["preset"], None)
+        print(
+            (
+                f"{dataset:<14} | {row['preset'] or '-':<12} | "
+                f"{_format_scoremix(config):<8} | "
+                f"{_format_neighbors(config):<10} | "
+                f"{_format_metric_value(row['test_ndcg_20']):>8} | "
+                f"{_format_metric_value(row['test_recall_20']):>10} | "
+                f"{_format_metric_value(row['test_hit_ratio_20']):>8} | "
+                f"{_format_metric_value(row['test_personalization_20']):>9} | "
+                f"{_format_metric_value(row['test_average_popularity_20']):>10} | "
+                f"{_format_metric_value(row['test_ndcg_40']):>8} | "
+                f"{_format_metric_value(row['test_recall_40']):>10} | "
+                f"{_format_metric_value(row['test_hit_ratio_40']):>8} | "
+                f"{_format_metric_value(row['test_personalization_40']):>9} | "
+                f"{_format_metric_value(row['test_average_popularity_40']):>10}"
+            ),
+        )
+        _print_result_row_experiment(
+            profile_name=row["profile_name"],
+            canonical_name=canonical_name,
+            training_time_s=row["training_time_s"],
+            completed_train_epochs=row["completed_train_epochs"],
+            peak_vram_mb=row["peak_vram_mb"],
+        )
+    print()
+
+
+def _print_ablation_rows(rows: list[sqlite3.Row]) -> None:
+    """Print the best full-data ablation rows per dataset and variant."""
+    print("=" * 80)
+    print("ABLATION FULL-DATA TEST RUNS — best run per dataset and variant")
+    print("=" * 80)
+    if not rows:
+        print("No completed ablation full-data runs with test metrics found.")
+        print()
+        return
+
+    print(
+        (
+            f"{'Dataset':<14} | {'Variant':<20} | {'ScoreMix':<8} | {'Neighbors':<10} | "
+            f"{'NDCG@20':>8} | {'Recall@20':>10} | {'Hit@20':>8} | {'Pers@20':>9} | "
+            f"{'AvgPop@20':>10} | {'NDCG@40':>8} | {'Recall@40':>10} | {'Hit@40':>8} | "
+            f"{'Pers@40':>9} | {'AvgPop@40':>10}"
+        ),
+    )
+    print("-" * 192)
+    previous_dataset: str | None = None
+    for row in rows:
+        dataset = row["dataset"] or "-"
+        if previous_dataset is not None and dataset != previous_dataset:
+            print()
+        previous_dataset = dataset
+        config = _load_config_json(row["config_json"])
+        intervention = row["intervention"]
+        canonical_name = _build_canonical_name_from_config(config, row["preset"], intervention)
+        print(
+            (
+                f"{dataset:<14} | {intervention or '-':<20} | "
+                f"{_format_scoremix(config):<8} | "
+                f"{_format_neighbors(config):<10} | "
+                f"{_format_metric_value(row['test_ndcg_20']):>8} | "
+                f"{_format_metric_value(row['test_recall_20']):>10} | "
+                f"{_format_metric_value(row['test_hit_ratio_20']):>8} | "
+                f"{_format_metric_value(row['test_personalization_20']):>9} | "
+                f"{_format_metric_value(row['test_average_popularity_20']):>10} | "
+                f"{_format_metric_value(row['test_ndcg_40']):>8} | "
+                f"{_format_metric_value(row['test_recall_40']):>10} | "
+                f"{_format_metric_value(row['test_hit_ratio_40']):>8} | "
+                f"{_format_metric_value(row['test_personalization_40']):>9} | "
+                f"{_format_metric_value(row['test_average_popularity_40']):>10}"
+            ),
+        )
+        _print_result_row_experiment(
+            canonical_name=canonical_name,
+            training_time_s=row["training_time_s"],
+            completed_train_epochs=row["completed_train_epochs"],
+            peak_vram_mb=row["peak_vram_mb"],
+        )
+    print()
 
 
 def show_experiment(conn: sqlite3.Connection, exp_id: int) -> None:
@@ -411,114 +671,42 @@ def show_bottleneck(conn: sqlite3.Connection, exp_id: int) -> None:
 
 
 def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
-    """Print the top-n completed full-data runs per dataset.
-
-    Smoke-test runs (sample_interactions set in config) are excluded automatically.
-    """
+    """Print the default thesis summary for formal and ablation test runs."""
     print("=" * 80)
-    print(f"TOP {n} COMPLETED RUNS PER DATASET — ranked by test NDCG@20 (full-data only)")
+    print("THESIS TEST RESULTS — formal and ablation runs only (full-data only)")
     print("=" * 80)
     print(f"Database: {DB_PATH.resolve()}")
     print()
 
-    rows = conn.execute(
-        """
-        SELECT s.id, s.dataset, s.preset, s.seed,
-               s.test_ndcg_20, s.test_ndcg_40,
-               s.test_recall_20, s.test_recall_40,
-               s.test_hit_ratio_20, s.test_hit_ratio_40,
-               s.test_personalization_20, s.test_personalization_40,
-               s.test_average_popularity_20, s.test_average_popularity_40,
-               s.training_time_s, s.completed_train_epochs,
-               s.training_mode, s.training_hash, s.peak_vram_mb,
-               e.intervention,
-               e.config_json
-        FROM experiment_completed_summary s
-        JOIN experiments e ON s.id = e.id
-        WHERE s.test_ndcg_20 IS NOT NULL
-          AND json_extract(e.config_json, '$.sample_interactions') IS NULL
-          AND json_extract(e.config_json, '$.loader_max_rows') IS NULL
-        ORDER BY s.dataset ASC, s.test_ndcg_20 DESC, s.test_ndcg_40 DESC,
-                 s.test_recall_20 DESC, s.test_recall_40 DESC, s.id ASC
-        """,
-    ).fetchall()
-
+    rows = _query_report_rows(conn)
     if not rows:
-        print("No completed full-data runs with test NDCG@20 found.")
-        print("Use --view all to see all experiments (including smoke-test runs).")
+        print("No completed formal or ablation full-data runs with test metrics found.")
+        print("Use --view all to inspect every logged experiment row.")
         return
 
-    top_rows: list[sqlite3.Row] = []
-    dataset_counts: dict[str, int] = {}
-    for row in rows:
-        dataset = row["dataset"] or "-"
-        if dataset_counts.get(dataset, 0) >= n:
-            continue
-        dataset_counts[dataset] = dataset_counts.get(dataset, 0) + 1
-        top_rows.append(row)
+    _print_formal_rows(_select_top_formal_rows(rows, n))
+    _print_ablation_rows(_select_best_ablation_rows(rows))
 
-    if not top_rows:
-        print("No completed full-data runs with test NDCG@20 found.")
-        print("Use --view all to see all experiments (including smoke-test runs).")
-        return
-    print(
-        (
-            f"{'Dataset':<14} | {'Preset':<12} | {'ScoreMix':<8} | "
-            f"{'Neighbors':<10} | {'NDCG@20':>8} | {'Recall@20':>10} | "
-            f"{'AvgPop@20':>10} | {'NDCG@40':>8} | {'Recall@40':>10} | "
-            f"{'AvgPop@40':>10} | {'Training Time':>13} | {'Epochs':>6} | "
-            f"{'PeakVRAM':>8} | {'Experiment':<40}"
-        ),
+
+def _render_default_summary(conn: sqlite3.Connection, *, n: int = 20) -> str:
+    """Render the default thesis summary into a text buffer."""
+    buffer = StringIO()
+    with redirect_stdout(buffer):
+        list_top_completed(conn, n=n)
+    return buffer.getvalue().rstrip()
+
+
+def _write_default_summary_markdown(report_text: str) -> None:
+    """Persist the default thesis summary to the repository results folder."""
+    QUERY_RESULTS_MARKDOWN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    markdown_report = (
+        "# Query Results\n\n"
+        "Generated by `uv run scripts/query_results.py`.\n\n"
+        "```text\n"
+        f"{report_text}\n"
+        "```\n"
     )
-    print("-" * 237)
-    for row in top_rows:
-        config = _load_config_json(row["config_json"])
-        intervention = row["intervention"]
-        canonical_name = _build_canonical_name_from_config(config, row["preset"], intervention)
-        experiment_label = (
-            f"{canonical_name}_train-{row['training_hash']}"
-            if row["training_hash"]
-            else canonical_name
-        )
-        scoremix = str(config.get("scoring_weight_mode", "-"))
-        num_neighbors = config.get("num_neighbors")
-        neighbor_label = "-"
-        if isinstance(num_neighbors, list):
-            neighbor_label = "-".join(str(value) for value in num_neighbors)
-        elif num_neighbors is not None:
-            neighbor_label = str(num_neighbors)
-        epochs = (
-            str(int(row["completed_train_epochs"]))
-            if row["completed_train_epochs"] is not None
-            else "-"
-        )
-        peak_vram = f"{row['peak_vram_mb']:.0f}MB" if row["peak_vram_mb"] is not None else "-"
-        ndcg20 = f"{row['test_ndcg_20']:.4f}" if row["test_ndcg_20"] is not None else "-"
-        recall20 = f"{row['test_recall_20']:.4f}" if row["test_recall_20"] is not None else "-"
-        avgpop20 = (
-            f"{row['test_average_popularity_20']:.4f}"
-            if row["test_average_popularity_20"] is not None
-            else "-"
-        )
-        ndcg40 = f"{row['test_ndcg_40']:.4f}" if row["test_ndcg_40"] is not None else "-"
-        recall40 = f"{row['test_recall_40']:.4f}" if row["test_recall_40"] is not None else "-"
-        avgpop40 = (
-            f"{row['test_average_popularity_40']:.4f}"
-            if row["test_average_popularity_40"] is not None
-            else "-"
-        )
-        training_time_s = (
-            f"{row['training_time_s']:.1f}s" if row["training_time_s"] is not None else "-"
-        )
-        print(
-            (
-                f"{row['dataset'] or '-':<14} | {row['preset'] or '-':<12} | "
-                f"{scoremix:<8} | {neighbor_label:<10} | {ndcg20:>8} | "
-                f"{recall20:>10} | {avgpop20:>10} | {ndcg40:>8} | "
-                f"{recall40:>10} | {avgpop40:>10} | {training_time_s:>13} | "
-                f"{epochs:>6} | {peak_vram:>8} | {experiment_label:<40}"
-            ),
-        )
+    QUERY_RESULTS_MARKDOWN_PATH.write_text(markdown_report, encoding="utf-8")
 
 
 def main() -> int:
@@ -538,7 +726,9 @@ def main() -> int:
         elif args.bottleneck is not None:
             show_bottleneck(conn, args.bottleneck)
         elif args.view is None and args.batch_id is None and args.status is None:
-            list_top_completed(conn)
+            report_text = _render_default_summary(conn)
+            _write_default_summary_markdown(report_text)
+            print(f"Wrote default results summary to {QUERY_RESULTS_MARKDOWN_PATH.resolve()}")
         else:
             list_experiments(
                 conn,

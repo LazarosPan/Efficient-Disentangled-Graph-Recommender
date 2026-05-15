@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
 import unittest
 from contextlib import redirect_stdout
 from dataclasses import dataclass
@@ -286,9 +287,9 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertAlmostEqual(row["delta_test_recall_20"], 0.05)
         self.assertAlmostEqual(row["delta_test_average_popularity_20"], -0.02)
 
-    def test_query_results_top_completed_uses_training_time_and_actual_epochs(self) -> None:
-        """Top-results output should show total training time and stopped epochs."""
-        completed_exp = self.logger.log_experiment(
+    def test_query_results_top_completed_shows_only_formal_and_ablation_test_runs(self) -> None:
+        """Default results output should exclude ad-hoc and smoke-test runs."""
+        formal_exp = self.logger.log_experiment(
             dataset="amazonbook",
             config={
                 "dataset": "amazonbook",
@@ -302,9 +303,12 @@ class ExperimentLoggerTests(unittest.TestCase):
                 "seed": 13,
             },
             preset="lightgcn",
+            batch_id="formal-dev-profile-20260515T000000Z",
+            profile_name="dev-profile",
+            training_hash="formalhash",
         )
         self.logger.log_epoch(
-            exp_id=completed_exp,
+            exp_id=formal_exp,
             epoch=0,
             train_loss=1.0,
             epoch_time_s=0.4,
@@ -312,42 +316,103 @@ class ExperimentLoggerTests(unittest.TestCase):
             profiler_stages=[],
             model=None,
         )
-        self.logger.log_metric(completed_exp, "training_time_s", 7.9, split="train")
-        self.logger.log_metric(completed_exp, "NDCG@20", 0.1, split="test")
-        self.logger.log_metric(completed_exp, "Recall@20", 0.2, split="test")
-        self.logger.log_metric(completed_exp, "AveragePopularity@20", 0.3, split="test")
-        self.logger.update_experiment_status(completed_exp, status="completed")
+        self.logger.log_metric(formal_exp, "NDCG@20", 0.1, split="test")
+        self.logger.log_metric(formal_exp, "Recall@20", 0.2, split="test")
+        self.logger.log_metric(formal_exp, "HitRatio@20", 0.21, split="test")
+        self.logger.log_metric(formal_exp, "Personalization@20", 0.22, split="test")
+        self.logger.log_metric(formal_exp, "AveragePopularity@20", 0.3, split="test")
+        self.logger.log_metric(formal_exp, "NDCG@40", 0.4, split="test")
+        self.logger.log_metric(formal_exp, "Recall@40", 0.5, split="test")
+        self.logger.log_metric(formal_exp, "HitRatio@40", 0.51, split="test")
+        self.logger.log_metric(formal_exp, "Personalization@40", 0.52, split="test")
+        self.logger.log_metric(formal_exp, "AveragePopularity@40", 0.6, split="test")
+        self.logger.log_metric(formal_exp, "training_time_s", 7.9, split="train")
+        self.logger.log_metric(formal_exp, "peak_vram_mb", 1234.0, split="train")
+        self.logger.update_experiment_status(formal_exp, status="completed")
 
-        failed_exp = self.logger.log_experiment(
+        ablation_exp = self.logger.log_experiment(
             dataset="amazonbook",
             config={
                 "dataset": "amazonbook",
-                "epochs": 200,
-                "batch_size": 8192,
+                "epochs": 300,
+                "batch_size": 4096,
+                "embed_dim": 64,
+                "use_dual_branch": True,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 2,
+                "num_neighbors": [20, 10],
+                "scoring_weight_mode": "learned",
+                "use_features": True,
+                "lr_scheduler": "cosine",
+                "seed": 13,
+            },
+            preset="ucagnn",
+            intervention="no_ipw",
+            batch_id="ablation-20260515T000000Z",
+            training_hash="ablationhash",
+        )
+        self.logger.log_metric(ablation_exp, "NDCG@20", 0.4, split="test")
+        self.logger.log_metric(ablation_exp, "Recall@20", 0.5, split="test")
+        self.logger.log_metric(ablation_exp, "HitRatio@20", 0.55, split="test")
+        self.logger.log_metric(ablation_exp, "Personalization@20", 0.56, split="test")
+        self.logger.log_metric(ablation_exp, "AveragePopularity@20", 0.6, split="test")
+        self.logger.log_metric(ablation_exp, "NDCG@40", 0.7, split="test")
+        self.logger.log_metric(ablation_exp, "Recall@40", 0.8, split="test")
+        self.logger.log_metric(ablation_exp, "HitRatio@40", 0.81, split="test")
+        self.logger.log_metric(ablation_exp, "Personalization@40", 0.82, split="test")
+        self.logger.log_metric(ablation_exp, "AveragePopularity@40", 0.9, split="test")
+        self.logger.log_epoch(
+            exp_id=ablation_exp,
+            epoch=0,
+            train_loss=0.7,
+            epoch_time_s=0.6,
+            val_metrics={"NDCG@20": 0.35},
+            profiler_stages=[],
+            model=None,
+        )
+        self.logger.log_metric(ablation_exp, "training_time_s", 12.3, split="train")
+        self.logger.log_metric(ablation_exp, "peak_vram_mb", 2345.0, split="train")
+        self.logger.update_experiment_status(ablation_exp, status="completed")
+
+        ad_hoc_exp = self.logger.log_experiment(
+            dataset="amazonbook",
+            config={
+                "dataset": "amazonbook",
+                "epochs": 100,
+                "batch_size": 1024,
                 "embed_dim": 64,
                 "use_dual_branch": False,
                 "single_branch_gnn_layers": 2,
+                "num_neighbors": [10, 5],
                 "lr_scheduler": "plateau",
                 "seed": 13,
             },
             preset="ucagnn",
         )
-        self.logger.log_epoch(
-            exp_id=failed_exp,
-            epoch=0,
-            train_loss=0.5,
-            epoch_time_s=0.3,
-            val_metrics={"NDCG@20": 0.9},
-            profiler_stages=[],
-            model=None,
+        self.logger.log_metric(ad_hoc_exp, "NDCG@20", 0.9, split="test")
+        self.logger.update_experiment_status(ad_hoc_exp, status="completed")
+
+        smoke_exp = self.logger.log_experiment(
+            dataset="amazonbook",
+            config={
+                "dataset": "amazonbook",
+                "epochs": 100,
+                "batch_size": 1024,
+                "embed_dim": 64,
+                "use_dual_branch": False,
+                "single_branch_gnn_layers": 2,
+                "num_neighbors": [10, 5],
+                "lr_scheduler": "plateau",
+                "sample_interactions": 100,
+                "loader_max_rows": 100,
+                "seed": 13,
+            },
+            preset="lightgcn",
+            batch_id="formal-smoke-20260515T000000Z",
+            profile_name="smoke-profile",
         )
-        self.logger.log_metric(failed_exp, "training_time_s", 2.0, split="train")
-        self.logger.log_metric(failed_exp, "NDCG@20", 0.9, split="test")
-        self.logger.update_experiment_status(
-            failed_exp,
-            status="failed",
-            failure_reason="synthetic failure",
-        )
+        self.logger.log_metric(smoke_exp, "NDCG@20", 0.8, split="test")
+        self.logger.update_experiment_status(smoke_exp, status="completed")
 
         buffer = StringIO()
         temp_db_path = Path(self.temp_dir.name) / "experiments.sqlite"
@@ -355,16 +420,98 @@ class ExperimentLoggerTests(unittest.TestCase):
             query_results.list_top_completed(self.logger.conn, n=20)
 
         output = buffer.getvalue()
-        self.assertIn("Training Time", output)
-        self.assertIn("lightgcn", output)
-        self.assertNotIn("ucagnn", output)
-
-        completed_line = next(
-            line for line in output.splitlines() if line.strip().startswith("amazonbook")
+        self.assertIn("FORMAL FULL-DATA TEST RUNS", output)
+        self.assertIn("ABLATION FULL-DATA TEST RUNS", output)
+        self.assertIn("dev-profile", output)
+        self.assertIn("no_ipw", output)
+        self.assertIn("Hit@20", output)
+        self.assertIn("Pers@40", output)
+        self.assertIn("Resources:  time=7.9s | epochs=1 | peak_vram=1234MB", output)
+        self.assertIn("Resources:  time=12.3s | epochs=1 | peak_vram=2345MB", output)
+        self.assertIn(
+            "amazonbook_lightgcn_ep200_bs8192_dim64_layers2_nbr10-5_lr-plateau_seed13",
+            output,
         )
-        columns = [column.strip() for column in completed_line.split("|")]
-        self.assertEqual(columns[10], "7.9s")
-        self.assertEqual(columns[11], "1")
+        self.assertIn(
+            "amazonbook_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_scoremixlearned_lr-cosine_no_ipw_seed13",
+            output,
+        )
+        self.assertNotIn("_train-formalhash", output)
+        self.assertNotIn("_train-ablationhash", output)
+        self.assertNotIn("smoke-profile", output)
+        self.assertNotIn(
+            "amazonbook_ucagnn_ep100_bs1024_dim64_layers2_nbr10-5_lr-plateau_seed13",
+            output,
+        )
+
+    def test_query_results_main_writes_default_summary_markdown(self) -> None:
+        """The base CLI should persist the thesis summary to results/query_results.md."""
+        exp_id = self.logger.log_experiment(
+            dataset="amazonbook",
+            config={
+                "dataset": "amazonbook",
+                "epochs": 100,
+                "batch_size": 4096,
+                "embed_dim": 64,
+                "use_dual_branch": False,
+                "single_branch_gnn_layers": 2,
+                "num_neighbors": [10, 5],
+                "lr_scheduler": "plateau",
+                "seed": 13,
+            },
+            preset="lightgcn",
+            batch_id="formal-dev-profile-20260515T000000Z",
+            profile_name="dev-profile",
+        )
+        self.logger.log_epoch(
+            exp_id=exp_id,
+            epoch=0,
+            train_loss=1.0,
+            epoch_time_s=0.4,
+            val_metrics={"NDCG@20": 0.1},
+            profiler_stages=[],
+            model=None,
+        )
+        self.logger.log_metric(exp_id, "NDCG@20", 0.1, split="test")
+        self.logger.log_metric(exp_id, "Recall@20", 0.2, split="test")
+        self.logger.log_metric(exp_id, "HitRatio@20", 0.3, split="test")
+        self.logger.log_metric(exp_id, "Personalization@20", 0.4, split="test")
+        self.logger.log_metric(exp_id, "AveragePopularity@20", 0.5, split="test")
+        self.logger.log_metric(exp_id, "NDCG@40", 0.6, split="test")
+        self.logger.log_metric(exp_id, "Recall@40", 0.7, split="test")
+        self.logger.log_metric(exp_id, "HitRatio@40", 0.8, split="test")
+        self.logger.log_metric(exp_id, "Personalization@40", 0.9, split="test")
+        self.logger.log_metric(exp_id, "AveragePopularity@40", 1.0, split="test")
+        self.logger.log_metric(exp_id, "training_time_s", 11.2, split="train")
+        self.logger.log_metric(exp_id, "peak_vram_mb", 2048.0, split="train")
+        self.logger.update_experiment_status(exp_id, status="completed")
+
+        temp_db_path = Path(self.temp_dir.name) / "experiments.sqlite"
+        output_path = Path(self.temp_dir.name) / "query_results.md"
+        buffer = StringIO()
+        with (
+            patch.object(query_results, "DB_PATH", temp_db_path),
+            patch.object(query_results, "QUERY_RESULTS_MARKDOWN_PATH", output_path),
+            patch.object(sys, "argv", ["query_results.py"]),
+            redirect_stdout(buffer),
+        ):
+            exit_code = query_results.main()
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            buffer.getvalue().strip(),
+            f"Wrote default results summary to {output_path.resolve()}",
+        )
+        self.assertTrue(output_path.exists())
+        markdown_output = output_path.read_text(encoding="utf-8")
+        self.assertIn("# Query Results", markdown_output)
+        self.assertIn("```text", markdown_output)
+        self.assertIn("THESIS TEST RESULTS", markdown_output)
+        self.assertIn("dev-profile", markdown_output)
+        self.assertIn(
+            "amazonbook_lightgcn_ep100_bs4096_dim64_layers2_nbr10-5_lr-plateau_seed13",
+            markdown_output,
+        )
 
     def test_schema_mismatch_requires_current_tables(self) -> None:
         """ExperimentLogger should reject databases that predate the current schema."""

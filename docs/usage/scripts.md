@@ -55,7 +55,7 @@ uv run query-results --alpha 12
 uv run query-results --bottleneck 12
 ```
 
-- `query-results`: inspect the thesis SQLite database. Use the base command for the run list, then add one focused flag when drilling into a run.
+- `query-results`: inspect the thesis SQLite database. The base command renders the default thesis summary for full-data formal and ablation runs, ordered by dataset and test ranking metrics, with the full test metric suite, a per-run `Resources:` line (`training_time_s`, `completed_train_epochs`, `peak_vram_mb`), and full canonical experiment names, then writes that report to `results/query_results.md`. Add one focused flag when drilling into a run.
 - `query-results --view completed`: show only finished runs via the SQLite completed-run view.
 - `query-results --view attention`: show anything not yet cleanly completed, including running, unknown, OOM, and failed rows.
 - `query-results --view errors`: show only the failed and OOM rows.
