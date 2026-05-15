@@ -37,7 +37,8 @@ You are working on a thesis project about causal embeddings for recommendation. 
 
 Before each implementation iteration read the following files:
 
--  `.github/skills/` - Useful skills for implementation, project structure, and existing work (see the detailed list below).
+- `.github/skills/` - Useful skills for implementation, project structure, and existing work (see the detailed list below).
+- `.github/skills/existing-work/full_summary.md` - This file is very important, as it is the scientific source of truth for the project; it synthesizes all the relevant papers and prior implementations that the project builds on. It is not a routing target, but it should be read before any other files to understand the scientific context and motivation for the implementation. The goal of this project is to synthesize the best ideas from the existing work into a single, unified codebase that implements the U-CaGNN model and its training protocol.
 
 - Target system / development tracking files (not source of truth):
 
@@ -62,7 +63,7 @@ After each iteration, update the target system files so they match the code; do 
 
 ## Engineering Standards
 
-- Apply KISS, YAGNI, DRY, and SOLID pragmatically.
+- Apply KISS (Keep It Simple, Stupid), YAGNI (You Aren't Gonna Need It), DRY (Don’t Repeat Yourself), and SOLID (Single Responsibility, Open/Closed, Liskov Substitution, Interface Segregation, Dependency Inversion) pragmatically.
 - Maintain consistent abstraction levels within a file/function.
 - Reuse existing code and utilities whenever possible.
 - Keep the codebase clean and organized; remove unused or duplicated code.
