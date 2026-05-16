@@ -138,11 +138,39 @@ class Evaluator:
 
         return exclude_mask
 
+    @staticmethod
+    def _group_items_by_user(
+        user_nodes: torch.Tensor,
+        item_nodes: torch.Tensor,
+    ) -> dict[int, torch.Tensor]:
+        """Group CPU item IDs by CPU user ID with one pass over unique users.
+
+        Args:
+            user_nodes: CPU user IDs for one interaction slice.
+            item_nodes: CPU item IDs aligned to ``user_nodes``.
+
+        Returns:
+            Mapping from user ID to a CPU ``torch.long`` tensor of item IDs.
+
+        """
+        if user_nodes.numel() == 0:
+            return {}
+
+        sort_order = user_nodes.argsort(stable=True)
+        sorted_users = user_nodes[sort_order]
+        sorted_items = item_nodes[sort_order].long()
+        unique_users, counts = torch.unique_consecutive(sorted_users, return_counts=True)
+        item_groups = sorted_items.split(counts.tolist())
+        return {
+            int(user_id.item()): items
+            for user_id, items in zip(unique_users, item_groups, strict=True)
+        }
+
     def _get_or_build_split_cache(
         self,
         data,
         mask: torch.Tensor,
-    ) -> tuple[dict[int, list[int]], dict[int, list[int]], torch.Tensor]:
+    ) -> tuple[dict[int, torch.Tensor], dict[int, torch.Tensor], torch.Tensor]:
         """Return (user_gt, user_seen_items, unique_users) for the split mask.
 
         Built once on first call and stored; subsequent epoch calls for the
@@ -161,16 +189,14 @@ class Evaluator:
             user_nodes_cpu = data.user_nodes[target_mask]
             item_nodes_cpu = data.item_nodes[target_mask] - data.n_users
             unique_users = user_nodes_cpu.unique()
-
-            user_gt: dict[int, list[int]] = {}
-            for u, i in zip(user_nodes_cpu.tolist(), item_nodes_cpu.tolist(), strict=False):
-                user_gt.setdefault(u, []).append(i)
+            user_gt = self._group_items_by_user(user_nodes_cpu, item_nodes_cpu)
 
             exclude_user_nodes = data.user_nodes[exclude_mask]
             exclude_item_nodes = data.item_nodes[exclude_mask] - data.n_users
-            user_seen_items: dict[int, list[int]] = {}
-            for u, i in zip(exclude_user_nodes.tolist(), exclude_item_nodes.tolist(), strict=False):
-                user_seen_items.setdefault(u, []).append(i)
+            user_seen_items = self._group_items_by_user(
+                exclude_user_nodes,
+                exclude_item_nodes,
+            )
 
             self._split_cache[key] = {
                 "user_gt": user_gt,
@@ -243,46 +269,50 @@ class Evaluator:
                 )
             scores = scores.float()
 
-            seen_rows: list[int] = []
-            seen_cols: list[int] = []
+            seen_row_parts: list[torch.Tensor] = []
+            seen_col_parts: list[torch.Tensor] = []
             for row_index, user_id in enumerate(batch_user_ids):
                 seen_items = user_seen_items.get(user_id)
-                if seen_items:
-                    seen_rows.extend([row_index] * len(seen_items))
-                    seen_cols.extend(seen_items)
-            if seen_rows:
+                if seen_items is None or seen_items.numel() == 0:
+                    continue
+                seen_row_parts.append(
+                    torch.full((seen_items.numel(),), row_index, dtype=torch.long),
+                )
+                seen_col_parts.append(seen_items)
+            if seen_row_parts:
+                seen_rows = move_tensor_to_device(torch.cat(seen_row_parts), device)
+                seen_cols = move_tensor_to_device(torch.cat(seen_col_parts), device)
                 scores[seen_rows, seen_cols] = float("-inf")
 
             # Build batch ground truth on-the-fly (small: batch_size * n_items)
-            gt_rows = []
-            keep_mask = []
-            for uid in batch_user_ids:
+            gt_rows: list[torch.Tensor] = []
+            keep_rows: list[int] = []
+            for row_index, uid in enumerate(batch_user_ids):
                 items = user_gt.get(uid)
-                if items:
-                    gt_rows.append(items)
-                    keep_mask.append(True)
-                else:
-                    keep_mask.append(False)
-            keep = torch.tensor(keep_mask, device=device)
-            if not keep.any():
+                if items is None or items.numel() == 0:
+                    continue
+                keep_rows.append(row_index)
+                gt_rows.append(items)
+            if not gt_rows:
                 continue
 
-            scores = scores[keep]
+            keep_indices = torch.tensor(keep_rows, device=device, dtype=torch.long)
+            scores = scores.index_select(0, keep_indices)
             if scores.size(0) == 0:
                 continue
 
             _, pred_index_mat = torch.topk(scores, max_k, dim=-1)
 
             # Build edge_label_index from sparse ground truth
-            gt_user_list: list[int] = []
-            gt_item_list: list[int] = []
-            for local_idx, items in enumerate(gt_rows):
-                for item_id in items:
-                    gt_user_list.append(local_idx)
-                    gt_item_list.append(item_id)
+            gt_counts = torch.tensor([items.numel() for items in gt_rows], device=device)
+            gt_user_index = torch.repeat_interleave(
+                torch.arange(len(gt_rows), device=device),
+                gt_counts,
+            )
+            gt_item_index = move_tensor_to_device(torch.cat(gt_rows), device)
             edge_label_index = (
-                torch.tensor(gt_user_list, device=device),
-                torch.tensor(gt_item_list, device=device),
+                gt_user_index,
+                gt_item_index,
             )
             metrics.update(pred_index_mat, edge_label_index)
 
