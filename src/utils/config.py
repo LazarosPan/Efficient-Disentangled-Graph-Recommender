@@ -15,6 +15,7 @@ ScoringMode = Literal[
     "conformity_only",
     "conformity_suppressed",
 ]
+GraphPolicy = Literal["observed", "cagra_augmented"]
 LRSchedulerName = Literal[
     "none",
     "plateau",
@@ -37,6 +38,7 @@ SUPPORTED_LR_SCHEDULERS: tuple[LRSchedulerName, ...] = (
     "polynomial",
     "linear",
 )
+GRAPH_POLICY_CHOICES: tuple[GraphPolicy, ...] = ("observed", "cagra_augmented")
 PresetOverrideValue = bool | int | float | str | list[int]
 PresetOverrides = dict[str, PresetOverrideValue]
 
@@ -45,13 +47,13 @@ _NON_CAUSAL_PRESET_OVERRIDES: PresetOverrides = {
     "use_ipw": False,
     "use_popularity_head": False,
     "use_popularity_emb": False,
-    "lambda_contrastive": 0.0,
-    "lambda_align": 0.0,
-    "lambda_uniform": 0.0,
-    "lambda_pop": 0.0,
+    "loss_weight_contrastive": 0.0,
+    "loss_weight_align": 0.0,
+    "loss_weight_uniform": 0.0,
+    "loss_weight_popularity": 0.0,
     "auxiliary_loss_schedule": "phased",
     "scoring_weight_mode": "fixed",
-    "gamma_popularity": 0.0,
+    "score_weight_popularity": 0.0,
     "train_scoring_mode": "default",
     "eval_scoring_mode": "default",
     "use_features": False,
@@ -60,18 +62,18 @@ _NON_CAUSAL_PRESET_OVERRIDES: PresetOverrides = {
 }
 _LIGHTGCN_PRESET_OVERRIDES: PresetOverrides = _NON_CAUSAL_PRESET_OVERRIDES | {
     "use_dual_branch": False,
-    "lambda_interest_bpr": 0.0,
-    "lambda_conformity_bpr": 0.0,
-    "lambda_independence": 0.0,
-    "beta_conformity": 0.0,
+    "loss_weight_interest_bpr": 0.0,
+    "loss_weight_conformity_bpr": 0.0,
+    "loss_weight_independence": 0.0,
+    "score_weight_conformity": 0.0,
 }
 _DICE_LIKE_PRESET_OVERRIDES: PresetOverrides = _NON_CAUSAL_PRESET_OVERRIDES | {
     "use_dual_branch": True,
-    "lambda_interest_bpr": 0.1,
-    "lambda_conformity_bpr": 0.1,
-    "lambda_independence": 0.01,
-    "alpha_interest": 1.0,
-    "beta_conformity": 1.0,
+    "loss_weight_interest_bpr": 0.1,
+    "loss_weight_conformity_bpr": 0.1,
+    "loss_weight_independence": 0.01,
+    "score_weight_interest": 1.0,
+    "score_weight_conformity": 1.0,
     "auxiliary_losses_start_epoch": 0,
     "popularity_supervision_start_epoch": 0,
 }
@@ -81,18 +83,18 @@ _FULL_PRESET_OVERRIDES: PresetOverrides = {
     "use_ipw": True,
     "use_popularity_head": True,
     "use_popularity_emb": True,
-    "lambda_interest_bpr": 0.02,
-    "lambda_conformity_bpr": 0.02,
-    "lambda_independence": 0.005,
-    "lambda_contrastive": 0.02,
-    "lambda_align": 0.0,
-    "lambda_uniform": 0.0,
-    "lambda_pop": 0.02,
+    "loss_weight_interest_bpr": 0.02,
+    "loss_weight_conformity_bpr": 0.02,
+    "loss_weight_independence": 0.005,
+    "loss_weight_contrastive": 0.02,
+    "loss_weight_align": 0.0,
+    "loss_weight_uniform": 0.0,
+    "loss_weight_popularity": 0.02,
     "auxiliary_loss_schedule": "linear_ramp",
     "scoring_weight_mode": "learned",
-    "alpha_interest": 0.5,
-    "beta_conformity": 0.3,
-    "gamma_popularity": 0.2,
+    "score_weight_interest": 0.5,
+    "score_weight_conformity": 0.3,
+    "score_weight_popularity": 0.2,
     "train_scoring_mode": "default",
     "eval_scoring_mode": "default",
     "auxiliary_losses_start_epoch": 15,
@@ -118,15 +120,16 @@ class UCaGNNConfig:
 
     # ── Graph construction ───────────────────────────────────────────────
     cagra_k: int = 20
-    cagra_out_degree: int = 32  # thesis-speed default; cuVS library default is 64
-    cagra_initial_degree: int = 64  # thesis-speed default; cuVS library default is 128
+    cagra_out_degree: int = 64  # cuVS-recommended default graph degree
+    cagra_initial_degree: int = 128  # cuVS-recommended intermediate graph degree
     cagra_team_size: int = 0  # 0 = auto-select (cuVS default)
     cagra_metric: str = "inner_product"  # dot-product space matches the model's scoring function
     cagra_itopk_size: int = 64  # intermediate candidates per step; higher = better recall
+    graph_policy: GraphPolicy = "observed"
 
     # ── Embedding / GNN hyperparameters ──────────────────────────────────
     embed_dim: int = 64
-    pop_embed_dim: int = 16
+    popularity_embedding_dimensions: int = 16
     single_branch_gnn_layers: int = 2
     interest_gnn_layers: int = 1
     conformity_gnn_layers: int = 2
@@ -134,20 +137,20 @@ class UCaGNNConfig:
 
     # ── Scoring weights ──────────────────────────────────────────────────
     scoring_weight_mode: Literal["fixed", "learned"] = "fixed"
-    alpha_interest: float = 0.5
-    beta_conformity: float = 0.3
-    gamma_popularity: float = 0.2
+    score_weight_interest: float = 0.5
+    score_weight_conformity: float = 0.3
+    score_weight_popularity: float = 0.2
     train_scoring_mode: ScoringMode = "default"  # score view optimized by the ranking loss
 
     # ── Loss lambdas (0.0 = disabled) ────────────────────────────────────
-    lambda_rec: float = 1.0
-    lambda_interest_bpr: float = 0.02
-    lambda_conformity_bpr: float = 0.02
-    lambda_independence: float = 0.005
-    lambda_contrastive: float = 0.02
-    lambda_align: float = 0.02
-    lambda_uniform: float = 0.02
-    lambda_pop: float = 0.02
+    loss_weight_recommendation: float = 1.0
+    loss_weight_interest_bpr: float = 0.02
+    loss_weight_conformity_bpr: float = 0.02
+    loss_weight_independence: float = 0.005
+    loss_weight_contrastive: float = 0.02
+    loss_weight_align: float = 0.02
+    loss_weight_uniform: float = 0.02
+    loss_weight_popularity: float = 0.02
     auxiliary_loss_schedule: Literal["phased", "linear_ramp"] = "phased"
     auxiliary_ramp_rate: float = 0.001
     independence_ramp_rate: float = 0.00025
@@ -165,7 +168,7 @@ class UCaGNNConfig:
     lr: float = 1e-3
     weight_decay: float = 1e-5
     batch_size: int = 4096
-    auto_batch_size: bool = False
+    auto_batch_size: bool = True
     batch_size_candidates: list[int] = field(
         default_factory=lambda: [16384, 8192, 4096, 2048, 1024, 512, 256],
     )
@@ -191,8 +194,13 @@ class UCaGNNConfig:
     loader_max_rows: int | None = None
 
     # ── Negative sampling ────────────────────────────────────────────────
+    # n_negatives=1 is the standard BPR setting: one unobserved item per positive
+    # interaction, sampled uniformly (or popularity-weighted if hard_negative_ratio > 0).
+    # These are BPR "unobserved" negatives, not user-expressed dislikes.
     n_negatives: int = 1
-    hard_negative_ratio: float = 0.0  # fraction of negatives that are popularity-weighted
+    # Fraction of negatives drawn proportional to item popularity (harder, more popular
+    # items) rather than uniformly at random. 0.0 = purely uniform; 0.25 = 25% hard.
+    hard_negative_ratio: float = 0.0
     # ── Curriculum schedule (epoch thresholds) ───────────────────────────
     # Phase 1 ends when auxiliary losses begin; phase 2 ends when popularity
     # supervision begins. Both thresholds stay as explicit config fields so
@@ -212,15 +220,10 @@ class UCaGNNConfig:
     val_ratio: float = 0.1
     derived_split_mode: DerivedSplitMode = "per_user_temporal"
     preprocessing_preset: str | None = None
-    popularity_window_seconds: int | None = None
     seed: int = DEFAULT_SEED
 
     # ── Device ───────────────────────────────────────────────────────────
     device: str = "cuda"
-
-    # ── Profiling ────────────────────────────────────────────────────────
-    enable_profiling: bool = False
-    profiling_cadence: int = 10
 
     def __post_init__(self) -> None:
         self.validate()
@@ -246,19 +249,19 @@ class UCaGNNConfig:
             raise ValueError("loader_max_rows must be > 0 when provided")
         if self.progress_bar_loss_cadence < 1:
             raise ValueError("progress_bar_loss_cadence must be >= 1")
-        if self.profiling_cadence < 1:
-            raise ValueError("profiling_cadence must be >= 1")
         if self.batch_size < 1:
             raise ValueError("batch_size must be >= 1")
         if not self.batch_size_candidates:
             raise ValueError("batch_size_candidates must contain at least one value")
         if any(candidate < 1 for candidate in self.batch_size_candidates):
             raise ValueError("batch_size_candidates must all be >= 1")
-        if self.popularity_window_seconds is not None and self.popularity_window_seconds <= 0:
-            raise ValueError("popularity_window_seconds must be > 0 when provided")
         if self.lr_scheduler not in SUPPORTED_LR_SCHEDULERS:
             raise ValueError(
                 f"lr_scheduler must be one of {', '.join(SUPPORTED_LR_SCHEDULERS)}",
+            )
+        if self.graph_policy not in GRAPH_POLICY_CHOICES:
+            raise ValueError(
+                f"graph_policy must be one of {', '.join(GRAPH_POLICY_CHOICES)}",
             )
         if self.amp_dtype != "bfloat16":
             raise ValueError("amp_dtype is fixed to 'bfloat16'")
@@ -278,9 +281,9 @@ class UCaGNNConfig:
             raise ValueError("contrastive_max_pairs must be >= 2")
         if (
             min(
-                self.alpha_interest,
-                self.beta_conformity,
-                self.gamma_popularity,
+                self.score_weight_interest,
+                self.score_weight_conformity,
+                self.score_weight_popularity,
             )
             < 0
         ):
@@ -291,16 +294,6 @@ class UCaGNNConfig:
         if not self.use_dual_branch:
             return self.single_branch_gnn_layers
         return max(self.interest_gnn_layers, self.conformity_gnn_layers)
-
-    @property
-    def curriculum_phase1_end(self) -> int:
-        """Backwards-compatible alias for auxiliary_losses_start_epoch."""
-        return self.auxiliary_losses_start_epoch
-
-    @property
-    def curriculum_phase2_end(self) -> int:
-        """Backwards-compatible alias for popularity_supervision_start_epoch."""
-        return self.popularity_supervision_start_epoch
 
     # ── Scoring contract (authoritative table) ────────────────────────────
     # Each preset fixes the train/eval scoring modes so the model optimises and

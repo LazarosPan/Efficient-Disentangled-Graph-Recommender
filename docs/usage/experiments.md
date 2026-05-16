@@ -1,6 +1,6 @@
 # Running Experiments
 
-Use `uv run formal-run` for thesis/formal runs. Use `uv run experiment` and `uv run ablation` for low-level single-run and ablation study control.
+Use `uv run formal-run` for thesis/formal runs. Use `uv run experiment` and `uv run ablation` only for lower-level debugging or focused follow-up runs.
 
 The examples below are smoke-sized forms that were checked against the current CLI surface.
 
@@ -9,18 +9,18 @@ The examples below are smoke-sized forms that were checked against the current C
 ```bash
 uv run formal-run
 uv run formal-run --list-profiles
-uv run formal-run --resume-latest
-uv run formal-run --new-run
 uv run formal-run --profile <slug-from-list-profiles>
+uv run formal-run --profile <slug-from-list-profiles> --overwrite-checkpoint
 ```
 
 - `formal-run` launches the selected formal profile from `experiments/experiment_catalog.json`.
 - `--profile` selects the semantic experiment bundle.
 - `--list-profiles` prints the current deterministic profile slugs.
-- `--resume-latest` reuses `results/formal_run_state.json`.
-- `--new-run` forces a fresh batch even if a resumable state already exists.
-- `--restart` starts the selected profile from the beginning under a fresh batch id.
-- Formal runs always use the full datasets and keep OOM rows as thesis evidence while continuing to the next item.
+- `--overwrite-checkpoint` forces fresh training for each resolved run.
+- `results/formal_run_state.json` is a strict generated resume pointer. `formal-run` automatically resumes the saved profile when the persisted semantic plan still matches the current catalog/profile definition; otherwise it starts a fresh batch for the selected profile instead of reviving compatibility fallbacks.
+- Formal profiles may set `config_overrides.graph_policy` to either one value or a list like `["observed", "cagra_augmented"]`; a list expands into separate runs, and each concrete run still uses exactly one graph policy.
+- Formal profiles may also set `config_overrides.preprocessing_preset` to either one preset or a list. The benchmark planner expands that sweep internally so each concrete run still carries one preprocessing preset.
+- Formal runs always use the full datasets and keep OOM rows as thesis evidence while continuing to the next item. Smoke-only caps such as `sample_interactions` and `loader_max_rows` are ignored by `formal-run` even if they appear in a profile override block.
 - The current default formal profile is development-focused: it runs only the `ucagnn` preset, disables early stopping, keeps the full 60-epoch budget, uses learned fused scoring, and makes the mainline branch asymmetry explicit with `interest_gnn_layers=1`, `conformity_gnn_layers=2`, `num_neighbors=[10, 5]`, and `loss_schedule="baseline"` so BPR is active from the start.
 - A second formal profile is reserved for the final matched comparison pass, where `lightgcn` and `dice_like` re-enter under the same pipeline.
 
@@ -28,26 +28,25 @@ uv run formal-run --profile <slug-from-list-profiles>
 
 ```bash
 uv run experiment --list-recipes
-uv run experiment --dataset movielens1m --recipe ucagnn --sample-interactions 100 --loader-max-rows 100 --epochs 1 --no-mlflow
-uv run experiment --dataset amazonbook --recipe ucagnn --sample-interactions 100 --loader-max-rows 100 --epochs 1 --no-mlflow
-uv run experiment --dataset kuairec_v2 --recipe ucagnn --num-neighbors 25 10 --epochs 1 --no-mlflow
-uv run experiment --dataset kuairec_v2 --preset ucagnn --num-neighbors 25 10 --epochs 1 --no-mlflow
-uv run experiment --dataset movielens1m --recipe ucagnn --sample-interactions 100 --loader-max-rows 100 --epochs 1 --no-auto-resume --no-mlflow
+uv run experiment --dataset movielens1m --recipe ucagnn
+uv run experiment --dataset amazonbook --recipe ucagnn --overwrite-checkpoint
+uv run experiment --dataset kuairec_v2 --preset ucagnn
 ```
 
 - `--recipe` is the normal way to choose a known experiment path.
 - Use `ucagnn` as the main preset/recipe name for the thesis model.
-- Recipes own the matrix-defining fields they declare.
-- `--sample-interactions` and `--loader-max-rows` are smoke controls, not thesis settings.
-- `--no-auto-resume` forces a fresh run even if a matching checkpoint already exists.
+- Recipes and presets own the training semantics they declare.
+- The single-run CLI is intentionally selection-focused: dataset, recipe/preset, checkpointing, and lightweight tracking metadata stay public; training/runtime overrides stay inside presets, recipes, and catalog-owned profiles.
+- In the current runtime, `cagra_augmented` means **observed train-interaction graph plus ANN edges**. It is not just a cuVS speed toggle over the same exact graph semantics.
+- The current bootstrap path for `cagra_augmented` still requires item features; otherwise the ANN edges would be built from untrained ID-only embeddings before training starts.
 
 ## Ablations
 
 ```bash
-uv run ablation --dataset movielens1m --dry-run
-uv run ablation --dataset movielens1m --variants mainline --epochs 1 --sample-interactions 100 --loader-max-rows 100 --no-mlflow
-uv run ablation --dataset movielens1m --variants mainline --epochs 1 --sample-interactions 100 --loader-max-rows 100 --batch-id smoke-ablation --resume-batch --no-mlflow
+uv run ablation --datasets movielens1m
+uv run ablation --datasets amazonbook kuairec_v2 movielens1m --variants mainline no_ipw
+uv run ablation --datasets movielens1m --variants mainline --overwrite-checkpoint
 ```
 
 - `ablation` is a secondary study command, not the main thesis workflow.
-- `--batch-id` and `--resume-batch` behave the same way as in `benchmark`, but at the ablation-variant level.
+- Ablation configs own their runtime semantics; the CLI only selects datasets, variants, and whether existing checkpoints should be replaced.

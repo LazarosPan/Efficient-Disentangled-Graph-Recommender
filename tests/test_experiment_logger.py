@@ -240,6 +240,28 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertAlmostEqual(row["training_time_s"], 7.9)
         self.assertEqual(row["completed_train_epochs"], 2)
 
+    def test_experiment_summary_tracks_average_gpu_utilization(self) -> None:
+        """The summary view should expose the averaged train-split GPU utilization metric."""
+        exp_id = self.logger.log_experiment(
+            dataset="movielens1m",
+            config=_DummyConfig(seed=21),
+        )
+        self.logger.log_metric(exp_id, "gpu_utilization_pct", 55.0, epoch=0, split="train")
+        self.logger.log_metric(exp_id, "gpu_utilization_pct", 65.0, epoch=1, split="train")
+        self.logger.update_experiment_status(exp_id, status="completed")
+
+        row = self.logger.conn.execute(
+            (
+                "SELECT avg_gpu_utilization_pct, max_gpu_utilization_pct "
+                "FROM experiment_summary WHERE id = ?"
+            ),
+            (exp_id,),
+        ).fetchone()
+        assert row is not None
+
+        self.assertAlmostEqual(row["avg_gpu_utilization_pct"], 60.0)
+        self.assertAlmostEqual(row["max_gpu_utilization_pct"], 65.0)
+
     def test_comparison_view_exposes_metric_deltas_for_same_semantic_run(self) -> None:
         """Comparison view should show deltas across repeated same-config runs."""
         first_exp = self.logger.log_experiment(
@@ -498,9 +520,12 @@ class ExperimentLoggerTests(unittest.TestCase):
             exit_code = query_results.main()
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(
-            buffer.getvalue().strip(),
+        stdout_text = buffer.getvalue()
+        self.assertIn("THESIS TEST RESULTS", stdout_text)
+        self.assertIn("dev-profile", stdout_text)
+        self.assertIn(
             f"Wrote default results summary to {output_path.resolve()}",
+            stdout_text,
         )
         self.assertTrue(output_path.exists())
         markdown_output = output_path.read_text(encoding="utf-8")

@@ -16,8 +16,8 @@ Use this skill when working on data loading, graph construction, negative sampli
 ## Graph Construction Methods
 | Method | Function | When to Use |
 |--------|----------|-------------|
-| Train-interaction graph | `build_graph(..., embeddings=None)` | Current runtime default; uses only train-split bipartite edges and their aligned signs |
-| Optional CAGRA augmentation | `build_graph(..., embeddings=...)` | Support path when a caller explicitly provides node embeddings; mirrors ANN edges, assigns neutral sign `0.0`, seeds `SearchParams.rand_xor_mask` from `config.seed`, and falls back to the train-interaction graph on failure |
+| `graph_policy="observed"` | `build_graph(..., embeddings=None)` | Thesis-default runtime path; uses only train-split bipartite edges and their aligned signs |
+| `graph_policy="cagra_augmented"` | `load_runtime_data()` bootstrap + `build_graph(..., embeddings=...)` | Builds the observed graph first, bootstraps Module A node embeddings, then adds neutral ANN edges on top of the train-interaction graph; currently requires item features so ANN edges are not built from untrained ID-only embeddings, and treats CAGRA failures as hard errors |
 
 ## Paper Sources
 | Decision | Source |
@@ -28,19 +28,20 @@ Use this skill when working on data loading, graph construction, negative sampli
 
 ## Quick Reference
 ```python
-from src.data.loaders import load_dataset
-from src.data.graph_builder import build_graph
+from experiments.run_experiment import load_runtime_data
 
-canonical = load_dataset(config.dataset, config.data_dir)
-data = build_graph(canonical, config, embeddings=None)  # train-interaction graph
-data = build_graph(canonical, config, embeddings=model.get_stacked_embeddings())  # optional cagra augmentation
+config.graph_policy = "observed"
+canonical, data = load_runtime_data(config)
+
+config.graph_policy = "cagra_augmented"
+canonical, data = load_runtime_data(config)
 ```
 
 Named preprocessing presets stay inside the same loader registry via `load_dataset(..., preprocessing_preset=...)`; use them instead of inventing new dataset aliases.
 
 When `preprocessing_preset` is omitted, `load_dataset(...)` resolves the repository default for the selected dataset automatically.
 
-Without embeddings, the graph builder reduces to the train-interaction bipartite graph; this is also the current experiment runtime path in `experiments/run_experiment.py::load_runtime_data()`.
+Without embeddings, the graph builder reduces to the train-interaction bipartite graph. The runtime now makes that choice explicit through `config.graph_policy`.
 
 For capped smoke or tiny-validation runs, pass `max_rows=...` through the experiment path. The shared loader now reuses capped loads in-process, so the validator can stay aligned with feature-enabled formal runs without rescanning the same dataset files for every recipe.
 
@@ -49,12 +50,13 @@ For capped smoke or tiny-validation runs, pass `max_rows=...` through the experi
 - `CanonicalInteractions.get_splits()` prefers predefined loader masks when present, derives validation from a provided train/test split when necessary, and otherwise falls back to the configured derived split mode (`per_user_temporal` by default, `global_temporal` opt-in).
 - ANN graph augmentation now stays undirected for `cagra`: the query-neighbor edges are mirrored before coalescing, and their aligned signs remain neutral `0.0`.
 - The CAGRA path now materializes the returned neighbor table once as a CPU `torch.long` tensor and builds the directed edge index in Torch, avoiding the old `np.repeat(...)` / `np.stack(...)` / `torch.tensor(...)` bounce through several large intermediate host arrays.
-- The current runtime does **not** build ANN edges automatically: `load_runtime_data()` passes `embeddings=None`, so thesis runs use the split-safe train-interaction graph unless a separate caller explicitly opts into CAGRA augmentation.
+- `graph_policy="observed"` remains the default thesis path. `graph_policy="cagra_augmented"` now bootstraps Module A node embeddings and rebuilds the graph with CAGRA before training begins, while still keeping the observed train-interaction edges.
+- The current `cagra_augmented` runtime path is intentionally strict: it raises when item features are unavailable, so featureless datasets do not silently build ANN edges from untrained ID-only embeddings before training begins.
 - `SubgraphBatch` now carries `sub_edge_norm: torch.Tensor | None` — the per-edge precomputed norms for the sampled subgraph edges, aligned to `sub_edge_index`.  `SubgraphSampler` accepts `edge_norm` at construction time and subsets it during every `sample()` call.
 - `SubgraphSampler.sample()` now sorts each local user/item ID space once per batch and reuses those sorted views for positive/negative remapping, instead of re-sorting the same subgraph item IDs separately for every `_map_to_local(...)` call.
 - `NegativeSampler` remains fully vectorized, mixes uniform and popularity-weighted draws via `hard_negative_ratio`, and applies only best-effort collision avoidance against the current positive item IDs.
 - `build_graph()` now carries canonical `user_features`, `item_features`, `metadata`, and the new causal descriptors (`raw_target`, `behavior_type`, `exposure_flag`, `source_domain`, `feedback_type`, `preprocessing_preset`) plus repeat-aware collapse summaries (`repeat_count`, `repeat_mean_target`, `repeat_max_target`, `repeat_latest_target`, `repeat_first_timestamp`, `repeat_last_timestamp`, and optional `repeat_behavior_counts` / `repeat_behavior_labels`) onto the PyG `Data` object when they exist. That graph-boundary transfer now goes through one shared helper in `src/data/graph_builder.py`, so NumPy-to-tensor conversion and optional-field passthrough stay aligned instead of being hand-maintained as a long per-field `if` chain. The same helper now copies only non-writable NumPy inputs before `torch.from_numpy(...)`, which avoids PyTorch warnings when loaders hand off read-only views (for example from Polars-backed arrays).
-- `build_graph()` now recomputes `data.popularity` from the final training split rather than reusing all-interaction counts, so held-out validation/test rows never leak into popularity-driven losses, sampling, or evaluation metrics. `config.popularity_window_seconds` can further restrict that summary to the recent train window.
+- `build_graph()` now recomputes `data.popularity` from the final training split rather than reusing all-interaction counts, so held-out validation/test rows never leak into popularity-driven losses, sampling, or evaluation metrics. Train popularity now follows that one split-safe count-based summary path; there is no separate popularity-window override.
 - The current feature-aware model path is item-feature-first: `data.item_features` and split-safe `data.popularity` are passed into `UCaGNN`, while user features remain available for later extensions.
 - `load_dataset(..., max_rows=...)` now caches capped loads in-process, so tiny validation can reuse the same feature-enriched canonical dataset across many recipe cases instead of rescanning the same files repeatedly.
 - Derived split resolution now defaults to `per_user_temporal` whenever a loader does not provide masks. Keep `global_temporal` only as an explicit opt-in for compatibility or analysis baselines.

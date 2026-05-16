@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -52,17 +53,6 @@ class GPUProfiler:
             torch.cuda.reset_peak_memory_stats()
 
     @contextmanager
-    def epoch_timer(self):
-        """Wall-clock context manager for total epoch duration.
-
-        Records elapsed time without ``torch.cuda.synchronize()`` overhead;
-        safe to use regardless of whether stage profiling is enabled.
-        """
-        t0 = time.perf_counter()
-        yield
-        self.epoch_elapsed_ms = (time.perf_counter() - t0) * 1000
-
-    @contextmanager
     def stage(self, name: str):
         """Context manager for profiling a named stage."""
         if not self._enabled or not torch.cuda.is_available():
@@ -107,6 +97,17 @@ class GPUProfiler:
             lines.append(f"  {'EPOCH WALL':20s} {self.epoch_elapsed_ms:8.1f}ms")
         return "\n".join(lines)
 
+    # TODO: Seems like duplicate, def_stage already has VRAM tracking. Maybe we can unify them?
+    @staticmethod
+    def peak_vram_mb() -> float | None:
+        """Return peak VRAM allocated (MB) since the last reset, without sync.
+
+        Returns None when CUDA is unavailable.
+        """
+        if not torch.cuda.is_available():
+            return None
+        return torch.cuda.max_memory_allocated() / 1024 / 1024
+
     @staticmethod
     def model_summary(model: torch.nn.Module) -> str:
         """Return parameter count and model size via PyG utilities."""
@@ -119,6 +120,41 @@ class GPUProfiler:
         """Return data object size via PyG utilities."""
         size_bytes = get_data_size(data)
         return f"Data size: {size_bytes / 1024 / 1024:.1f} MB"
+
+
+def sample_gpu_utilization_percent(device: torch.device) -> float | None:
+    """Return current GPU utilization via ``nvidia-smi`` when available.
+
+    Args:
+        device: Active runtime device.
+
+    Returns:
+        Utilization percentage for the current CUDA device, or ``None`` when the
+        device is not CUDA or the system utility is unavailable.
+
+    """
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return None
+    try:
+        output = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu",
+                "--format=csv,noheader,nounits",
+                "--id",
+                str(torch.cuda.current_device()),
+            ],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
+        return None
+    if not output:
+        return None
+    try:
+        return float(output.splitlines()[0].strip())
+    except ValueError:
+        return None
 
 
 @contextmanager

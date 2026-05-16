@@ -15,10 +15,7 @@ from torch_geometric.data import Data
 from torch_geometric.utils import coalesce, degree
 
 from ..utils.config import UCaGNNConfig
-from ..utils.interaction_indexing import (
-    compute_normalized_popularity,
-    compute_time_windowed_popularity,
-)
+from ..utils.interaction_indexing import compute_normalized_popularity
 from .canonical import CanonicalInteractions
 
 _FLOAT_CANONICAL_FIELDS = frozenset(
@@ -83,7 +80,6 @@ def _resolve_training_popularity(
     canonical: CanonicalInteractions,
     train_mask: np.ndarray,
     n_items: int,
-    popularity_window_seconds: int | None,
 ) -> torch.Tensor:
     """Compute train-only item popularity and return it as a float tensor.
 
@@ -91,23 +87,12 @@ def _resolve_training_popularity(
         canonical: Canonical dataset whose training rows define the popularity.
         train_mask: Boolean mask selecting the training interactions.
         n_items: Number of catalog items.
-        popularity_window_seconds: Optional trailing-window width in seconds.
-
     Returns:
         torch.Tensor: Float tensor of shape ``(n_items,)`` with train-only
         popularity values.
 
     """
-    popularity_array = (
-        compute_normalized_popularity(canonical.item_id[train_mask], n_items)
-        if popularity_window_seconds is None
-        else compute_time_windowed_popularity(
-            canonical.item_id[train_mask],
-            n_items,
-            canonical.timestamp[train_mask],
-            popularity_window_seconds,
-        )
-    )
+    popularity_array = compute_normalized_popularity(canonical.item_id[train_mask], n_items)
     return torch.from_numpy(popularity_array).float()
 
 
@@ -215,7 +200,6 @@ def build_graph(
         canonical,
         train_mask,
         n_items,
-        config.popularity_window_seconds,
     )
 
     labels = torch.from_numpy(canonical.label).float()
@@ -385,7 +369,9 @@ def _build_cagra(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Bipartite edges + CAGRA GPU-accelerated ANN graph.
 
-    Falls back to the train-interaction graph if CAGRA is unavailable or fails.
+    When ``config.graph_policy == "cagra_augmented"``, CAGRA build/search errors
+    are treated as hard failures so thesis runs never silently degrade to the
+    observed graph. Other callers keep the legacy warning-and-fallback behavior.
     CAGRA edges receive a neutral sign of 0.0.
     """
     bipartite_ei, bipartite_sign = _build_interaction_graph(
@@ -437,5 +423,12 @@ def _build_cagra(
             if isinstance(exc, ImportError)
             else f"CAGRA graph construction failed; using train-interaction graph: {exc}"
         )
+        if config.graph_policy == "cagra_augmented":
+            raise RuntimeError(
+                msg.replace(
+                    "using train-interaction graph",
+                    "graph_policy='cagra_augmented' requires a working CAGRA build",
+                ),
+            ) from exc
         warnings.warn(msg, RuntimeWarning, stacklevel=2)
         return bipartite_ei, bipartite_sign

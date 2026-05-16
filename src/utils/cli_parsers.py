@@ -36,46 +36,6 @@ DEFAULT_EVALUATE_SCORING_MODES = [
 _VALIDATION_CATEGORIES = ["recipes", "ablations", "observability", "evaluation"]
 
 
-def add_batch_size_probe_args(
-    container: argparse._ActionsContainer,
-    *,
-    auto_help: str,
-    fixed_help: str,
-    candidates_help: str,
-) -> None:
-    """Add the shared auto-batch-size override arguments.
-
-    Args:
-        container: Parser or argument group receiving the options.
-        auto_help: Help text for ``--auto-batch-size``.
-        fixed_help: Help text for ``--fixed-batch-size``.
-        candidates_help: Help text for ``--batch-size-candidates``.
-
-    Returns:
-        None.
-
-    """
-    container.add_argument(
-        "--auto-batch-size",
-        dest="auto_batch_size",
-        action="store_true",
-        help=auto_help,
-    )
-    container.add_argument(
-        "--fixed-batch-size",
-        dest="auto_batch_size",
-        action="store_false",
-        help=fixed_help,
-    )
-    container.add_argument(
-        "--batch-size-candidates",
-        type=int,
-        nargs="+",
-        default=None,
-        help=candidates_help,
-    )
-
-
 def normalize_benchmark_datasets_arg(raw: object) -> list[str]:
     """Normalize the benchmark ``datasets`` field to a list of selectors."""
     if isinstance(raw, (list, tuple)):
@@ -279,37 +239,6 @@ def add_execution_tracking_group(
     return group
 
 
-def add_sample_limit_args(
-    container: argparse._ActionsContainer,
-    *,
-    sample_help: str,
-    loader_help: str,
-) -> None:
-    """Add the shared sampled-run limit arguments.
-
-    Args:
-        container: Parser or argument group receiving the options.
-        sample_help: Help text for ``--sample-interactions``.
-        loader_help: Help text for ``--loader-max-rows``.
-
-    Returns:
-        None.
-
-    """
-    container.add_argument(
-        "--sample-interactions",
-        type=int,
-        default=None,
-        help=sample_help,
-    )
-    container.add_argument(
-        "--loader-max-rows",
-        type=int,
-        default=None,
-        help=loader_help,
-    )
-
-
 def build_quick_validate_parser() -> argparse.ArgumentParser:
     """Build the tiny validation CLI parser.
 
@@ -320,53 +249,14 @@ def build_quick_validate_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run unified tiny-scale validation across the full experiment surface",
     )
-    parser.add_argument(
-        "--datasets",
-        nargs="*",
-        default=list(BENCHMARK_DATASETS),
-        help="Datasets to validate",
-    )
-    parser.add_argument(
-        "--categories",
-        nargs="*",
-        choices=_VALIDATION_CATEGORIES,
-        default=_VALIDATION_CATEGORIES,
-        help="Validation categories to run",
-    )
-    parser.add_argument(
-        "--recipe-names",
-        nargs="*",
-        default=None,
-        help="Optional canonical recipe filter",
-    )
-    parser.add_argument(
-        "--ablation-variants",
-        nargs="*",
-        default=None,
-        help="Optional ablation-variant filter",
-    )
-    parser.add_argument("--data-dir", default="data", help="Data directory")
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=1,
-        help="Epochs for each tiny validation run",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=128,
-        help="Batch size for tiny validation runs",
-    )
-    parser.add_argument(
-        "--mlflow",
-        action="store_true",
-        help="Enable the optional MLflow observability probe",
-    )
-    parser.add_argument(
-        "--fail-fast",
-        action="store_true",
-        help="Stop after the first failure",
+    parser.set_defaults(
+        datasets=list(BENCHMARK_DATASETS),
+        categories=list(_VALIDATION_CATEGORIES),
+        recipe_names=None,
+        ablation_variants=None,
+        data_dir="data",
+        mlflow=False,
+        fail_fast=False,
     )
     return parser
 
@@ -436,25 +326,6 @@ def build_query_results_parser() -> argparse.ArgumentParser:
             "NDCG@20."
         ),
     )
-    parser.add_argument(
-        "--batch-id",
-        default=None,
-        help="Filter experiment list to one batch id",
-    )
-    parser.add_argument(
-        "--status",
-        choices=["running", "completed", "oom", "failed", "unknown"],
-        help="Filter experiment list by status",
-    )
-    parser.add_argument("--exp", type=int, help="Show experiment details")
-    parser.add_argument("--metrics", type=int, help="Show metrics for experiment")
-    parser.add_argument("--profiling", type=int, help="Show profiling for experiment")
-    parser.add_argument("--alpha", type=int, help="Show alpha drift for experiment")
-    parser.add_argument(
-        "--bottleneck",
-        type=int,
-        help="Show bottleneck analysis for experiment",
-    )
     return parser
 
 
@@ -521,10 +392,8 @@ __all__ = [
     "PRESET_CHOICES",
     "SCORING_WEIGHT_MODE_CHOICES",
     "add_batch_execution_args",
-    "add_batch_size_probe_args",
     "add_device_and_data_dir_args",
     "add_mlflow_destination_args",
-    "add_sample_limit_args",
     "build_data_information_parser",
     "build_evaluate_scoring_modes_parser",
     "build_explore_all_datasets_parser",

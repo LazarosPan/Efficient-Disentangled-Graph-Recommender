@@ -3,7 +3,7 @@
     {
       "id": "dev-ucagnn",
       "aliases": ["default", "latest"],
-      "description": "Development-focused formal profile: ucagnn with learned fused scoring, explicit 1/2 branch depth, and the default CAGRA graph across all thesis datasets.",
+      "description": "Development-focused formal profile: ucagnn with learned fused scoring, explicit 1/2 branch depth, and the default observed train-interaction graph across all thesis datasets.",
       "matrix": {
         "datasets": "all",
         "presets": ["ucagnn"],
@@ -13,16 +13,14 @@
         "epochs": 60,
         "use_early_stopping": false,
         "lr": 0.001,
-        "auto_batch_size": true,
         "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
         "interest_gnn_layers": 1,
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
+        "graph_policy": "observed",
         "num_neighbors": [10, 5],
-        "hard_negative_ratio": 0.0,
         "auxiliary_losses_start_epoch": 15,
-        "popularity_supervision_start_epoch": 30,
-        "loss_schedule": "baseline"
+        "popularity_supervision_start_epoch": 30
       }
     },
     {
@@ -38,17 +36,15 @@
         "use_early_stopping": true,
         "patience": 10,
         "lr": 0.01,
-        "auto_batch_size": true,
         "batch_size_candidates": [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
         "single_branch_gnn_layers": 2,
         "interest_gnn_layers": 1,
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
-        "num_neighbors_options": [[8, 4]],
-        "hard_negative_ratio": 0.0,
+        "graph_policy": "observed",
+        "num_neighbors": [8, 4],
         "auxiliary_losses_start_epoch": 15,
-        "popularity_supervision_start_epoch": 30,
-        "loss_schedule": "baseline"
+        "popularity_supervision_start_epoch": 30
       }
     },
     {
@@ -64,17 +60,15 @@
         "use_early_stopping": true,
         "patience": 10,
         "lr": 0.01,
-        "auto_batch_size": true,
         "batch_size_candidates": [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
         "single_branch_gnn_layers": 2,
         "interest_gnn_layers": 2,
         "conformity_gnn_layers": 3,
         "dropout": 0.1,
-        "num_neighbors_options": [[10, 5, 3], [5, 3, 2]],
-        "hard_negative_ratio": 0.0,
+        "graph_policy": "observed",
+        "num_neighbors": [[10, 5, 3], [5, 3, 2]],
         "auxiliary_losses_start_epoch": 15,
-        "popularity_supervision_start_epoch": 30,
-        "loss_schedule": "baseline"
+        "popularity_supervision_start_epoch": 30
       }
     },
     {
@@ -91,17 +85,15 @@
         "patience": 10,
         "lr": 0.01,
         "lr_scheduler": "all",
-        "auto_batch_size": true,
         "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
         "single_branch_gnn_layers": 2,
         "interest_gnn_layers": 1,
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
-        "num_neighbors_options": [[10, 5]],
-        "hard_negative_ratio": 0.0,
+        "graph_policy": "observed",
+        "num_neighbors": [10, 5],
         "auxiliary_losses_start_epoch": 15,
-        "popularity_supervision_start_epoch": 30,
-        "loss_schedule": "baseline"
+        "popularity_supervision_start_epoch": 30
       }
     },
     {
@@ -118,16 +110,89 @@
         "patience": 10,
         "lr": 0.01,
         "lr_scheduler": "cosine",
-        "auto_batch_size": true,
         "batch_size_candidates": [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
         "interest_gnn_layers": 1,
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
+        "graph_policy": "observed",
         "num_neighbors": [20, 10],
-        "hard_negative_ratio": 0.0,
         "auxiliary_losses_start_epoch": 30,
-        "popularity_supervision_start_epoch": 60,
-        "loss_schedule": "baseline"
+        "popularity_supervision_start_epoch": 60
+      }
+    },
+    {
+      "id": "taobao-preprocessing-sweep",
+      "description": "Taobao preprocessing comparison under one strong UCaGNN mainline so the default preset can be chosen once and then left fixed.",
+      "matrix": {
+        "datasets": ["taobao"],
+        "presets": ["ucagnn"],
+        "scoring_weight_modes": ["learned"]
+      },
+      "config_overrides": {
+        "epochs": 120,
+        "use_early_stopping": true,
+        "patience": 10,
+        "lr": 0.01,
+        "lr_scheduler": "cosine",
+        "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
+        "interest_gnn_layers": 1,
+        "conformity_gnn_layers": 2,
+        "dropout": 0.1,
+        "graph_policy": "observed",
+        "num_neighbors": [20, 10],
+        "preprocessing_preset": ["taobao_multibehavior", "taobao_multibehavior_raw"],
+        "auxiliary_losses_start_epoch": 30,
+        "popularity_supervision_start_epoch": 60
+      }
+    },
+    {
+      "id": "kuairec-v2-preprocessing-sweep",
+      "description": "KuaiRec_v2 preprocessing comparison across the available causal-ready views so one repository default can be selected and then kept stable.",
+      "matrix": {
+        "datasets": ["kuairec_v2"],
+        "presets": ["ucagnn"],
+        "scoring_weight_modes": ["learned"]
+      },
+      "config_overrides": {
+        "epochs": 120,
+        "use_early_stopping": true,
+        "patience": 10,
+        "lr": 0.01,
+        "lr_scheduler": "cosine",
+        "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
+        "interest_gnn_layers": 1,
+        "conformity_gnn_layers": 2,
+        "dropout": 0.1,
+        "graph_policy": "observed",
+        "num_neighbors": [20, 10],
+        "preprocessing_preset": ["kuairec_fullobs", "kuairec_watchratio", "kuairec_watchratio_raw"],
+        "auxiliary_losses_start_epoch": 30,
+        "popularity_supervision_start_epoch": 60
+      }
+    },
+    {
+      "id": "kuairand1k-preprocessing-sweep",
+      "description": "KuaiRand-1K preprocessing comparison between the causal-default and randomized-only evaluation views under the same UCaGNN mainline.",
+      "matrix": {
+        "datasets": ["kuairand1k"],
+        "presets": ["ucagnn"],
+        "scoring_weight_modes": ["learned"]
+      },
+      "config_overrides": {
+        "epochs": 120,
+        "use_early_stopping": true,
+        "patience": 10,
+        "lr": 0.01,
+        "lr_scheduler": "cosine",
+        "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
+        "interest_gnn_layers": 1,
+        "conformity_gnn_layers": 2,
+        "dropout": 0.1,
+        "graph_policy": "observed",
+        "num_neighbors": [20, 10],
+        "preprocessing_preset": ["kuairand_causal", "kuairand_random_only"],
+        "auxiliary_losses_start_epoch": 30,
+        "popularity_supervision_start_epoch": 60
       }
     },
     {
@@ -144,16 +209,15 @@
         "patience": 20,
         "lr": 0.001,
         "lr_scheduler": "cosine",
-        "auto_batch_size": true,
         "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
         "interest_gnn_layers": 1,
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
+        "graph_policy": "observed",
         "num_neighbors": [20, 10],
         "hard_negative_ratio": 0.1,
         "auxiliary_losses_start_epoch": 15,
-        "popularity_supervision_start_epoch": 30,
-        "loss_schedule": "baseline"
+        "popularity_supervision_start_epoch": 30
       }
     },
     {
@@ -170,44 +234,15 @@
         "patience": 20,
         "lr": 0.001,
         "lr_scheduler": "cosine",
-        "auto_batch_size": true,
         "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
         "interest_gnn_layers": 1,
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
+        "graph_policy": "observed",
         "num_neighbors": [20, 10],
         "hard_negative_ratio": 0.25,
         "auxiliary_losses_start_epoch": 15,
-        "popularity_supervision_start_epoch": 30,
-        "loss_schedule": "baseline"
-      }
-    },
-    {
-      "id": "kuairec-v2-ucagnn-popwin-7d",
-      "description": "KuaiRec v2 follow-up: keep the fully observed small-matrix preset and test a 7-day train-only popularity window under the learned UCaGNN score mix.",
-      "matrix": {
-        "datasets": ["kuairec_v2"],
-        "presets": ["ucagnn"],
-        "scoring_weight_modes": ["learned"]
-      },
-      "config_overrides": {
-        "epochs": 300,
-        "use_early_stopping": true,
-        "patience": 20,
-        "lr": 0.001,
-        "lr_scheduler": "cosine",
-        "auto_batch_size": true,
-        "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
-        "interest_gnn_layers": 1,
-        "conformity_gnn_layers": 2,
-        "dropout": 0.1,
-        "num_neighbors": [20, 10],
-        "preprocessing_preset": "kuairec_fullobs",
-        "popularity_window_seconds": 604800,
-        "hard_negative_ratio": 0.0,
-        "auxiliary_losses_start_epoch": 15,
-        "popularity_supervision_start_epoch": 30,
-        "loss_schedule": "baseline"
+        "popularity_supervision_start_epoch": 30
       }
     },
     {
@@ -224,32 +259,30 @@
         "patience": 20,
         "lr": 0.001,
         "lr_scheduler": "cosine",
-        "auto_batch_size": true,
         "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
         "single_branch_gnn_layers": 2,
         "interest_gnn_layers": 1,
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
+        "graph_policy": "observed",
         "num_neighbors": [20, 10],
         "preprocessing_preset": "kuairand_random_only",
-        "hard_negative_ratio": 0.0,
         "auxiliary_losses_start_epoch": 15,
-        "popularity_supervision_start_epoch": 30,
-        "loss_schedule": "baseline"
+        "popularity_supervision_start_epoch": 30
       }
     }
   ],
   "recipes": {
     "ucagnn": {
-      "description": "UCaGNN with mini-batch training on the default CAGRA graph.",
+      "description": "UCaGNN with mini-batch training on the default observed train-interaction graph.",
       "preset": "ucagnn"
     },
     "lightgcn": {
-      "description": "LightGCN baseline with mini-batch training on the default CAGRA graph.",
+      "description": "LightGCN baseline with mini-batch training on the default observed train-interaction graph.",
       "preset": "lightgcn"
     },
     "dice_like": {
-      "description": "DICE-like preset with mini-batch training on the default CAGRA graph.",
+      "description": "DICE-like preset with mini-batch training on the default observed train-interaction graph.",
       "preset": "dice_like"
     }
   }

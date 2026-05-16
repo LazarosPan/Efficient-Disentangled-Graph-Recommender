@@ -421,6 +421,14 @@ class ExperimentLogger:
                     WHEN p.stage = 'forward'
                     THEN p.duration_ms / NULLIF(p.stage_call_count, 0)
                 END) AS avg_forward_ms,
+                AVG(CASE
+                    WHEN m.metric_name = 'gpu_utilization_pct' AND m.split = 'train'
+                    THEN m.metric_value
+                END) AS avg_gpu_utilization_pct,
+                MAX(CASE
+                    WHEN m.metric_name = 'gpu_utilization_pct' AND m.split = 'train'
+                    THEN m.metric_value
+                END) AS max_gpu_utilization_pct,
                 COALESCE(
                     MAX(p.vram_peak_mb),
                     MAX(CASE WHEN m.metric_name = 'peak_vram_mb' THEN m.metric_value END)

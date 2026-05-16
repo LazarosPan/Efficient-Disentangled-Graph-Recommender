@@ -7,13 +7,7 @@ Usage:
     python scripts/query_results.py --view completed   # Show only completed runs
     python scripts/query_results.py --view attention   # Show failed, OOM, running, or unknown runs
     python scripts/query_results.py --view errors      # Show only failed and OOM runs
-    python scripts/query_results.py --batch-id foo    # Show one batch only
-    python scripts/query_results.py --status oom      # Show only OOM rows
-    python scripts/query_results.py --exp 1            # Show experiment 1 details
-    python scripts/query_results.py --metrics 1        # Show metrics for experiment 1
-    python scripts/query_results.py --profiling 1      # Show profiling for experiment 1
-    python scripts/query_results.py --alpha 1          # Show alpha drift for experiment 1
-    python scripts/query_results.py --bottleneck 1     # Show bottleneck breakdown for experiment 1
+    python scripts/query_results.py --view comparison  # Show summary comparison tables
 """
 
 from __future__ import annotations
@@ -183,8 +177,6 @@ def _build_canonical_name_from_config(
     derived_split_mode = str(config.get("derived_split_mode", "per_user_temporal"))
     if derived_split_mode != "per_user_temporal":
         parts.append(f"split{derived_split_mode}")
-    if config.get("popularity_window_seconds") is not None:
-        parts.append(f"popwin{int(config['popularity_window_seconds'])}")
     if config.get("use_features"):
         parts.append("feat")
     if config.get("feature_policy") not in (None, "thesis_default"):
@@ -240,6 +232,7 @@ def _query_report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         """
         SELECT s.id, s.dataset, s.preset, s.updated_at,
                s.training_time_s, s.completed_train_epochs, s.peak_vram_mb,
+               s.avg_gpu_utilization_pct,
                s.test_ndcg_20, s.test_ndcg_40,
                s.test_recall_20, s.test_recall_40,
                s.test_hit_ratio_20, s.test_hit_ratio_40,
@@ -335,6 +328,7 @@ def _print_result_row_experiment(
     training_time_s: float | None = None,
     completed_train_epochs: float | None = None,
     peak_vram_mb: float | None = None,
+    avg_gpu_utilization_pct: float | None = None,
 ) -> None:
     """Print the full profile, resource, and experiment labels under a metric row."""
     if profile_name:
@@ -342,7 +336,14 @@ def _print_result_row_experiment(
     training_time = f"{training_time_s:.1f}s" if training_time_s is not None else "-"
     epochs = str(int(completed_train_epochs)) if completed_train_epochs is not None else "-"
     peak_vram = f"{peak_vram_mb:.0f}MB" if peak_vram_mb is not None else "-"
-    print(f"  Resources:  time={training_time} | epochs={epochs} | peak_vram={peak_vram}")
+    gpu_utilization = (
+        f"{avg_gpu_utilization_pct:.0f}%" if avg_gpu_utilization_pct is not None else "-"
+    )
+    print(
+        "  Resources:  "
+        f"time={training_time} | epochs={epochs} | peak_vram={peak_vram} | "
+        f"gpu_util={gpu_utilization}",
+    )
     print(f"  Experiment: {canonical_name}")
 
 
@@ -396,6 +397,7 @@ def _print_formal_rows(rows: list[sqlite3.Row]) -> None:
             training_time_s=row["training_time_s"],
             completed_train_epochs=row["completed_train_epochs"],
             peak_vram_mb=row["peak_vram_mb"],
+            avg_gpu_utilization_pct=row["avg_gpu_utilization_pct"],
         )
     print()
 
@@ -450,6 +452,7 @@ def _print_ablation_rows(rows: list[sqlite3.Row]) -> None:
             training_time_s=row["training_time_s"],
             completed_train_epochs=row["completed_train_epochs"],
             peak_vram_mb=row["peak_vram_mb"],
+            avg_gpu_utilization_pct=row["avg_gpu_utilization_pct"],
         )
     print()
 
@@ -715,25 +718,14 @@ def main() -> int:
 
     conn = connect()
     try:
-        if args.exp is not None:
-            show_experiment(conn, args.exp)
-        elif args.metrics is not None:
-            show_metrics(conn, args.metrics)
-        elif args.profiling is not None:
-            show_profiling(conn, args.profiling)
-        elif args.alpha is not None:
-            show_alpha_drift(conn, args.alpha)
-        elif args.bottleneck is not None:
-            show_bottleneck(conn, args.bottleneck)
-        elif args.view is None and args.batch_id is None and args.status is None:
+        if args.view is None:
             report_text = _render_default_summary(conn)
+            print(report_text)
             _write_default_summary_markdown(report_text)
             print(f"Wrote default results summary to {QUERY_RESULTS_MARKDOWN_PATH.resolve()}")
         else:
             list_experiments(
                 conn,
-                batch_id=args.batch_id,
-                status=args.status,
                 view_name=args.view or "all",
             )
     finally:

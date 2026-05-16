@@ -25,7 +25,7 @@ from tqdm.auto import tqdm
 from ..data.subgraph_sampler import SubgraphBatch, SubgraphSampler
 from ..losses.loss_suite import LossSuite
 from ..models.ucagnn import UCaGNN
-from ..profiling.gpu_profiler import GPUProfiler, profile_stage
+from ..profiling.gpu_profiler import GPUProfiler
 from ..utils.config import UCaGNNConfig
 from ..utils.reproducibility import build_torch_generator
 from ..utils.trainer_runtime import (
@@ -207,17 +207,14 @@ class MiniBatchTrainer(TrainerRuntime):
             sub_batch = sub_batch.to(self.device, non_blocking=True)
 
         with autocast_context(use_amp=self.use_amp, amp_dtype=self.amp_dtype):
-            with profile_stage("forward", self.profiler):
-                output = self.model.forward_subgraph(sub_batch)
-
-            with profile_stage("loss", self.profiler):
-                local_popularity = popularity[sub_batch.item_global_ids]
-                losses = self.loss_suite(
-                    output,
-                    local_popularity,
-                    sub_batch.batch_pos_local,
-                    epoch,
-                )
+            output = self.model.forward_subgraph(sub_batch)
+            local_popularity = popularity[sub_batch.item_global_ids]
+            losses = self.loss_suite(
+                output,
+                local_popularity,
+                sub_batch.batch_pos_local,
+                epoch,
+            )
 
         return losses["total"].detach(), losses
 
@@ -253,8 +250,7 @@ class MiniBatchTrainer(TrainerRuntime):
                 progress_bar.update(1)
                 progress_bar.set_postfix(skipped=n_skipped + 1)
             return None
-        with profile_stage("backward", self.profiler):
-            self._apply_optimization_step(losses["total"])
+        self._apply_optimization_step(losses["total"])
         if progress_bar is not None:
             progress_bar.update(1)
             if batch_idx + 1 == n_batches or batch_idx % self.config.progress_bar_loss_cadence == 0:
@@ -357,7 +353,7 @@ class MiniBatchTrainer(TrainerRuntime):
 
         for epoch in range(start_epoch, self.config.epochs):
             self._ensure_subgraph_sampler()
-            should_profile = self._set_epoch_profiling(epoch)
+            self._reset_epoch_vram_stats()
 
             epoch_start = time.perf_counter()
             perm = torch.randperm(
@@ -439,8 +435,7 @@ class MiniBatchTrainer(TrainerRuntime):
             history["train_loss"].append(avg_loss)
             released_cuda_sampler = self._release_cuda_sampler_for_eval()
             try:
-                with profile_stage("eval", self.profiler):
-                    val_metrics = self._evaluate_validation_metrics()
+                val_metrics = self._evaluate_validation_metrics()
             finally:
                 if released_cuda_sampler:
                     self._ensure_subgraph_sampler()
@@ -456,14 +451,11 @@ class MiniBatchTrainer(TrainerRuntime):
                 primary_metric,
                 skipped_batches=skipped_batches,
             )
-            if should_profile and self.profiler and self.profiler.stages:
-                logger.info(self.profiler.summary())
             self._log_epoch_to_sqlite(
                 epoch,
                 avg_loss,
                 epoch_time_s,
                 val_metrics,
-                should_profile,
             )
             self.completed_epoch = epoch
             self.resume_history = history

@@ -39,9 +39,9 @@ class ScoringModule(nn.Module):
         if config.scoring_weight_mode == "learned" and config.use_dual_branch:
             initial_weights = torch.tensor(
                 [
-                    config.alpha_interest,
-                    config.beta_conformity,
-                    config.gamma_popularity,
+                    config.score_weight_interest,
+                    config.score_weight_conformity,
+                    config.score_weight_popularity,
                 ],
                 dtype=torch.bfloat16,
             )
@@ -59,7 +59,7 @@ class ScoringModule(nn.Module):
 
         popularity_input_dim = config.embed_dim + 2
         if config.use_popularity_emb:
-            popularity_input_dim += config.pop_embed_dim
+            popularity_input_dim += config.popularity_embedding_dimensions
         self.popularity_head = (
             nn.Sequential(
                 nn.Linear(popularity_input_dim, config.embed_dim),
@@ -75,9 +75,9 @@ class ScoringModule(nn.Module):
             "_fixed_weights",
             torch.tensor(
                 [
-                    config.alpha_interest,
-                    config.beta_conformity,
-                    config.gamma_popularity,
+                    config.score_weight_interest,
+                    config.score_weight_conformity,
+                    config.score_weight_popularity,
                 ],
                 dtype=torch.bfloat16,
             ),
@@ -193,7 +193,7 @@ class ScoringModule(nn.Module):
             features.append(
                 torch.zeros(
                     item_anchor.size(0),
-                    self.config.pop_embed_dim,
+                    self.config.popularity_embedding_dimensions,
                     device=item_anchor.device,
                     dtype=item_anchor.dtype,
                 ),
