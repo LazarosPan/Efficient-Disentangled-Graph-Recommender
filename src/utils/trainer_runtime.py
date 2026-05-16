@@ -23,7 +23,7 @@ from torch.optim.lr_scheduler import (
 from ..data.negative_sampler import NegativeSampler
 from ..losses.loss_suite import LossSuite
 from ..models.ucagnn import UCaGNN
-from ..profiling.gpu_profiler import GPUProfiler
+from ..profiling.gpu_profiler import GPUProfiler, sample_gpu_utilization_percent
 from .config import UCaGNNConfig
 from .reproducibility import configure_torch_runtime
 
@@ -437,13 +437,16 @@ class TrainerRuntime:
         skipped_batches: int = 0,
     ) -> None:
         """Emit the per-epoch training summary."""
+        peak_vram_mb = GPUProfiler.peak_vram_mb()
+        vram_str = f" | VRAM: {peak_vram_mb:.0f} MB" if peak_vram_mb is not None else ""
         logger.info(
-            "Epoch %3d/%d | Loss: %.4f | %s: %.4f",
+            "Epoch %3d/%d | Loss: %.4f | %s: %.4f%s",
             epoch + 1,
             self.config.epochs,
             avg_loss,
             primary_metric,
             current_ndcg,
+            vram_str,
         )
         if skipped_batches > 0:
             logger.warning(
@@ -452,16 +455,10 @@ class TrainerRuntime:
                 skipped_batches,
             )
 
-    def _set_epoch_profiling(self, epoch: int) -> bool:
-        """Enable or disable profiling for the current epoch based on config."""
-        should_profile = (
-            self.profiler is not None
-            and self.config.enable_profiling
-            and (epoch + 1) % self.config.profiling_cadence == 0
-        )
-        if self.profiler:
-            self.profiler.reset(should_profile)
-        return should_profile
+    def _reset_epoch_vram_stats(self) -> None:
+        """Reset CUDA peak memory stats at epoch start for per-epoch VRAM tracking."""
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
 
     def _step_scheduler(self, metric_value: float, epoch: int) -> None:
         """Step the LR scheduler after the curriculum warmup has completed."""
@@ -493,9 +490,10 @@ class TrainerRuntime:
         avg_loss: float,
         epoch_time_s: float,
         val_metrics: dict[str, float],
-        should_profile: bool,
     ) -> None:
-        """Persist epoch metrics and profiling output through the experiment logger."""
+        """Persist epoch metrics, GPU utilization, and peak VRAM through the experiment logger."""
+        gpu_utilization_pct = sample_gpu_utilization_percent(self.device)
+        peak_vram_mb = GPUProfiler.peak_vram_mb()
         if self.experiment_logger and self.exp_id is not None:
             self.experiment_logger.log_epoch(
                 self.exp_id,
@@ -503,14 +501,34 @@ class TrainerRuntime:
                 avg_loss,
                 epoch_time_s,
                 val_metrics,
-                self.profiler.stages if should_profile and self.profiler else [],
+                [],
                 self.model,
             )
+            if gpu_utilization_pct is not None:
+                self.experiment_logger.log_metric(
+                    self.exp_id,
+                    "gpu_utilization_pct",
+                    gpu_utilization_pct,
+                    epoch=epoch,
+                    split="train",
+                )
+            if peak_vram_mb is not None:
+                self.experiment_logger.log_metric(
+                    self.exp_id,
+                    "peak_vram_mb",
+                    peak_vram_mb,
+                    epoch=epoch,
+                    split="train",
+                )
         if self.mlflow_module is not None:
             mlflow_metrics = {
                 f"val_{m}".replace("@", "_at_"): float(v) for m, v in val_metrics.items()
             }
             mlflow_metrics["train_loss"] = avg_loss
+            if gpu_utilization_pct is not None:
+                mlflow_metrics["gpu_utilization_pct"] = gpu_utilization_pct
+            if peak_vram_mb is not None:
+                mlflow_metrics["peak_vram_mb"] = peak_vram_mb
             self.mlflow_module.log_metrics(mlflow_metrics, step=epoch)
 
     def _update_early_stopping(
