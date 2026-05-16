@@ -11,20 +11,21 @@ Use this skill when working on loss functions, multi-task learning, curriculum s
 - `LossSuite` is the only public loss-layer surface.
 - The individual loss implementations now live as private helpers inside `src/losses/loss_suite.py`; keep them there unless an external caller with a real separate lifecycle appears.
 - The current mainline uses a batch-safe DCCL-style contrastive auxiliary with `auxiliary_loss_schedule="linear_ramp"`; keep DirectAU alignment/uniformity available as optional ablations rather than the default path.
-- The base dataclass keeps `lambda_align=lambda_uniform=0.02`, but `preset_full()` overrides both to `0.0`; DirectAU is currently present as an optional diagnostic path, not part of the mainline preset.
+- The base dataclass keeps `loss_weight_align=loss_weight_uniform=0.02`, but `preset_full()` overrides both to `0.0`; DirectAU is currently present as an optional diagnostic path, not part of the mainline preset.
 - Keep popularity supervision attached to the scorer-owned popularity head rather than reintroducing a separate predictor inside the loss suite.
 - `LossSuite` receives scores from `UCaGNN.build_training_output()`, which now respects `config.train_scoring_mode`; keep the ranking loss semantics aligned with that model-owned scoring contract.
 - Keep the public ablation matrix focused on headline U-CaGNN components: `mainline`, `fixed_score_mix`, `no_popularity_head`, `no_ipw`, `no_contrastive`, `no_independence`, and `no_features`. Treat curriculum or DirectAU geometry toggles as local diagnostics, not thesis headline ablations.
 
 ## Loss Formula
 ```
-L_total = lambda_rec * L_rec
-        + lambda_interest_bpr * L_interest_bpr
-        + lambda_conformity_bpr * L_conformity_bpr
-        + lambda_independence * L_independence
-        + lambda_contrastive * L_contrastive
-        + lambda_align * L_align
-        + lambda_uniform * L_uniform + lambda_pop * L_pop
+L_total = loss_weight_recommendation * L_rec
+        + loss_weight_interest_bpr * L_interest_bpr
+        + loss_weight_conformity_bpr * L_conformity_bpr
+        + loss_weight_independence * L_independence
+        + loss_weight_contrastive * L_contrastive
+        + loss_weight_align * L_align
+        + loss_weight_uniform * L_uniform
+        + loss_weight_popularity * L_pop
 ```
 
 ## Paper Sources

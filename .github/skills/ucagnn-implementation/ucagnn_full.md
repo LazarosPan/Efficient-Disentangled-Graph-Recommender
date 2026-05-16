@@ -56,9 +56,9 @@ Implementation preference: extend existing entry points and collapse duplication
 
 Depth ownership is now explicit in `UCaGNNConfig`: `single_branch_gnn_layers` controls the LightGCN / non-dual-branch path, while `interest_gnn_layers` and `conformity_gnn_layers` control the dual-branch U-CaGNN path. `max_gnn_layers` remains the derived sampler-facing depth used to validate `num_neighbors`, and the base dual-branch default is now the matching two-hop fan-out `[10, 5]`.
 
-Current data defaults are no longer purely incidental: derived splits default to `per_user_temporal`, loaders may record a `preprocessing_preset`, and graph-time popularity can optionally be restricted with `popularity_window_seconds` while remaining train-split-only. Mechanical loader downcasting now also has one shared bulk helper in `src/utils/dataset_loader_utils.py`, so repeated array extraction can reuse the same narrowing policy without duplicating one-call-per-column boilerplate. The graph-boundary tensor conversion in `src/data/graph_builder.py` also guards against read-only NumPy payloads by copying only when needed before `torch.from_numpy(...)`, which keeps Polars-backed canonical arrays from emitting non-writable-tensor warnings during validation runs.
+Current data defaults are no longer purely incidental: derived splits default to `per_user_temporal`, loaders may record a `preprocessing_preset`, and train-split popularity is always derived from the observed training interactions. Mechanical loader downcasting now also has one shared bulk helper in `src/utils/dataset_loader_utils.py`, so repeated array extraction can reuse the same narrowing policy without duplicating one-call-per-column boilerplate. The graph-boundary tensor conversion in `src/data/graph_builder.py` also guards against read-only NumPy payloads by copying only when needed before `torch.from_numpy(...)`, which keeps Polars-backed canonical arrays from emitting non-writable-tensor warnings during validation runs.
 
-The graph builder supports optional ANN augmentation on top of the train-interaction graph. When node embeddings are supplied to `build_graph(...)`, the CAGRA path mirrors ANN edges to keep the graph undirected, converts embeddings through CuPy/CUDA-array inputs, threads `config.seed` into `SearchParams.rand_xor_mask`, and falls back to the train-interaction graph when import, build, or search fails.
+The graph builder now exposes the thesis-facing graph contract explicitly through `config.graph_policy`: `"observed"` keeps the train-interaction graph as the default, while `"cagra_augmented"` first builds the observed graph, bootstraps node embeddings from Module A, and then rebuilds the graph with CAGRA. In other words, the current CAGRA path is **observed graph plus ANN augmentation**, not a replacement for the train-interaction edges. When item features are present, the bootstrap embeddings are feature-aware; when they are absent, the current runtime intentionally raises instead of building ANN edges from untrained ID-only embeddings before training starts. The CAGRA path mirrors ANN edges to keep the graph undirected, converts embeddings through CuPy/CUDA-array inputs, threads `config.seed` into `SearchParams.rand_xor_mask`, and treats ANN failures as hard errors when the augmentation policy is selected. Runtime model assembly now also reuses `data.train_mask` from the already-built graph when deriving item recency instead of recomputing canonical split masks again.
 
 ---
 
@@ -91,7 +91,7 @@ src/
     config.py                UCaGNNConfig dataclass (all hyperparameters + presets)
     cli_parsers.py           Shared argparse constants plus parser/helper builders for experiments, scripts, and data-exploration entry points
     csv_features.py          Shared mixed-type CSV side-feature loader plus feature-block stacking helpers
-    interaction_indexing.py  Shared contiguous ID remapping plus max-normalized or time-windowed popularity helpers
+    interaction_indexing.py  Shared contiguous ID remapping plus max-normalized popularity helpers
 
   data/
     __init__.py              Exports CanonicalInteractions, build_graph, NegativeSampler, SubgraphSampler, SubgraphBatch
@@ -128,8 +128,8 @@ src/
     evaluator.py             Evaluator: batched Recall@K + NDCG@K via PyG metrics with device-side graph caching
 
   profiling/
-    __init__.py              Exports GPUProfiler, profile_stage
-    gpu_profiler.py          Stage-level timing + VRAM tracking + PyG model/data summaries
+    __init__.py              Exports GPUProfiler
+    gpu_profiler.py          Peak VRAM tracking + PyG model/data summaries
 
   data_exploration/
     data_exploration.py      Dataset analysis utilities (not part of training pipeline)
@@ -157,7 +157,7 @@ The formal experiment matrix is defined along two semantic axes. Profile-owned `
 
 1. `dataset`
 2. `preset`
-Support parameters such as `batch_size`, `epochs`, and `num_neighbors` are not formal matrix axes. They remain config-level values that should be checked through `quick-validate` before long runs begin. Formal profiles may still sweep several support-parameter fan-out shapes through a JSON-safe `num_neighbors_options` field (for example `[[10, 5], [5, 3]]`); the benchmark runner expands those into separate resolved runs while each run still keeps one concrete `config.num_neighbors` vector.
+Support parameters such as `batch_size`, `epochs`, and `num_neighbors` are not formal matrix axes. They remain config-level values that should be checked through `quick-validate` before long runs begin. Formal profiles may still sweep several support-parameter fan-out shapes through `num_neighbors` itself by setting either one vector like `[10, 5]` or a list like `[[10, 5], [5, 3]]`; the benchmark runner expands those into separate resolved runs while each run still keeps one concrete `config.num_neighbors` vector.
 
 Use the orchestration layer as follows:
 
@@ -165,16 +165,16 @@ Use the orchestration layer as follows:
 uv run formal-run
 uv run quick-validate
 uv run experiment --list-recipes
-uv run ablation --datasets amazonbook kuairec_v2 movielens1m --dry-run
+uv run ablation --datasets amazonbook kuairec_v2 movielens1m
 ```
 
-`formal-run` is the default thesis entry point. `quick-validate` is the default tiny-scale validation entry point. It exercises the canonical recipe matrix, ablation variants, and representative observability/evaluation probes so implementation changes are checked against the same mini-batch runtime path used in formal runs. MLflow stays off by default there; pass `--mlflow` only when you explicitly want the MLflow probe. Repository pytest collection is scoped to `tests/` so vendored reference code under `external/` does not interfere with the main validation workflow.
+`formal-run` is the default thesis entry point. It exposes only `--profile`, `--list-profiles`, and `--overwrite-checkpoint`, while its saved-state handling stays internal and resumes automatically only when the persisted semantic plan still matches the current catalog/profile definition. `quick-validate` is the default tiny-scale validation entry point. It exercises the canonical recipe matrix, ablation variants, and representative observability/evaluation probes so implementation changes are checked against the same mini-batch runtime path used in formal runs. Repository pytest collection is scoped to `tests/` so vendored reference code under `external/` does not interfere with the main validation workflow.
 
-The orchestration layer now treats `build_config()` as the single config-assembly contract for both CLI namespaces and script-built mapping inputs. Benchmark and quick-validation code should pass plain dictionaries into `build_config()` instead of manufacturing intermediate `argparse.Namespace` adapters, the formal-run resume path should keep `benchmark_args` in that normalized dict form instead of rebuilding internal Namespace transport objects, and `build_config()` itself should normalize namespace-like inputs once at the boundary instead of stacking generic field-access wrapper helpers on top of both dict and Namespace callers. The benchmark/formal-run path now shares that contract explicitly: config-bearing benchmark payload fields are normalized once through `normalize_benchmark_config_overrides(...)`, each concrete matrix item rebuilds its run-local config input dict through `build_benchmark_config_inputs(...)`, quick validation now reuses the same runtime config-input assembly via `build_runtime_config_inputs(...)` before handing the mapping back to `build_config()`, both config-input builders share one internal present-field helper so runtime and benchmark wiring stay aligned, and benchmark-only exclusions such as `num_neighbors_options` remain explicit in one place. The normalized benchmark payload now also carries follow-up experiment knobs such as `use_features`, `feature_policy`, `preprocessing_preset`, `derived_split_mode`, and `popularity_window_seconds`, so targeted catalog profiles can express diagnostic runs without new wrappers. Downstream helpers such as `build_benchmark_plan()` and `run_benchmark()` should consume an already-normalized formal-run payload directly instead of renormalizing it. Presets now apply before explicit CLI/profile overrides, so changing branch depths or fan-out really changes the resolved runtime config and checkpoint identity rather than silently snapping back to preset defaults. When a formal profile carries a deeper `num_neighbors` bundle than a shallower preset needs, the benchmark runner now trims that vector to the preset's active depth instead of failing config validation for baselines such as LightGCN. Saved formal-run state is intentionally strict: unexpected saved fields or removed graph methods should force a fresh formal run instead of reviving compatibility shims. Formal profile alias normalization and catalog lookup belong in `experiments/recipes.py`, with the current implementation resolving formal profiles in one cached normalization pass rather than layering separate helper wrappers for each normalization step. Canonical recipe filtering also lives there now, so `quick_validate.py` reuses `recipe_names(include_aliases=False)` instead of reading the catalog directly. Semantic plan matching in `experiments/run_benchmark.py` should be derived from the normalized `benchmark_args` payload with runtime-only overrides excluded.
+The orchestration layer now treats `build_config()` as the single config-assembly contract for both CLI namespaces and script-built mapping inputs. Benchmark and quick-validation code should pass plain dictionaries into `build_config()` instead of manufacturing intermediate `argparse.Namespace` adapters, the formal-run resume path should keep `benchmark_args` in that normalized dict form instead of rebuilding internal Namespace transport objects, and `build_config()` itself should normalize namespace-like inputs once at the boundary instead of stacking generic field-access wrapper helpers on top of both dict and Namespace callers. The benchmark/formal-run path now shares that contract explicitly: config-bearing benchmark payload fields are normalized once through `normalize_benchmark_config_overrides(...)`, each concrete matrix item rebuilds its run-local config input dict through `build_benchmark_config_inputs(...)`, quick validation now reuses the same runtime config-input assembly via `build_runtime_config_inputs(...)` before handing the mapping back to `build_config()`, both config-input builders share one internal present-field helper so runtime and benchmark wiring stay aligned, and formal fan-out sweeps now stay on the single `num_neighbors` field instead of splitting across parallel `num_neighbors` and `num_neighbors_options` surfaces. The normalized benchmark payload now also carries follow-up experiment knobs such as `use_features`, `feature_policy`, `preprocessing_preset`, and `derived_split_mode`, while train popularity is always derived from the observed training interactions rather than a separate popularity-window override. Downstream helpers such as `build_benchmark_plan()` and `run_benchmark()` should consume an already-normalized formal-run payload directly instead of renormalizing it. Presets now apply before explicit CLI/profile overrides, so changing branch depths or fan-out really changes the resolved runtime config and checkpoint identity rather than silently snapping back to preset defaults. When a formal profile carries a deeper `num_neighbors` bundle than a shallower preset needs, the benchmark runner now trims that vector to the preset's active depth instead of failing config validation for baselines such as LightGCN. Saved formal-run state is intentionally strict: unexpected saved fields or removed graph methods should force a fresh formal run instead of reviving compatibility shims. Formal profile alias normalization and catalog lookup belong in `experiments/recipes.py`, with the current implementation resolving formal profiles in one cached normalization pass rather than layering separate helper wrappers for each normalization step. Canonical recipe filtering also lives there now, so `quick_validate.py` reuses `recipe_names(include_aliases=False)` instead of reading the catalog directly. Semantic plan matching in `experiments/run_benchmark.py` should be derived from the normalized `benchmark_args` payload with runtime-only overrides excluded.
 
 Checkpoint resume now uses an explicit identity split. `training_identity` / `training_hash` encode every training-defining field that must match for safe resume, while `evaluation_identity` / `evaluation_hash` capture same-checkpoint evaluation settings such as `eval_scoring_mode` and `eval_ks`. The default checkpoint filename includes `training_hash`, so runs with different training semantics do not collide under one canonical experiment stem. Evaluation-only overrides should therefore remain compatible with the same checkpoint, but changing any training-defining field must force a new checkpoint path or raise when the user explicitly points at an incompatible existing path. Use `--overwrite-checkpoint` when you intentionally want to delete and replace an existing checkpoint.
 
-Experiment-level CLI parsers live in `experiments/cli_parsers.py` (`build_run_experiment_parser`, `build_benchmark_parser`, `build_formal_run_parser`, `build_ablation_parser`). Utility-script parsers live in `src/utils/cli_parsers.py`. Command files import their parser directly from `experiments/cli_parsers.py` with no thin `build_parser()` facade wrappers. Shared parser constants and reusable argument-group helpers stay centralized as well: benchmark dataset/tier definitions plus dataset-selector normalization and expansion helpers live in `src/utils/cli_parsers.py`, benchmark and ablation now share one `add_execution_tracking_group(...)` helper for the standard device/data-dir plus batch-execution flags, the ablation parser now also reuses the benchmark dataset-selector helpers through `--datasets`, LR-scheduler choices stay in `src/utils/config.py`, repository-local results/checkpoint path constants now live in `src/utils/project_paths.py`, and small orchestration helpers such as CLI logging setup, batch-id generation, summary counters, and metric fallback logic belong in `scripts/_workflow_helpers.py`. Prefer extending the appropriate centralized module over adding local `add_argument(...)` blocks, keep choice validation in those centralized parsers instead of re-validating the same values inside entry-point `main()` functions, and invoke the experiment commands through the packaged entry points (`uv run experiment`, `uv run formal-run`, `uv run ablation`) instead of relying on repo-root `sys.path` bootstrapping from direct file execution.
+Experiment-level CLI parsers live in `experiments/cli_parsers.py` (`build_run_experiment_parser`, `build_benchmark_parser`, `build_formal_run_parser`, `build_ablation_parser`). Utility-script parsers live in `src/utils/cli_parsers.py`. Command files import their parser directly from `experiments/cli_parsers.py` with no thin `build_parser()` facade wrappers. Shared parser constants and normalization helpers stay centralized as well: benchmark dataset/tier definitions plus dataset-selector normalization and expansion helpers live in `src/utils/cli_parsers.py`, repository-local results/checkpoint path constants live in `src/utils/project_paths.py`, and small orchestration helpers such as CLI logging setup, batch-id generation, summary counters, and metric fallback logic belong in `scripts/_workflow_helpers.py`. The public experiment CLIs are now intentionally selection-focused: recipes, presets, ablation configs, and formal profiles own training semantics, while CLI arguments mainly choose datasets/variants and checkpoint behavior. Prefer extending the appropriate centralized module over adding local `add_argument(...)` blocks, keep choice validation in those centralized parsers instead of re-validating the same values inside entry-point `main()` functions, and invoke the experiment commands through the packaged entry points (`uv run experiment`, `uv run formal-run`, `uv run ablation`) instead of relying on repo-root `sys.path` bootstrapping from direct file execution.
 
 ## Thesis Evaluation Focus
 
@@ -337,7 +337,7 @@ Symbols: `U` = n_users, `I` = n_items, `N = U + I`, `B` = batch_size, `D` = embe
 
 ## Ablation Map
 
-Each config toggle enables/disables specific modules and losses. Setting a toggle to `False` (or lambda to `0.0`) cleanly removes that component.
+Each config toggle enables/disables specific modules and losses. Setting a toggle to `False` (or a loss weight to `0.0`) cleanly removes that component.
 
 | Config Toggle | Modules Affected | Losses Affected | Default |
 |--------------|------------------|-----------------|---------|
@@ -346,11 +346,11 @@ Each config toggle enables/disables specific modules and losses. Setting a toggl
 | `use_ipw` | F (PropensityEstimator) | L_rec (IPW-weighted BPR) | `True` |
 | `use_popularity_emb` | A (item_pop embedding), C (extra popularity-head input block) | -- | `True` |
 | `use_popularity_head` | C (scorer-owned popularity head) | `L_pop` | `True` |
-| `lambda_interest_bpr > 0` | -- | `L_interest_bpr` | `0.02` |
-| `lambda_conformity_bpr > 0` | -- | `L_conformity_bpr` | `0.02` |
-| `lambda_independence > 0` | -- | `L_independence` | `0.005` |
-| `lambda_contrastive > 0` | -- | `L_contrastive` | `0.02` |
-| `lambda_pop > 0` | C (scorer-owned popularity head) | `L_pop` | `0.02` |
+| `loss_weight_interest_bpr > 0` | -- | `L_interest_bpr` | `0.02` |
+| `loss_weight_conformity_bpr > 0` | -- | `L_conformity_bpr` | `0.02` |
+| `loss_weight_independence > 0` | -- | `L_independence` | `0.005` |
+| `loss_weight_contrastive > 0` | -- | `L_contrastive` | `0.02` |
+| `loss_weight_popularity > 0` | C (scorer-owned popularity head) | `L_pop` | `0.02` |
 
 ### Presets
 
@@ -371,7 +371,7 @@ Each config toggle enables/disables specific modules and losses. Setting a toggl
 | Metrics | `LinkPredRecall`, `LinkPredNDCG` | `Evaluator` orchestrates batched eval | PyG metric API does the heavy math |
 | Profiling | `count_parameters`, `get_model_size`, `get_data_size` | `GPUProfiler` adds stage timing + VRAM tracking | PyG gives static summaries; we need per-stage dynamics |
 | Data object | `torch_geometric.data.Data` | `build_graph()` constructs it with custom attributes | Standard PyG Data, extended with sign/mask/popularity attrs |
-| CAGRA ANN | -- (uses `cuvs.neighbors.cagra`) | `_build_cagra()` with fallback to the train-interaction graph | GPU-accelerated ANN; optional support path, not the default runtime graph |
+| CAGRA ANN | -- (uses `cuvs.neighbors.cagra`) | `_build_cagra()` under `graph_policy="cagra_augmented"` augments the observed graph with ANN edges | GPU-accelerated ANN; optional support path, not the default runtime graph |
 
 # Models
 
@@ -611,9 +611,9 @@ All other scores are set to zero tensors for API compatibility.
 | Parameter | Default | Role |
 |-----------|---------|------|
 | `scoring_weight_mode` | `fixed` | `fixed` uses config weights directly; `learned` learns simplex-constrained score weights |
-| `alpha_interest` | 0.5 | Weight on interest score |
-| `beta_conformity` | 0.3 | Weight on conformity score |
-| `gamma_popularity` | 0.2 | Weight on popularity score |
+| `score_weight_interest` | 0.5 | Weight on interest score |
+| `score_weight_conformity` | 0.3 | Weight on conformity score |
+| `score_weight_popularity` | 0.2 | Weight on popularity score |
 ### Evaluation-Time Intervention Modes
 
 `ScoringModule` now exposes evaluation-time scoring modes without changing the training objective:
@@ -770,14 +770,14 @@ All loss functions and the multi-task orchestrator. Each section covers one file
 
 | Loss | Symbol | File | Role | Paper Origin | Config Lambda |
 |------|--------|------|------|-------------|---------------|
-| BPR | L_rec | `loss_suite.py` | Pairwise ranking (positive > negative) | LightGCN (He et al., 2020) | `lambda_rec` (1.0) |
-| Interest branch BPR | L_interest_bpr | `loss_suite.py` | Keep the interest branch rankable on its own | Repository auxiliary ranking contract | `lambda_interest_bpr` (0.02 in `preset_full`) |
-| Conformity branch BPR | L_conformity_bpr | `loss_suite.py` | Keep the conformity branch rankable on its own | Repository auxiliary ranking contract | `lambda_conformity_bpr` (0.02 in `preset_full`) |
-| Independence | L_independence | `loss_suite.py` | Decorrelate interest/conformity user embeddings | DICE (Zheng et al., 2020); cosine-squared implementation chosen for tractability | `lambda_independence` (0.005 in `preset_full`) |
-| Contrastive | L_contrastive | `loss_suite.py` | Sum of popularity-aware branch-specific contrastive losses over batch-local other-user negatives | DCCL-style interest/conformity regularization | `lambda_contrastive` (0.02 in `preset_full`) |
-| DirectAU alignment | L_align | `loss_suite.py` | Optional branch-local alignment regularizer | DirectAU (2023) | `lambda_align` (0.0 in `preset_full`) |
-| DirectAU uniformity | L_uniform | `loss_suite.py` | Optional branch-local uniformity regularizer | DirectAU (2023) | `lambda_uniform` (0.0 in `preset_full`) |
-| Popularity | L_pop | `loss_suite.py` | Supervise the scorer-owned popularity head on train-split popularity targets | DICE / DDCE-style popularity anchoring | `lambda_pop` (0.02 in `preset_full`) |
+| BPR | L_rec | `loss_suite.py` | Pairwise ranking (positive > negative) | LightGCN (He et al., 2020) | `loss_weight_recommendation` (1.0) |
+| Interest branch BPR | L_interest_bpr | `loss_suite.py` | Keep the interest branch rankable on its own | Repository auxiliary ranking contract | `loss_weight_interest_bpr` (0.02 in `preset_full`) |
+| Conformity branch BPR | L_conformity_bpr | `loss_suite.py` | Keep the conformity branch rankable on its own | Repository auxiliary ranking contract | `loss_weight_conformity_bpr` (0.02 in `preset_full`) |
+| Independence | L_independence | `loss_suite.py` | Decorrelate interest/conformity user embeddings | DICE (Zheng et al., 2020); cosine-squared implementation chosen for tractability | `loss_weight_independence` (0.005 in `preset_full`) |
+| Contrastive | L_contrastive | `loss_suite.py` | Sum of popularity-aware branch-specific contrastive losses over batch-local other-user negatives | DCCL-style interest/conformity regularization | `loss_weight_contrastive` (0.02 in `preset_full`) |
+| DirectAU alignment | L_align | `loss_suite.py` | Optional branch-local alignment regularizer | DirectAU (2023) | `loss_weight_align` (0.0 in `preset_full`) |
+| DirectAU uniformity | L_uniform | `loss_suite.py` | Optional branch-local uniformity regularizer | DirectAU (2023) | `loss_weight_uniform` (0.0 in `preset_full`) |
+| Popularity | L_pop | `loss_suite.py` | Supervise the scorer-owned popularity head on train-split popularity targets | DICE / DDCE-style popularity anchoring | `loss_weight_popularity` (0.02 in `preset_full`) |
 | **Total** | L_total | `loss_suite.py` | Weighted sum with curriculum scheduling | CaDCR (2025) multi-task curriculum | -- |
 
 ---
@@ -904,7 +904,7 @@ Pulls aligned positive user-item pairs together within each branch while assigni
 
 **File:** `src/losses/loss_suite.py`
 
-DirectAU-style alignment (`L_align`) and uniformity (`L_uniform`) are still implemented as optional branch-local auxiliaries. They operate on the current batch's positive user-item pairs and are guarded by `lambda_align`, `lambda_uniform`, and `use_conformity_au`. The base dataclass exposes both lambdas at `0.02`, but `preset_full()` overrides them to `0.0`, so the current mainline does not use them unless you opt in explicitly.
+DirectAU-style alignment (`L_align`) and uniformity (`L_uniform`) are still implemented as optional branch-local auxiliaries. They operate on the current batch's positive user-item pairs and are guarded by `loss_weight_align`, `loss_weight_uniform`, and `use_conformity_au`. The base dataclass exposes both loss weights at `0.02`, but `preset_full()` overrides them to `0.0`, so the current mainline does not use them unless you opt in explicitly.
 
 ---
 
@@ -962,7 +962,7 @@ def forward(
 ### Total Loss Formula
 
 ```
-L_total = lambda_rec * L_rec
+L_total = loss_weight_recommendation * L_rec
         + w_interest_bpr   * L_interest_bpr
         + w_conformity_bpr * L_conformity_bpr
         + w_independence   * L_independence
@@ -1211,9 +1211,10 @@ def build_graph(
 
 ### Graph Construction Strategies
 
-| Path | Config Surface | Description | Paper Rationale | Fallback |
-|------|----------------|-------------|-----------------|----------|
-| `cagra` | Implicit default with `cagra_*` settings | Train bipartite edges plus optional CAGRA GPU-accelerated ANN edges (via `cuvs`) | CAGRA paper (2024): 33-77x batch speedups over HNSW; out_degree 32-96 | Falls back to the train-interaction graph if CAGRA import, CuPy conversion, index build, or search fails, and also if embeddings are absent |
+| Path | Config Surface | Description | Paper Rationale | Failure Contract |
+|------|----------------|-------------|-----------------|------------------|
+| `observed` | `config.graph_policy="observed"` | Train bipartite edges only; thesis-default runtime path | Keeps the causal graph equal to observed training interactions | N/A |
+| `cagra_augmented` | `config.graph_policy="cagra_augmented"` plus `cagra_*` settings | Builds the observed graph first, bootstraps Module A embeddings, then adds GPU-accelerated ANN edges on top | CAGRA paper (2024): 33-77x batch speedups over HNSW; out_degree 32-96 | Strict: requires bootstrap embeddings and raises on ANN failures instead of silently degrading to the observed graph |
 
 All strategies add edges in **both directions** (undirected graph).
 
@@ -1364,7 +1365,7 @@ Shared lifecycle code lives in `src/utils/trainer_runtime.py`. The shared runtim
 On CUDA, that shared runtime also owns AMP/autocast setup, cached device-side popularity, and a reusable epoch-level batch progress bar. The runtime standardizes AMP on bfloat16 autocast and no longer exposes a separate fp16/GradScaler path.
 Experiment entry now enforces one repository-wide reproducibility contract: seed Python, NumPy, and PyTorch once per run, enable deterministic torch algorithms, disable cuDNN benchmarking and TF32 shortcuts, and keep that backend policy centralized in `src/utils/reproducibility.py`. The precision policy itself remains bf16 AMP.
 To avoid per-batch host/device sync pressure from tqdm, the runtime now accumulates epoch loss on-device and only syncs a Python loss scalar for the progress-bar postfix every `config.progress_bar_loss_cadence` batches (and on the final batch of the epoch).
-Profiling is now opt-in through `config.enable_profiling`; default training runs prioritize throughput unless a script or experiment explicitly enables stage profiling. `GPUProfiler` instances also start disabled, so direct construction does not introduce synchronized stage timing until the runtime opts in.
+Profiling is lightweight and always-on for peak VRAM: `_reset_epoch_vram_stats()` calls `torch.cuda.reset_peak_memory_stats()` at the start of each epoch, and `GPUProfiler.peak_vram_mb()` reads `torch.cuda.max_memory_allocated()` at epoch end — no synchronization needed. `peak_vram_mb` is logged to both SQLite and MLflow every epoch alongside training loss and validation metrics. Stage-level profiling wrappers (`profile_stage`) have been removed; per-epoch peak VRAM is sufficient for thesis-facing resource tracking.
 
 `config.use_torch_compile` remains available, but it is now opt-in rather than default. In the current mini-batch-only runtime the sampled subgraph shapes and per-batch edge tensors are dynamic enough that `torch.compile(dynamic=True)` frequently recompiles `DualBranchGCN`, which hurts throughput on long formal runs instead of improving it.
 
@@ -1443,7 +1444,7 @@ Each training batch contains:
 
 Mini-batch training extracts a k-hop subgraph around batch nodes via `SubgraphSampler`, then runs GCN propagation only on the local subgraph. This keeps VRAM usage proportional to the batch neighbourhood size rather than the full graph, enabling training on large datasets.
 
-`batch_size` controls both the number of interactions per loss/optimizer step and the size of the extracted subgraph. Fixed-batch runs still default to `4096`, but CUDA runs can now enable `auto_batch_size` so the runtime mirrors the real epoch-0 shuffle, probes several representative mini-batches, synchronizes CUDA before releasing probe allocations, and picks the largest surviving candidate before checkpoint identity, canonical naming, and logging are frozen. The experiment entry also defaults `PYTORCH_ALLOC_CONF=expandable_segments:True` so the allocator can reuse segments more safely across probe/train handoff. The built-in candidate ladders are dataset-aware support defaults rather than thesis axes and now extend down to `256`, which matters for dense sampled subgraphs such as Amazon-Book. `num_neighbors` limits per-hop fan-out to control subgraph density and VRAM; the current default is `[10, 5]`, and formal profiles can optionally expand several such shapes through `num_neighbors_options`.
+`batch_size` controls both the number of interactions per loss/optimizer step and the size of the extracted subgraph. `auto_batch_size=True` is the UCaGNNConfig default: on CUDA the runtime mirrors the real epoch-0 shuffle, probes several representative mini-batches, synchronizes CUDA before releasing probe allocations, and picks the largest surviving candidate before checkpoint identity, canonical naming, and logging are frozen. Fixed-batch fallback uses `4096`. The experiment entry also defaults `PYTORCH_ALLOC_CONF=expandable_segments:True` so the allocator can reuse segments more safely across probe/train handoff. The built-in candidate ladders are dataset-aware support defaults rather than thesis axes and now extend down to `256`, which matters for dense sampled subgraphs such as Amazon-Book. `num_neighbors` limits per-hop fan-out to control subgraph density and VRAM; the current default is `[10, 5]`, and formal profiles can optionally expand several such shapes directly through the same `num_neighbors` field.
 
 When running on CUDA, the shared runtime wraps the forward/loss path in bfloat16 autocast so the batch loop benefits from Tensor Core acceleration without changing the trainer API. The reproducibility contract keeps deterministic algorithms enabled and disables cuDNN benchmarking / TF32 shortcuts, so throughput-oriented Tensor Core use comes from AMP rather than relaxed backend determinism. The epoch progress bar reports batch progress for the active epoch while leaving the existing log summary at epoch boundaries.
 
@@ -1487,20 +1488,20 @@ Saves/loads: model state dict, loss_suite state dict, optimizer state dict, conf
 
 Named recipes own the matrix-defining fields they declare. Conflicting CLI flags should be considered an invalid command; use a different recipe alias or drop `--recipe` and pass `--preset` with explicit matrix flags instead.
 
-Formal matrix runners now support explicit batch orchestration metadata through `--batch-id` and `--resume-batch`. This is intentionally separate from checkpoint auto-resume inside a single run: SQLite tracks whether each matrix item finished as `completed`, failed with `oom`, or failed generically, and batch resume skips only those terminal rows.
+The public formal workflow is intentionally profile-driven. `uv run formal-run` exposes only `--profile`, `--list-profiles`, and `--overwrite-checkpoint`; internal batch/state bookkeeping stays behind that thin entry point instead of remaining part of the day-to-day CLI surface.
 
-`experiments/run_benchmark.py::formal_main()` now provides the repository's simplest formal entry point through `uv run formal-run`. It persists the last formal batch plan to `results/formal_run_state.json`, so re-running the same semantic profile or calling `uv run formal-run --resume-latest` continues the formal matrix after an interrupted workday or overnight run.
+`experiments/run_benchmark.py::formal_main()` now provides the repository's simplest formal entry point through `uv run formal-run`. It persists the last formal batch plan to `results/formal_run_state.json`, and re-running `formal-run` resumes automatically only when the saved semantic plan still matches the current selected/default profile.
 
-`results/formal_run_state.json` is only a generated resume pointer. It stores the current user-facing `profile_name` id, deterministic `profile_slug`, operational `batch_id`, runtime args, and simple run timestamps/status. The formal matrix definition itself still lives in `experiments/experiment_catalog.json`, so the state file should not be treated as a hand-maintained or authoritative profile snapshot. Keep the nested `benchmark_args` payload normalized once at the boundary so saved JSON, semantic plan matching, and resumed execution all reuse the same dict schema instead of drifting across separate helper lists.
+`results/formal_run_state.json` is only a generated resume pointer. It stores the current user-facing `profile_name` id, deterministic `profile_slug`, operational `batch_id`, runtime args, and simple run timestamps/status. The formal matrix definition itself still lives in `experiments/experiment_catalog.json`, so the state file should not be treated as a hand-maintained or authoritative profile snapshot. The saved schema is intentionally strict: if a stored profile id disappears, the nested `benchmark_args` shape drifts, or unexpected fields show up, `formal-run` now errors and expects a fresh run rather than reviving compatibility shims. Keep the nested `benchmark_args` payload normalized once at the boundary so saved JSON, semantic plan matching, and resumed execution all reuse the same dict schema instead of drifting across separate helper lists.
 
 `formal-run` now separates two identities that used to be conflated:
 - `profile_name`: the short explicit JSON identifier passed to `--profile` (for example `dev` or `final`), meant to be easy to remember and visible directly in `experiments/experiment_catalog.json`.
-- `profile_slug`: the deterministic semantic signature derived from that bundle, used to make the exact support-parameter contract visible in logs and saved state. Auto-batch profiles now use an `abauto` slug fragment instead of pretending they are pinned to a fixed `bs4096` schedule.
+- `profile_slug`: the deterministic semantic signature derived from that bundle, used to make the exact support-parameter contract visible in logs and saved state. Because `auto_batch_size=True` is the UCaGNNConfig default, profiles that do not explicitly set it still render `abauto` in their slug.
 - `batch_id`: the operational execution label used to resume or restart a concrete long-running sweep.
 
 Both are logged in SQLite and MLflow so result inspection can answer two different questions cleanly: which formal protocol produced the run, and which specific overnight batch execution it belonged to.
 
-Formal profiles always run on full datasets. Sampled-interaction and loader-cap controls remain available for quick validation and other smoke-scale workflows, but they are intentionally excluded from the formal wrapper so the thesis entry point stays semantically clean.
+Formal profiles always run on full datasets. Sampled-interaction and loader-cap controls remain available for quick validation and other smoke-scale workflows, but they are intentionally excluded from the formal wrapper so the thesis entry point stays semantically clean; `formal-run` strips `sample_interactions` and `loader_max_rows` back to `None` even if they appear in a profile override block.
 
 The default formal profile currently focuses on the proposed architecture and keeps the day-to-day formal sweep intentionally narrow. Exact support-parameter choices belong in `experiments/experiment_catalog.json`, not in this routed implementation document.
 
@@ -1512,9 +1513,7 @@ Benchmark and `formal-run` no longer expose seed as a matrix axis or public orch
 
 Benchmark and `ablation` now follow the same OOM policy as `formal-run`: log the failure and continue. There is no fallback retry flag anymore.
 
-Keep the ablation runner's resume query direct at its only call site; a single `ExperimentLogger.find_latest_batch_experiment()` use does not need its own wrapper helper.
-
-The SQLite tracking layer now exposes three convenience exploration views on top of `experiment_summary`: `experiment_completed_summary`, `experiment_attention_summary`, and `experiment_error_summary`. They are the intended read path for quick experiment review when you want only clean completions, anything still needing attention, or strict failures. `query-results --view ...` is the supported CLI on top of those views.
+The SQLite tracking layer now exposes convenience exploration views on top of `experiment_summary`: `experiment_completed_summary`, `experiment_attention_summary`, `experiment_error_summary`, and `experiment_comparison_summary`. They are the intended read path for quick experiment review when you want only clean completions, anything still needing attention, strict failures, or same-config comparisons across code versions. `query-results --view ...` is the supported CLI on top of those views.
 
 The supported query-view mapping now lives in `ExperimentLogger.VIEW_TABLES`, and `scripts/query_results.py` imports that registry instead of re-declaring the valid view names. Keep view ownership in the logger layer so schema definition and CLI filtering stay aligned.
 
@@ -1546,18 +1545,18 @@ Checkpoint payload loading stays centralized in `experiments/run_experiment.py::
 
 `quick_validate.py` still keeps its own tiny dataset caps and inline timing around `run_experiment()`, rather than routing those one-command details through `scripts/_workflow_helpers.py`. Its parser definition now comes from the shared `src/utils/cli_parsers.py` module, while the tiny-run workflow logic stays local to the script.
 
-The script keeps runs small through aggressive loader caps, sampled interactions, and one-epoch defaults, so it behaves like a tiny end-to-end experiment suite rather than a benchmark runner. Use category filters only when debugging a specific surface.
+The script keeps runs small through aggressive loader caps, sampled interactions, and one-epoch defaults, so it behaves like a tiny end-to-end experiment suite rather than a benchmark runner. Because `quick-validate` is now a zero-argument smoke command, use the fixed default run as the supported post-change validation surface rather than a menu of ad-hoc filter flags.
 Feature-aware runs follow the formal config default, so the validator exercises the same side-feature path as formal experiments. Capped dataset loads are reused in-process, which keeps repeated recipe coverage practical without dropping feature enrichment from the default tiny run.
-MLflow is disabled by default in quick validation, so the standard command does not create `results/mlflow.db` or `mlruns/`. Pass `--mlflow` only when you explicitly want the MLflow observability probe.
+MLflow is disabled in quick validation's fixed smoke contract, so the standard command does not create `results/mlflow.db` or `mlruns/`.
 Use `query-results` as the supported SQLite inspection path after runs. The repository currently does not expose a supported plotting command in the main workflow.
-`query-results` now also supports `--view`, `--batch-id`, and `--status`. Its default thesis summary keeps only full-data formal and ablation rows, orders them by dataset then test ranking metrics, shows the full test metric suite (`NDCG`, `Recall`, `HitRatio`, `Personalization`, `AveragePopularity` at 20 and 40), restores per-run resource readouts (`training_time_s`, `completed_train_epochs`, `peak_vram_mb`) on a dedicated `Resources:` line, prints the full canonical experiment name on a dedicated `Experiment:` line so it is never truncated, and writes that default report to `results/query_results.md`.
+`query-results` now supports only `--view` on its public CLI. Its default thesis summary keeps only full-data formal and ablation rows, orders them by dataset then test ranking metrics, shows the full test metric suite (`NDCG`, `Recall`, `HitRatio`, `Personalization`, `AveragePopularity` at 20 and 40), restores per-run resource readouts (`training_time_s`, `completed_train_epochs`, `peak_vram_mb`, `avg_gpu_utilization_pct`) on a dedicated `Resources:` line, prints the full canonical experiment name on a dedicated `Experiment:` line so it is never truncated, and writes that default report to `results/query_results.md`.
 Keep one-command runtime details local even though parser definitions are centralized. `scripts/_workflow_helpers.py` should stay limited to genuinely shared helpers such as CLI logging setup, batch-id generation, shared summary counters, and shared metric fallback logic, while one-command concerns like tiny dataset caps, inline timing, and same-checkpoint JSON writing remain local to their scripts.
 
 The intended validation invariant is: formal and tiny runs use the same loader registry, canonical schema, and feature-engineering path, with only row scaling and runtime controls changed. In practice this means `loader_max_rows` and `sample_interactions` may shrink the data, but they should not silently redefine which fields exist or which feature transforms run.
 
 ### Sampled Runner Support
 
-`experiments/run_experiment.py` accepts `--sample-interactions` for preflight-style runs. This samples the canonical interaction table before graph construction while preserving split coverage as much as possible. It is intended for smoke checks, not for formal metrics.
+`experiments/run_experiment.py` still supports config-level sampled-run inputs such as `sample_interactions` and `loader_max_rows`, but the packaged `uv run experiment` CLI no longer exposes them directly. Smoke scaling now belongs in internal validation/config assembly rather than the public single-run parser. The sampled path still shrinks the canonical interaction table before graph construction while preserving split coverage as much as possible, so it remains a smoke aid rather than a formal-metrics path.
 
 This split-preserving row scaling is the current answer to representativeness in tiny runs: the path remains semantically aligned with the formal experiment, while the sample size is reduced for cost. If a future feature block requires skipping an expensive optional scan during tiny validation, add that exception explicitly and keep at least one dedicated feature-path observability probe enabled.
 
@@ -1565,7 +1564,7 @@ This split-preserving row scaling is the current answer to representativeness in
 
 `experiments/run_experiment.py` resolves MLflow tracking in this order:
 
-1. `--mlflow-tracking-uri`
+1. active run args
 2. `MLFLOW_TRACKING_URI`
 3. project default `results/mlflow.db`
 
@@ -1585,7 +1584,7 @@ dataset × preset
 
 Dual-branch presets (`ucagnn`, `dice_like`) also sweep `scoring_weight_mode ∈ {fixed, learned}` inside that matrix. `lightgcn` stays fixed-only.
 
-Use `--dry-run` to inspect the matrix before executing it.
+`build_benchmark_plan()` still supports internal dry-run style inspection for benchmark payloads, but the public thesis workflow is `formal-run` via catalog-owned profiles rather than a wide benchmark CLI.
 
 ---
 
@@ -1663,43 +1662,13 @@ def evaluate(
 | Method | Description |
 |--------|-------------|
 | `reset()` | Clear stage list and reset CUDA peak memory stats |
-| `stage(name)` | Context manager that records timing and VRAM for a named stage |
-| `summary()` | Formatted multi-line string with per-stage breakdown and percentages |
+| `peak_vram_mb()` | Static: read `torch.cuda.max_memory_allocated()` in MB (no sync) |
 | `model_summary(model)` | Static: parameter count and model size via PyG's `count_parameters` and `get_model_size` |
 | `data_summary(data)` | Static: data object size via PyG's `get_data_size` |
 
 ### Usage in Trainer
 
-The profiler is optional. When provided, each training stage is wrapped:
-
-```python
-with profile_stage("forward", self.profiler):
-    output = self.model(...)
-```
-
-The `profile_stage` convenience function is a no-op if profiler is `None`.
-
-### Profiled Stages
-
-| Stage | What It Measures |
-|-------|-----------------|
-| `forward` | Full UCaGNN forward pass (embed + GCN + score + IPW) |
-| `loss` | LossSuite computation (all 5 loss terms) |
-| `backward` | Gradient computation + optimizer step |
-| `eval` | Full validation evaluation pass |
-
-Negative sampling and subgraph extraction now run in the CPU prefetch pipeline ahead of the profiled GPU forward/backward stages, so they are intentionally not reported as separate profiler stages.
-
-### Example Output
-
-```
-=== GPU Profile ===
-    forward                 45.2ms (42.5%) | VRAM peak 1024 MB
-    loss                     8.1ms ( 7.6%) | VRAM peak 1024 MB
-    backward                41.9ms (39.4%) | VRAM peak 1536 MB
-    eval                    11.2ms (10.5%) | VRAM peak 1024 MB
-    TOTAL                  106.4ms
-```
+At the start of each epoch `_reset_epoch_vram_stats()` resets peak CUDA stats. At epoch end, `peak_vram_mb` is read and logged to SQLite + MLflow automatically — no per-stage wrappers or synchronization needed.
 
 ---
 
@@ -1708,7 +1677,7 @@ Negative sampling and subgraph extraction now run in the CPU prefetch pipeline a
 | Package | `__init__.py` Exports | Used By |
 |---------|----------------------|---------|
 | `src/training/` | `MiniBatchTrainer`, `Evaluator`, thesis metric constants | Main entry point |
-| `src/profiling/` | `GPUProfiler`, `profile_stage` | Trainer |
+| `src/profiling/` | `GPUProfiler` | Trainer |
 
 
 # Config Reference
@@ -1779,7 +1748,7 @@ Public experiment naming note: use `ucagnn` as the main CLI preset/recipe name. 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `embed_dim` | `int` | `64` | Embedding dimension (D) for users and items |
-| `pop_embed_dim` | `int` | `16` | Popularity embedding dimension (D_pop) |
+| `popularity_embedding_dimensions` | `int` | `16` | Popularity embedding dimension (D_pop) |
 | `single_branch_gnn_layers` | `int` | `2` | Dedicated LightGCN / non-dual-branch depth |
 | `interest_gnn_layers` | `int` | `1` | Interest-branch depth for dual-branch runs |
 | `conformity_gnn_layers` | `int` | `2` | Conformity-branch depth for dual-branch runs |
@@ -1798,15 +1767,17 @@ Public experiment naming note: use `ucagnn` as the main CLI preset/recipe name. 
 Control how the three score components combine into `final_score`:
 
 ```
-final_score = alpha * interest + beta * conformity + gamma * cf
+final_score = score_weight_interest * interest
+            + score_weight_conformity * conformity
+            + score_weight_popularity * popularity
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `scoring_weight_mode` | `"fixed" \| "learned"` | `"fixed"` | Whether the default score mixture uses the config weights directly or learns simplex-constrained mixture weights |
-| `alpha_interest` | `float` | `0.5` | Weight on interest score |
-| `beta_conformity` | `float` | `0.3` | Weight on conformity score |
-| `gamma_popularity` | `float` | `0.2` | Weight on popularity score |
+| `score_weight_interest` | `float` | `0.5` | Weight on interest score |
+| `score_weight_conformity` | `float` | `0.3` | Weight on conformity score |
+| `score_weight_popularity` | `float` | `0.2` | Weight on popularity score |
 | `train_scoring_mode` | `"default" \| "interest_only" \| "conformity_only" \| "conformity_suppressed"` | `"default"` | Controls which score view feeds the ranking loss |
 
 **Scoring weight rationale:** Defaults weight interest most heavily (50%), conformity secondary (30%), and popularity as a lightweight calibration/debiasing signal (20%). DICE uses interest only (equivalent to alpha=1, beta=0, gamma=0); nonzero beta and gamma differentiate U-CaGNN from DICE by incorporating conformity and popularity into the final ranking score. `scoring_weight_mode="learned"` keeps the same three components but lets the model learn a simplex-constrained mixture over the active components.
@@ -1821,31 +1792,31 @@ final_score = alpha * interest + beta * conformity + gamma * cf
 
 ---
 
-## Loss Lambdas
+## Loss Weights
 
-Control the weight of each loss term in the total loss. Setting a lambda to `0.0` disables that loss entirely.
+Control the weight of each loss term in the total loss. Setting a loss weight to `0.0` disables that loss entirely.
 
 ```
-L_total = lambda_rec * L_rec
-        + lambda_interest_bpr * L_interest_bpr
-        + lambda_conformity_bpr * L_conformity_bpr
-        + lambda_independence * L_independence
-        + lambda_contrastive * L_contrastive
-        + lambda_align * L_align
-        + lambda_uniform * L_uniform
-        + lambda_pop * L_pop
+L_total = loss_weight_recommendation * L_rec
+        + loss_weight_interest_bpr * L_interest_bpr
+        + loss_weight_conformity_bpr * L_conformity_bpr
+        + loss_weight_independence * L_independence
+        + loss_weight_contrastive * L_contrastive
+        + loss_weight_align * L_align
+        + loss_weight_uniform * L_uniform
+        + loss_weight_popularity * L_pop
 ```
 
 | Parameter | Type | Default | Loss Term |
 |-----------|------|---------|-----------|
-| `lambda_rec` | `float` | `1.0` | L_rec (BPR ranking) |
-| `lambda_interest_bpr` | `float` | `0.02` | L_interest_bpr |
-| `lambda_conformity_bpr` | `float` | `0.02` | L_conformity_bpr |
-| `lambda_independence` | `float` | `0.005` | L_independence |
-| `lambda_contrastive` | `float` | `0.02` | L_contrastive |
-| `lambda_align` | `float` | `0.02` | L_align (base config; `preset_full()` overrides to `0.0`) |
-| `lambda_uniform` | `float` | `0.02` | L_uniform (base config; `preset_full()` overrides to `0.0`) |
-| `lambda_pop` | `float` | `0.02` | L_pop |
+| `loss_weight_recommendation` | `float` | `1.0` | L_rec (BPR ranking) |
+| `loss_weight_interest_bpr` | `float` | `0.02` | L_interest_bpr |
+| `loss_weight_conformity_bpr` | `float` | `0.02` | L_conformity_bpr |
+| `loss_weight_independence` | `float` | `0.005` | L_independence |
+| `loss_weight_contrastive` | `float` | `0.02` | L_contrastive |
+| `loss_weight_align` | `float` | `0.02` | L_align (base config; `preset_full()` overrides to `0.0`) |
+| `loss_weight_uniform` | `float` | `0.02` | L_uniform (base config; `preset_full()` overrides to `0.0`) |
+| `loss_weight_popularity` | `float` | `0.02` | L_pop |
 
 ---
 
@@ -1889,7 +1860,7 @@ L_total = lambda_rec * L_rec
 | `eval_ks` | `list[int]` | `[20, 40]` | Thesis-standard K values for Recall@K and NDCG@K |
 **Paper evidence for training defaults:**
 - `lr=1e-3`: LightGCN paper: "0.001 using Adam."
-- `batch_size=4096`: the repository now uses this as the fixed-batch default. CUDA runs can instead enable `auto_batch_size=True`, which probes representative shuffled batches with dataset-aware candidates (`[16384, 8192, 4096, 2048, 1024]` for MovieLens 1M, `[8192, 4096, 2048, 1024, 512, 256]` for Amazon-Book, `[4096, 2048, 1024, 512, 256]` for MovieLens 20M / KuaiRec, `[2048, 1024, 512, 256, 4096]` for KuaiRand after the fallback append) and freezes the largest surviving value into the run identity. This keeps batch size as an efficiency support parameter rather than a thesis axis.
+- `batch_size=4096`: the repository now uses this as the fixed-batch fallback. CUDA runs default to `auto_batch_size=True`, which probes representative shuffled batches with dataset-aware candidates (`[16384, 8192, 4096, 2048, 1024]` for MovieLens 1M, `[8192, 4096, 2048, 1024, 512, 256]` for Amazon-Book, `[4096, 2048, 1024, 512, 256]` for MovieLens 20M / KuaiRec, `[2048, 1024, 512, 256, 4096]` for KuaiRand after the fallback append) and freezes the largest surviving value into the run identity. This keeps batch size as an efficiency support parameter rather than a thesis axis.
 - `weight_decay=1e-5`: LightGCN optimal is 1e-4; DDCE uses 1e-5. The slightly lower value may suit the additional loss terms in U-CaGNN.
 - `epochs=60`: Aligns with thesis_plan.md (3 curriculum phases x 20 epochs each). The previous 100-epoch default was not grounded in any paper; 60 matches CaDCR/MGCE convergence behavior.
 - `patience=10`: DDCE: "early stopping after 10 consecutive epochs" of validation decline.
@@ -1898,7 +1869,7 @@ L_total = lambda_rec * L_rec
 - `eval_ks=[20, 40]`: matches the repository's thesis-standard visible-list and deeper-list cutoffs while staying aligned with the common K=20/K=40 reporting pattern in the causal recommendation literature.
 - `grad_clip_norm=1.0`: DICE recommends `max_norm=1.0` to prevent gradient explosions, especially important with 5 loss terms and IPW weights up to 100x.
 
-Formal profile note: the repository's `uv run formal-run --profile ...` entry point freezes a predefined support-parameter bundle outside `UCaGNNConfig` orchestration, then passes the resolved values into the benchmark runner. This keeps semantic thesis protocols distinct from operational batch-resume metadata. Formal profiles no longer pin an explicit batch-size override in the catalog; they enable `auto_batch_size` with a shared descending candidate ladder and let the runtime resolve the actual CUDA batch size per dataset before logging and checkpoint hashing. Formal profiles may also declare `num_neighbors_options`, which expands to several resolved benchmark items while preserving one concrete `num_neighbors` vector per run. Profile-specific support choices should remain in `experiments/experiment_catalog.json` rather than being duplicated across the routed skill docs.
+Formal profile note: the repository's `uv run formal-run --profile ...` entry point freezes a predefined support-parameter bundle outside `UCaGNNConfig` orchestration, then passes the resolved values into the benchmark runner. This keeps semantic thesis protocols distinct from operational batch-resume metadata. Formal profiles do not pin an explicit `auto_batch_size` flag in the catalog — `auto_batch_size=True` is the UCaGNNConfig default and the effective auto-sizing behavior is always active on CUDA runs. Formal profiles may declare `num_neighbors` as either one vector or a list of vectors, which expands to several resolved benchmark items while preserving one concrete `num_neighbors` vector per run. Profile-specific support choices should remain in `experiments/experiment_catalog.json` rather than being duplicated across the routed skill docs.
 
 When full-graph validation still hits a CUDA OOM on very large catalogs such as KuaiRand even after the sampler copy is released, the runtime now retries once after temporarily moving optimizer state tensors to CPU. That keeps the OOM handling explicit while letting the evaluation path use VRAM that would otherwise stay occupied by Adam state during the validation step.
 The formal bundle now also forwards support parameters such as `hard_negative_ratio`, `auxiliary_losses_start_epoch`, and `popularity_supervision_start_epoch` through the formal-run orchestration path instead of leaving them stranded in the catalog.
@@ -1988,13 +1959,13 @@ Non-causal LightGCN baseline. Disables all causal components:
 | `use_sign_aware` | `False` |
 | `use_ipw` | `False` |
 | `use_popularity_emb` | `False` |
-| `lambda_interest_bpr` | `0.0` |
-| `lambda_conformity_bpr` | `0.0` |
-| `lambda_independence` | `0.0` |
-| `lambda_contrastive` | `0.0` |
-| `lambda_pop` | `0.0` |
-| `beta_conformity` | `0.0` |
-| `gamma_popularity` | `0.0` |
+| `loss_weight_interest_bpr` | `0.0` |
+| `loss_weight_conformity_bpr` | `0.0` |
+| `loss_weight_independence` | `0.0` |
+| `loss_weight_contrastive` | `0.0` |
+| `loss_weight_popularity` | `0.0` |
+| `score_weight_conformity` | `0.0` |
+| `score_weight_popularity` | `0.0` |
 
 ### `preset_dice_like()`
 
@@ -2008,14 +1979,14 @@ DICE-inspired dual-branch with fixed interest+conformity scoring:
 | `use_popularity_emb` | `False` |
 | `use_sign_aware` | `False` |
 | `use_features` | `False` |
-| `lambda_interest_bpr` | `0.1` |
-| `lambda_conformity_bpr` | `0.1` |
-| `lambda_independence` | `0.01` |
-| `lambda_contrastive` | `0.0` |
-| `lambda_pop` | `0.0` |
-| `alpha_interest` | `1.0` |
-| `beta_conformity` | `1.0` |
-| `gamma_popularity` | `0.0` |
+| `loss_weight_interest_bpr` | `0.1` |
+| `loss_weight_conformity_bpr` | `0.1` |
+| `loss_weight_independence` | `0.01` |
+| `loss_weight_contrastive` | `0.0` |
+| `loss_weight_popularity` | `0.0` |
+| `score_weight_interest` | `1.0` |
+| `score_weight_conformity` | `1.0` |
+| `score_weight_popularity` | `0.0` |
 
 ### `preset_full()`
 
@@ -2188,37 +2159,37 @@ This is the standard dimension used by LightGCN (He et al., 2020) and DICE (Zhen
 
 This is the *MLP hidden size*, not an embedding dimension. The factor of 2x (128 = 2 * 64) follows standard MLP design: the hidden layer expands the representation space to enable non-linear transformations before compressing to a scalar propensity score.
 
-### 4.3 pop_embed_dim = 16
+### 4.3 popularity_embedding_dimensions = 16
 
 Popularity is a low-dimensional signal (single scalar per item, bucketed). A 16-dim embedding is sufficient to capture the relationship between popularity buckets and recommendation relevance. This is concatenated with the main embedding, so keeping it small minimizes parameter overhead.
 
 ---
 
-## 5. Default Lambda Values
+## 5. Default Loss Weights
 
 ### 5.1 Source
 
 The current code exposes both base dataclass defaults and preset-level overrides. For the thesis mainline (`preset_full()`), the effective weights are:
 
-| Lambda | Default | Source | Role |
-|--------|---------|--------|------|
-| `lambda_rec` | 1.0 | Standard | Primary BPR loss weight |
-| `lambda_interest_bpr` | 0.02 | Repository mainline | Keep the interest branch rankable |
-| `lambda_conformity_bpr` | 0.02 | Repository mainline | Keep the conformity branch rankable |
-| `lambda_independence` | 0.005 | DICE-inspired | Branch disentanglement |
-| `lambda_contrastive` | 0.02 | DCCL-style | Within-branch contrastive regularization |
-| `lambda_pop` | 0.02 | Repository mainline | Popularity-head supervision |
+| Loss weight | Default | Source | Role |
+|-------------|---------|--------|------|
+| `loss_weight_recommendation` | 1.0 | Standard | Primary BPR loss weight |
+| `loss_weight_interest_bpr` | 0.02 | Repository mainline | Keep the interest branch rankable |
+| `loss_weight_conformity_bpr` | 0.02 | Repository mainline | Keep the conformity branch rankable |
+| `loss_weight_independence` | 0.005 | DICE-inspired | Branch disentanglement |
+| `loss_weight_contrastive` | 0.02 | DCCL-style | Within-branch contrastive regularization |
+| `loss_weight_popularity` | 0.02 | Repository mainline | Popularity-head supervision |
 
 ### 5.2 Sensitivity
 
-These values are *not* universal. Each dataset has different characteristics (density, sign distribution, popularity skew) that affect optimal lambda values. The experiment infrastructure supports systematic sensitivity sweeps:
+These values are *not* universal. Each dataset has different characteristics (density, sign distribution, popularity skew) that affect optimal loss weights. The experiment infrastructure supports systematic sensitivity sweeps:
 
 ```bash
-# Example: sweep lambda_independence on MovieLens1M
+# Example: sweep loss_weight_independence on MovieLens1M
 for val in 0.0 0.01 0.02 0.05 0.1; do
     uv run experiment \
     --dataset movielens1m --preset ucagnn \
-        --override lambda_independence=$val
+        --override loss_weight_independence=$val
 done
 ```
 
@@ -2301,7 +2272,7 @@ For each batch, the trainer extracts a k-hop subgraph around the batch users plu
 ### 8.3 Practical Tuning Guidance
 
 - **Batch size**: increase batch size first when GPU memory allows; it improves both hardware utilization and the representativeness of the sampled subgraph.
-- **Fan-out**: use `num_neighbors` as the main VRAM/throughput knob. The current base dual-branch default is `[10, 5]`, and formal profiles may expand alternate vectors through `num_neighbors_options`.
+- **Fan-out**: use `num_neighbors` as the main VRAM/throughput knob. The current base dual-branch default is `[10, 5]`, and formal profiles may expand alternate vectors by setting `num_neighbors` to a list of vectors.
 - **Contrastive cost**: `L_contrastive` remains an `O(B^2 d)` term, so batch size and fan-out should be tuned together rather than independently.
 
 This is the only training path reflected in the current implementation and experiment orchestration.
