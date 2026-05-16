@@ -230,12 +230,11 @@ class SplitSafetyTests(unittest.TestCase):
         )
         config = UCaGNNConfig(
             device="cuda",
-            popularity_window_seconds=10,
         )
 
         data = build_graph(canonical, config)
 
-        expected_popularity = torch.tensor([0.0, 1.0], dtype=torch.bfloat16)
+        expected_popularity = torch.tensor([1.0, 0.5], dtype=torch.bfloat16)
         self.assertTrue(torch.equal(data.popularity.cpu(), expected_popularity))
 
     def test_build_graph_carries_causal_fields(self) -> None:
@@ -426,6 +425,65 @@ class SplitSafetyTests(unittest.TestCase):
         self.assertEqual(edge_signs[0, 1], 1.0)
         self.assertEqual(edge_signs[1, 0], 1.0)
         self.assertEqual(len(edge_signs), 2)
+
+    def test_cagra_augmented_policy_raises_on_runtime_failure(self) -> None:
+        """Strict CAGRA policy should raise instead of silently downgrading the graph."""
+        canonical = CanonicalInteractions(
+            user_id=np.array([0], dtype=np.int64),
+            item_id=np.array([0], dtype=np.int64),
+            label=np.ones(1, dtype=np.float32),
+            timestamp=np.array([1], dtype=np.int64),
+            sign=np.ones(1, dtype=np.float32),
+            popularity=np.ones(2, dtype=np.float32),
+            n_users=1,
+            n_items=2,
+            user_map={0: 0},
+            item_map={0: 0, 1: 1},
+            train_mask=np.array([True]),
+            val_mask=np.array([False]),
+            test_mask=np.array([False]),
+        )
+        config = UCaGNNConfig(device="cuda", seed=17, graph_policy="cagra_augmented")
+        embeddings = torch.tensor(
+            [[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]],
+            dtype=torch.float32,
+        )
+
+        class _FakeCupyArray:
+            """Minimal CuPy-like wrapper for graph-builder tests."""
+
+            def __init__(self, array: np.ndarray) -> None:
+                self.array = np.asarray(array, dtype=np.float32)
+
+        fake_cp = ModuleType("cupy")
+        fake_cp.asarray = lambda array: _FakeCupyArray(array)
+        fake_cp.asnumpy = lambda array: array.array
+
+        cagra_module = ModuleType("cagra")
+        cagra_module.IndexParams = lambda **kwargs: kwargs
+        cagra_module.SearchParams = lambda **kwargs: kwargs
+        cagra_module.build = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
+
+        neighbors_module = ModuleType("cuvs.neighbors")
+        neighbors_module.cagra = cagra_module
+        cuvs_module = ModuleType("cuvs")
+        cuvs_module.neighbors = neighbors_module
+
+        with (
+            patch.dict(
+                sys.modules,
+                {
+                    "cupy": fake_cp,
+                    "cuvs": cuvs_module,
+                    "cuvs.neighbors": neighbors_module,
+                },
+            ),
+            self.assertRaisesRegex(
+                RuntimeError,
+                "graph_policy='cagra_augmented' requires a working CAGRA build",
+            ),
+        ):
+            build_graph(canonical, config, embeddings=embeddings)
 
     def test_cagra_uses_seeded_search_params(self) -> None:
         """CAGRA search should thread the config seed into its search params."""
@@ -709,8 +767,8 @@ class CausalTrainingContractTests(unittest.TestCase):
         self.assertFalse(dice_like.use_sign_aware)
         self.assertFalse(dice_like.use_features)
         self.assertEqual(dice_like.scoring_weight_mode, "fixed")
-        self.assertEqual(dice_like.alpha_interest, 1.0)
-        self.assertEqual(dice_like.beta_conformity, 1.0)
+        self.assertEqual(dice_like.score_weight_interest, 1.0)
+        self.assertEqual(dice_like.score_weight_conformity, 1.0)
         self.assertEqual(dice_like.train_scoring_mode, "default")
         self.assertEqual(dice_like.eval_scoring_mode, "default")
         self.assertEqual(ucagnn.train_scoring_mode, "default")
@@ -723,9 +781,9 @@ class CausalTrainingContractTests(unittest.TestCase):
 
         self.assertTrue(ucagnn.use_features)
         self.assertEqual(ucagnn.scoring_weight_mode, "learned")
-        self.assertEqual(ucagnn.alpha_interest, 0.5)
-        self.assertEqual(ucagnn.beta_conformity, 0.3)
-        self.assertEqual(ucagnn.gamma_popularity, 0.2)
+        self.assertEqual(ucagnn.score_weight_interest, 0.5)
+        self.assertEqual(ucagnn.score_weight_conformity, 0.3)
+        self.assertEqual(ucagnn.score_weight_popularity, 0.2)
         self.assertEqual(ucagnn.auxiliary_losses_start_epoch, 15)
         self.assertEqual(ucagnn.popularity_supervision_start_epoch, 30)
         self.assertEqual(ucagnn.propensity_clip_min, 0.1)
@@ -819,7 +877,7 @@ class CausalTrainingContractTests(unittest.TestCase):
             "user_conformity": torch.tensor([[0.0, 1.0]]),
             "item_conformity": torch.tensor([[0.0, 2.0], [0.0, 1.0]]),
             "item_popularity": torch.tensor([0.2, 0.8]),
-            "item_pop": torch.zeros(2, config.pop_embed_dim),
+            "item_pop": torch.zeros(2, config.popularity_embedding_dimensions),
         }
 
         scores = model.scoring(
@@ -873,7 +931,11 @@ class CausalTrainingContractTests(unittest.TestCase):
             "item_conformity": torch.tensor([[0.0, 2.0], [0.0, 1.0]], dtype=torch.bfloat16),
             "item_popularity": torch.tensor([0.2, 0.8], dtype=torch.bfloat16),
             "item_recency": torch.tensor([0.1, 0.9], dtype=torch.bfloat16),
-            "item_pop": torch.zeros(2, config.pop_embed_dim, dtype=torch.bfloat16),
+            "item_pop": torch.zeros(
+                2,
+                config.popularity_embedding_dimensions,
+                dtype=torch.bfloat16,
+            ),
         }
 
         scores = model.scoring(
@@ -968,14 +1030,14 @@ class CausalTrainingContractTests(unittest.TestCase):
         config.use_dual_branch = True
         config.use_ipw = False
         config.use_popularity_head = False
-        config.lambda_rec = 0.0
-        config.lambda_interest_bpr = 0.0
-        config.lambda_conformity_bpr = 0.0
-        config.lambda_independence = 0.0
-        config.lambda_align = 0.0
-        config.lambda_uniform = 0.0
-        config.lambda_pop = 0.0
-        config.lambda_contrastive = 1.0
+        config.loss_weight_recommendation = 0.0
+        config.loss_weight_interest_bpr = 0.0
+        config.loss_weight_conformity_bpr = 0.0
+        config.loss_weight_independence = 0.0
+        config.loss_weight_align = 0.0
+        config.loss_weight_uniform = 0.0
+        config.loss_weight_popularity = 0.0
+        config.loss_weight_contrastive = 1.0
         config.auxiliary_loss_schedule = "linear_ramp"
         config.auxiliary_ramp_rate = 1.0
         config.contrastive_temperature = 1.0
