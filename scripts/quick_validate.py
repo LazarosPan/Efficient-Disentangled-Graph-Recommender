@@ -35,6 +35,8 @@ from src.utils.config import DEFAULT_SEED, UCaGNNConfig
 from src.utils.project_paths import CHECKPOINT_DIR, MLFLOW_DB_PATH, THESIS_DB_PATH
 
 RUNTIME_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+QUICK_VALIDATE_EPOCHS = 1
+QUICK_VALIDATE_BATCH_SIZE = 128
 _TINY_DATASET_LIMITS = {
     "amazonbook": 100,
     "movielens1m": 100,
@@ -59,8 +61,6 @@ def _build_runtime_config(
     sample_interactions: int | None = None,
     loader_max_rows: int | None = None,
     patience: int | None = None,
-    enable_profiling: bool | None = None,
-    profiling_cadence: int | None = None,
 ) -> UCaGNNConfig:
     """Build a quick-validate config without emulating a full CLI namespace.
 
@@ -77,8 +77,6 @@ def _build_runtime_config(
         sample_interactions: Optional tiny-run interaction budget.
         loader_max_rows: Optional loader row cap.
         patience: Optional early-stopping patience override.
-        enable_profiling: Optional profiling toggle.
-        profiling_cadence: Optional profiling cadence override.
 
     Returns:
         A validated runtime config tailored for quick validation.
@@ -91,8 +89,8 @@ def _build_runtime_config(
         seed=DEFAULT_SEED,
         data_dir=args.data_dir,
         device=RUNTIME_DEVICE,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
+        epochs=QUICK_VALIDATE_EPOCHS,
+        batch_size=QUICK_VALIDATE_BATCH_SIZE,
         auto_batch_size=False,
         eval_scoring_mode=eval_scoring_mode,
         scoring_weight_mode=scoring_weight_mode,
@@ -108,10 +106,6 @@ def _build_runtime_config(
     config.use_torch_compile = False
     if patience is not None:
         config.patience = patience
-    if enable_profiling is not None:
-        config.enable_profiling = enable_profiling
-    if profiling_cadence is not None:
-        config.profiling_cadence = profiling_cadence
     return config
 
 
@@ -122,7 +116,6 @@ def _build_tiny_recipe_config(
     recipe: str,
     eval_scoring_mode: str | None = None,
     use_features: bool | None = None,
-    enable_profiling: bool = False,
 ) -> UCaGNNConfig:
     """Build a tiny validation config for a catalog recipe on one dataset."""
     dataset_limit = int(_TINY_DATASET_LIMITS.get(dataset, 100))
@@ -135,8 +128,6 @@ def _build_tiny_recipe_config(
         sample_interactions=dataset_limit,
         loader_max_rows=dataset_limit,
         patience=1,
-        enable_profiling=enable_profiling,
-        profiling_cadence=1,
     )
 
 
@@ -176,15 +167,6 @@ def _assert_experiment_logging(exp_id: int) -> None:
         raise AssertionError(f"SQLite metric rows missing for experiment_id={exp_id}")
 
 
-def _assert_profiling_logging(exp_id: int) -> None:
-    profiling_rows = _sqlite_count(
-        "SELECT COUNT(*) FROM profiling WHERE experiment_id = ?",
-        (exp_id,),
-    )
-    if profiling_rows == 0:
-        raise AssertionError(f"Profiling rows missing for experiment_id={exp_id}")
-
-
 def _assert_ranking_metrics(test_metrics: dict[str, float]) -> None:
     for metric_name in THESIS_PRIMARY_METRICS:
         if metric_name not in test_metrics:
@@ -219,7 +201,6 @@ def _run_single_case(
     auto_resume: bool = False,
     checkpoint_path: str | None = None,
     expect_logging: bool = False,
-    expect_profiling: bool = False,
     expect_metrics: bool = False,
     expect_mlflow_db_touch: bool = False,
 ) -> tuple[dict, float]:
@@ -246,8 +227,6 @@ def _run_single_case(
     exp_id = int(result["exp_id"])
     if expect_logging:
         _assert_experiment_logging(exp_id)
-    if expect_profiling:
-        _assert_profiling_logging(exp_id)
     if expect_metrics:
         _assert_ranking_metrics(result["test_metrics"])
     if expect_mlflow_db_touch:
@@ -272,7 +251,11 @@ def _run_recipe_category(args: argparse.Namespace, results: list[dict]) -> None:
     for dataset in args.datasets:
         for recipe_name in selected_recipe_names:
             recipe = get_recipe(recipe_name)
-            config = _build_tiny_recipe_config(args, dataset, recipe=recipe_name)
+            config = _build_tiny_recipe_config(
+                args,
+                dataset,
+                recipe=recipe_name,
+            )
             label = f"recipe:{recipe_name}"
             try:
                 _, elapsed = _run_single_case(
@@ -329,16 +312,14 @@ def _run_ablation_category(args: argparse.Namespace, results: list[dict]) -> Non
                     dataset=dataset,
                     data_dir=args.data_dir,
                     device=RUNTIME_DEVICE,
-                    epochs=args.epochs,
-                    batch_size=args.batch_size,
+                    epochs=QUICK_VALIDATE_EPOCHS,
+                    batch_size=QUICK_VALIDATE_BATCH_SIZE,
                     sample_interactions=dataset_limit,
                     loader_max_rows=dataset_limit,
                 ),
             )
             config.use_torch_compile = False
             config.patience = 1
-            config.enable_profiling = False
-            config.profiling_cadence = 1
             label = f"ablation:{variant}"
             try:
                 _, elapsed = _run_single_case(
@@ -377,80 +358,12 @@ def _run_ablation_category(args: argparse.Namespace, results: list[dict]) -> Non
 
 
 def _run_observability_category(args: argparse.Namespace, results: list[dict]) -> None:
-    profiling_recipe = "ucagnn"
     feature_datasets = [dataset for dataset in args.datasets if supports_feature_utility(dataset)]
     print(
         ""
-        f"Observability coverage: {len(args.datasets)} datasets x 1 profiling probe, "
-        f"{len(feature_datasets)} feature probes, {len(args.datasets)} resume probes",
+        f"Observability coverage: {len(feature_datasets)} feature probes, "
+        f"{len(args.datasets)} resume probes",
     )
-    if not torch.cuda.is_available():
-        for dataset in args.datasets:
-            label = f"profiling:{profiling_recipe}"
-            results.append(
-                {
-                    "status": "skip",
-                    "category": "observability",
-                    "dataset": dataset,
-                    "label": label,
-                    "elapsed": 0.0,
-                    "detail": "CUDA unavailable",
-                },
-            )
-            _print_case(
-                "SKIP",
-                "observability",
-                dataset,
-                label,
-                0.0,
-                "CUDA unavailable",
-            )
-    else:
-        for dataset in args.datasets:
-            recipe = get_recipe(profiling_recipe)
-            config = _build_tiny_recipe_config(
-                args,
-                dataset,
-                recipe=profiling_recipe,
-                enable_profiling=True,
-            )
-            label = f"profiling:{profiling_recipe}"
-            try:
-                _, elapsed = _run_single_case(
-                    category="observability",
-                    dataset=dataset,
-                    label=label,
-                    config=config,
-                    preset=recipe.get("preset"),
-                    intervention=f"quick_profile_{profiling_recipe}",
-                    recipe_name=profiling_recipe,
-                    expect_logging=True,
-                    expect_profiling=True,
-                )
-                results.append(
-                    {
-                        "status": "pass",
-                        "category": "observability",
-                        "dataset": dataset,
-                        "label": label,
-                        "elapsed": elapsed,
-                    },
-                )
-                _print_case("OK", "observability", dataset, label, elapsed)
-            except Exception as exc:
-                results.append(
-                    {
-                        "status": "fail",
-                        "category": "observability",
-                        "dataset": dataset,
-                        "label": label,
-                        "elapsed": 0.0,
-                        "detail": str(exc),
-                    },
-                )
-                _print_case("FAIL", "observability", dataset, label, 0.0, str(exc))
-                if args.fail_fast:
-                    return
 
     feature_recipe = "ucagnn"
     feature_label = "features:ucagnn"
@@ -502,7 +415,11 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
     for dataset in args.datasets:
         checkpoint_path = CHECKPOINT_DIR / f"quick_validate_resume_probe_{dataset}.pt"
         checkpoint_path.unlink(missing_ok=True)
-        resume_config = _build_tiny_recipe_config(args, dataset, recipe="ucagnn")
+        resume_config = _build_tiny_recipe_config(
+            args,
+            dataset,
+            recipe="ucagnn",
+        )
         try:
             _, first_elapsed = _run_single_case(
                 category="observability",
@@ -678,7 +595,7 @@ def main() -> int:
     print("=" * 78)
     print(f"Datasets: {', '.join(args.datasets)}")
     print(f"Categories: {', '.join(args.categories)}")
-    print(f"Epochs: {args.epochs} | Batch size: {args.batch_size}")
+    print(f"Epochs: {QUICK_VALIDATE_EPOCHS} | Batch size: {QUICK_VALIDATE_BATCH_SIZE}")
     print(f"MLflow probe: {'enabled' if args.mlflow else 'disabled'}")
 
     for category in args.categories:

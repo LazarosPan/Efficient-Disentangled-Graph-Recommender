@@ -20,13 +20,12 @@ Use `uv run <command> --help` when you need the full option surface for a specif
 
 ```bash
 uv run quick-validate
-uv run quick-validate --mlflow
 uv run reset-experiment-db
 uv run cleanup-experiment-artifacts
 ```
 
 - `quick-validate`: default post-change validator. It runs tiny recipe, ablation, observability, and evaluation checks.
-- `quick-validate --mlflow`: same validator, but also checks the optional MLflow logging path.
+- `quick-validate` is now a zero-argument smoke command with one fixed tiny runtime shape, so validation follows the active recipe/ablation semantics instead of ad-hoc CLI overrides.
 - `reset-experiment-db`: deletes only `results/thesis_experiments.db` and its SQLite sidecars.
 - `cleanup-experiment-artifacts`: deletes the repo-local MLflow database, `results/formal_run_state.json`, `mlruns/`, and local checkpoints.
 
@@ -43,30 +42,18 @@ uv run query-results
 uv run query-results --view completed
 uv run query-results --view attention
 uv run query-results --view errors
+uv run query-results --view comparison
 uv run evaluate-scoring-modes --checkpoint-path results/checkpoints/<checkpoint>.pt
 uv run python src/data_exploration/explore_all_datasets.py
 uv run python src/data_exploration/explore_all_datasets.py --output-dir results/dataset_visualizations
-uv run query-results --batch-id smoke-bench
-uv run query-results --status completed
-uv run query-results --exp 12
-uv run query-results --metrics 12
-uv run query-results --profiling 12
-uv run query-results --alpha 12
-uv run query-results --bottleneck 12
 ```
 
-- `query-results`: inspect the thesis SQLite database. The base command renders the default thesis summary for full-data formal and ablation runs, ordered by dataset and test ranking metrics, with the full test metric suite, a per-run `Resources:` line (`training_time_s`, `completed_train_epochs`, `peak_vram_mb`), and full canonical experiment names, then writes that report to `results/query_results.md`. Add one focused flag when drilling into a run.
+- `query-results`: inspect the thesis SQLite database. The base command renders the default thesis summary for full-data formal and ablation runs, ordered by dataset and test ranking metrics, with the full test metric suite, a per-run `Resources:` line (`training_time_s`, `completed_train_epochs`, `peak_vram_mb`, `avg_gpu_utilization_pct`), and full canonical experiment names, then writes that report to `results/query_results.md`.
 - `query-results --view completed`: show only finished runs via the SQLite completed-run view.
 - `query-results --view attention`: show anything not yet cleanly completed, including running, unknown, OOM, and failed rows.
 - `query-results --view errors`: show only the failed and OOM rows.
+- `query-results --view comparison`: align same-config runs across code versions for side-by-side inspection.
 - `evaluate-scoring-modes --checkpoint-path ...`: reload one saved checkpoint and compare the thesis metrics under multiple evaluation-time scoring modes without retraining.
-- `query-results --batch-id smoke-bench`: list only the runs that belong to one benchmark or ablation batch.
-- `query-results --status completed`: filter the list to one terminal status such as `completed`, `oom`, or `failed`.
-- `query-results --exp 12`: show the stored config and metadata for experiment 12.
-- `query-results --metrics 12`: show train, validation, and test metrics for experiment 12.
-- `query-results --profiling 12`: show per-stage runtime and VRAM summary for experiment 12.
-- `query-results --alpha 12`: inspect alpha drift for sign-aware runs.
-- `query-results --bottleneck 12`: rank the slowest profiling stages for experiment 12.
 - `python src/data_exploration/explore_all_datasets.py`: load the six benchmark datasets through the canonical loader path, always use the full selected datasets, and rewrite the fixed benchmark/profile PNGs in `results/dataset_visualizations/`.
 
 ## Data
