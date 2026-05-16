@@ -72,7 +72,7 @@ class EmbeddingModule(nn.Module):
 
         # Optional popularity embedding
         if config.use_popularity_emb:
-            self.item_pop = nn.Embedding(n_items, config.pop_embed_dim)
+            self.item_pop = nn.Embedding(n_items, config.popularity_embedding_dimensions)
             nn.init.xavier_uniform_(self.item_pop.weight)
 
         if self.has_item_features:

@@ -244,7 +244,7 @@ class LossSuite(nn.Module):
 
     def _resolve_auxiliary_weight(
         self,
-        lambda_max: float,
+        max_weight: float,
         epoch: int,
         *,
         ramp_rate: float,
@@ -253,7 +253,7 @@ class LossSuite(nn.Module):
         """Resolve one auxiliary-loss weight under the configured schedule.
 
         Args:
-            lambda_max: Configured maximum loss weight.
+            max_weight: Configured maximum loss weight.
             epoch: Current zero-based epoch.
             ramp_rate: Linear ramp slope used when the schedule is
                 ``linear_ramp``.
@@ -264,11 +264,11 @@ class LossSuite(nn.Module):
             Effective scalar weight for the current epoch.
 
         """
-        if lambda_max <= 0:
+        if max_weight <= 0:
             return 0.0
         if self.config.auxiliary_loss_schedule == "linear_ramp":
-            return min(lambda_max, ramp_rate * max(epoch, 0))
-        return lambda_max if active_in_phased_schedule else 0.0
+            return min(max_weight, ramp_rate * max(epoch, 0))
+        return max_weight if active_in_phased_schedule else 0.0
 
     def forward(
         self,
@@ -315,15 +315,23 @@ class LossSuite(nn.Module):
         )
 
         # Resolve all auxiliary weights from a single spec table.
-        # Each entry: (lambda_val, ramp_rate, active_in_phased_schedule)
+        # Each entry: (max_weight, ramp_rate, active_in_phased_schedule)
         aux_specs_ = [
-            (cfg.lambda_interest_bpr, cfg.auxiliary_ramp_rate, True),
-            (cfg.lambda_conformity_bpr, cfg.auxiliary_ramp_rate, True),
-            (cfg.lambda_independence, cfg.independence_ramp_rate, auxiliary_losses_active),
-            (cfg.lambda_contrastive, cfg.auxiliary_ramp_rate, auxiliary_losses_active),
-            (cfg.lambda_align, cfg.auxiliary_ramp_rate, auxiliary_losses_active),
-            (cfg.lambda_uniform, cfg.auxiliary_ramp_rate, auxiliary_losses_active),
-            (cfg.lambda_pop, cfg.auxiliary_ramp_rate, popularity_supervision_active),
+            (cfg.loss_weight_interest_bpr, cfg.auxiliary_ramp_rate, True),
+            (cfg.loss_weight_conformity_bpr, cfg.auxiliary_ramp_rate, True),
+            (
+                cfg.loss_weight_independence,
+                cfg.independence_ramp_rate,
+                auxiliary_losses_active,
+            ),
+            (cfg.loss_weight_contrastive, cfg.auxiliary_ramp_rate, auxiliary_losses_active),
+            (cfg.loss_weight_align, cfg.auxiliary_ramp_rate, auxiliary_losses_active),
+            (cfg.loss_weight_uniform, cfg.auxiliary_ramp_rate, auxiliary_losses_active),
+            (
+                cfg.loss_weight_popularity,
+                cfg.auxiliary_ramp_rate,
+                popularity_supervision_active,
+            ),
         ]
         (
             interest_weight,
@@ -334,8 +342,13 @@ class LossSuite(nn.Module):
             uniform_weight,
             popularity_weight,
         ) = [
-            self._resolve_auxiliary_weight(lmax, epoch, ramp_rate=rr, active_in_phased_schedule=act)
-            for lmax, rr, act in aux_specs_
+            self._resolve_auxiliary_weight(
+                max_weight,
+                epoch,
+                ramp_rate=ramp_rate,
+                active_in_phased_schedule=is_active,
+            )
+            for max_weight, ramp_rate, is_active in aux_specs_
         ]
 
         # Branch-local BPR auxiliaries keep each branch predictive on its own.
@@ -434,7 +447,7 @@ class LossSuite(nn.Module):
 
         # Weighted sum
         total = (
-            cfg.lambda_rec * losses["rec"]
+            cfg.loss_weight_recommendation * losses["rec"]
             + interest_weight * losses["interest_bpr"]
             + conformity_weight * losses["conformity_bpr"]
             + independence_weight * losses["independence"]
