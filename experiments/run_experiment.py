@@ -2,8 +2,9 @@
 """Main single-experiment CLI runner for U-CaGNN.
 
 Usage:
-    uv run experiment --dataset movielens1m --preset lightgcn --epochs 3
-    uv run experiment --dataset kuairec_v2 --preset ucagnn
+    uv run experiment --list-recipes
+    uv run experiment --dataset movielens1m --recipe ucagnn
+    uv run experiment --dataset kuairec_v2 --preset ucagnn --overwrite-checkpoint
 """
 
 from __future__ import annotations
@@ -33,9 +34,8 @@ from src.data.graph_builder import build_graph
 from src.data.loaders import default_preprocessing_preset, load_dataset
 from src.losses.loss_suite import LossSuite
 from src.models.ucagnn import UCaGNN
-from src.profiling.gpu_profiler import GPUProfiler
 from src.training.mini_batch_trainer import MiniBatchTrainer
-from src.utils.config import DEFAULT_SEED, UCaGNNConfig
+from src.utils.config import DEFAULT_SEED, GRAPH_POLICY_CHOICES, UCaGNNConfig
 from src.utils.experiment_logger import ExperimentLogger
 from src.utils.interaction_indexing import compute_normalized_popularity
 from src.utils.project_paths import (
@@ -92,9 +92,9 @@ CONFIG_OVERRIDE_FIELDS = (
     "scoring_weight_mode",
     "use_features",
     "feature_policy",
+    "graph_policy",
     "preprocessing_preset",
     "derived_split_mode",
-    "popularity_window_seconds",
     "num_neighbors",
     "hard_negative_ratio",
     "auxiliary_losses_start_epoch",
@@ -127,9 +127,9 @@ _BENCHMARK_SHARED_CONFIG_FIELD_SET = frozenset(
         "sample_interactions",
         "use_features",
         "feature_policy",
+        "graph_policy",
         "preprocessing_preset",
         "derived_split_mode",
-        "popularity_window_seconds",
     },
 )
 BENCHMARK_CONFIG_FIELDS = (
@@ -138,28 +138,19 @@ BENCHMARK_CONFIG_FIELDS = (
         for field_name in CONFIG_OVERRIDE_FIELDS
         if field_name in _BENCHMARK_SHARED_CONFIG_FIELD_SET
     ),
-    "num_neighbors_options",
     "device",
     "data_dir",
 )
-BENCHMARK_CONFIG_INPUT_FIELDS = tuple(
-    field_name for field_name in BENCHMARK_CONFIG_FIELDS if field_name != "num_neighbors_options"
-)
+BENCHMARK_CONFIG_INPUT_FIELDS = BENCHMARK_CONFIG_FIELDS
 _CHECKPOINT_IDENTITY_VERSION = 1
 _CHECKPOINT_HASH_LEN = 16
-LEGACY_CONFIG_FIELD_ALIASES = {
-    "curriculum_phase1_end": "auxiliary_losses_start_epoch",
-    "curriculum_phase2_end": "popularity_supervision_start_epoch",
-}
 _TRAINING_IDENTITY_FIELDS = (
-    "alpha_interest",
     "amp_dtype",
     "auxiliary_loss_schedule",
     "auxiliary_ramp_rate",
     "auto_batch_size",
     "batch_size",
     "batch_size_candidates",
-    "beta_conformity",
     "cagra_initial_degree",
     "cagra_itopk_size",
     "cagra_k",
@@ -178,19 +169,19 @@ _TRAINING_IDENTITY_FIELDS = (
     "embed_dim",
     "epochs",
     "feature_policy",
-    "gamma_popularity",
+    "graph_policy",
     "grad_clip_norm",
     "hard_negative_ratio",
     "independence_ramp_rate",
     "interest_gnn_layers",
-    "lambda_align",
-    "lambda_conformity_bpr",
-    "lambda_contrastive",
-    "lambda_independence",
-    "lambda_interest_bpr",
-    "lambda_pop",
-    "lambda_rec",
-    "lambda_uniform",
+    "loss_weight_align",
+    "loss_weight_conformity_bpr",
+    "loss_weight_contrastive",
+    "loss_weight_independence",
+    "loss_weight_interest_bpr",
+    "loss_weight_popularity",
+    "loss_weight_recommendation",
+    "loss_weight_uniform",
     "loader_max_rows",
     "loss_schedule",
     "lr",
@@ -199,13 +190,15 @@ _TRAINING_IDENTITY_FIELDS = (
     "lr_scheduler_patience",
     "n_negatives",
     "num_neighbors",
-    "pop_embed_dim",
-    "popularity_window_seconds",
+    "popularity_embedding_dimensions",
     "preprocessing_preset",
     "propensity_clip_max",
     "propensity_clip_min",
     "propensity_hidden",
     "sample_interactions",
+    "score_weight_conformity",
+    "score_weight_interest",
+    "score_weight_popularity",
     "scoring_weight_mode",
     "seed",
     "single_branch_gnn_layers",
@@ -257,10 +250,10 @@ def _build_canonical_name(
         parts.append(f"loadrows{config.loader_max_rows}")
     if config.preprocessing_preset is not None:
         parts.append(f"ppreset{config.preprocessing_preset}")
+    if config.graph_policy != "observed":
+        parts.append(f"graph{config.graph_policy}")
     if config.derived_split_mode != "per_user_temporal":
         parts.append(f"split{config.derived_split_mode}")
-    if config.popularity_window_seconds is not None:
-        parts.append(f"popwin{config.popularity_window_seconds}")
     if config.use_features:
         parts.append("feat")
     if config.feature_policy != "thesis_default":
@@ -543,17 +536,74 @@ def load_runtime_data(config: UCaGNNConfig) -> tuple[Any, Any]:
         config.val_ratio,
         config.derived_split_mode,
     )
-    data = build_graph(canonical, config, embeddings=None)
-    return canonical, data
+    observed_data = build_graph(canonical, config, embeddings=None)
+    if config.graph_policy == "observed":
+        return canonical, observed_data
+
+    bootstrap_embeddings = _bootstrap_cagra_embeddings(config, canonical, observed_data)
+    return canonical, build_graph(canonical, config, embeddings=bootstrap_embeddings)
+
+
+def _bootstrap_cagra_embeddings(
+    config: UCaGNNConfig,
+    canonical: Any,
+    observed_data: Any,
+) -> torch.Tensor:
+    """Return the bootstrap node embeddings used for CAGRA augmentation.
+
+    Args:
+        config: Active runtime configuration.
+        canonical: Loaded canonical interactions.
+        observed_data: Graph payload for the observed train-interaction graph.
+
+    Returns:
+        torch.Tensor: CPU float tensor with shape ``(n_users + n_items, d)``.
+
+    Raises:
+        ValueError: If the current bootstrap path lacks item features and would
+            therefore build ANN edges from untrained ID-only embeddings.
+
+    """
+    item_features = getattr(observed_data, "item_features", None)
+    if item_features is None or item_features.numel() == 0:
+        raise ValueError(
+            "graph_policy='cagra_augmented' combines CAGRA edges with the observed "
+            "train-interaction graph, but the current bootstrap path still needs "
+            "item features. Without them, load_runtime_data() would build ANN edges "
+            "from untrained ID-only embeddings before training begins.",
+        )
+
+    bootstrap_model = build_runtime_model(config, canonical, observed_data)
+    with torch.no_grad():
+        bootstrap_embeddings = (
+            bootstrap_model.embedding.get_stacked_embeddings().detach().float().cpu()
+        )
+    del bootstrap_model
+    return bootstrap_embeddings
+
+
+def _train_mask_numpy_from_data(data: Any) -> np.ndarray:
+    """Return the runtime graph's train mask as a NumPy boolean array.
+
+    Args:
+        data: Runtime graph payload produced by ``build_graph``.
+
+    Returns:
+        np.ndarray: Boolean train mask aligned with the canonical interactions.
+
+    Raises:
+        ValueError: If the runtime graph does not expose a CPU-accessible train mask.
+
+    """
+    train_mask = getattr(data, "train_mask", None)
+    if not isinstance(train_mask, torch.Tensor):
+        raise ValueError("Runtime graph data must include a torch train_mask tensor.")
+    return train_mask.detach().cpu().numpy()
 
 
 def build_runtime_model(config: UCaGNNConfig, canonical: Any, data: Any) -> UCaGNN:
     """Instantiate the runtime model for a loaded canonical dataset and graph."""
-    train_mask, _, _ = canonical.get_splits(
-        config.train_ratio,
-        config.val_ratio,
-        derived_split_mode=config.derived_split_mode,
-    )
+    train_mask = _train_mask_numpy_from_data(data)
     item_recency = torch.from_numpy(canonical.compute_item_recency(train_mask))
     return UCaGNN(
         canonical.n_users,
@@ -1020,11 +1070,9 @@ def _build_mlflow_params(
         "feature_policy": config.feature_policy,
         "preprocessing_preset": config.preprocessing_preset or "default",
         "derived_split_mode": config.derived_split_mode,
-        "popularity_window_seconds": config.popularity_window_seconds or 0,
         "use_dual_branch": config.use_dual_branch,
         "use_sign_aware": config.use_sign_aware,
         "use_ipw": config.use_ipw,
-        "enable_profiling": config.enable_profiling,
         "canonical_name": _build_canonical_name(config, preset, intervention),
         "run_started_at_utc": run_started_at_utc,
         **provenance,
@@ -1125,11 +1173,7 @@ def normalize_config_inputs(
     args: argparse.Namespace | Mapping[str, object] | object,
 ) -> dict[str, object]:
     """Return config inputs as a plain mapping."""
-    config_inputs = dict(args) if isinstance(args, Mapping) else vars(args).copy()
-    for legacy_name, new_name in LEGACY_CONFIG_FIELD_ALIASES.items():
-        if legacy_name in config_inputs and new_name not in config_inputs:
-            config_inputs[new_name] = config_inputs[legacy_name]
-    return config_inputs
+    return dict(args) if isinstance(args, Mapping) else vars(args).copy()
 
 
 def _present_field_mapping(
@@ -1234,6 +1278,8 @@ def build_benchmark_config_inputs(
     lr_scheduler: str,
     scoring_weight_mode: str,
     num_neighbors: list[int],
+    preprocessing_preset: str | None = None,
+    graph_policy: str | None = None,
 ) -> dict[str, object]:
     """Build one run's config inputs from normalized benchmark arguments."""
     return _build_config_input_mapping(
@@ -1248,6 +1294,8 @@ def build_benchmark_config_inputs(
             "lr_scheduler": lr_scheduler,
             "scoring_weight_mode": scoring_weight_mode,
             "num_neighbors": num_neighbors,
+            "preprocessing_preset": preprocessing_preset,
+            "graph_policy": graph_policy,
         },
     )
 
@@ -1266,10 +1314,71 @@ def _normalize_benchmark_lr_scheduler_override(
     return "plateau"
 
 
+def _normalize_benchmark_graph_policy_override(
+    raw_value: object,
+) -> tuple[str | None, list[str] | None]:
+    """Normalize benchmark ``graph_policy`` overrides to one value or a sweep list."""
+    if raw_value is None:
+        return None, None
+    if isinstance(raw_value, str):
+        if raw_value not in GRAPH_POLICY_CHOICES:
+            raise ValueError(
+                f"graph_policy must be one of {GRAPH_POLICY_CHOICES}, got {raw_value!r}",
+            )
+        return raw_value, None
+    if isinstance(raw_value, (list, tuple)):
+        if not raw_value:
+            raise ValueError("graph_policy sweep must be a non-empty list.")
+        graph_policy_options: list[str] = []
+        for index, value in enumerate(raw_value):
+            graph_policy = str(value)
+            if graph_policy not in GRAPH_POLICY_CHOICES:
+                raise ValueError(
+                    f"graph_policy[{index}] must be one of {GRAPH_POLICY_CHOICES}, "
+                    f"got {graph_policy!r}",
+                )
+            if graph_policy not in graph_policy_options:
+                graph_policy_options.append(graph_policy)
+        return graph_policy_options[0], graph_policy_options
+    raise ValueError(
+        "graph_policy must be a string or a list of graph-policy strings.",
+    )
+
+
+def _normalize_benchmark_preprocessing_override(
+    raw_value: object,
+) -> tuple[str | None, list[str] | None]:
+    """Normalize benchmark preprocessing overrides to one value or a sweep list."""
+    if raw_value is None:
+        return None, None
+    if isinstance(raw_value, str):
+        values = [part.strip() for part in raw_value.split(",") if part.strip()]
+    elif isinstance(raw_value, (list, tuple)):
+        values = [str(value).strip() for value in raw_value if str(value).strip()]
+    else:
+        raise ValueError(
+            "preprocessing_preset must be a string or a list of preprocessing preset names.",
+        )
+    if not values:
+        raise ValueError("preprocessing_preset sweep must be a non-empty string or list.")
+    deduped = list(dict.fromkeys(values))
+    return deduped[0], deduped if len(deduped) > 1 else None
+
+
 def normalize_benchmark_config_overrides(
     raw_config: Mapping[str, object],
 ) -> dict[str, object]:
     """Normalize the config-bearing portion of a benchmark or formal-run payload."""
+    removed_fields = [
+        field_name
+        for field_name in ("num_neighbors_options", "popularity_window_seconds")
+        if field_name in raw_config
+    ]
+    if removed_fields:
+        raise ValueError(
+            "Use the current config surface only; removed fields are not supported: "
+            + ", ".join(removed_fields),
+        )
     default_config = UCaGNNConfig()
     normalized: dict[str, object] = {
         field_name: raw_config.get(field_name) for field_name in BENCHMARK_CONFIG_FIELDS
@@ -1279,23 +1388,31 @@ def normalize_benchmark_config_overrides(
     normalized["use_features"] = bool(use_features) if use_features is not None else None
     feature_policy = raw_config.get("feature_policy")
     normalized["feature_policy"] = str(feature_policy) if feature_policy is not None else None
-    preprocessing_preset = raw_config.get("preprocessing_preset")
-    normalized["preprocessing_preset"] = (
-        str(preprocessing_preset) if preprocessing_preset is not None else None
+    raw_graph_policy = raw_config.get("graph_policy_options")
+    if raw_graph_policy is None:
+        raw_graph_policy = raw_config.get("graph_policy")
+    graph_policy, graph_policy_options = _normalize_benchmark_graph_policy_override(
+        raw_graph_policy,
     )
+    normalized["graph_policy"] = graph_policy
+    normalized["graph_policy_options"] = graph_policy_options
+    (
+        preprocessing_preset,
+        preprocessing_preset_options,
+    ) = _normalize_benchmark_preprocessing_override(
+        raw_config.get("preprocessing_preset"),
+    )
+    normalized["preprocessing_preset"] = preprocessing_preset
+    normalized["preprocessing_preset_options"] = preprocessing_preset_options
     derived_split_mode = raw_config.get("derived_split_mode")
     normalized["derived_split_mode"] = (
         str(derived_split_mode) if derived_split_mode is not None else None
-    )
-    popularity_window_seconds = raw_config.get("popularity_window_seconds")
-    normalized["popularity_window_seconds"] = (
-        int(popularity_window_seconds) if popularity_window_seconds is not None else None
     )
     batch_size = raw_config.get("batch_size")
     normalized["batch_size"] = (
         int(batch_size) if batch_size is not None else default_config.batch_size
     )
-    normalized["auto_batch_size"] = bool(raw_config.get("auto_batch_size", False))
+    normalized["auto_batch_size"] = bool(raw_config.get("auto_batch_size", True))
     batch_size_candidates = raw_config.get("batch_size_candidates")
     normalized["batch_size_candidates"] = (
         list(batch_size_candidates) if isinstance(batch_size_candidates, (list, tuple)) else None
@@ -1327,14 +1444,16 @@ def normalize_benchmark_config_overrides(
     )
     dropout = raw_config.get("dropout")
     normalized["dropout"] = float(dropout) if dropout is not None else None
-    resolved_num_neighbors, num_neighbors_options = resolve_profile_num_neighbors(
-        {
-            "num_neighbors": raw_config.get("num_neighbors"),
-            "num_neighbors_options": raw_config.get("num_neighbors_options"),
-        },
+    neighbor_sweep = resolve_profile_num_neighbors(
+        {"num_neighbors": raw_config.get("num_neighbors")},
     )
-    normalized["num_neighbors"] = resolved_num_neighbors
-    normalized["num_neighbors_options"] = num_neighbors_options
+    normalized["num_neighbors"] = (
+        None
+        if neighbor_sweep is None
+        else neighbor_sweep[0]
+        if len(neighbor_sweep) == 1
+        else neighbor_sweep
+    )
     normalized["hard_negative_ratio"] = float(
         raw_config.get("hard_negative_ratio", default_config.hard_negative_ratio),
     )
@@ -1560,7 +1679,7 @@ def run_experiment(
     logger.info(f"Model parameters: {n_params:,}")
 
     loss_suite = LossSuite(config)
-    profiler = GPUProfiler() if torch.cuda.is_available() and config.enable_profiling else None
+    profiler = None
     gpu_name, gpu_vram_gb = _gpu_hardware_metadata(config.device)
 
     # Return early for already-complete checkpoints before opening the DB.
@@ -1923,7 +2042,7 @@ def main() -> int:
         config,
         preset=resolved_preset,
         intervention=args.intervention,
-        save_checkpoint=not args.no_checkpoint,
+        save_checkpoint=True,
         enable_mlflow=args.enable_mlflow,
         mlflow_tracking_uri=args.mlflow_tracking_uri,
         mlflow_experiment_name=args.mlflow_experiment_name,

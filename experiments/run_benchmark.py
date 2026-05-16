@@ -2,9 +2,7 @@
 """Formal matrix benchmark runner for dataset x preset.
 
 Usage:
-    uv run formal-run --dry-run
     uv run formal-run --profile default
-    uv run formal-run --resume-latest
 """
 
 from __future__ import annotations
@@ -38,6 +36,7 @@ from experiments.recipes import (
     default_formal_profile_name,
     formal_profile_names,
     get_formal_profile,
+    resolve_profile_num_neighbors,
 )
 from experiments.run_experiment import (
     BENCHMARK_CONFIG_FIELDS,
@@ -54,6 +53,18 @@ DEFAULT_PROFILE_NAME = default_formal_profile_name()
 
 
 DEFAULT_SCORING_WEIGHT_MODES = ["learned"]
+FORMAL_RUN_STATE_FIELDS = frozenset(
+    {
+        "profile_name",
+        "profile_slug",
+        "batch_id",
+        "resumed",
+        "last_started_at_utc",
+        "last_finished_at_utc",
+        "last_exit_code",
+        "benchmark_args",
+    },
+)
 BENCHMARK_MATRIX_FIELDS = (
     "datasets",
     "presets",
@@ -77,6 +88,8 @@ RUNTIME_ONLY_BENCHMARK_FIELDS = (
 NORMALIZED_BENCHMARK_FIELDS = (
     *BENCHMARK_MATRIX_FIELDS,
     *BENCHMARK_CONFIG_FIELDS,
+    "graph_policy_options",
+    "preprocessing_preset_options",
     "change_note",
     "no_mlflow",
     "mlflow_tracking_uri",
@@ -97,6 +110,68 @@ def _write_state(payload: dict[str, object]) -> None:
     """Persist the formal-run state file."""
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     STATE_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def _load_saved_formal_state() -> dict[str, object] | None:
+    """Load and validate the saved formal-run state."""
+    if not STATE_PATH.exists():
+        return None
+
+    raw_state = json.loads(STATE_PATH.read_text())
+    if not isinstance(raw_state, dict):
+        raise ValueError(
+            "Saved formal-run state is malformed. Delete it and start a fresh formal run.",
+        )
+
+    unexpected_fields = sorted(set(raw_state) - FORMAL_RUN_STATE_FIELDS)
+    if unexpected_fields:
+        raise ValueError(
+            (
+                "Saved formal-run state contains unexpected fields "
+                f"{unexpected_fields}. Delete it and start a fresh formal run."
+            ),
+        )
+
+    raw_profile_name = raw_state.get("profile_name")
+    if not isinstance(raw_profile_name, str) or not raw_profile_name.strip():
+        raise ValueError(
+            (
+                "Saved formal-run state is missing profile_name. Delete it and start "
+                "a fresh formal run."
+            ),
+        )
+
+    try:
+        profile_bundle = get_formal_profile(raw_profile_name)
+    except KeyError as exc:
+        raise ValueError(
+            (
+                "The saved formal-run state references a profile that is no longer "
+                "defined. Delete it and start a fresh formal run."
+            ),
+        ) from exc
+
+    raw_benchmark_args = raw_state.get("benchmark_args")
+    if not isinstance(raw_benchmark_args, Mapping):
+        raise ValueError(
+            (
+                "Saved formal-run state is missing benchmark_args. Delete it and "
+                "start a fresh formal run."
+            ),
+        )
+
+    benchmark_args = _coerce_benchmark_args(
+        raw_benchmark_args,
+        fallback_profile_name=str(profile_bundle["id"]),
+    )
+    benchmark_args["profile_name"] = str(profile_bundle["id"])
+    benchmark_args["profile_slug"] = str(profile_bundle["name"])
+
+    saved_state = dict(raw_state)
+    saved_state["profile_name"] = str(profile_bundle["id"])
+    saved_state["profile_slug"] = str(profile_bundle["name"])
+    saved_state["benchmark_args"] = benchmark_args
+    return saved_state
 
 
 def _normalize_benchmark_args(
@@ -194,10 +269,10 @@ def _build_new_run_args(
     assert isinstance(matrix, dict)
     config_overrides = profile_bundle["config_overrides"]
     assert isinstance(config_overrides, dict)
-    # CLI --datasets overrides the profile's dataset selection.
-    cli_datasets = getattr(cli_args, "datasets", None)
-    datasets_value = cli_datasets if cli_datasets is not None else matrix.get("datasets", "all")
+    datasets_value = matrix.get("datasets", "all")
     benchmark_args = normalize_benchmark_config_overrides(config_overrides)
+    benchmark_args["sample_interactions"] = None
+    benchmark_args["loader_max_rows"] = None
     benchmark_args.update(
         {
             "datasets": normalize_benchmark_datasets_arg(datasets_value),
@@ -207,18 +282,18 @@ def _build_new_run_args(
             ),
             "profile_name": str(profile_bundle["id"]),
             "profile_slug": str(profile_bundle["name"]),
-            "change_note": getattr(cli_args, "change_note", None),
-            "device": cli_args.device or "cuda",
-            "data_dir": cli_args.data_dir or "data",
-            "no_mlflow": bool(cli_args.no_mlflow),
-            "mlflow_tracking_uri": cli_args.mlflow_tracking_uri,
-            "mlflow_experiment_name": cli_args.mlflow_experiment_name or "ucagnn-formal",
+            "change_note": None,
+            "device": "cuda",
+            "data_dir": "data",
+            "no_mlflow": False,
+            "mlflow_tracking_uri": None,
+            "mlflow_experiment_name": "ucagnn-formal",
             "overwrite_checkpoint": bool(
                 getattr(cli_args, "overwrite_checkpoint", False),
             ),
             "batch_id": resolve_batch_id(None, prefix=f"formal-{profile_name}"),
             "resume_batch": True,
-            "dry_run": cli_args.dry_run,
+            "dry_run": False,
         },
     )
     return benchmark_args
@@ -227,32 +302,15 @@ def _build_new_run_args(
 def _override_resumed_args(
     benchmark_args: dict[str, object],
     cli_args: argparse.Namespace,
-    profile_name: str,
 ) -> dict[str, object]:
     """Apply a small set of runtime overrides when resuming a saved run."""
     overridden_args = dict(benchmark_args)
-    for attribute in (
-        "device",
-        "data_dir",
-        "mlflow_tracking_uri",
-        "mlflow_experiment_name",
-    ):
-        value = getattr(cli_args, attribute)
-        if value is not None:
-            overridden_args[attribute] = value
-    if cli_args.no_mlflow:
-        overridden_args["no_mlflow"] = True
     if getattr(cli_args, "overwrite_checkpoint", False):
         overridden_args["overwrite_checkpoint"] = True
-    overridden_args["dry_run"] = cli_args.dry_run
+    overridden_args["dry_run"] = False
     overridden_args["resume_batch"] = True
     overridden_args["sample_interactions"] = None
     overridden_args["loader_max_rows"] = None
-    if cli_args.restart:
-        overridden_args["batch_id"] = resolve_batch_id(
-            None,
-            prefix=f"formal-{profile_name}",
-        )
     return overridden_args
 
 
@@ -260,7 +318,7 @@ def _resolve_benchmark_args(
     cli_args: argparse.Namespace,
 ) -> tuple[dict[str, object], str, bool]:
     """Resolve whether to create a new formal run or resume the saved one."""
-    saved_state = json.loads(STATE_PATH.read_text()) if STATE_PATH.exists() else None
+    saved_state = _load_saved_formal_state()
     current_profile_bundle = None
     saved_benchmark_args: dict[str, object] | None = None
 
@@ -269,48 +327,16 @@ def _resolve_benchmark_args(
         current_profile_bundle = get_formal_profile(cli_args.profile)
         requested_profile = str(current_profile_bundle["id"])
     saved_profile = None
-    saved_profile_bundle = None
     if saved_state is not None:
-        raw_saved_profile = str(
-            saved_state.get("profile_name") or saved_state.get("version") or DEFAULT_PROFILE_NAME,
-        )
-        try:
-            saved_profile_bundle = get_formal_profile(raw_saved_profile)
-            saved_profile = str(saved_profile_bundle["id"])
-        except KeyError:
-            saved_profile = raw_saved_profile
-            saved_profile_bundle = saved_state.get("profile_config")
-        raw_saved_benchmark_args = saved_state.get("benchmark_args")
-        if isinstance(raw_saved_benchmark_args, dict):
-            try:
-                saved_benchmark_args = _coerce_benchmark_args(
-                    raw_saved_benchmark_args,
-                    fallback_profile_name=raw_saved_profile,
-                )
-            except ValueError:
-                # Stale state with an unrecognized schema; treat as missing.
-                saved_benchmark_args = None
-                saved_profile = None
-                saved_profile_bundle = None
+        saved_profile = str(saved_state["profile_name"])
+        raw_saved_benchmark_args = saved_state["benchmark_args"]
+        assert isinstance(raw_saved_benchmark_args, dict)
+        saved_benchmark_args = dict(raw_saved_benchmark_args)
 
-    should_resume_latest = cli_args.resume_latest or (
-        requested_profile is None and not cli_args.new_run and saved_state is not None
-    )
+    should_resume_latest = requested_profile is None and saved_state is not None
     if should_resume_latest:
         if saved_state is None:
             raise ValueError("No saved formal-run state exists to resume.")
-        if saved_profile_bundle is None:
-            if cli_args.resume_latest:
-                raise ValueError(
-                    (
-                        "The saved formal-run state references a profile that is no "
-                        "longer defined. Use --new-run or --restart to start a fresh "
-                        "batch."
-                    ),
-                )
-            profile_name = requested_profile or DEFAULT_PROFILE_NAME
-            benchmark_args = _build_new_run_args(cli_args, profile_name)
-            return benchmark_args, profile_name, False
         assert saved_benchmark_args is not None
         benchmark_args = saved_benchmark_args
         profile_name = saved_profile or DEFAULT_PROFILE_NAME
@@ -318,17 +344,9 @@ def _resolve_benchmark_args(
         if _benchmark_plan_signature(benchmark_args) != _benchmark_plan_signature(
             expected_args,
         ):
-            if cli_args.resume_latest:
-                raise ValueError(
-                    (
-                        "The saved formal-run state no longer matches the current "
-                        "profile bundle. Use --new-run or --restart to start a "
-                        "fresh mini-batch-only batch."
-                    ),
-                )
             benchmark_args = expected_args
             return benchmark_args, profile_name, False
-        benchmark_args = _override_resumed_args(benchmark_args, cli_args, profile_name)
+        benchmark_args = _override_resumed_args(benchmark_args, cli_args)
         benchmark_args["profile_name"] = profile_name
         benchmark_args["profile_slug"] = str(get_formal_profile(profile_name)["name"])
         return benchmark_args, profile_name, True
@@ -336,10 +354,7 @@ def _resolve_benchmark_args(
     if (
         requested_profile is not None
         and saved_state is not None
-        and not cli_args.new_run
-        and not cli_args.restart
         and requested_profile == saved_profile
-        and saved_profile_bundle == current_profile_bundle
     ):
         assert saved_benchmark_args is not None
         benchmark_args = saved_benchmark_args
@@ -353,7 +368,6 @@ def _resolve_benchmark_args(
         benchmark_args = _override_resumed_args(
             benchmark_args,
             cli_args,
-            requested_profile,
         )
         benchmark_args["profile_name"] = requested_profile
         benchmark_args["profile_slug"] = str(current_profile_bundle["name"])
@@ -405,9 +419,34 @@ def _resolve_benchmark_num_neighbors_for_preset(
     return list(num_neighbors[:required_hops])
 
 
+def _benchmark_graph_policy_values(
+    benchmark_args: Mapping[str, object],
+) -> list[str]:
+    """Return the resolved graph-policy values for one benchmark plan."""
+    graph_policy_options = benchmark_args.get("graph_policy_options")
+    if isinstance(graph_policy_options, (list, tuple)) and graph_policy_options:
+        return [str(graph_policy) for graph_policy in graph_policy_options]
+    graph_policy = benchmark_args.get("graph_policy")
+    if graph_policy is not None:
+        return [str(graph_policy)]
+    return [UCaGNNConfig().graph_policy]
+
+
+def _benchmark_num_neighbors_values(
+    benchmark_args: Mapping[str, object],
+) -> list[list[int]]:
+    """Return the resolved neighbor vectors for one benchmark plan."""
+    neighbor_sweep = resolve_profile_num_neighbors(
+        {"num_neighbors": benchmark_args.get("num_neighbors")},
+    )
+    if neighbor_sweep is not None:
+        return neighbor_sweep
+    return [list(UCaGNNConfig().num_neighbors)]
+
+
 def build_benchmark_plan(
     args: argparse.Namespace | Mapping[str, object] | object,
-) -> list[tuple[str, str, str, str, tuple[int, ...]]]:
+) -> list[tuple[str, str, str, str, str | None, str, tuple[int, ...]]]:
     """Build the ordered benchmark execution plan.
 
     The semantic thesis matrix remains dataset * preset, but the
@@ -418,18 +457,26 @@ def build_benchmark_plan(
     benchmark_args = _coerce_benchmark_args(args)
     datasets = resolve_benchmark_datasets(benchmark_args["datasets"])
     presets = list(dict.fromkeys(benchmark_args["presets"]))
-    num_neighbors_options = benchmark_args["num_neighbors_options"] or (
-        [benchmark_args["num_neighbors"]]
-        if benchmark_args["num_neighbors"] is not None
-        else [list(UCaGNNConfig().num_neighbors)]
-    )
+    num_neighbor_values = _benchmark_num_neighbors_values(benchmark_args)
     lr_scheduler_values = benchmark_args["lr_scheduler"]
     if isinstance(lr_scheduler_values, str):
         lr_scheduler_values = [lr_scheduler_values]
     if lr_scheduler_values == ["all"]:
         lr_scheduler_values = list(SUPPORTED_LR_SCHEDULERS)
+    graph_policy_values = _benchmark_graph_policy_values(benchmark_args)
+    preprocessing_preset_values = benchmark_args.get("preprocessing_preset_options") or [
+        benchmark_args.get("preprocessing_preset")
+    ]
     return [
-        (dataset, preset, scoring_weight_mode, lr_scheduler, tuple(num_neighbors))
+        (
+            dataset,
+            preset,
+            scoring_weight_mode,
+            lr_scheduler,
+            None if preprocessing_preset is None else str(preprocessing_preset),
+            str(graph_policy),
+            tuple(num_neighbors),
+        )
         for preset in presets
         for scoring_weight_mode in _scoring_weight_modes_for_preset(
             preset,
@@ -437,7 +484,9 @@ def build_benchmark_plan(
         )
         for dataset in datasets
         for lr_scheduler in lr_scheduler_values
-        for num_neighbors in num_neighbors_options
+        for preprocessing_preset in preprocessing_preset_values
+        for graph_policy in graph_policy_values
+        for num_neighbors in num_neighbor_values
     ]
 
 
@@ -477,10 +526,26 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
         if isinstance(schedulers, str):
             schedulers = [schedulers]
         print(f"  LR schedulers: {', '.join(schedulers)}")
-    if benchmark_args["num_neighbors_options"]:
+    graph_policies = _benchmark_graph_policy_values(benchmark_args)
+    print(f"  Graph policies: {', '.join(str(policy) for policy in graph_policies)}")
+    preprocessing_presets = benchmark_args.get("preprocessing_preset_options") or [
+        benchmark_args.get("preprocessing_preset"),
+    ]
+    resolved_preprocessing_presets = [
+        preset for preset in preprocessing_presets if preset is not None
+    ]
+    if resolved_preprocessing_presets:
+        print(
+            "  Preprocessing presets: "
+            + ", ".join(
+                str(preprocessing_preset) for preprocessing_preset in resolved_preprocessing_presets
+            ),
+        )
+    neighbor_values = _benchmark_num_neighbors_values(benchmark_args)
+    if neighbor_values:
         neighbor_shapes = ", ".join(
             "[" + ", ".join(str(value) for value in neighbors) + "]"
-            for neighbors in benchmark_args["num_neighbors_options"]
+            for neighbors in neighbor_values
         )
         print(f"  Neighbor shapes: {neighbor_shapes}")
     print(f"  Batch ID: {batch_id}")
@@ -498,13 +563,18 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
         print(
             "\n"
             f"{'#':>4} | {'Dataset':<15} | {'Preset':<12} | {'ScoreMix':<8} | "
-            f"{'Scheduler':<12} | {'Neighbors':<10}",
+            f"{'Scheduler':<12} | {'Preproc':<24} | {'Graph':<16} | {'Neighbors':<10}",
         )
-        print("-" * 106)
-        for i, (ds, pr, swm, scheduler, neighbors) in enumerate(experiments, 1):
+        print("-" * 151)
+        for i, (ds, pr, swm, scheduler, preprocessing_preset, graph_policy, neighbors) in enumerate(
+            experiments,
+            1,
+        ):
             neighbor_label = "-".join(str(value) for value in neighbors)
             print(
-                f"{i:>4} | {ds:<15} | {pr:<12} | {swm:<8} | {scheduler:<12} | {neighbor_label:<10}",
+                f"{i:>4} | {ds:<15} | {pr:<12} | {swm:<8} | {scheduler:<12} | "
+                f"{preprocessing_preset or '-'!s: <24} | "
+                f"{graph_policy:<16} | {neighbor_label:<10}",
             )
         print(f"\nTotal: {len(experiments)} experiments (dry run, nothing executed)")
         return 0
@@ -517,9 +587,15 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
     results = []
     failure_notes: list[str] = []
 
-    for i, (dataset, preset, scoring_weight_mode, lr_scheduler, num_neighbors) in enumerate(
-        experiments, 1
-    ):
+    for i, (
+        dataset,
+        preset,
+        scoring_weight_mode,
+        lr_scheduler,
+        preprocessing_preset,
+        graph_policy,
+        num_neighbors,
+    ) in enumerate(experiments, 1):
         neighbor_list = list(num_neighbors)
         effective_neighbor_list = list(neighbor_list)
         raw_neighbor_label = "-".join(str(value) for value in neighbor_list)
@@ -537,7 +613,8 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             failure_notes.append(
                 (
                     f"{dataset} / {preset} / {scoring_weight_mode} / {lr_scheduler} "
-                    f" / nbr{neighbor_label}: {type(e).__name__}: {e}"
+                    f"/ {preprocessing_preset or 'default'} / {graph_policy} "
+                    f"/ nbr{neighbor_label}: {type(e).__name__}: {e}"
                 ),
             )
             logger.error(f"FAILED: {e}")
@@ -548,7 +625,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
         print(
             "["
             f"{i}/{len(experiments)}] {dataset} / {preset} / {scoring_weight_mode} "
-            f"/ nbr{neighbor_label}",
+            f"/ {preprocessing_preset or 'default'} / {graph_policy} / nbr{neighbor_label}",
         )
         print("=" * 70)
 
@@ -560,8 +637,14 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             seed=DEFAULT_SEED,
             training_mode="mini_batch",
             config_filters={
+                "graph_policy": graph_policy,
                 "scoring_weight_mode": scoring_weight_mode,
                 "num_neighbors": effective_neighbor_list,
+                **(
+                    {"preprocessing_preset": preprocessing_preset}
+                    if preprocessing_preset is not None
+                    else {}
+                ),
             },
         )
         if (
@@ -581,6 +664,8 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                         "dataset": dataset,
                         "preset": preset,
                         "scoring_weight_mode": scoring_weight_mode,
+                        "preprocessing_preset": preprocessing_preset,
+                        "graph_policy": graph_policy,
                         "num_neighbors": neighbor_list,
                         "exp_id": existing["id"],
                         "metrics": tracker.get_metrics_for_split(
@@ -605,6 +690,8 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                     lr_scheduler=lr_scheduler,
                     scoring_weight_mode=scoring_weight_mode,
                     num_neighbors=effective_neighbor_list,
+                    preprocessing_preset=preprocessing_preset,
+                    graph_policy=graph_policy,
                 ),
             )
             t0 = time.time()
@@ -626,6 +713,8 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                     "dataset": dataset,
                     "preset": preset,
                     "scoring_weight_mode": scoring_weight_mode,
+                    "preprocessing_preset": preprocessing_preset,
+                    "graph_policy": graph_policy,
                     "num_neighbors": effective_neighbor_list,
                     "exp_id": result["exp_id"],
                     "metrics": result["test_metrics"],
@@ -643,7 +732,9 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             failed += 1
             failure_notes.append(
                 (
-                    f"{dataset} / {preset} / {scoring_weight_mode} / nbr{neighbor_label}: "
+                    f"{dataset} / {preset} / {scoring_weight_mode} / "
+                    f"{preprocessing_preset or 'default'} / {graph_policy} "
+                    f"/ nbr{neighbor_label}: "
                     f"{type(e).__name__}: {e}"
                 ),
             )
@@ -663,6 +754,8 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             metric_value(r["metrics"], "AveragePopularity@40"),
             str(r["preset"]).lower(),
             str(r["scoring_weight_mode"]).lower(),
+            str(r.get("preprocessing_preset") or "").lower(),
+            str(r["graph_policy"]).lower(),
             tuple(r["num_neighbors"]),
         ),
     )
@@ -680,14 +773,14 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                 "\n"
                 + (
                     f"{'Dataset':<15} | {'Preset':<12} | {'ScoreMix':<8} | "
-                    f"{'Neighbors':<10} | {'NDCG@20':>8} | {'Recall@20':>10} | "
-                    f"{'AvgPop@20':>10} | {'NDCG@40':>8} | {'Recall@40':>10} | "
-                    f"{'AvgPop@40':>10} | {'Epochs':>6} | {'PeakVRAM':>8} | "
-                    f"Time | {'Mode':<8} | {'Experiment':<40}"
+                    f"{'Preproc':<24} | {'Graph':<16} | {'Neighbors':<10} | {'NDCG@20':>8} | "
+                    f"{'Recall@20':>10} | {'AvgPop@20':>10} | {'NDCG@40':>8} | "
+                    f"{'Recall@40':>10} | {'AvgPop@40':>10} | {'Epochs':>6} | "
+                    f"{'PeakVRAM':>8} | Time | {'Mode':<8} | {'Experiment':<40}"
                 )
             ),
         )
-        print("-" * 219)
+        print("-" * 264)
         for r in sorted_results:
             metric_values = thesis_metric_values(
                 r["metrics"],
@@ -711,8 +804,10 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             print(
                 (
                     f"{r['dataset']:<15} | {r['preset']:<12} | "
-                    f"{r['scoring_weight_mode']:<8} | {neighbor_label:<10} | "
-                    f"{metric_values['NDCG@20']:>8.4f} | "
+                    f"{r['scoring_weight_mode']:<8} | "
+                    f"{r.get('preprocessing_preset') or '-'!s: <24} | "
+                    f"{r['graph_policy']:<16} | "
+                    f"{neighbor_label:<10} | {metric_values['NDCG@20']:>8.4f} | "
                     f"{metric_values['Recall@20']:>10.4f} | "
                     f"{metric_values['AveragePopularity@20']:>10.4f} | "
                     f"{metric_values['NDCG@40']:>8.4f} | "
@@ -765,8 +860,7 @@ def formal_main() -> int:
         "last_exit_code": None,
         "benchmark_args": dict(benchmark_args),
     }
-    if not cli_args.dry_run:
-        _write_state(state)
+    _write_state(state)
 
     print("=" * 70)
     print("FORMAL RUN")
@@ -785,8 +879,7 @@ def formal_main() -> int:
     exit_code = run_benchmark(benchmark_args)
     state["last_finished_at_utc"] = datetime.now(UTC).isoformat()
     state["last_exit_code"] = exit_code
-    if not cli_args.dry_run:
-        _write_state(state)
+    _write_state(state)
     return exit_code
 
 

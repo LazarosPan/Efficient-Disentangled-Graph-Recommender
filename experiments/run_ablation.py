@@ -4,9 +4,8 @@
 Runs named variants around the UCaGNN mainline on specified datasets.
 
 Usage:
-    uv run ablation --dataset movielens1m --epochs 3
-    uv run ablation --dataset movielens1m --variants mainline no_independence no_features
-    uv run ablation --dataset movielens1m --dry-run
+    uv run ablation --datasets movielens1m
+    uv run ablation --datasets movielens1m --variants mainline no_independence no_features
 """
 
 from __future__ import annotations
@@ -15,6 +14,7 @@ import logging
 import time
 import traceback
 
+import torch
 from scripts._workflow_helpers import (
     configure_cli_logging,
     metric_value,
@@ -32,7 +32,6 @@ from src.utils.experiment_logger import ExperimentLogger
 from src.utils.project_paths import THESIS_DB_PATH
 
 from experiments.ablation_configs import (
-    ABLATION_VARIANTS,
     build_ablation_base_kwargs,
     make_ablation_config,
 )
@@ -41,6 +40,8 @@ from experiments.run_experiment import run_experiment
 
 logger = logging.getLogger("ucagnn.ablation")
 UCAGNN_PRESET = "ucagnn"
+DEFAULT_RUNTIME_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+DEFAULT_DATA_DIR = "data"
 
 
 def _resolve_target_datasets(args) -> list[str]:
@@ -53,13 +54,12 @@ def _resolve_target_datasets(args) -> list[str]:
         Ordered dataset list with benchmark-tier selectors expanded.
 
     Raises:
-        ValueError: If neither ``--dataset`` nor ``--datasets`` is supplied.
+        ValueError: If ``--datasets`` is empty.
 
     """
-    raw_datasets = args.datasets if args.datasets else ([args.dataset] if args.dataset else None)
-    if raw_datasets is None:
-        raise ValueError("Pass --dataset or --datasets for the ablation study.")
-    return resolve_benchmark_datasets(normalize_benchmark_datasets_arg(raw_datasets))
+    if not args.datasets:
+        raise ValueError("Pass one or more values to --datasets for the ablation study.")
+    return resolve_benchmark_datasets(normalize_benchmark_datasets_arg(args.datasets))
 
 
 def main() -> int:
@@ -68,29 +68,13 @@ def main() -> int:
     datasets = _resolve_target_datasets(args)
 
     configure_cli_logging()
-    batch_id = resolve_batch_id(args.batch_id, prefix="ablation")
+    batch_id = resolve_batch_id(None, prefix="ablation")
 
     print("=" * 70)
     print(f"ABLATION STUDY: {', '.join(datasets)}")
     print(f"  Variants: {', '.join(args.variants)}")
     print(f"  Batch ID: {batch_id}")
-    print(f"  Resume batch: {args.resume_batch}")
     print("=" * 70)
-
-    if args.dry_run:
-        print(f"\n{'#':>4} | {'Dataset':<12} | {'Variant':<20} | Overrides")
-        print("-" * 76)
-        row_number = 0
-        for dataset in datasets:
-            for variant in args.variants:
-                row_number += 1
-                overrides = ABLATION_VARIANTS[variant]
-                override_str = ", ".join(f"{k}={v}" for k, v in overrides.items()) or "(baseline)"
-                print(f"{row_number:>4} | {dataset:<12} | {variant:<20} | {override_str}")
-        print(
-            f"\nTotal: {len(datasets) * len(args.variants)} runs (dry run, nothing executed)",
-        )
-        return 0
 
     # Run ablation experiments
     tracker = ExperimentLogger(db_path=str(THESIS_DB_PATH))
@@ -104,6 +88,15 @@ def main() -> int:
     for dataset in datasets:
         for variant in args.variants:
             run_index += 1
+            config = make_ablation_config(
+                variant,
+                **build_ablation_base_kwargs(
+                    dataset=dataset,
+                    data_dir=DEFAULT_DATA_DIR,
+                    seed=DEFAULT_SEED,
+                    device=DEFAULT_RUNTIME_DEVICE,
+                ),
+            )
             print(f"\n{'=' * 70}")
             print(f"[{run_index}/{total_runs}] Ablation: {dataset} :: {variant}")
             print("=" * 70)
@@ -115,12 +108,9 @@ def main() -> int:
                 intervention=variant,
                 seed=DEFAULT_SEED,
                 training_mode=None,
+                config_filters={"graph_policy": config.graph_policy},
             )
-            if (
-                args.resume_batch
-                and existing is not None
-                and existing["status"] in ExperimentLogger.TERMINAL_STATUSES
-            ):
+            if existing is not None and existing["status"] in ExperimentLogger.TERMINAL_STATUSES:
                 skipped += 1
                 logger.info(
                     "Skipping existing batch ablation (dataset=%s, exp_id=%s, status=%s)",
@@ -133,6 +123,7 @@ def main() -> int:
                         {
                             "dataset": dataset,
                             "variant": variant,
+                            "graph_policy": config.graph_policy,
                             "exp_id": existing["id"],
                             "metrics": tracker.get_metrics_for_split(
                                 int(existing["id"]),
@@ -144,30 +135,16 @@ def main() -> int:
                 continue
 
             try:
-                config = make_ablation_config(
-                    variant,
-                    **build_ablation_base_kwargs(
-                        dataset=dataset,
-                        data_dir=args.data_dir,
-                        seed=DEFAULT_SEED,
-                        device=args.device,
-                        epochs=args.epochs,
-                        batch_size=args.batch_size,
-                        sample_interactions=args.sample_interactions,
-                        loader_max_rows=args.loader_max_rows,
-                    ),
-                )
-
                 t0 = time.time()
                 result = run_experiment(
                     config,
                     preset=UCAGNN_PRESET,
                     intervention=variant,
                     save_checkpoint=True,
-                    enable_mlflow=not args.no_mlflow,
-                    mlflow_tracking_uri=args.mlflow_tracking_uri,
-                    mlflow_experiment_name=args.mlflow_experiment_name,
+                    enable_mlflow=True,
+                    mlflow_experiment_name="ucagnn-ablation",
                     batch_id=batch_id,
+                    overwrite_checkpoint=bool(args.overwrite_checkpoint),
                 )
                 elapsed = time.time() - t0
 
@@ -175,6 +152,7 @@ def main() -> int:
                     {
                         "dataset": dataset,
                         "variant": variant,
+                        "graph_policy": config.graph_policy,
                         "exp_id": result["exp_id"],
                         "metrics": result["test_metrics"],
                         "elapsed_s": elapsed,
@@ -218,10 +196,11 @@ def main() -> int:
             print(
                 ""
                 f"\nDATASET: {dataset}\n"
-                f"{'Variant':<20} | {'NDCG@20':>8} | {'Recall@20':>10} | {'AvgPop@20':>10} | "
-                f"{'NDCG@40':>8} | {'Recall@40':>10} | {'AvgPop@40':>10} | Time",
+                f"{'Variant':<20} | {'Graph':<16} | {'NDCG@20':>8} | {'Recall@20':>10} | "
+                f"{'AvgPop@20':>10} | {'NDCG@40':>8} | {'Recall@40':>10} | "
+                f"{'AvgPop@40':>10} | Time",
             )
-            print("-" * 117)
+            print("-" * 136)
             for result_entry in dataset_results:
                 metric_values = thesis_metric_values(
                     result_entry["metrics"],
@@ -229,7 +208,8 @@ def main() -> int:
                 )
 
                 print(
-                    f"{result_entry['variant']:<20} | {metric_values['NDCG@20']:>8.4f} | "
+                    f"{result_entry['variant']:<20} | {result_entry['graph_policy']:<16} | "
+                    f"{metric_values['NDCG@20']:>8.4f} | "
                     f"{metric_values['Recall@20']:>10.4f} | "
                     f"{metric_values['AveragePopularity@20']:>10.4f} | "
                     f"{metric_values['NDCG@40']:>8.4f} | "

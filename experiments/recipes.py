@@ -64,42 +64,43 @@ def _normalize_num_neighbors_vector(
 
 def resolve_profile_num_neighbors(
     overrides: Mapping[str, Any],
-) -> tuple[list[int] | None, list[list[int]] | None]:
-    """Resolve single and multi-option neighbor overrides from one profile payload.
+) -> list[list[int]] | None:
+    """Resolve one or many neighbor vectors from one profile payload.
 
     Args:
-        overrides: Profile override mapping that may contain either
-            ``num_neighbors`` or ``num_neighbors_options``.
+        overrides: Profile override mapping that may contain ``num_neighbors``
+            as either one vector or a list of vectors.
 
     Returns:
-        Tuple of ``(resolved_num_neighbors, num_neighbors_options)`` where the
-        first element is the single per-run vector to use when one run is being
-        built, and the second element is the ordered list of candidate vectors
-        to expand in benchmark planning.
+        Ordered list of per-run fan-out vectors to expand in benchmark
+        planning. A single configured vector still returns as a one-element
+        list.
 
     """
-    raw_options = overrides.get("num_neighbors_options")
-    if raw_options is None:
-        raw_neighbors = overrides.get("num_neighbors")
-        if raw_neighbors is None:
-            return None, None
-        resolved = _normalize_num_neighbors_vector(
-            raw_neighbors,
-            field_name="num_neighbors",
-        )
-        return resolved, [list(resolved)]
+    if "num_neighbors_options" in overrides:
+        raise ValueError("Use num_neighbors only; num_neighbors_options was removed.")
+    raw_neighbors = overrides.get("num_neighbors")
+    if raw_neighbors is None:
+        return None
+    if (
+        isinstance(raw_neighbors, (list, tuple))
+        and raw_neighbors
+        and all(not isinstance(value, (list, tuple)) for value in raw_neighbors)
+    ):
+        resolved = _normalize_num_neighbors_vector(raw_neighbors, field_name="num_neighbors")
+        return [list(resolved)]
 
-    if not isinstance(raw_options, (list, tuple)) or not raw_options:
+    if not isinstance(raw_neighbors, (list, tuple)) or not raw_neighbors:
         raise ValueError(
-            "num_neighbors_options must be a non-empty list of fan-out vectors.",
+            "num_neighbors must be a non-empty fan-out vector or a non-empty list of vectors.",
         )
 
     deduped: list[list[int]] = []
     seen: set[tuple[int, ...]] = set()
-    for index, raw_option in enumerate(raw_options):
+    for index, raw_option in enumerate(raw_neighbors):
         option = _normalize_num_neighbors_vector(
             raw_option,
-            field_name=f"num_neighbors_options[{index}]",
+            field_name=f"num_neighbors[{index}]",
         )
         option_key = tuple(option)
         if option_key in seen:
@@ -107,7 +108,7 @@ def resolve_profile_num_neighbors(
         seen.add(option_key)
         deduped.append(option)
 
-    return list(deduped[0]), deduped
+    return deduped
 
 
 def _resolved_profile_matrix(profile: dict[str, Any]) -> dict[str, Any]:
@@ -128,13 +129,11 @@ def _resolved_profile_matrix(profile: dict[str, Any]) -> dict[str, Any]:
 def _resolved_profile_overrides(profile: dict[str, Any]) -> dict[str, Any]:
     """Normalize the config override block for a formal profile."""
     overrides = dict(profile.get("config_overrides", {}))
-    resolved_num_neighbors, num_neighbors_options = resolve_profile_num_neighbors(
-        overrides,
-    )
-    if resolved_num_neighbors is not None:
-        overrides["num_neighbors"] = resolved_num_neighbors
-    if num_neighbors_options is not None:
-        overrides["num_neighbors_options"] = num_neighbors_options
+    neighbor_sweep = resolve_profile_num_neighbors(overrides)
+    if neighbor_sweep is not None:
+        overrides["num_neighbors"] = (
+            neighbor_sweep[0] if len(neighbor_sweep) == 1 else neighbor_sweep
+        )
     return overrides
 
 
@@ -148,7 +147,7 @@ def _formal_profile_name(profile: dict[str, Any]) -> str:
         if set(scoring_modes) == {"fixed", "learned"} and len(scoring_modes) == 2
         else "-".join(_slugify_fragment(mode) for mode in scoring_modes)
     )
-    neighbor_options = overrides.get("num_neighbors_options") or []
+    neighbor_options = resolve_profile_num_neighbors(overrides) or []
     neighbor_slug = (
         "+".join("x".join(str(value) for value in neighbors) for neighbors in neighbor_options)
         if neighbor_options
@@ -156,7 +155,7 @@ def _formal_profile_name(profile: dict[str, Any]) -> str:
     )
     batch_slug = (
         "abauto"
-        if overrides.get("auto_batch_size")
+        if overrides.get("auto_batch_size", True)  # True matches UCaGNNConfig default
         else f"bs{_slugify_fragment(overrides.get('batch_size', 'na'))}"
     )
     signature = json.dumps(

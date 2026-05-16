@@ -15,12 +15,12 @@ ABLATION_VARIANTS: dict[str, dict] = {
     "fixed_score_mix": {"scoring_weight_mode": "fixed"},
     "no_popularity_head": {
         "use_popularity_head": False,
-        "gamma_popularity": 0.0,
-        "lambda_pop": 0.0,
+        "score_weight_popularity": 0.0,
+        "loss_weight_popularity": 0.0,
     },
     "no_ipw": {"use_ipw": False},
-    "no_contrastive": {"lambda_contrastive": 0.0},
-    "no_independence": {"lambda_independence": 0.0},
+    "no_contrastive": {"loss_weight_contrastive": 0.0},
+    "no_independence": {"loss_weight_independence": 0.0},
     "no_features": {"use_features": False},
 }
 _ABLATION_RECOMMENDED_DEFAULTS: dict[str, object] = {
@@ -42,6 +42,7 @@ def build_ablation_base_kwargs(
     seed: int = DEFAULT_SEED,
     epochs: int | None = None,
     batch_size: int | None = None,
+    graph_policy: str | None = None,
     sample_interactions: int | None = None,
     loader_max_rows: int | None = None,
 ) -> dict[str, object]:
@@ -54,6 +55,7 @@ def build_ablation_base_kwargs(
         seed: Run seed.
         epochs: Optional epoch override.
         batch_size: Optional batch-size override.
+        graph_policy: Optional graph-policy override.
         sample_interactions: Optional tiny-run interaction cap.
         loader_max_rows: Optional loader row cap.
 
@@ -70,6 +72,7 @@ def build_ablation_base_kwargs(
     optional_fields = {
         "epochs": epochs,
         "batch_size": batch_size,
+        "graph_policy": graph_policy,
         "sample_interactions": sample_interactions,
         "loader_max_rows": loader_max_rows,
     }
