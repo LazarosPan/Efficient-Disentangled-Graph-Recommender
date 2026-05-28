@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import sys
 from collections import defaultdict
@@ -673,6 +674,100 @@ def show_bottleneck(conn: sqlite3.Connection, exp_id: int) -> None:
     )
 
 
+def _minmax_normalize(values: list[float | None]) -> list[float]:
+    """Return min-max normalized values, replacing None with 0.0."""
+    cleaned = [v if v is not None else 0.0 for v in values]
+    lo, hi = min(cleaned), max(cleaned)
+    if hi == lo:
+        return [0.0] * len(cleaned)
+    return [(v - lo) / (hi - lo) for v in cleaned]
+
+
+def _compute_crru(rows: list[sqlite3.Row]) -> list[float]:
+    """Compute the CRRU composite metric for each row.
+
+    CRRU = A^0.5 * B^0.3 * E^0.2 where:
+      - A = NDCG@20_norm^0.7 * Recall@20_norm^0.3   (accuracy)
+      - B = (1-AvgPop@20_norm)^0.7 * Pers@20_norm^0.3   (diversity)
+      - E = (1-log1p(VRAM)_norm)^0.5 * (1-log1p(time)_norm)^0.5   (efficiency)
+
+    All components are min-max normalized within dataset.
+
+    Args:
+        rows: Rows from ``_query_report_rows`` for ONE dataset.
+
+    Returns:
+        CRRU score per row (same order as ``rows``).
+
+    """
+    ndcg_n = _minmax_normalize([r["test_ndcg_20"] for r in rows])
+    recall_n = _minmax_normalize([r["test_recall_20"] for r in rows])
+    pop_n = _minmax_normalize([r["test_average_popularity_20"] for r in rows])
+    pers_n = _minmax_normalize([r["test_personalization_20"] for r in rows])
+    vram_n = _minmax_normalize(
+        [math.log1p(r["peak_vram_mb"]) if r["peak_vram_mb"] else None for r in rows]
+    )
+    time_n = _minmax_normalize(
+        [math.log1p(r["training_time_s"]) if r["training_time_s"] else None for r in rows]
+    )
+
+    scores = []
+    for ndcg, rec, pop, pers, vram, time in zip(
+        ndcg_n, recall_n, pop_n, pers_n, vram_n, time_n, strict=True
+    ):
+        a = (ndcg**0.7) * (rec**0.3)
+        b = ((1.0 - pop) ** 0.7) * (pers**0.3)
+        e = ((1.0 - vram) ** 0.5) * ((1.0 - time) ** 0.5)
+        scores.append((a**0.5) * (b**0.3) * (e**0.2))
+    return scores
+
+
+def _print_crru_table(rows: list[sqlite3.Row]) -> None:
+    """Print a CRRU composite metric table grouped by dataset.
+
+    Args:
+        rows: Combined formal and ablation rows from ``_query_report_rows``.
+
+    """
+    print("=" * 80)
+    print("CRRU COMPOSITE METRIC -- accuracy * diversity * efficiency (within-dataset norm)")
+    print("  CRRU = A^0.5 * B^0.3 * E^0.2")
+    print("  A = NDCG@20_n^0.7 * Recall@20_n^0.3")
+    print("  B = (1-AvgPop_n)^0.7 * Pers@20_n^0.3")
+    print("  E = (1-log(1+VRAM)_n)^0.5 * (1-log(1+time)_n)^0.5")
+    print("=" * 80)
+
+    by_dataset: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    for row in rows:
+        by_dataset[row["dataset"] or "-"].append(row)
+
+    header = (
+        f"{'Dataset':<14} | {'Variant':<22} | "
+        f"{'NDCG@20':>8} | {'AvgPop@20':>10} | {'Pers@20':>8} | "
+        f"{'VRAM(MB)':>9} | {'Time(s)':>8} | {'CRRU':>7}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    for dataset, ds_rows in sorted(by_dataset.items()):
+        crru_scores = _compute_crru(ds_rows)
+        for row, crru in sorted(
+            zip(ds_rows, crru_scores, strict=True), key=lambda t: t[1], reverse=True
+        ):
+            config = _load_config_json(row["config_json"])
+            name = _build_canonical_name_from_config(config, row["preset"], row["intervention"])
+            vram_str = f"{row['peak_vram_mb']:,.0f}" if row["peak_vram_mb"] else "-"
+            time_str = f"{row['training_time_s']:,.0f}" if row["training_time_s"] else "-"
+            print(
+                f"{dataset:<14} | {_truncate_label(name, 22):<22} | "
+                f"{_format_metric_value(row['test_ndcg_20']):>8} | "
+                f"{_format_metric_value(row['test_average_popularity_20']):>10} | "
+                f"{_format_metric_value(row['test_personalization_20']):>8} | "
+                f"{vram_str:>9} | {time_str:>8} | {crru:>7.4f}"
+            )
+        print()
+
+
 def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
     """Print the default thesis summary for formal and ablation test runs."""
     print("=" * 80)
@@ -689,6 +784,7 @@ def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
 
     _print_formal_rows(_select_top_formal_rows(rows, n))
     _print_ablation_rows(_select_best_ablation_rows(rows))
+    _print_crru_table(rows)
 
 
 def _render_default_summary(conn: sqlite3.Connection, *, n: int = 20) -> str:

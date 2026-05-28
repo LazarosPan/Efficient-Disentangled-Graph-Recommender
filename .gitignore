@@ -29,7 +29,7 @@ wheels/
 
 # Results
 /results/*
-!/results/figures/
+!/results/query_results.md
 
 # MLFlow
 /mlruns/*
