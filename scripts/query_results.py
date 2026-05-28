@@ -33,6 +33,7 @@ ABLATION_BATCH_PREFIX = "ablation-"
 ABLATION_VARIANT_ORDER = {
     variant_name: index for index, variant_name in enumerate(ABLATION_VARIANTS)
 }
+CRRU_EPSILON = 1e-8
 
 
 def connect() -> sqlite3.Connection:
@@ -106,11 +107,7 @@ def list_experiments(
     print("-" * (135 + profile_width - 8))
     for row in rows:
         batch_label = row["batch_id"] or "-"
-        if len(batch_label) > 22:
-            batch_label = f"{batch_label[:19]}..."
         profile_label = row["profile_name"] or "-"
-        if len(profile_label) > profile_width:
-            profile_label = f"{profile_label[: profile_width - 3]}..."
         status_label = row["status"] or ("oom" if row["oom_flag"] else "unknown")
         print(
             (
@@ -203,6 +200,15 @@ def _format_metric_value(value: float | None) -> str:
     return f"{value:.4f}" if value is not None else "-"
 
 
+def _format_crru_value(value: float | None) -> str:
+    """Return a CRRU display string that preserves very small positive values."""
+    if value is None:
+        return "-"
+    if value < 0.001:
+        return f"{value:.3e}"
+    return f"{value:.4f}"
+
+
 def _format_neighbors(config: dict[str, object]) -> str:
     """Return the configured neighborhood fan-out as a compact label."""
     num_neighbors = config.get("num_neighbors")
@@ -266,18 +272,31 @@ def _is_ablation_row(row: sqlite3.Row) -> bool:
     return isinstance(batch_id, str) and batch_id.startswith(ABLATION_BATCH_PREFIX)
 
 
-def _select_top_formal_rows(rows: list[sqlite3.Row], n: int) -> list[sqlite3.Row]:
-    """Return the top completed formal rows per dataset ranked by test metrics."""
+def _crru_sort_key(
+    row: sqlite3.Row,
+    crru_scores: dict[int, dict[int, float]],
+) -> tuple[float, float, float, float, int]:
+    """Return the sort key that orders rows by CRRU within a dataset."""
+    row_scores = crru_scores[int(row["id"])]
+    return (
+        -row_scores[20],
+        -row_scores[40],
+        -(float(row["test_ndcg_20"]) if row["test_ndcg_20"] is not None else float("-inf")),
+        -(float(row["test_ndcg_40"]) if row["test_ndcg_40"] is not None else float("-inf")),
+        int(row["id"]),
+    )
+
+
+def _select_top_formal_rows(
+    rows: list[sqlite3.Row],
+    *,
+    n: int,
+    crru_scores: dict[int, dict[int, float]],
+) -> list[sqlite3.Row]:
+    """Return the top completed formal rows per dataset ranked by CRRU."""
     ranked_rows = sorted(
         (row for row in rows if _is_formal_row(row)),
-        key=lambda row: (
-            row["dataset"] or "-",
-            -(float(row["test_ndcg_20"]) if row["test_ndcg_20"] is not None else float("-inf")),
-            -(float(row["test_ndcg_40"]) if row["test_ndcg_40"] is not None else float("-inf")),
-            -(float(row["test_recall_20"]) if row["test_recall_20"] is not None else float("-inf")),
-            -(float(row["test_recall_40"]) if row["test_recall_40"] is not None else float("-inf")),
-            int(row["id"]),
-        ),
+        key=lambda row: (row["dataset"] or "-", *_crru_sort_key(row, crru_scores)),
     )
 
     top_rows: list[sqlite3.Row] = []
@@ -291,20 +310,16 @@ def _select_top_formal_rows(rows: list[sqlite3.Row], n: int) -> list[sqlite3.Row
     return top_rows
 
 
-def _select_best_ablation_rows(rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
+def _select_best_ablation_rows(
+    rows: list[sqlite3.Row],
+    *,
+    crru_scores: dict[int, dict[int, float]],
+) -> list[sqlite3.Row]:
     """Return one completed full-data ablation row per dataset and variant."""
     best_by_variant: dict[tuple[str, str], sqlite3.Row] = {}
     ranked_rows = sorted(
         (row for row in rows if _is_ablation_row(row)),
-        key=lambda row: (
-            row["dataset"] or "-",
-            row["intervention"] or "",
-            -(float(row["test_ndcg_20"]) if row["test_ndcg_20"] is not None else float("-inf")),
-            -(float(row["test_ndcg_40"]) if row["test_ndcg_40"] is not None else float("-inf")),
-            -(float(row["test_recall_20"]) if row["test_recall_20"] is not None else float("-inf")),
-            -(float(row["test_recall_40"]) if row["test_recall_40"] is not None else float("-inf")),
-            int(row["id"]),
-        ),
+        key=lambda row: (row["dataset"] or "-", *_crru_sort_key(row, crru_scores)),
     )
     for row in ranked_rows:
         dataset = row["dataset"] or "-"
@@ -315,9 +330,8 @@ def _select_best_ablation_rows(rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
         best_by_variant.values(),
         key=lambda row: (
             row["dataset"] or "-",
+            *_crru_sort_key(row, crru_scores),
             ABLATION_VARIANT_ORDER.get(row["intervention"] or "", len(ABLATION_VARIANT_ORDER)),
-            -(float(row["test_ndcg_20"]) if row["test_ndcg_20"] is not None else float("-inf")),
-            int(row["id"]),
         ),
     )
 
@@ -348,10 +362,14 @@ def _print_result_row_experiment(
     print(f"  Experiment: {canonical_name}")
 
 
-def _print_formal_rows(rows: list[sqlite3.Row]) -> None:
+def _print_formal_rows(
+    rows: list[sqlite3.Row],
+    *,
+    crru_scores: dict[int, dict[int, float]],
+) -> None:
     """Print the formal-run ranking table."""
     print("=" * 80)
-    print("FORMAL FULL-DATA TEST RUNS — top runs per dataset ranked by NDCG@20")
+    print("FORMAL FULL-DATA TEST RUNS — top runs per dataset ranked by CRRU@20 then CRRU@40")
     print("=" * 80)
     if not rows:
         print("No completed formal full-data runs with test metrics found.")
@@ -363,16 +381,17 @@ def _print_formal_rows(rows: list[sqlite3.Row]) -> None:
             f"{'Dataset':<14} | {'Preset':<12} | {'ScoreMix':<8} | {'Neighbors':<10} | "
             f"{'NDCG@20':>8} | {'Recall@20':>10} | {'Hit@20':>8} | {'Pers@20':>9} | "
             f"{'AvgPop@20':>10} | {'NDCG@40':>8} | {'Recall@40':>10} | {'Hit@40':>8} | "
-            f"{'Pers@40':>9} | {'AvgPop@40':>10}"
+            f"{'Pers@40':>9} | {'AvgPop@40':>10} | {'CRRU@20':>8} | {'CRRU@40':>8}"
         ),
     )
-    print("-" * 184)
+    print("-" * 205)
     previous_dataset: str | None = None
     for row in rows:
         dataset = row["dataset"] or "-"
         if previous_dataset is not None and dataset != previous_dataset:
             print()
         previous_dataset = dataset
+        row_crru_scores = crru_scores.get(int(row["id"]), {})
         config = _load_config_json(row["config_json"])
         canonical_name = _build_canonical_name_from_config(config, row["preset"], None)
         print(
@@ -389,7 +408,9 @@ def _print_formal_rows(rows: list[sqlite3.Row]) -> None:
                 f"{_format_metric_value(row['test_recall_40']):>10} | "
                 f"{_format_metric_value(row['test_hit_ratio_40']):>8} | "
                 f"{_format_metric_value(row['test_personalization_40']):>9} | "
-                f"{_format_metric_value(row['test_average_popularity_40']):>10}"
+                f"{_format_metric_value(row['test_average_popularity_40']):>10} | "
+                f"{_format_crru_value(row_crru_scores.get(20)):>8} | "
+                f"{_format_crru_value(row_crru_scores.get(40)):>8}"
             ),
         )
         _print_result_row_experiment(
@@ -403,10 +424,17 @@ def _print_formal_rows(rows: list[sqlite3.Row]) -> None:
     print()
 
 
-def _print_ablation_rows(rows: list[sqlite3.Row]) -> None:
+def _print_ablation_rows(
+    rows: list[sqlite3.Row],
+    *,
+    crru_scores: dict[int, dict[int, float]],
+) -> None:
     """Print the best full-data ablation rows per dataset and variant."""
     print("=" * 80)
-    print("ABLATION FULL-DATA TEST RUNS — best run per dataset and variant")
+    print(
+        "ABLATION FULL-DATA TEST RUNS — best run per dataset and variant "
+        "ranked by CRRU@20 then CRRU@40"
+    )
     print("=" * 80)
     if not rows:
         print("No completed ablation full-data runs with test metrics found.")
@@ -418,16 +446,17 @@ def _print_ablation_rows(rows: list[sqlite3.Row]) -> None:
             f"{'Dataset':<14} | {'Variant':<20} | {'ScoreMix':<8} | {'Neighbors':<10} | "
             f"{'NDCG@20':>8} | {'Recall@20':>10} | {'Hit@20':>8} | {'Pers@20':>9} | "
             f"{'AvgPop@20':>10} | {'NDCG@40':>8} | {'Recall@40':>10} | {'Hit@40':>8} | "
-            f"{'Pers@40':>9} | {'AvgPop@40':>10}"
+            f"{'Pers@40':>9} | {'AvgPop@40':>10} | {'CRRU@20':>8} | {'CRRU@40':>8}"
         ),
     )
-    print("-" * 192)
+    print("-" * 213)
     previous_dataset: str | None = None
     for row in rows:
         dataset = row["dataset"] or "-"
         if previous_dataset is not None and dataset != previous_dataset:
             print()
         previous_dataset = dataset
+        row_crru_scores = crru_scores.get(int(row["id"]), {})
         config = _load_config_json(row["config_json"])
         intervention = row["intervention"]
         canonical_name = _build_canonical_name_from_config(config, row["preset"], intervention)
@@ -445,7 +474,9 @@ def _print_ablation_rows(rows: list[sqlite3.Row]) -> None:
                 f"{_format_metric_value(row['test_recall_40']):>10} | "
                 f"{_format_metric_value(row['test_hit_ratio_40']):>8} | "
                 f"{_format_metric_value(row['test_personalization_40']):>9} | "
-                f"{_format_metric_value(row['test_average_popularity_40']):>10}"
+                f"{_format_metric_value(row['test_average_popularity_40']):>10} | "
+                f"{_format_crru_value(row_crru_scores.get(20)):>8} | "
+                f"{_format_crru_value(row_crru_scores.get(40)):>8}"
             ),
         )
         _print_result_row_experiment(
@@ -674,98 +705,97 @@ def show_bottleneck(conn: sqlite3.Connection, exp_id: int) -> None:
     )
 
 
-def _minmax_normalize(values: list[float | None]) -> list[float]:
-    """Return min-max normalized values, replacing None with 0.0."""
+def _minmax_normalize(
+    values: list[float | None],
+    *,
+    lower_is_better: bool = False,
+) -> list[float]:
+    """Return clamped dataset-local min-max normalized values."""
     cleaned = [v if v is not None else 0.0 for v in values]
     lo, hi = min(cleaned), max(cleaned)
-    if hi == lo:
-        return [0.0] * len(cleaned)
-    return [(v - lo) / (hi - lo) for v in cleaned]
+    scale = (hi - lo) + CRRU_EPSILON
+    normalized = [(v - lo) / scale for v in cleaned]
+    if lower_is_better:
+        normalized = [1.0 - value for value in normalized]
+    return [max(CRRU_EPSILON, min(1.0, value)) for value in normalized]
 
 
-def _compute_crru(rows: list[sqlite3.Row]) -> list[float]:
-    """Compute the CRRU composite metric for each row.
-
-    CRRU = A^0.5 * B^0.3 * E^0.2 where:
-      - A = NDCG@20_norm^0.7 * Recall@20_norm^0.3   (accuracy)
-      - B = (1-AvgPop@20_norm)^0.7 * Pers@20_norm^0.3   (diversity)
-      - E = (1-log1p(VRAM)_norm)^0.5 * (1-log1p(time)_norm)^0.5   (efficiency)
-
-    All components are min-max normalized within dataset.
-
-    Args:
-        rows: Rows from ``_query_report_rows`` for ONE dataset.
-
-    Returns:
-        CRRU score per row (same order as ``rows``).
-
-    """
-    ndcg_n = _minmax_normalize([r["test_ndcg_20"] for r in rows])
-    recall_n = _minmax_normalize([r["test_recall_20"] for r in rows])
-    pop_n = _minmax_normalize([r["test_average_popularity_20"] for r in rows])
-    pers_n = _minmax_normalize([r["test_personalization_20"] for r in rows])
+def _compute_efficiency_scores(rows: list[sqlite3.Row]) -> list[float]:
+    """Compute the shared CRRU efficiency utility for one dataset."""
     vram_n = _minmax_normalize(
-        [math.log1p(r["peak_vram_mb"]) if r["peak_vram_mb"] else None for r in rows]
+        [math.log1p(r["peak_vram_mb"]) if r["peak_vram_mb"] else None for r in rows],
+        lower_is_better=True,
     )
     time_n = _minmax_normalize(
-        [math.log1p(r["training_time_s"]) if r["training_time_s"] else None for r in rows]
+        [math.log1p(r["training_time_s"]) if r["training_time_s"] else None for r in rows],
+        lower_is_better=True,
+    )
+    return [(vram**0.50) * (time**0.50) for vram, time in zip(vram_n, time_n, strict=True)]
+
+
+def _compute_crru_for_k(
+    rows: list[sqlite3.Row],
+    *,
+    k: int,
+    efficiency_scores: list[float],
+) -> list[float]:
+    """Compute CRRU@K scores for one dataset."""
+    ndcg_n = _minmax_normalize([r[f"test_ndcg_{k}"] for r in rows])
+    recall_n = _minmax_normalize([r[f"test_recall_{k}"] for r in rows])
+    hit_n = _minmax_normalize([r[f"test_hit_ratio_{k}"] for r in rows])
+    pers_n = _minmax_normalize([r[f"test_personalization_{k}"] for r in rows])
+    avg_pop_n = _minmax_normalize(
+        [r[f"test_average_popularity_{k}"] for r in rows],
+        lower_is_better=True,
     )
 
-    scores = []
-    for ndcg, rec, pop, pers, vram, time in zip(
-        ndcg_n, recall_n, pop_n, pers_n, vram_n, time_n, strict=True
+    scores: list[float] = []
+    for ndcg, recall, hit, pers, avg_pop, efficiency in zip(
+        ndcg_n,
+        recall_n,
+        hit_n,
+        pers_n,
+        avg_pop_n,
+        efficiency_scores,
+        strict=True,
     ):
-        a = (ndcg**0.7) * (rec**0.3)
-        b = ((1.0 - pop) ** 0.7) * (pers**0.3)
-        e = ((1.0 - vram) ** 0.5) * ((1.0 - time) ** 0.5)
-        scores.append((a**0.5) * (b**0.3) * (e**0.2))
+        accuracy = (ndcg**0.50) * (recall**0.35) * (hit**0.15)
+        bias = (pers**0.40) * (avg_pop**0.60)
+        scores.append((accuracy**0.55) * (bias**0.30) * (efficiency**0.15))
     return scores
 
 
-def _print_crru_table(rows: list[sqlite3.Row]) -> None:
-    """Print a CRRU composite metric table grouped by dataset.
-
-    Args:
-        rows: Combined formal and ablation rows from ``_query_report_rows``.
-
-    """
-    print("=" * 80)
-    print("CRRU COMPOSITE METRIC -- accuracy * diversity * efficiency (within-dataset norm)")
-    print("  CRRU = A^0.5 * B^0.3 * E^0.2")
-    print("  A = NDCG@20_n^0.7 * Recall@20_n^0.3")
-    print("  B = (1-AvgPop_n)^0.7 * Pers@20_n^0.3")
-    print("  E = (1-log(1+VRAM)_n)^0.5 * (1-log(1+time)_n)^0.5")
-    print("=" * 80)
-
-    by_dataset: dict[str, list[sqlite3.Row]] = defaultdict(list)
+def _compute_dataset_crru_scores(rows: list[sqlite3.Row]) -> dict[int, dict[int, float]]:
+    """Return dataset-local CRRU@20 and CRRU@40 scores keyed by experiment ID."""
+    scores_by_id: dict[int, dict[int, float]] = {}
+    rows_by_dataset: dict[str, list[sqlite3.Row]] = defaultdict(list)
     for row in rows:
-        by_dataset[row["dataset"] or "-"].append(row)
+        rows_by_dataset[row["dataset"] or "-"].append(row)
 
-    header = (
-        f"{'Dataset':<14} | {'Variant':<22} | "
-        f"{'NDCG@20':>8} | {'AvgPop@20':>10} | {'Pers@20':>8} | "
-        f"{'VRAM(MB)':>9} | {'Time(s)':>8} | {'CRRU':>7}"
-    )
-    print(header)
-    print("-" * len(header))
-
-    for dataset, ds_rows in sorted(by_dataset.items()):
-        crru_scores = _compute_crru(ds_rows)
-        for row, crru in sorted(
-            zip(ds_rows, crru_scores, strict=True), key=lambda t: t[1], reverse=True
+    for dataset_rows in rows_by_dataset.values():
+        efficiency_scores = _compute_efficiency_scores(dataset_rows)
+        crru_20 = _compute_crru_for_k(dataset_rows, k=20, efficiency_scores=efficiency_scores)
+        crru_40 = _compute_crru_for_k(dataset_rows, k=40, efficiency_scores=efficiency_scores)
+        for row, score_20, score_40 in zip(
+            dataset_rows,
+            crru_20,
+            crru_40,
+            strict=True,
         ):
-            config = _load_config_json(row["config_json"])
-            name = _build_canonical_name_from_config(config, row["preset"], row["intervention"])
-            vram_str = f"{row['peak_vram_mb']:,.0f}" if row["peak_vram_mb"] else "-"
-            time_str = f"{row['training_time_s']:,.0f}" if row["training_time_s"] else "-"
-            print(
-                f"{dataset:<14} | {_truncate_label(name, 22):<22} | "
-                f"{_format_metric_value(row['test_ndcg_20']):>8} | "
-                f"{_format_metric_value(row['test_average_popularity_20']):>10} | "
-                f"{_format_metric_value(row['test_personalization_20']):>8} | "
-                f"{vram_str:>9} | {time_str:>8} | {crru:>7.4f}"
-            )
-        print()
+            scores_by_id[int(row["id"])] = {20: score_20, 40: score_40}
+
+    return scores_by_id
+
+
+def _print_crru_summary() -> None:
+    """Print the CRRU framing used by the default thesis summary."""
+    print("CRRU@K — Causal Resource-aware Recommendation Utility at K")
+    print("  Accuracy@K = NDCG@K^0.50 * Recall@K^0.35 * Hit@K^0.15")
+    print("  Bias@K     = Pers@K^0.40 * (1-AvgPop@K_n)^0.60")
+    print("  Efficiency = (1-log(1+VRAM)_n)^0.50 * (1-log(1+time)_n)^0.50")
+    print("  CRRU@K     = Accuracy@K^0.55 * Bias@K^0.30 * Efficiency^0.15")
+    print(f"  Normalization: dataset-local min-max with epsilon={CRRU_EPSILON:g}")
+    print()
 
 
 def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
@@ -782,9 +812,16 @@ def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
         print("Use --view all to inspect every logged experiment row.")
         return
 
-    _print_formal_rows(_select_top_formal_rows(rows, n))
-    _print_ablation_rows(_select_best_ablation_rows(rows))
-    _print_crru_table(rows)
+    crru_scores = _compute_dataset_crru_scores(rows)
+    _print_crru_summary()
+    _print_formal_rows(
+        _select_top_formal_rows(rows, n=n, crru_scores=crru_scores),
+        crru_scores=crru_scores,
+    )
+    _print_ablation_rows(
+        _select_best_ablation_rows(rows, crru_scores=crru_scores),
+        crru_scores=crru_scores,
+    )
 
 
 def _render_default_summary(conn: sqlite3.Connection, *, n: int = 20) -> str:

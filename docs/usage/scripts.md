@@ -48,7 +48,7 @@ uv run python src/data_exploration/explore_all_datasets.py
 uv run python src/data_exploration/explore_all_datasets.py --output-dir results/dataset_visualizations
 ```
 
-- `query-results`: inspect the thesis SQLite database. The base command renders the default thesis summary for full-data formal and ablation runs, ordered by dataset and test ranking metrics, with the full test metric suite, a per-run `Resources:` line (`training_time_s`, `completed_train_epochs`, `peak_vram_mb`, `avg_gpu_utilization_pct`), and full canonical experiment names, then writes that report to `results/query_results.md`.
+- `query-results`: inspect the thesis SQLite database. The base command renders the default thesis summary for full-data formal and ablation runs, ordered by dataset and then by `CRRU@20` / `CRRU@40`, with the full test metric suite, inline `CRRU@20` and `CRRU@40` columns framed as Causal Resource-aware Recommendation Utility at K, dataset-local min-max normalization for those CRRU columns, a per-run `Resources:` line (`training_time_s`, `completed_train_epochs`, `peak_vram_mb`, `avg_gpu_utilization_pct`), and full canonical experiment names, then writes that report to `results/query_results.md`.
 - `query-results --view completed`: show only finished runs via the SQLite completed-run view.
 - `query-results --view attention`: show anything not yet cleanly completed, including running, unknown, OOM, and failed rows.
 - `query-results --view errors`: show only the failed and OOM rows.
