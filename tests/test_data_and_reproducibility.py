@@ -758,8 +758,8 @@ class DataContractTests(unittest.TestCase):
             canonical.metadata["repeat_collapse"]["reason"],
         )
 
-    def test_kuairec_defaults_prefer_small_matrix_fullobs(self) -> None:
-        """KuaiRec defaults should prefer the nearly fully observed small matrix."""
+    def test_kuairec_loader_direct_default_is_small_matrix_fullobs(self) -> None:
+        """The loader function's own default should keep small_matrix/kuairec_fullobs."""
         with TemporaryDirectory() as tmp_dir:
             data_root = Path(tmp_dir) / "KuaiRec_v2" / "data"
             data_root.mkdir(parents=True)
@@ -772,25 +772,38 @@ class DataContractTests(unittest.TestCase):
                 data_dir=tmp_dir,
                 include_optional_features=False,
             )
+
+        self.assertEqual(direct_canonical.preprocessing_preset, "kuairec_fullobs")
+        self.assertEqual(direct_canonical.metadata["matrix_variant"], "small_matrix")
+        self.assertEqual(direct_canonical.metadata["watch_ratio_policy"], "raw")
+        np.testing.assert_array_equal(
+            direct_canonical.source_domain,
+            np.array(["small_matrix", "small_matrix"]),
+        )
+        np.testing.assert_allclose(
+            direct_canonical.raw_target,
+            np.array([573.4572, 0.8], dtype=np.float32),
+        )
+        self.assertFalse(direct_canonical.metadata["repeat_collapse"]["applied"])
+
+    def test_kuairec_registry_default_is_watchratio_big_matrix(self) -> None:
+        """Registry default for kuairec_v2 should be kuairec_watchratio (big_matrix)."""
+        with TemporaryDirectory() as tmp_dir:
+            data_root = Path(tmp_dir) / "KuaiRec_v2" / "data"
+            data_root.mkdir(parents=True)
+            (data_root / "big_matrix.csv").write_text(
+                ("user_id,video_id,watch_ratio,timestamp\n1,10,0.8,100\n2,11,0.3,200\n"),
+                encoding="utf-8",
+            )
+
             registry_canonical = load_dataset(
                 "kuairec_v2",
                 data_dir=tmp_dir,
                 include_optional_features=False,
             )
 
-        for canonical in (direct_canonical, registry_canonical):
-            self.assertEqual(canonical.preprocessing_preset, "kuairec_fullobs")
-            self.assertEqual(canonical.metadata["matrix_variant"], "small_matrix")
-            self.assertEqual(canonical.metadata["watch_ratio_policy"], "raw")
-            np.testing.assert_array_equal(
-                canonical.source_domain,
-                np.array(["small_matrix", "small_matrix"]),
-            )
-            np.testing.assert_allclose(
-                canonical.raw_target,
-                np.array([573.4572, 0.8], dtype=np.float32),
-            )
-            self.assertFalse(canonical.metadata["repeat_collapse"]["applied"])
+        self.assertEqual(registry_canonical.preprocessing_preset, "kuairec_watchratio")
+        self.assertEqual(registry_canonical.metadata["matrix_variant"], "big_matrix")
 
     def test_kuairec_watchratio_preset_clips_targets_and_collapses_pairs(self) -> None:
         """Explicit KuaiRec watch-ratio runs should keep the clipped big-matrix path."""
@@ -840,6 +853,44 @@ class DataContractTests(unittest.TestCase):
             "cannot span train/val/test",
             canonical.metadata["repeat_collapse"]["reason"],
         )
+
+    def test_load_dataset_kuairec_watchratio_preset_routes_to_big_matrix(self) -> None:
+        """Registry-based KuaiRec watch-ratio runs should load the big-matrix view."""
+        with TemporaryDirectory() as tmp_dir:
+            data_root = Path(tmp_dir) / "KuaiRec_v2" / "data"
+            data_root.mkdir(parents=True)
+            (data_root / "small_matrix.csv").write_text(
+                ("user_id,video_id,watch_ratio,timestamp\n1,10,0.9,100\n"),
+                encoding="utf-8",
+            )
+            (data_root / "big_matrix.csv").write_text(
+                (
+                    "user_id,video_id,watch_ratio,timestamp\n"
+                    "1,10,573.4572,100\n"
+                    "1,10,0.2,200\n"
+                    "2,11,0.8,300\n"
+                ),
+                encoding="utf-8",
+            )
+
+            canonical = load_dataset(
+                "kuairec_v2",
+                data_dir=tmp_dir,
+                include_optional_features=False,
+                preprocessing_preset="kuairec_watchratio",
+            )
+
+        self.assertEqual(canonical.preprocessing_preset, "kuairec_watchratio")
+        self.assertEqual(canonical.metadata["matrix_variant"], "big_matrix")
+        self.assertEqual(canonical.metadata["watch_ratio_policy"], "clipped_to_5")
+        self.assertEqual(len(canonical), 2)
+        np.testing.assert_array_equal(
+            canonical.source_domain,
+            np.array(["big_matrix", "big_matrix"]),
+        )
+        np.testing.assert_allclose(canonical.raw_target, np.array([5.0, 0.8], dtype=np.float32))
+        self.assertTrue(canonical.metadata["repeat_collapse"]["applied"])
+        self.assertEqual(canonical.metadata["repeat_collapse"]["dropped_rows"], 1)
 
     def test_kuairand_default_preset_collapses_repeated_pairs_before_split(self) -> None:
         """KuaiRand collapse metadata should document the pre-split leakage guard."""

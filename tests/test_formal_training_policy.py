@@ -136,9 +136,9 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         """Default config assembly should pin the causal-ready KuaiRec view."""
         config = build_config(_experiment_args(dataset="kuairec_v2"))
 
-        self.assertEqual(config.preprocessing_preset, "kuairec_fullobs")
+        self.assertEqual(config.preprocessing_preset, "kuairec_watchratio")
         self.assertIn(
-            "ppresetkuairec_fullobs",
+            "ppresetkuairec_watchratio",
             _build_canonical_name(config, None, None),
         )
 
@@ -234,7 +234,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.num_neighbors, [10, 5])
         self.assertEqual(config.loss_schedule, "baseline")
         self.assertEqual(config.auxiliary_loss_schedule, "linear_ramp")
-        self.assertGreater(config.loss_weight_contrastive, 0.0)
+        self.assertEqual(config.loss_weight_contrastive, 0.0)
         self.assertEqual(config.loss_weight_align, 0.0)
         self.assertEqual(config.loss_weight_uniform, 0.0)
 

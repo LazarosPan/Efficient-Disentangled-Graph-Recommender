@@ -12,14 +12,11 @@ from src.utils.config import DEFAULT_SEED, UCaGNNConfig
 # Variants beyond this set require a thesis rationale; do not extend casually.
 ABLATION_VARIANTS: dict[str, dict] = {
     "mainline": {},
-    "fixed_score_mix": {"scoring_weight_mode": "fixed"},
     "no_popularity_head": {
         "use_popularity_head": False,
         "score_weight_popularity": 0.0,
         "loss_weight_popularity": 0.0,
     },
-    "no_ipw": {"use_ipw": False},
-    "no_contrastive": {"loss_weight_contrastive": 0.0},
     "no_independence": {"loss_weight_independence": 0.0},
     "no_features": {"use_features": False},
 }

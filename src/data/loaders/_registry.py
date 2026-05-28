@@ -31,7 +31,7 @@ _DEFAULT_PREPROCESSING_PRESETS: dict[str, str] = {
     "movielens1m": "movielens_explicit",
     "movielens20m": "movielens_explicit",
     "taobao": "taobao_multibehavior",
-    "kuairec_v2": "kuairec_fullobs",
+    "kuairec_v2": "kuairec_watchratio",
     "amazonbook": "amazonbook_graph_only",
     "kuairand1k": "kuairand_causal",
 }
@@ -54,8 +54,14 @@ _PREPROCESSING_PRESETS: dict[str, dict[str, dict[str, object]]] = {
         },
     },
     "kuairec_v2": {
-        "kuairec_watchratio": {"preprocessing_preset": "kuairec_watchratio"},
-        "kuairec_watchratio_raw": {"preprocessing_preset": "kuairec_watchratio_raw"},
+        "kuairec_watchratio": {
+            "preprocessing_preset": "kuairec_watchratio",
+            "matrix_variant": "big_matrix",
+        },
+        "kuairec_watchratio_raw": {
+            "preprocessing_preset": "kuairec_watchratio_raw",
+            "matrix_variant": "big_matrix",
+        },
         "kuairec_fullobs": {
             "preprocessing_preset": "kuairec_fullobs",
             "matrix_variant": "small_matrix",

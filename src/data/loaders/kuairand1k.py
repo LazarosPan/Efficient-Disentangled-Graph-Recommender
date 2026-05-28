@@ -51,6 +51,63 @@ _REPEAT_BEHAVIOR_LABELS = (
 )
 
 
+def _load_propensity_targets(
+    base: Path,
+    item_map: dict[int, int],
+    n_items: int,
+) -> np.ndarray | None:
+    """Load per-item exposure proxy from the statistics file as propensity targets.
+
+    Reads only ``video_id`` and ``show_cnt`` (lazy scan of the 3.2 GB file) to
+    avoid loading all feature columns.  Normalizes via ``log1p(show_cnt) /
+    max(log1p(show_cnt))`` so values lie in ``[0, 1]``.  Items absent from the
+    statistics file receive ``0.0`` (unknown exposure).
+
+    Args:
+        base: KuaiRand-1K data directory.
+        item_map: Mapping from raw ``video_id`` to contiguous item index.
+        n_items: Total number of items in the contiguous index.
+
+    Returns:
+        Float32 array of shape ``(n_items,)`` or ``None`` when the statistics
+        file is unavailable or lacks ``show_cnt``.
+
+    """
+    stats_path = base / "video_features_statistic_1k.csv"
+    if not stats_path.exists():
+        return None
+    try:
+        df = pl.scan_csv(stats_path, ignore_errors=True).select(["video_id", "show_cnt"]).collect()
+    except Exception:
+        logger.warning(
+            "Could not read show_cnt from %s; propensity targets unavailable",
+            stats_path,
+        )
+        return None
+    if "show_cnt" not in df.columns:
+        return None
+
+    targets = np.zeros(n_items, dtype=np.float32)
+    raw_show_cnt = df["show_cnt"].fill_null(0).cast(pl.Float32).to_numpy()
+    raw_video_ids = df["video_id"].to_numpy()
+    log_counts = np.log1p(raw_show_cnt)
+    max_log = log_counts.max()
+    if max_log > 0:
+        log_counts /= max_log
+
+    for vid, lc in zip(raw_video_ids, log_counts, strict=True):
+        cid = item_map.get(int(vid))
+        if cid is not None:
+            targets[cid] = float(lc)
+
+    logger.info(
+        "KuaiRand-1K: loaded show_cnt propensity targets for %d/%d items.",
+        int(np.sum(targets > 0)),
+        n_items,
+    )
+    return targets
+
+
 def load_kuairand1k(
     data_dir: str = "data",
     max_rows: int | None = None,
@@ -313,7 +370,7 @@ def load_kuairand1k(
     # Store is_rand as metadata for causal analysis
     source_domain = np.where(is_rand_arr > 0, "random", "standard").astype("<U8")
 
-    return build_indexed_canonical_interactions(
+    canonical = build_indexed_canonical_interactions(
         indexed,
         label=label,
         timestamp=timestamps_arr,
@@ -347,3 +404,5 @@ def load_kuairand1k(
         feedback_type="randomized-exposure",
         preprocessing_preset=effective_preset,
     )
+    canonical.item_propensity_targets = _load_propensity_targets(base, item_map, n_items)
+    return canonical

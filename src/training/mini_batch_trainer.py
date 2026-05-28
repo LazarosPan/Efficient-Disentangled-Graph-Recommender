@@ -206,6 +206,11 @@ class MiniBatchTrainer(TrainerRuntime):
         if sub_batch.sub_edge_index.device != self.device:
             sub_batch = sub_batch.to(self.device, non_blocking=True)
 
+        local_prop_targets = (
+            self.propensity_targets[sub_batch.item_global_ids]
+            if self.propensity_targets is not None
+            else None
+        )
         with autocast_context(use_amp=self.use_amp, amp_dtype=self.amp_dtype):
             output = self.model.forward_subgraph(sub_batch)
             local_popularity = popularity[sub_batch.item_global_ids]
@@ -214,6 +219,7 @@ class MiniBatchTrainer(TrainerRuntime):
                 local_popularity,
                 sub_batch.batch_pos_local,
                 epoch,
+                propensity_targets=local_prop_targets,
             )
 
         return losses["total"].detach(), losses

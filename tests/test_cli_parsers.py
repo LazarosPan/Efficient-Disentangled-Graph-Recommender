@@ -26,10 +26,7 @@ from src.utils.cli_parsers import (
 
 EXPECTED_ABLATION_VARIANTS = [
     "mainline",
-    "fixed_score_mix",
     "no_popularity_head",
-    "no_ipw",
-    "no_contrastive",
     "no_independence",
     "no_features",
 ]

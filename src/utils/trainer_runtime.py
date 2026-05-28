@@ -201,6 +201,9 @@ class TrainerRuntime:
         self.model.to(self.device)
         self.loss_suite.to(self.device)
         self.popularity = move_tensor_to_device(data.popularity, self.device)
+        self.propensity_targets = move_optional_tensor_to_device(
+            getattr(data, "propensity_targets", None), self.device
+        )
         self.trainable_parameters = list(model.parameters()) + list(
             loss_suite.parameters(),
         )

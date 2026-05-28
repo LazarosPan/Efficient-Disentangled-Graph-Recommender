@@ -276,6 +276,7 @@ class LossSuite(nn.Module):
         item_popularity: torch.Tensor,
         pos_item_ids: torch.Tensor,
         epoch: int = 0,
+        propensity_targets: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """Compute all active losses.
 
@@ -284,6 +285,10 @@ class LossSuite(nn.Module):
             item_popularity: (I,) normalized popularity array.
             pos_item_ids: (B,) positive item indices (for popularity lookup).
             epoch: Current epoch (for curriculum scheduling).
+            propensity_targets: Optional (I_sub,) per-item exposure proxy
+                (subgraph-local).  When provided together with a positive
+                ``loss_weight_propensity_calibration``, an MSE calibration loss
+                is added to supervise the propensity estimator.
 
         Returns:
             Dict with individual losses and 'total' combined loss.
@@ -332,6 +337,11 @@ class LossSuite(nn.Module):
                 cfg.auxiliary_ramp_rate,
                 popularity_supervision_active,
             ),
+            (
+                cfg.loss_weight_propensity_calibration,
+                cfg.auxiliary_ramp_rate,
+                popularity_supervision_active,
+            ),
         ]
         (
             interest_weight,
@@ -341,6 +351,7 @@ class LossSuite(nn.Module):
             align_weight,
             uniform_weight,
             popularity_weight,
+            prop_calib_weight,
         ) = [
             self._resolve_auxiliary_weight(
                 max_weight,
@@ -445,6 +456,21 @@ class LossSuite(nn.Module):
         else:
             losses["pop"] = zero
 
+        # Propensity calibration: supervise the estimator with exposure-proxy targets.
+        propensity_scores = cast("torch.Tensor | None", model_output.get("propensity_scores"))
+        if (
+            prop_calib_weight > 0
+            and propensity_scores is not None
+            and propensity_targets is not None
+        ):
+            calib_target = propensity_targets[pos_item_ids].to(
+                device=reference_score.device,
+                dtype=reference_score.dtype,
+            )
+            losses["prop_calib"] = _popularity_loss(propensity_scores, calib_target)
+        else:
+            losses["prop_calib"] = zero
+
         # Weighted sum
         total = (
             cfg.loss_weight_recommendation * losses["rec"]
@@ -455,6 +481,7 @@ class LossSuite(nn.Module):
             + align_weight * losses["align"]
             + uniform_weight * losses["uniform"]
             + popularity_weight * losses["pop"]
+            + prop_calib_weight * losses["prop_calib"]
         )
         losses["total"] = total
 

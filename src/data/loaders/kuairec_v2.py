@@ -167,8 +167,11 @@ def load_kuairec_v2(
     """Load KuaiRec v2 from ``data_dir/KuaiRec_v2/data/<matrix_variant>.csv``.
 
     Expected columns: user_id, video_id, watch_ratio, timestamp
-    The default view uses ``small_matrix`` / ``kuairec_fullobs`` so the
-    repository favors the nearly fully observed benchmark split by default.
+    The default view uses ``big_matrix`` / ``kuairec_watchratio`` so the
+    repository uses the sparse, realistic ranking benchmark by default.
+    The ``small_matrix`` / ``kuairec_fullobs`` path remains available via an
+    explicit ``preprocessing_preset`` when the near-fully-observed variant is
+    needed for comparison.
     Label: watch_ratio >= 0.5 -> positive
     Sign:  (watch_ratio clipped to [0,2] - 1) -> [-1, 1]
     """

@@ -123,9 +123,10 @@ class UCaGNN(nn.Module):
             propensity = self._propensity_mlp(propagated[item_key][pos_item_ids])
             ipw_weights = 1.0 / propensity
         else:
+            propensity = None
             ipw_weights = torch.ones(user_ids.size(0), device=user_ids.device)
 
-        return {
+        output: dict[str, torch.Tensor | dict[str, torch.Tensor]] = {
             "pos_scores": pos_scores,
             "neg_scores": neg_scores,
             "embeddings": embeddings,
@@ -133,6 +134,9 @@ class UCaGNN(nn.Module):
             "ipw_weights": ipw_weights,
             "loss_user_ids": user_ids,
         }
+        if propensity is not None:
+            output["propensity_scores"] = propensity
+        return output
 
     def forward(
         self,

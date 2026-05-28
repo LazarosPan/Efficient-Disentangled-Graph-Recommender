@@ -86,7 +86,7 @@ _FULL_PRESET_OVERRIDES: PresetOverrides = {
     "loss_weight_interest_bpr": 0.02,
     "loss_weight_conformity_bpr": 0.02,
     "loss_weight_independence": 0.005,
-    "loss_weight_contrastive": 0.02,
+    "loss_weight_contrastive": 0.0,
     "loss_weight_align": 0.0,
     "loss_weight_uniform": 0.0,
     "loss_weight_popularity": 0.02,
@@ -126,6 +126,7 @@ class UCaGNNConfig:
     cagra_metric: str = "inner_product"  # dot-product space matches the model's scoring function
     cagra_itopk_size: int = 64  # intermediate candidates per step; higher = better recall
     graph_policy: GraphPolicy = "observed"
+    cagra_candidate_k: int = 0  # 0 = full-catalog eval; >0 = restrict to top-K ANN candidates
 
     # ── Embedding / GNN hyperparameters ──────────────────────────────────
     embed_dim: int = 64
@@ -163,6 +164,7 @@ class UCaGNNConfig:
     propensity_hidden: int = 128
     propensity_clip_min: float = 0.01
     propensity_clip_max: float = 0.99
+    loss_weight_propensity_calibration: float = 0.0
 
     # ── Training ─────────────────────────────────────────────────────────
     lr: float = 1e-3

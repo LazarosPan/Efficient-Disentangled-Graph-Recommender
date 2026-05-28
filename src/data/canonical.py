@@ -65,6 +65,10 @@ class CanonicalInteractions:
     # Metadata (e.g., is_rand flags for causal analysis)
     metadata: dict | None = None
 
+    # Per-item exposure proxy for propensity calibration supervision.
+    # Shape (n_items,) float32 in [0, 1]; None when unavailable.
+    item_propensity_targets: np.ndarray | None = None
+
     def __len__(self) -> int:
         return len(self.user_id)
 

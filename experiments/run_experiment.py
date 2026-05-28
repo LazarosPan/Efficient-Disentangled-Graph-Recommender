@@ -1618,6 +1618,8 @@ def run_experiment(
     config.device = config.device if torch.cuda.is_available() else "cpu"
     logger.info("Loading dataset and building graph...")
     canonical, data = load_runtime_data(config)
+    if canonical.item_propensity_targets is not None:
+        data.propensity_targets = torch.from_numpy(canonical.item_propensity_targets)
     _resolve_auto_batch_size(config, canonical, data)
     _verify_selected_auto_batch_size(config, canonical, data)
     _release_cuda_probe_memory()
