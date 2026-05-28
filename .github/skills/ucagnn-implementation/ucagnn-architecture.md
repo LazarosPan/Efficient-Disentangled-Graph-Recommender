@@ -1,51 +1,65 @@
-# U-CaGNN Architecture Skill
+# U-CaGNN Architecture
 
-Use this skill when working on model architecture, embeddings, GCN layers, or module design.
+Use this file for the live model structure: embeddings, propagation, scoring, and the public `UCaGNN` surfaces used by training and evaluation.
 
-## Key Files
-- `.github/skills/ucagnn-implementation/ucagnn-architecture.md` - Routed architecture summary for the current implementation
-- `src/models/ucagnn.py` - Main orchestrator
-- `src/models/embeddings.py` - Module A: EmbeddingModule
-- `src/models/lightgcn.py` - Module B: DualBranchGCN
-- `src/models/scoring.py` - Module C: ScoringModule
-- `src/models/propensity.py` - Module F: PropensityEstimator
+## Key files
 
-## Paper Sources
-| Decision | Source |
-|----------|--------|
-| Embedding init Uniform(-1,1) | DDCE |
-| LightGCN backbone (no W, no activation) | He et al. 2020 |
-| 2 GCN layers default | LightGCN, MCLN, CaDSI |
-| Asymmetric branch depth option | MGCE |
-| No self-loops | LightGCN section 3.1 |
-| Sign-aware alpha_pos/alpha_neg | SIGformer |
+- `.github/skills/ucagnn-implementation/ucagnn-architecture.md`
+- `src/models/embeddings.py`
+- `src/models/lightgcn.py`
+- `src/models/scoring.py`
+- `src/models/propensity.py`
+- `src/models/ucagnn.py`
 
-## Current Architecture Notes
-- `DualBranchGCN` now uses explicit branch-specific propagation depths via `interest_gnn_layers` and `conformity_gnn_layers`, while the LightGCN single-branch path uses its own `single_branch_gnn_layers` field.
-- `ScoringModule` now supports both fixed fusion priors and a learnable user-conditioned gate via `scoring_weight_mode`, mixing interest, conformity, and popularity scores while exposing the raw component scores and gate weights for diagnostics without deriving an extra pseudo-causal score.
-- `EmbeddingModule` now supports optional item-feature fusion when `use_features=True` and canonical item features are available, producing branch-specific item inputs for interest and conformity propagation.
-- `EmbeddingModule` now routes branch-aware user selection, raw item popularity, train-split item recency, and optional popularity embeddings through shared private helpers so the full-graph, subgraph, and stacked-embedding paths stay aligned.
-- `ScoringModule` now owns both pairwise batch scoring and full-catalog component assembly, with a scorer-owned popularity head that consumes item popularity and train-split recency while preserving the item-level fast path used by evaluation.
-- `UCaGNN` now routes subgraph training and full-graph evaluation through shared propagation and training-payload helpers, so pairwise scoring, loss-suite payload assembly, and IPW item selection stay aligned across the runtime paths that still exist.
-- Cached evaluation keeps the narrow public model surface: `UCaGNN.get_propagated_for_eval()` caches one propagated full-graph state, `UCaGNN.score_users_from_propagated()` owns the evaluator-facing full-score path, and `UCaGNN.get_all_score_components()` remains the diagnostic full-catalog entry point.
-- `LightGCNBranch` now uses repeated sparse adjacency matmuls instead of per-layer `LGConv` gather-scatter calls. `DualBranchGCN.forward()` accepts `edge_norm` (pre-computed full-graph `1/sqrt(deg_u * deg_v)`), combines it with optional sign-aware weights, builds one sparse adjacency matrix per forward pass, and reuses it across all propagation layers. This preserves the LightGCN update exactly while cutting the edge-message materialization cost that was inflating memory on large graphs.
-- `DualBranchGCN` keeps sign-aware edge weighting opt-in. On one-sided graphs it keeps the unit LightGCN baseline, and on mixed-sign graphs it preserves that baseline for positive/neutral edges while down-weighting negative edges relative to the learned `alpha_neg / alpha_pos` ratio.
-- The default ranking contract is the fused score `alpha * interest + beta * conformity + gamma * popularity`. Alternate score views (`interest_only`, `conformity_only`, `conformity_suppressed`) are explicit train/eval modes rather than hidden changes to the underlying model.
-- `PropensityEstimator` is a standalone two-layer MLP reused by `UCaGNN` for inverse propensity weighting. It consumes propagated item embeddings, applies a sigmoid, and clamps to `[propensity_clip_min, propensity_clip_max]`; in theory-facing writeups this should be described as an item-side propensity proxy rather than a fully identified treatment/exposure model.
+## Model path
 
-## Quick Reference
-```python
-from src.utils.config import UCaGNNConfig
-from src.models.ucagnn import UCaGNN
-
-# Create model variant via config preset
-config = UCaGNNConfig().preset_full()  # or preset_lightgcn() / preset_dice_like()
-model = UCaGNN(
-    n_users,
-    n_items,
-    config,
-    item_features=item_features,
-    item_popularity=item_popularity,
-    item_recency=item_recency,
-)
+```mermaid
+flowchart LR
+    A[EmbeddingModule] --> B[DualBranchGCN]
+    B --> C[ScoringModule]
+    B --> D[PropensityEstimator]
+    C --> E[Pairwise or full catalog scores]
 ```
+
+The diagram shows the runtime path: the embedding layer prepares tables and metadata, the propagation layer updates them over the graph, the scoring layer produces ranking scores, and the optional propensity layer produces item-side propensity scores for IPW.
+
+## Component responsibilities
+
+| Layer | Owner | Current contract |
+| --- | --- | --- |
+| Embedding layer | `EmbeddingModule` | Builds user and item embeddings, optional popularity embeddings, train-split metadata buffers, and optional item-feature fusion inputs. |
+| Propagation layer | `DualBranchGCN` | Runs sparse LightGCN propagation with explicit branch depths and optional sign-aware edge weights. |
+| Scoring layer | `ScoringModule` | Produces pairwise and full-catalog component scores plus the fused final score for the active score view. |
+| Propensity layer | `PropensityEstimator` | Optional two-layer MLP over propagated item embeddings, clipped to `[propensity_clip_min, propensity_clip_max]`. |
+| Orchestrator | `UCaGNN` | Wires the embedding, propagation, scoring, and optional propensity layers together for subgraph training and full-graph evaluation. |
+
+## Embedding and propagation rules
+
+- `single_branch_gnn_layers` controls the single-branch path. `interest_gnn_layers` and `conformity_gnn_layers` control the dual-branch path.
+- When `use_features=True` and `item_features` exist, `EmbeddingModule` projects item features once and builds branch-aware item inputs:
+  - `item_interest = item_embed + gate * projected_features`
+  - `item_conformity = item_embed + gate * (projected_features * popularity_gate)`
+- `item_popularity` and `item_recency` are registered once in the embedding layer and reused by both training and evaluation.
+- `LightGCNBranch` uses repeated sparse adjacency matmuls and alpha-averaged layer outputs. Degree normalization comes from precomputed `edge_norm`, so train and eval use the same normalization.
+- Sign-aware weighting only changes mixed-sign graphs. Positive and neutral edges keep weight `1.0`; negative edges receive weight `alpha_neg / alpha_pos`, which downweights their propagation effect.
+
+## Score views
+
+| Score view | Meaning |
+| --- | --- |
+| `default` | Interest + conformity + popularity, masked and weighted by the active scoring mode. |
+| `interest_only` | Interest branch only. |
+| `conformity_only` | Conformity branch only. |
+| `conformity_suppressed` | Interest + popularity, with conformity removed. |
+
+`train_scoring_mode` and `eval_scoring_mode` both default to `default`. The evaluator may reuse the same checkpoint with a different eval-only score view.
+
+## Public `UCaGNN` surfaces
+
+| Method | Used by | Returns |
+| --- | --- | --- |
+| `forward_subgraph(batch)` | `MiniBatchTrainer` | One training payload for a sampled subgraph batch. |
+| `get_propagated_for_eval(edge_index, edge_sign, edge_norm, ...)` | `Evaluator` | One reusable full-graph propagated state. |
+| `score_users_from_propagated(propagated, user_ids, ...)` | `Evaluator` | Final `(batch_users, n_items)` score matrix. |
+| `get_all_score_components(...)` | diagnostics and same-checkpoint evaluation tooling | Full-catalog component scores plus branch embeddings when dual-branch is active. |
+| `build_training_output(...)` | internal training path | Shared payload containing scores, propagated tensors, IPW weights, and optional `propensity_scores`. |

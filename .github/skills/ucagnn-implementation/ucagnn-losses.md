@@ -1,64 +1,83 @@
-# U-CaGNN Loss Functions Skill
+# U-CaGNN Losses
 
-Use this skill when working on loss functions, multi-task learning, curriculum scheduling, or IPW weighting.
+Use this file for the live objective contract. `LossSuite` is the only public loss-layer surface.
 
-## Key Files
-- `.github/skills/ucagnn-implementation/ucagnn-losses.md` - Routed loss summary for the current implementation
-- `src/losses/loss_suite.py` - LossSuite orchestrator
-- `experiments/ablation_configs.py` - Thesis-facing ablation variants built from `preset_full()`
+## Key files
 
-## Ownership Notes
-- `LossSuite` is the only public loss-layer surface.
-- The individual loss implementations now live as private helpers inside `src/losses/loss_suite.py`; keep them there unless an external caller with a real separate lifecycle appears.
-- The current mainline uses a batch-safe DCCL-style contrastive auxiliary with `auxiliary_loss_schedule="linear_ramp"`; keep DirectAU alignment/uniformity available as optional ablations rather than the default path.
-- The base dataclass keeps `loss_weight_align=loss_weight_uniform=0.02`, but `preset_full()` overrides both to `0.0`; DirectAU is currently present as an optional diagnostic path, not part of the mainline preset.
-- Keep popularity supervision attached to the scorer-owned popularity head rather than reintroducing a separate predictor inside the loss suite.
-- `LossSuite` receives scores from `UCaGNN.build_training_output()`, which now respects `config.train_scoring_mode`; keep the ranking loss semantics aligned with that model-owned scoring contract.
-- Keep the public ablation matrix focused on headline U-CaGNN components: `mainline`, `fixed_score_mix`, `no_popularity_head`, `no_ipw`, `no_contrastive`, `no_independence`, and `no_features`. Treat curriculum or DirectAU geometry toggles as local diagnostics, not thesis headline ablations.
+- `.github/skills/ucagnn-implementation/ucagnn-losses.md`
+- `src/losses/loss_suite.py`
+- `src/models/ucagnn.py`
+- `src/training/mini_batch_trainer.py`
+- `experiments/ablation_configs.py`
 
-## Loss Formula
-```
-L_total = loss_weight_recommendation * L_rec
-        + loss_weight_interest_bpr * L_interest_bpr
-        + loss_weight_conformity_bpr * L_conformity_bpr
-        + loss_weight_independence * L_independence
-        + loss_weight_contrastive * L_contrastive
-        + loss_weight_align * L_align
-        + loss_weight_uniform * L_uniform
-        + loss_weight_popularity * L_pop
+## Loss composition
+
+```mermaid
+flowchart LR
+    A[L_rec] --> T[L_total]
+    B[Branch BPR terms] --> T
+    C[Independence] --> T
+    D[Contrastive and DirectAU] --> T
+    E[Popularity and prop calib] --> T
 ```
 
-## Paper Sources
-| Loss | Lambda | Source |
-|------|--------|--------|
-| L_rec (BPR) | 1.0 | Rendle 2009 |
-| L_interest_bpr / L_conformity_bpr | 0.02 | Branch-local BPR auxiliaries keep each branch predictive |
-| L_independence | 0.005 | Cosine-squared branch separation |
-| L_contrastive | 0.02 | Sum of popularity-aware `L_interest_contrastive` and `L_conformity_contrastive` over batch-local other-user negatives |
-| L_align / L_uniform | 0.02 | DirectAU-style branch-local geometry regularization (optional) |
-| L_pop | 0.02 | DDCE-style popularity supervision routed through the scorer |
+The diagram shows the weighted-sum structure only. Whether a term contributes in a given run depends on the preset, the corresponding config weight, and the schedule rules below.
 
-Current preset deltas:
-- `preset_lightgcn()`: only `L_rec` remains active.
-- `preset_dice_like()`: `L_rec + 0.1 * L_interest_bpr + 0.1 * L_conformity_bpr + 0.01 * L_independence`.
-- `preset_full()`: `L_rec + 0.02 * L_interest_bpr + 0.02 * L_conformity_bpr + 0.005 * L_independence + 0.02 * L_contrastive + 0.02 * L_pop`, with `L_align` and `L_uniform` disabled unless you opt in manually.
+## Loss terms
 
-## Curriculum Scheduling
-Config field `auxiliary_loss_schedule` controls how auxiliary weights activate:
-- `"linear_ramp"`: mainline path; fused BPR and branch BPR are active from epoch 0, while the other auxiliaries ramp from 0 using `auxiliary_ramp_rate` (`L_interest_bpr`, `L_conformity_bpr`, `L_contrastive`, `L_align`, `L_uniform`, `L_pop`) and `independence_ramp_rate` (`L_independence`).
-- `"phased"`: stage auxiliaries with `auxiliary_losses_start_epoch` and `popularity_supervision_start_epoch` while fused BPR still stays on from epoch 0.
+| Term | Source tensors | Base weight | Enabled when |
+| --- | --- | --- | --- |
+| `L_rec` | `final_score(pos)` vs `final_score(neg)` | `loss_weight_recommendation = 1.0` | Always on; IPW-reweighted when `use_ipw=True` |
+| `L_interest_bpr` | `interest_score(pos)` vs `interest_score(neg)` | `0.02` | Dual-branch only |
+| `L_conformity_bpr` | `conformity_score(pos)` vs `conformity_score(neg)` | `0.02` | Dual-branch only |
+| `L_independence` | `user_interest` vs `user_conformity` | `0.005` | Dual-branch only |
+| `L_contrastive` | Branch-local positive-pair contrastive terms | `0.02` | Dual-branch only and weight > 0 |
+| `L_align` / `L_uniform` | DirectAU-style branch geometry | `0.02` | Dual-branch only and weight > 0 |
+| `L_pop` | `popularity_score(pos)` vs train-split item popularity target | `0.02` | Dual branch + popularity head + weight > 0 |
+| `L_prop_calib` | `propensity_scores(pos)` vs `propensity_targets(pos)` | `0.0` | Weight > 0 and batch propensity targets available |
 
-When the phased schedule is active, `auxiliary_losses_start_epoch` and `popularity_supervision_start_epoch` control when auxiliary losses activate:
-- Base-config default: `auxiliary_losses_start_epoch=15, popularity_supervision_start_epoch=30` (CaDCR-inspired staged curriculum)
-- Disable curriculum: set both to 0 (joint training from epoch 0)
+## Total objective
 
-`loss_schedule` is fixed to `"baseline"` for supported runs. Do not reintroduce delayed-BPR schedules; the mainline contract is fused BPR from epoch 0 with only the auxiliary terms phased or ramped.
-
-## Quick Reference
-```python
-from src.losses.loss_suite import LossSuite
-
-loss_suite = LossSuite(config)
-losses = loss_suite(model_output, item_popularity, pos_item_ids, epoch=current_epoch)
-# Returns dict: {"total", "rec", "interest_bpr", "conformity_bpr", "independence", "interest_contrastive", "conformity_contrastive", "contrastive", "align", "uniform", "pop"}
+```text
+L_total =
+    loss_weight_recommendation * L_rec
+  + interest_weight * L_interest_bpr
+  + conformity_weight * L_conformity_bpr
+  + independence_weight * L_independence
+  + contrastive_weight * L_contrastive
+  + align_weight * L_align
+  + uniform_weight * L_uniform
+  + popularity_weight * L_pop
+  + prop_calib_weight * L_prop_calib
 ```
+
+`LossSuite` resolves the effective auxiliary weights first, then applies this weighted sum.
+
+## Schedule semantics
+
+| Schedule | Current behavior |
+| --- | --- |
+| `phased` | `L_interest_bpr` and `L_conformity_bpr` are active from epoch 0; `L_independence`, `L_contrastive`, `L_align`, and `L_uniform` wait for `auxiliary_losses_start_epoch`; `L_pop` and `L_prop_calib` wait for `popularity_supervision_start_epoch`. |
+| `linear_ramp` | Every enabled auxiliary ramps from 0 toward its configured max weight. `L_independence` uses `independence_ramp_rate`; the other enabled auxiliaries use `auxiliary_ramp_rate`. Under `linear_ramp`, `auxiliary_losses_start_epoch` does **not** delay the ramp itself. |
+
+`preset_full()` uses `linear_ramp`. The non-causal presets keep `phased`, but most auxiliary weights are zero there anyway.
+
+## Preset-owned defaults
+
+| Preset | Active losses by default |
+| --- | --- |
+| `lightgcn` preset (`UCaGNNConfig.preset_lightgcn()`) | `L_rec` |
+| `dice_like` preset (`UCaGNNConfig.preset_dice_like()`) | `L_rec + L_interest_bpr + L_conformity_bpr + L_independence` |
+| `ucagnn` preset (`UCaGNNConfig.preset_full()`) | `L_rec + L_interest_bpr + L_conformity_bpr + L_independence + L_pop` |
+
+In `preset_full()`, contrastive, align, uniform, and propensity calibration remain implemented but disabled until explicitly turned on.
+
+## Propensity calibration requirements
+
+`L_prop_calib` stays inactive unless all of the following are true:
+
+1. `loss_weight_propensity_calibration > 0`,
+2. the model output contains `propensity_scores`,
+3. the current batch provides `propensity_targets`.
+
+The data path that supplies those targets is owned by `ucagnn-data-pipeline.md`, while the runtime move and batch slicing are owned by `ucagnn-training.md`.

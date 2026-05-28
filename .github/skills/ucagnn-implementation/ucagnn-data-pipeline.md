@@ -1,75 +1,102 @@
-# U-CaGNN Data Pipeline Skill
+# U-CaGNN Data Pipeline
 
-Use this skill when working on data loading, graph construction, negative sampling, or dataset handling.
+Use this file for the live data contract: loader registry, canonical interactions, feature policy, graph construction, and sampling.
 
-## Key Files
-- `.github/skills/ucagnn-implementation/ucagnn-data-pipeline.md` - Routed data-pipeline summary for the current implementation
-- `src/data/loaders/_registry.py` - Dataset loading registry plus preprocessing-preset resolution
-- `src/data/loaders/__init__.py` - Re-exported public `load_dataset(...)` surface
-- `src/utils/dataset_loader_utils.py` - Shared dataset-loader helpers for local-path resolution and numeric downcasting
-- `src/data/feature_policy.py` - Structured feature-safety registry and policy helpers
-- `src/data/canonical.py` - CanonicalInteractions format
-- `src/data/graph_builder.py` - Graph construction (build_graph)
-- `src/data/negative_sampler.py` - NegativeSampler
-- `src/utils/interaction_indexing.py` - Contiguous user/item ID remapping plus max-normalized/time-windowed popularity
+## Key files
 
-## Graph Construction Methods
-| Method | Function | When to Use |
-|--------|----------|-------------|
-| `graph_policy="observed"` | `build_graph(..., embeddings=None)` | Thesis-default runtime path; uses only train-split bipartite edges and their aligned signs |
-| `graph_policy="cagra_augmented"` | `load_runtime_data()` bootstrap + `build_graph(..., embeddings=...)` | Builds the observed graph first, bootstraps Module A node embeddings, then adds neutral ANN edges on top of the train-interaction graph; currently requires item features so ANN edges are not built from untrained ID-only embeddings, and treats CAGRA failures as hard errors |
+- `.github/skills/ucagnn-implementation/ucagnn-data-pipeline.md`
+- `src/data/loaders/_registry.py`
+- `src/data/canonical.py`
+- `src/data/feature_policy.py`
+- `src/data/graph_builder.py`
+- `src/data/subgraph_sampler.py`
+- `src/data/negative_sampler.py`
+- `src/utils/csv_features.py`
+- `src/utils/interaction_indexing.py`
 
-## Paper Sources
-| Decision | Source |
-|----------|--------|
-| No self-loops (loop=False) | LightGCN section 3.1 |
-| Per-user 80/10/10 temporal split default; global temporal remains available | FMMRec, DICE |
-| CAGRA ANN acceleration | NVIDIA CAGRA 2024 |
+## Runtime path
 
-## Quick Reference
-```python
-from experiments.run_experiment import load_runtime_data
-
-config.graph_policy = "observed"
-canonical, data = load_runtime_data(config)
-
-config.graph_policy = "cagra_augmented"
-canonical, data = load_runtime_data(config)
+```mermaid
+flowchart LR
+    A[load_dataset] --> B[CanonicalInteractions]
+    B --> C[build_graph embeddings_none]
+    C --> D{graph_policy}
+    D -->|observed| E[Runtime graph]
+    D -->|cagra_augmented| F[Bootstrap embeddings]
+    F --> G[build_graph embeddings_present]
+    G --> E
 ```
 
-Named preprocessing presets stay inside the same loader registry via `load_dataset(..., preprocessing_preset=...)`; use them instead of inventing new dataset aliases.
+The diagram shows the runtime boundary: the loader always produces `CanonicalInteractions`, the first graph build always creates the observed train-interaction graph, and the `cagra_augmented` path uses that observed graph only to bootstrap embeddings before rebuilding with added ANN edges.
 
-When `preprocessing_preset` is omitted, `load_dataset(...)` resolves the repository default for the selected dataset automatically.
+## Loader boundary
 
-Without embeddings, the graph builder reduces to the train-interaction bipartite graph. The runtime now makes that choice explicit through `config.graph_policy`.
+- `load_dataset(...)` is the public loader surface.
+- Default preprocessing presets are resolved in `src/data/loaders/_registry.py`.
+- Full loads are uncached. Capped loads (`max_rows` set) are cached in-process so tiny validation can reuse the same canonical dataset.
+- `feature_policy` and `preprocessing_preset` cross the same loader boundary as the dataset name.
 
-For capped smoke or tiny-validation runs, pass `max_rows=...` through the experiment path. The shared loader now reuses capped loads in-process, so the validator can stay aligned with feature-enabled formal runs without rescanning the same dataset files for every recipe.
+### Repository preprocessing defaults
 
-## Current Data Notes
-- `build_graph()` now computes `data.edge_norm` — precomputed full-graph symmetric degree normalization `1/sqrt(deg_u * deg_v)` for every edge.  Both `SubgraphSampler` (training subgraph path) and `Evaluator` (full-graph eval path) consume `edge_norm` to apply identical normalization, eliminating the train/eval degree-normalization inconsistency that arises when `LGConv` computes degrees from the local subgraph edge index.
-- `CanonicalInteractions.get_splits()` prefers predefined loader masks when present, derives validation from a provided train/test split when necessary, and otherwise falls back to the configured derived split mode (`per_user_temporal` by default, `global_temporal` opt-in).
-- ANN graph augmentation now stays undirected for `cagra`: the query-neighbor edges are mirrored before coalescing, and their aligned signs remain neutral `0.0`.
-- The CAGRA path now materializes the returned neighbor table once as a CPU `torch.long` tensor and builds the directed edge index in Torch, avoiding the old `np.repeat(...)` / `np.stack(...)` / `torch.tensor(...)` bounce through several large intermediate host arrays.
-- `graph_policy="observed"` remains the default thesis path. `graph_policy="cagra_augmented"` now bootstraps Module A node embeddings and rebuilds the graph with CAGRA before training begins, while still keeping the observed train-interaction edges.
-- The current `cagra_augmented` runtime path is intentionally strict: it raises when item features are unavailable, so featureless datasets do not silently build ANN edges from untrained ID-only embeddings before training begins.
-- `SubgraphBatch` now carries `sub_edge_norm: torch.Tensor | None` — the per-edge precomputed norms for the sampled subgraph edges, aligned to `sub_edge_index`.  `SubgraphSampler` accepts `edge_norm` at construction time and subsets it during every `sample()` call.
-- `SubgraphSampler.sample()` now sorts each local user/item ID space once per batch and reuses those sorted views for positive/negative remapping, instead of re-sorting the same subgraph item IDs separately for every `_map_to_local(...)` call.
-- `NegativeSampler` remains fully vectorized, mixes uniform and popularity-weighted draws via `hard_negative_ratio`, and applies only best-effort collision avoidance against the current positive item IDs.
-- `build_graph()` now carries canonical `user_features`, `item_features`, `metadata`, and the new causal descriptors (`raw_target`, `behavior_type`, `exposure_flag`, `source_domain`, `feedback_type`, `preprocessing_preset`) plus repeat-aware collapse summaries (`repeat_count`, `repeat_mean_target`, `repeat_max_target`, `repeat_latest_target`, `repeat_first_timestamp`, `repeat_last_timestamp`, and optional `repeat_behavior_counts` / `repeat_behavior_labels`) onto the PyG `Data` object when they exist. That graph-boundary transfer now goes through one shared helper in `src/data/graph_builder.py`, so NumPy-to-tensor conversion and optional-field passthrough stay aligned instead of being hand-maintained as a long per-field `if` chain. The same helper now copies only non-writable NumPy inputs before `torch.from_numpy(...)`, which avoids PyTorch warnings when loaders hand off read-only views (for example from Polars-backed arrays).
-- `build_graph()` now recomputes `data.popularity` from the final training split rather than reusing all-interaction counts, so held-out validation/test rows never leak into popularity-driven losses, sampling, or evaluation metrics. Train popularity now follows that one split-safe count-based summary path; there is no separate popularity-window override.
-- The current feature-aware model path is item-feature-first: `data.item_features` and split-safe `data.popularity` are passed into `UCaGNN`, while user features remain available for later extensions.
-- `load_dataset(..., max_rows=...)` now caches capped loads in-process, so tiny validation can reuse the same feature-enriched canonical dataset across many recipe cases instead of rescanning the same files repeatedly.
-- Derived split resolution now defaults to `per_user_temporal` whenever a loader does not provide masks. Keep `global_temporal` only as an explicit opt-in for compatibility or analysis baselines.
-- The shared loader path now also accepts `feature_policy=...` and `preprocessing_preset=...`. `src/data/feature_policy.py` remains the source of truth for thesis-default/all-optional column gating and now also exposes which registered feature files are enabled under each policy, so the loaders and dataset audit do not have to duplicate file-selection facts.
-- Mixed-type CSV side-feature parsing shared by `kuairec_v2` and `kuairand1k` now lives in `src/utils/csv_features.py`; that module also owns the shared `stack_feature_blocks(...)` helper, the policy-gated CSV loader wrapper, and the small `PolicyCsvFeatureSpec` + `load_policy_csv_feature_blocks(...)` path used by the loaders to avoid repeating the same resolve-and-load branches for row-aligned feature tables. The shared path now keeps numeric columns numeric, ordinal-encodes categorical columns (including ID-like feature columns), and normalizes retained date/datetime strings to integer Unix seconds. Keep dataset-specific caption/category parsing and semantic feature choices in the individual loaders.
-- Keep only strictly mechanical loader helpers in `src/utils/dataset_loader_utils.py`, such as local raw-directory resolution and numeric downcasting. `downcast_numeric_array(...)` now narrows by explicit `np.iinfo` / `np.finfo` range checks across the standard NumPy storage widths instead of relying on implicit dtype promotion, and `downcast_numeric_arrays(...)` lets loaders bulk-downcast several extracted arrays through that same shared policy instead of repeating one-call-per-column boilerplate. Loader-local parse fallbacks, malformed-value accounting, and warning policy should stay in the concrete loader modules.
-- Contiguous user/item ID remapping and popularity helpers now live in `src/utils/interaction_indexing.py`; remapped IDs may be stored in narrower integer dtypes before `build_graph()` promotes them to `torch.long`, so keep dataset-specific parsing, labels, signs, preset semantics, and feature assembly inside the individual loaders. The pairwise-collapse helpers there now share one validation/slicing contract internally: `summarize_pairwise_max_priority_collapse(...)` remains the repeat-aware core, while the plain collapse helper, retained-index helper, loader-facing canonical repeat-field packaging, and shared `repeat_collapse` metadata payload reuse that same path instead of duplicating input validation, aligned-array slicing, and summary-to-canonical wiring. Final `CanonicalInteractions` packing for shared indexed payloads now goes through `src/data/canonical.py::build_indexed_canonical_interactions(...)`, which keeps the user/item maps, counts, popularity defaults, and optional canonical side fields aligned across Amazon-Book, Taobao, KuaiRec, KuaiRand, and shared explicit-rating paths.
-- Under `thesis_default`, `kuairec_v2` keeps the audited descriptor subset from `item_daily_features.csv` (`author_id`, `music_id`, `video_type`, `upload_dt`, `upload_type`, `visible_status` — 6 columns) plus `item_categories.csv` multi-hot and the three caption-category IDs, giving **item_feature_dim = 40**. `kuairand1k` now keeps 9 columns from `video_features_basic_1k.csv` (`author_id`, `video_type`, `upload_dt`, `upload_type`, `visible_status`, `server_width`, `server_height`, `music_id`, `music_type`), giving **item_feature_dim = 9**. `movielens20m` keeps only `movies.csv` genre features by default while `genome-scores.csv` moves behind `all_optional` / the dense-genome preset; both MovieLens loaders now infer the genre vocabulary directly from the raw movie file instead of relying on a duplicated hardcoded genre list. The Kuai datasets still stop loading deferred user-feature blocks by default.
-- `kuairec_v2` now parses `item_categories.csv` and `kuairec_caption_category.csv` with CSV-aware readers so quoted category lists and caption text containing commas do not corrupt the item-feature alignment.
-- All three main interaction loaders (`taobao`, `kuairec_v2`, `kuairand1k`) now use `polars.read_csv()` for the core interaction parsing path instead of Python for-loops: `taobao` uses `pl.read_csv` with `schema=pl.Schema(...)` and polars `.replace()` for behavior mapping; `kuairec_v2` uses `pl.read_csv` with `schema_overrides`; `kuairand1k` reads each log file with `pl.read_csv` and concatenates with `how="diagonal_relaxed"` to handle files with different optional column sets, then fills missing columns with 0.
-- Loader semantics are now normalized at the canonical boundary: MovieLens keeps raw ratings, Taobao keeps behavior labels plus an ordinal raw target, KuaiRec keeps watch-ratio feedback plus matrix provenance, KuaiRand keeps randomized exposure plus behavior/domain labels with comment-only rows left neutral until sentiment exists, and Amazon-Book records the graph-only preset. The benchmark loaders now also skip malformed core interaction rows and non-finite scalar targets with warnings instead of crashing or propagating bad rows into the canonical dataset. Thesis-default Taobao now collapses repeated user-item events to one max-priority row per pair, thesis-default `kuairec_v2` now defaults to `kuairec_fullobs` on `small_matrix` so raw `watch_ratio` stays intact on the nearly fully observed view, the explicit `kuairec_watchratio` path still targets `big_matrix` and collapses repeated pairs while clipping watch-ratio targets to `[0, 5]`, and `kuairand1k` now collapses repeated user-item pairs using the shared pairwise-collapse path in `src/utils/interaction_indexing.py` (priority = watch-ratio, tie-breaker = timestamp) for **both** `kuairand_causal` and `kuairand_random_only` presets; that loader now computes the clipped watch-ratio target once before collapse and carries the retained values through the shared collapse path instead of recomputing the same target after slicing. Those collapsed rows keep repeat-aware summaries (`repeat_count`, first/last timestamp, mean/max/latest target, plus dataset-backed behavior-count summaries where available) on the canonical object, while `collapsed_rows` remains recorded in the `repeat_collapse` metadata. KuaiRand also exposes a `kuairand_random_only` preset for causal-only views. The two MovieLens loaders now share a private explicit-rating canonicalization helper in `src/data/loaders/_explicit_ratings.py`, so reindexing, label/sign derivation, popularity computation, and canonical assembly stay identical across ML-1M and ML-20M while ML-20M still keeps its own file-format-specific parsing path. The ML-20M `np.loadtxt(...)` path now also forces a 2D table for single-row fixtures so tiny validation inputs keep the same canonical contract as full files.
-- `src/data_exploration/data_information.py` now emits a pure data inventory in `data/datasets_information.md` for the six selected benchmark folders: every discovered file is listed with its size in MiB, and tabular files surface their column names plus per-column dtypes without extra heuristic summary sections.
-- `src/data_exploration/explore_all_datasets.py` now reuses the same canonical loader registry to generate reader-facing figures for all six benchmark datasets: a benchmark overview plus per-dataset profiles covering scale, sparsity, long-tail behavior, relative timeline, response signal, and context panels that prioritize exposure-aware rates for KuaiRand, behavior mix for Taobao, rating drift for explicit MovieLens runs, and split composition when no richer side signal exists. Titles and dataset cards should use thesis-facing labels such as ratings, watch ratio, exposure policy, and interaction types rather than internal loader terms. The dataset cards and console summary now also surface distinct user-item pair counts, repeated-pair share, and randomized-exposure share when available, and the same script now writes `benchmark_summary.json` plus `benchmark_summary.md` beside the PNGs so those image-driven insights are available as text.
-- The dataset audit now also emits a per-column candidate-column table and can export a machine-readable JSON payload with `--audit-json ...` for feature-policy automation.
-- Use the terms precisely: `optional features` are canonical side-feature matrices, `optional feature scans` are the extra raw-file reads needed to construct them, and `feature consumption` refers to whether the current model or evaluator actually uses those fields.
-- Formal and tiny runs should use the same loader registry, canonical schema, feature toggles, and `feature_policy`; tiny runs may differ only through row caps, sampled interactions, and other runtime controls.
+| Dataset | Default preset | Important alternatives |
+| --- | --- | --- |
+| `movielens1m` | `movielens_explicit` | none |
+| `movielens20m` | `movielens_explicit` | `movielens_explicit_dense_genome` |
+| `taobao` | `taobao_multibehavior` | `taobao_multibehavior_raw` |
+| `kuairec_v2` | `kuairec_watchratio` | `kuairec_watchratio_raw`, `kuairec_fullobs` |
+| `amazonbook` | `amazonbook_graph_only` | none |
+| `kuairand1k` | `kuairand_causal` | `kuairand_random_only` |
+
+`kuairec_watchratio` is the default KuaiRec view and uses `big_matrix`. `kuairec_fullobs` is the explicit `small_matrix` path.
+
+## `CanonicalInteractions`
+
+| Group | Fields |
+| --- | --- |
+| Core arrays | `user_id`, `item_id`, `label`, `timestamp`, `sign`, `popularity` |
+| Maps and sizes | `n_users`, `n_items`, `user_map`, `item_map` |
+| Optional side info | `user_features`, `item_features` |
+| Causal descriptors | `raw_target`, `behavior_type`, `exposure_flag`, `source_domain`, `feedback_type`, `preprocessing_preset` |
+| Repeat-collapse summaries | `repeat_count`, `repeat_*`, optional `repeat_behavior_counts`, `repeat_behavior_labels` |
+| Split metadata | optional `train_mask`, `val_mask`, `test_mask`, plus `metadata` |
+| Propensity supervision | optional `item_propensity_targets` with shape `(n_items,)` |
+
+`get_splits()` prefers predefined loader masks, otherwise derives validation from an existing train/test split, otherwise falls back to the configured derived split mode. `compute_item_recency()` is intended to run on the training split only.
+
+## Feature policy
+
+- `thesis_default` loads only safe pre-treatment features from the structured registry.
+- `all_optional` keeps exploratory sources such as proxy-only feature files.
+- Post-treatment aggregates stay out of thesis-default model features.
+- Under `thesis_default`, KuaiRand's `video_features_statistic_1k.csv` stays excluded from model features, but its `show_cnt` column is reused separately as a propensity calibration target.
+
+`src/utils/csv_features.py` applies one shared encoding policy:
+
+- numeric columns stay numeric,
+- temporal columns become Unix seconds,
+- categorical-like columns become deterministic `float32` values in `[0, 1]`.
+
+## Graph construction
+
+| `graph_policy` | Path | Current behavior |
+| --- | --- | --- |
+| `observed` | `load_runtime_data()` -> `build_graph(..., embeddings=None)` | Uses only train-split interaction edges. |
+| `cagra_augmented` | `load_runtime_data()` -> bootstrap embeddings -> `build_graph(..., embeddings=...)` | Keeps observed train edges and adds neutral ANN edges from CAGRA. |
+
+Current graph rules:
+
+- `build_graph()` always recomputes `data.popularity` from the final training split.
+- `build_graph()` precomputes `data.edge_norm` once, so training and evaluation share the same degree normalization.
+- Optional canonical payloads are copied onto the PyG `Data` object through one shared boundary helper.
+- `cagra_augmented` is strict: it requires item features and raises on CAGRA failures instead of silently degrading.
+
+Only KuaiRand-1K currently populates `item_propensity_targets`; every other dataset leaves that field as `None`.
+
+## Sampling
+
+- `NegativeSampler` is fully vectorized and mixes uniform and popularity-weighted draws via `hard_negative_ratio`.
+- `SubgraphSampler` extracts sampled k-hop subgraphs with per-hop fan-out limits from `num_neighbors`.
+- `SubgraphBatch` carries:
+  - `sub_edge_index`, `sub_edge_sign`, `sub_edge_norm`,
+  - global user and item ids for metadata lookup,
+  - local user, positive-item, and negative-item ids for scoring and loss computation.

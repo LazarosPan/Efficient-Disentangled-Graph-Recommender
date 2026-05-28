@@ -44,7 +44,7 @@ uv run experiment --dataset kuairec_v2 --preset ucagnn
 
 ```bash
 uv run ablation --datasets movielens1m
-uv run ablation --datasets amazonbook kuairec_v2 movielens1m --variants mainline no_ipw
+uv run ablation --datasets amazonbook kuairec_v2 movielens1m --variants mainline no_features
 uv run ablation --datasets movielens1m --variants mainline --overwrite-checkpoint
 ```
 
