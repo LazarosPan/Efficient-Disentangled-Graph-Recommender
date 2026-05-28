@@ -153,32 +153,35 @@ def _encode_temporal_series(series: pl.Series) -> np.ndarray:
 
 
 def _encode_categorical_series(series: pl.Series) -> np.ndarray:
-    """Encode a categorical feature series into contiguous positive integers.
+    """Encode a categorical feature series as normalized floats in ``(0, 1]``.
 
-    Missing values are reserved as ``0`` so the encoded output stays dense and
-    deterministic across repeated loads of the same file subset.
+    Categories are sorted lexicographically and mapped to ``1..N``, then
+    divided by ``N`` so the result lies in ``(0, 1]``.  Missing values are
+    reserved as ``0.0`` so the output is dense and deterministic across
+    repeated loads of the same file subset.
 
     Args:
         series: Polars series for one categorical feature column.
 
     Returns:
-        Encoded category IDs aligned to the input series.
+        Float32 array in ``[0.0, 1.0]`` aligned to the input series.
 
     """
     frame = pl.DataFrame({"value": series})
     unique_values = frame.select(pl.col("value").drop_nulls().unique().sort().alias("value"))[
         "value"
     ]
+    n_unique = len(unique_values)
     if unique_values.is_empty():
-        return np.zeros(len(series), dtype=np.int32)
+        return np.zeros(len(series), dtype=np.float32)
     lut = pl.DataFrame(
         {
             "value": unique_values,
-            "code": np.arange(1, len(unique_values) + 1, dtype=np.int32),
+            "code": np.arange(1, n_unique + 1, dtype=np.int32),
         },
     )
-    encoded = frame.join(lut, on="value", how="left")["code"].fill_null(0).cast(pl.Int32).to_numpy()
-    return encoded
+    codes = frame.join(lut, on="value", how="left")["code"].fill_null(0).cast(pl.Int32).to_numpy()
+    return (codes.astype(np.float32)) / n_unique
 
 
 def _encode_numeric_series(series: pl.Series) -> np.ndarray:
