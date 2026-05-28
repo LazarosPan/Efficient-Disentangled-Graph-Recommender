@@ -5,6 +5,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+import scripts.quick_validate as quick_validate
 from experiments.ablation_configs import (
     ABLATION_VARIANTS,
     build_ablation_base_kwargs,
@@ -251,6 +252,29 @@ class UtilityParserTests(unittest.TestCase):
 
         self.assertIsNone(args.output)
         self.assertIsNone(args.audit_json)
+
+    def test_quick_validate_tiny_runtime_defaults_are_shared(self) -> None:
+        """Quick-validate tiny recipe and ablation configs should share runtime knobs."""
+        args = build_quick_validate_parser().parse_args([])
+
+        recipe_config = quick_validate._build_tiny_recipe_config(
+            args,
+            "movielens1m",
+            recipe="ucagnn",
+        )
+        ablation_config = quick_validate._build_tiny_ablation_config(
+            args,
+            "movielens1m",
+            variant="mainline",
+        )
+
+        for config in (recipe_config, ablation_config):
+            self.assertEqual(config.epochs, quick_validate.QUICK_VALIDATE_EPOCHS)
+            self.assertEqual(config.batch_size, quick_validate.QUICK_VALIDATE_BATCH_SIZE)
+            self.assertEqual(config.sample_interactions, 100)
+            self.assertEqual(config.loader_max_rows, 100)
+            self.assertEqual(config.patience, 1)
+            self.assertFalse(config.use_torch_compile)
 
 
 if __name__ == "__main__":

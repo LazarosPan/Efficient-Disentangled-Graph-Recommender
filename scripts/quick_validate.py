@@ -47,6 +47,27 @@ _TINY_DATASET_LIMITS = {
 }
 
 
+def _build_tiny_runtime_overrides(dataset: str) -> dict[str, int]:
+    """Build the shared tiny-run overrides for a dataset.
+
+    Args:
+        dataset: Dataset name for the validation run.
+
+    Returns:
+        A mapping containing the tiny-run epochs, batch size, interaction cap,
+        loader row cap, and patience.
+
+    """
+    dataset_limit = int(_TINY_DATASET_LIMITS.get(dataset, 100))
+    return {
+        "epochs": QUICK_VALIDATE_EPOCHS,
+        "batch_size": QUICK_VALIDATE_BATCH_SIZE,
+        "sample_interactions": dataset_limit,
+        "loader_max_rows": dataset_limit,
+        "patience": 1,
+    }
+
+
 def _build_runtime_config(
     args: argparse.Namespace,
     dataset: str,
@@ -118,17 +139,42 @@ def _build_tiny_recipe_config(
     use_features: bool | None = None,
 ) -> UCaGNNConfig:
     """Build a tiny validation config for a catalog recipe on one dataset."""
-    dataset_limit = int(_TINY_DATASET_LIMITS.get(dataset, 100))
+    tiny_overrides = _build_tiny_runtime_overrides(dataset)
     return _build_runtime_config(
         args,
         dataset,
         recipe=recipe,
         eval_scoring_mode=eval_scoring_mode,
         use_features=use_features,
-        sample_interactions=dataset_limit,
-        loader_max_rows=dataset_limit,
-        patience=1,
+        sample_interactions=tiny_overrides["sample_interactions"],
+        loader_max_rows=tiny_overrides["loader_max_rows"],
+        patience=tiny_overrides["patience"],
     )
+
+
+def _build_tiny_ablation_config(
+    args: argparse.Namespace,
+    dataset: str,
+    *,
+    variant: str,
+) -> UCaGNNConfig:
+    """Build a tiny validation config for an ablation variant on one dataset."""
+    tiny_overrides = _build_tiny_runtime_overrides(dataset)
+    config = make_ablation_config(
+        variant,
+        **build_ablation_base_kwargs(
+            dataset=dataset,
+            data_dir=args.data_dir,
+            device=RUNTIME_DEVICE,
+            epochs=tiny_overrides["epochs"],
+            batch_size=tiny_overrides["batch_size"],
+            sample_interactions=tiny_overrides["sample_interactions"],
+            loader_max_rows=tiny_overrides["loader_max_rows"],
+        ),
+    )
+    config.use_torch_compile = False
+    config.patience = tiny_overrides["patience"]
+    return config
 
 
 def _select_values(
@@ -304,22 +350,12 @@ def _run_ablation_category(args: argparse.Namespace, results: list[dict]) -> Non
         f"Ablation coverage: {len(args.datasets)} datasets x {len(variants)} variants",
     )
     for dataset in args.datasets:
-        dataset_limit = int(_TINY_DATASET_LIMITS.get(dataset, 100))
         for variant in variants:
-            config = make_ablation_config(
-                variant,
-                **build_ablation_base_kwargs(
-                    dataset=dataset,
-                    data_dir=args.data_dir,
-                    device=RUNTIME_DEVICE,
-                    epochs=QUICK_VALIDATE_EPOCHS,
-                    batch_size=QUICK_VALIDATE_BATCH_SIZE,
-                    sample_interactions=dataset_limit,
-                    loader_max_rows=dataset_limit,
-                ),
+            config = _build_tiny_ablation_config(
+                args,
+                dataset,
+                variant=variant,
             )
-            config.use_torch_compile = False
-            config.patience = 1
             label = f"ablation:{variant}"
             try:
                 _, elapsed = _run_single_case(

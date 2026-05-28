@@ -309,6 +309,263 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertAlmostEqual(row["delta_test_recall_20"], 0.05)
         self.assertAlmostEqual(row["delta_test_average_popularity_20"], -0.02)
 
+    def test_compute_dataset_crru_scores_is_dataset_local_and_k_specific(self) -> None:
+        """CRRU scores should normalize per dataset and differ between @20 and @40."""
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            """
+            CREATE TABLE report_rows (
+                id INTEGER PRIMARY KEY,
+                dataset TEXT NOT NULL,
+                test_ndcg_20 REAL,
+                test_recall_20 REAL,
+                test_hit_ratio_20 REAL,
+                test_personalization_20 REAL,
+                test_average_popularity_20 REAL,
+                test_ndcg_40 REAL,
+                test_recall_40 REAL,
+                test_hit_ratio_40 REAL,
+                test_personalization_40 REAL,
+                test_average_popularity_40 REAL,
+                peak_vram_mb REAL,
+                training_time_s REAL
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO report_rows (
+                id, dataset, test_ndcg_20, test_recall_20, test_hit_ratio_20,
+                test_personalization_20, test_average_popularity_20,
+                test_ndcg_40, test_recall_40, test_hit_ratio_40,
+                test_personalization_40, test_average_popularity_40,
+                peak_vram_mb, training_time_s
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    1,
+                    "amazonbook",
+                    0.90,
+                    0.80,
+                    0.70,
+                    0.60,
+                    0.20,
+                    0.10,
+                    0.20,
+                    0.30,
+                    0.40,
+                    0.80,
+                    1000.0,
+                    100.0,
+                ),
+                (
+                    2,
+                    "amazonbook",
+                    0.20,
+                    0.30,
+                    0.40,
+                    0.50,
+                    0.70,
+                    0.95,
+                    0.85,
+                    0.75,
+                    0.65,
+                    0.10,
+                    4000.0,
+                    400.0,
+                ),
+                (
+                    3,
+                    "movielens1m",
+                    0.09,
+                    0.08,
+                    0.07,
+                    0.06,
+                    0.02,
+                    0.01,
+                    0.02,
+                    0.03,
+                    0.04,
+                    0.08,
+                    500.0,
+                    50.0,
+                ),
+                (
+                    4,
+                    "movielens1m",
+                    0.02,
+                    0.03,
+                    0.04,
+                    0.05,
+                    0.07,
+                    0.10,
+                    0.09,
+                    0.08,
+                    0.07,
+                    0.01,
+                    1500.0,
+                    150.0,
+                ),
+            ],
+        )
+        all_rows = conn.execute("SELECT * FROM report_rows ORDER BY id").fetchall()
+        amazon_rows = conn.execute(
+            "SELECT * FROM report_rows WHERE dataset = 'amazonbook' ORDER BY id"
+        ).fetchall()
+
+        all_scores = query_results._compute_dataset_crru_scores(all_rows)
+        amazon_scores = query_results._compute_dataset_crru_scores(amazon_rows)
+
+        self.assertGreater(all_scores[1][20], all_scores[2][20])
+        self.assertLess(all_scores[1][40], all_scores[2][40])
+        self.assertAlmostEqual(all_scores[1][20], amazon_scores[1][20])
+        self.assertAlmostEqual(all_scores[1][40], amazon_scores[1][40])
+        self.assertAlmostEqual(all_scores[2][20], amazon_scores[2][20])
+        self.assertAlmostEqual(all_scores[2][40], amazon_scores[2][40])
+
+    def test_query_results_orders_rows_by_crru_within_dataset(self) -> None:
+        """The summary tables should sort each dataset by CRRU@20 then CRRU@40."""
+        high_accuracy_low_utility = self.logger.log_experiment(
+            dataset="amazonbook",
+            config={
+                "dataset": "amazonbook",
+                "epochs": 100,
+                "batch_size": 4096,
+                "embed_dim": 64,
+                "use_dual_branch": False,
+                "single_branch_gnn_layers": 2,
+                "num_neighbors": [10, 5],
+                "lr_scheduler": "plateau",
+                "seed": 11,
+            },
+            preset="lightgcn",
+            batch_id="formal-order-1",
+            profile_name="high-accuracy-low-utility",
+        )
+        self.logger.log_metric(high_accuracy_low_utility, "NDCG@20", 0.95, split="test")
+        self.logger.log_metric(high_accuracy_low_utility, "Recall@20", 0.05, split="test")
+        self.logger.log_metric(high_accuracy_low_utility, "HitRatio@20", 0.05, split="test")
+        self.logger.log_metric(high_accuracy_low_utility, "Personalization@20", 0.05, split="test")
+        self.logger.log_metric(
+            high_accuracy_low_utility,
+            "AveragePopularity@20",
+            0.95,
+            split="test",
+        )
+        self.logger.log_metric(high_accuracy_low_utility, "NDCG@40", 0.90, split="test")
+        self.logger.log_metric(high_accuracy_low_utility, "Recall@40", 0.05, split="test")
+        self.logger.log_metric(high_accuracy_low_utility, "HitRatio@40", 0.05, split="test")
+        self.logger.log_metric(high_accuracy_low_utility, "Personalization@40", 0.05, split="test")
+        self.logger.log_metric(
+            high_accuracy_low_utility,
+            "AveragePopularity@40",
+            0.95,
+            split="test",
+        )
+        self.logger.log_metric(high_accuracy_low_utility, "training_time_s", 900.0, split="train")
+        self.logger.log_metric(high_accuracy_low_utility, "peak_vram_mb", 9000.0, split="train")
+        self.logger.update_experiment_status(high_accuracy_low_utility, status="completed")
+
+        low_accuracy_high_utility = self.logger.log_experiment(
+            dataset="amazonbook",
+            config={
+                "dataset": "amazonbook",
+                "epochs": 100,
+                "batch_size": 4096,
+                "embed_dim": 64,
+                "use_dual_branch": False,
+                "single_branch_gnn_layers": 2,
+                "num_neighbors": [10, 5],
+                "lr_scheduler": "plateau",
+                "seed": 12,
+            },
+            preset="lightgcn",
+            batch_id="formal-order-2",
+            profile_name="low-accuracy-high-utility",
+        )
+        self.logger.log_metric(low_accuracy_high_utility, "NDCG@20", 0.10, split="test")
+        self.logger.log_metric(low_accuracy_high_utility, "Recall@20", 0.95, split="test")
+        self.logger.log_metric(low_accuracy_high_utility, "HitRatio@20", 0.95, split="test")
+        self.logger.log_metric(low_accuracy_high_utility, "Personalization@20", 0.95, split="test")
+        self.logger.log_metric(
+            low_accuracy_high_utility,
+            "AveragePopularity@20",
+            0.05,
+            split="test",
+        )
+        self.logger.log_metric(low_accuracy_high_utility, "NDCG@40", 0.10, split="test")
+        self.logger.log_metric(low_accuracy_high_utility, "Recall@40", 0.95, split="test")
+        self.logger.log_metric(low_accuracy_high_utility, "HitRatio@40", 0.95, split="test")
+        self.logger.log_metric(low_accuracy_high_utility, "Personalization@40", 0.95, split="test")
+        self.logger.log_metric(
+            low_accuracy_high_utility,
+            "AveragePopularity@40",
+            0.05,
+            split="test",
+        )
+        self.logger.log_metric(low_accuracy_high_utility, "training_time_s", 10.0, split="train")
+        self.logger.log_metric(low_accuracy_high_utility, "peak_vram_mb", 1000.0, split="train")
+        self.logger.update_experiment_status(low_accuracy_high_utility, status="completed")
+
+        buffer = StringIO()
+        temp_db_path = Path(self.temp_dir.name) / "experiments.sqlite"
+        with patch.object(query_results, "DB_PATH", temp_db_path), redirect_stdout(buffer):
+            query_results.list_top_completed(self.logger.conn, n=20)
+
+        output = buffer.getvalue()
+        self.assertLess(
+            output.index("low-accuracy-high-utility"),
+            output.index("high-accuracy-low-utility"),
+        )
+
+    def test_query_results_shows_tiny_crru_values_without_rounding_them_to_zero(
+        self,
+    ) -> None:
+        """Tiny CRRU values should render in scientific notation instead of 0.0000."""
+        exp_id = self.logger.log_experiment(
+            dataset="movielens1m",
+            config={
+                "dataset": "movielens1m",
+                "epochs": 100,
+                "batch_size": 4096,
+                "embed_dim": 64,
+                "use_dual_branch": False,
+                "single_branch_gnn_layers": 2,
+                "num_neighbors": [10, 5],
+                "lr_scheduler": "plateau",
+                "seed": 99,
+            },
+            preset="lightgcn",
+            batch_id="formal-tiny-crru",
+            profile_name="tiny-crru",
+        )
+        self.logger.log_metric(exp_id, "NDCG@20", 0.11, split="test")
+        self.logger.log_metric(exp_id, "Recall@20", 0.22, split="test")
+        self.logger.log_metric(exp_id, "HitRatio@20", 0.33, split="test")
+        self.logger.log_metric(exp_id, "Personalization@20", 0.44, split="test")
+        self.logger.log_metric(exp_id, "AveragePopularity@20", 0.55, split="test")
+        self.logger.log_metric(exp_id, "NDCG@40", 0.66, split="test")
+        self.logger.log_metric(exp_id, "Recall@40", 0.77, split="test")
+        self.logger.log_metric(exp_id, "HitRatio@40", 0.88, split="test")
+        self.logger.log_metric(exp_id, "Personalization@40", 0.99, split="test")
+        self.logger.log_metric(exp_id, "AveragePopularity@40", 1.0, split="test")
+        self.logger.log_metric(exp_id, "training_time_s", 11.2, split="train")
+        self.logger.log_metric(exp_id, "peak_vram_mb", 2048.0, split="train")
+        self.logger.update_experiment_status(exp_id, status="completed")
+
+        buffer = StringIO()
+        temp_db_path = Path(self.temp_dir.name) / "experiments.sqlite"
+        with patch.object(query_results, "DB_PATH", temp_db_path), redirect_stdout(buffer):
+            query_results.list_top_completed(self.logger.conn, n=20)
+
+        output = buffer.getvalue()
+        self.assertIn("tiny-crru", output)
+        self.assertIn("e-06", output)
+        self.assertNotIn("|   0.0000 |   0.0000", output)
+
     def test_query_results_top_completed_shows_only_formal_and_ablation_test_runs(self) -> None:
         """Default results output should exclude ad-hoc and smoke-test runs."""
         formal_exp = self.logger.log_experiment(
@@ -444,6 +701,9 @@ class ExperimentLoggerTests(unittest.TestCase):
         output = buffer.getvalue()
         self.assertIn("FORMAL FULL-DATA TEST RUNS", output)
         self.assertIn("ABLATION FULL-DATA TEST RUNS", output)
+        self.assertIn("Causal Resource-aware Recommendation Utility at K", output)
+        self.assertIn("CRRU@20", output)
+        self.assertIn("CRRU@40", output)
         self.assertIn("dev-profile", output)
         self.assertIn("no_ipw", output)
         self.assertIn("Hit@20", output)
@@ -460,6 +720,7 @@ class ExperimentLoggerTests(unittest.TestCase):
         )
         self.assertNotIn("_train-formalhash", output)
         self.assertNotIn("_train-ablationhash", output)
+        self.assertNotIn("CRRU COMPOSITE METRIC", output)
         self.assertNotIn("smoke-profile", output)
         self.assertNotIn(
             "amazonbook_ucagnn_ep100_bs1024_dim64_layers2_nbr10-5_lr-plateau_seed13",
@@ -532,11 +793,15 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertIn("# Query Results", markdown_output)
         self.assertIn("```text", markdown_output)
         self.assertIn("THESIS TEST RESULTS", markdown_output)
+        self.assertIn("Causal Resource-aware Recommendation Utility at K", markdown_output)
+        self.assertIn("CRRU@20", markdown_output)
+        self.assertIn("CRRU@40", markdown_output)
         self.assertIn("dev-profile", markdown_output)
         self.assertIn(
             "amazonbook_lightgcn_ep100_bs4096_dim64_layers2_nbr10-5_lr-plateau_seed13",
             markdown_output,
         )
+        self.assertNotIn("CRRU COMPOSITE METRIC", markdown_output)
 
     def test_schema_mismatch_requires_current_tables(self) -> None:
         """ExperimentLogger should reject databases that predate the current schema."""

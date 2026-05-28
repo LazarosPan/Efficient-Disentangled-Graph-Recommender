@@ -68,6 +68,7 @@ Important runtime details:
 - sign-aware scalars (`alpha_pos`, `alpha_neg`) live in a zero-weight-decay optimizer group,
 - `use_torch_compile` is opt-in because sampled subgraphs are too dynamic for a default compile win,
 - best validation state is tracked even when `use_early_stopping=False`,
+- validation retries once on CUDA after optimizer-state offload, then falls back to CPU if evaluation still OOMs,
 - scheduler stepping and early-stopping patience both wait until `max(auxiliary_losses_start_epoch, popularity_supervision_start_epoch)`.
 
 ## `MiniBatchTrainer`
@@ -126,3 +127,4 @@ Current rules:
 - `formal-run` persists `results/formal_run_state.json` as a strict resume pointer, not as a profile definition.
 - Per-epoch GPU utilization and peak VRAM are logged when available.
 - Query surfaces are centralized in `ExperimentLogger.VIEW_TABLES`, which powers the `completed`, `attention`, `errors`, and `comparison` views used by `scripts/query_results.py`.
+- The default `query-results` thesis summary now keeps CRRU inline: it prints a short CRRU framing block, adds dataset-local `CRRU@20` and `CRRU@40` columns to the existing formal and ablation tables, and does not emit a separate CRRU table.
