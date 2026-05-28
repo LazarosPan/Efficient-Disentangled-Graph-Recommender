@@ -1,4 +1,4 @@
-"""Module B: LightGCN propagation with optional dual-branch and sign-aware weighting."""
+"""Propagation layer: LightGCN with optional dual-branch and sign-aware weighting."""
 
 from __future__ import annotations
 
@@ -87,7 +87,7 @@ class LightGCNBranch(nn.Module):
 
 
 class DualBranchGCN(nn.Module):
-    """Module B: LightGCN with optional dual-branch and sign-aware edge weights.
+    """Propagation layer: LightGCN with optional dual-branch and sign-aware edge weights.
 
     - ``use_dual_branch=True``: two separate GCN branches (interest, conformity)
     - ``use_sign_aware=True``: learnable alpha_pos/alpha_neg scalars for edge weighting

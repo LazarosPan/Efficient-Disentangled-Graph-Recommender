@@ -1,6 +1,6 @@
 """U-CaGNN: Unified Causal Graph Neural Network for recommendations.
 
-Orchestrates Modules A (embeddings), B (LightGCN), C (scoring).
+Orchestrates the embedding, propagation, scoring, and optional propensity layers.
 Every component is toggleable via UCaGNNConfig.
 """
 
@@ -40,7 +40,7 @@ class UCaGNN(nn.Module):
         self.n_users = n_users
         self.n_items = n_items
 
-        # Module A: Embeddings
+        # Embedding layer
         self.embedding = EmbeddingModule(
             n_users,
             n_items,
@@ -50,13 +50,13 @@ class UCaGNN(nn.Module):
             item_recency=item_recency,
         )
 
-        # Module B: GCN propagation
+        # Propagation layer
         self.gcn = DualBranchGCN(config)
 
-        # Module C: Scoring
+        # Scoring layer
         self.scoring = ScoringModule(config)
 
-        # Module F: Propensity estimator (optional)
+        # Optional propensity layer
         if config.use_ipw:
             self._propensity_mlp = PropensityEstimator(config)
 
@@ -165,10 +165,10 @@ class UCaGNN(nn.Module):
             - ipw_weights: (B,) inverse propensity weights (if use_ipw)
 
         """
-        # Module A: Get initial embeddings
+        # Get initial embeddings from the embedding layer
         init_embs = self.embedding.get_embeddings()
 
-        # Module B: GCN propagation
+        # Run propagation on the full graph
         propagated = self.propagate_embeddings(
             init_embs,
             edge_index,

@@ -1,4 +1,4 @@
-"""Module C: fused scoring with a popularity head and adaptive score mixing.
+"""Scoring layer: fused scoring with a popularity head and adaptive score mixing.
 
 Scoring modes and the per-preset train/eval contract are documented in
 ``UCaGNNConfig`` (``src/utils/config.py``), above the preset methods.

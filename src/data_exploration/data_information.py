@@ -928,7 +928,7 @@ def model_use_text(record: DatasetRecord, aspect: str) -> str:
     if aspect == "interactions":
         return "consumed by training and evaluation"
     if aspect == "item_features":
-        return "used in Module A when canonical item_features exist"
+        return "used by the embedding layer when canonical item_features exist"
     if aspect == "user_features":
         return "retained in canonical/graph objects, not used by model"
     return "retained only for analysis; not used by model"

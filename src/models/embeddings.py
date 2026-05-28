@@ -1,4 +1,4 @@
-"""Module A: Dual user + item + popularity embedding tables."""
+"""Embedding layer: user, item, and optional popularity embedding tables."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Module F: IPW propensity estimator (2-layer MLP)."""
+"""Propensity layer: IPW propensity estimator (2-layer MLP)."""
 
 from __future__ import annotations
 
