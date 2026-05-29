@@ -181,6 +181,50 @@ def add_batch_execution_args(
     )
 
 
+def add_change_note_arg(
+    container: argparse._ActionsContainer,
+    *,
+    help_text: str,
+) -> None:
+    """Add the shared optional change-note argument.
+
+    Args:
+        container: Parser or argument group receiving the option.
+        help_text: Help text for ``--change-note``.
+
+    Returns:
+        None.
+
+    """
+    container.add_argument(
+        "--change-note",
+        default=None,
+        help=help_text,
+    )
+
+
+def add_overwrite_checkpoint_arg(
+    container: argparse._ActionsContainer,
+    *,
+    help_text: str,
+) -> None:
+    """Add the shared explicit checkpoint replacement flag.
+
+    Args:
+        container: Parser or argument group receiving the option.
+        help_text: Help text for ``--overwrite-checkpoint``.
+
+    Returns:
+        None.
+
+    """
+    container.add_argument(
+        "--overwrite-checkpoint",
+        action="store_true",
+        help=help_text,
+    )
+
+
 def add_execution_tracking_group(
     parser: argparse.ArgumentParser,
     *,
@@ -392,8 +436,10 @@ __all__ = [
     "PRESET_CHOICES",
     "SCORING_WEIGHT_MODE_CHOICES",
     "add_batch_execution_args",
+    "add_change_note_arg",
     "add_device_and_data_dir_args",
     "add_mlflow_destination_args",
+    "add_overwrite_checkpoint_arg",
     "build_data_information_parser",
     "build_evaluate_scoring_modes_parser",
     "build_explore_all_datasets_parser",

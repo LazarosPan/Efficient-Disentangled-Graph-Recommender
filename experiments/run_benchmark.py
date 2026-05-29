@@ -314,6 +314,25 @@ def _override_resumed_args(
     return overridden_args
 
 
+def _resolve_saved_benchmark_args(
+    saved_benchmark_args: dict[str, object],
+    expected_args: dict[str, object],
+    cli_args: argparse.Namespace,
+    *,
+    profile_name: str,
+    profile_slug: str,
+) -> tuple[dict[str, object], str, bool]:
+    """Resolve whether a saved plan can resume or must restart fresh."""
+    if _benchmark_plan_signature(saved_benchmark_args) != _benchmark_plan_signature(
+        expected_args,
+    ):
+        return expected_args, profile_name, False
+    benchmark_args = _override_resumed_args(saved_benchmark_args, cli_args)
+    benchmark_args["profile_name"] = profile_name
+    benchmark_args["profile_slug"] = profile_slug
+    return benchmark_args, profile_name, True
+
+
 def _resolve_benchmark_args(
     cli_args: argparse.Namespace,
 ) -> tuple[dict[str, object], str, bool]:
@@ -335,21 +354,17 @@ def _resolve_benchmark_args(
 
     should_resume_latest = requested_profile is None and saved_state is not None
     if should_resume_latest:
-        if saved_state is None:
-            raise ValueError("No saved formal-run state exists to resume.")
         assert saved_benchmark_args is not None
-        benchmark_args = saved_benchmark_args
         profile_name = saved_profile or DEFAULT_PROFILE_NAME
         expected_args = _build_new_run_args(cli_args, profile_name)
-        if _benchmark_plan_signature(benchmark_args) != _benchmark_plan_signature(
+        benchmark_args, profile_name, resumed = _resolve_saved_benchmark_args(
+            saved_benchmark_args,
             expected_args,
-        ):
-            benchmark_args = expected_args
-            return benchmark_args, profile_name, False
-        benchmark_args = _override_resumed_args(benchmark_args, cli_args)
-        benchmark_args["profile_name"] = profile_name
-        benchmark_args["profile_slug"] = str(get_formal_profile(profile_name)["name"])
-        return benchmark_args, profile_name, True
+            cli_args,
+            profile_name=profile_name,
+            profile_slug=str(get_formal_profile(profile_name)["name"]),
+        )
+        return benchmark_args, profile_name, resumed
 
     if (
         requested_profile is not None
@@ -357,21 +372,15 @@ def _resolve_benchmark_args(
         and requested_profile == saved_profile
     ):
         assert saved_benchmark_args is not None
-        benchmark_args = saved_benchmark_args
         expected_args = _build_new_run_args(cli_args, requested_profile)
-        if _benchmark_plan_signature(benchmark_args) != _benchmark_plan_signature(
+        benchmark_args, profile_name, resumed = _resolve_saved_benchmark_args(
+            saved_benchmark_args,
             expected_args,
-        ):
-            profile_name = requested_profile
-            benchmark_args = _build_new_run_args(cli_args, profile_name)
-            return benchmark_args, profile_name, False
-        benchmark_args = _override_resumed_args(
-            benchmark_args,
             cli_args,
+            profile_name=requested_profile,
+            profile_slug=str(current_profile_bundle["name"]),
         )
-        benchmark_args["profile_name"] = requested_profile
-        benchmark_args["profile_slug"] = str(current_profile_bundle["name"])
-        return benchmark_args, requested_profile, True
+        return benchmark_args, profile_name, resumed
 
     profile_name = requested_profile or DEFAULT_PROFILE_NAME
     benchmark_args = _build_new_run_args(cli_args, profile_name)
