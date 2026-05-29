@@ -393,15 +393,16 @@ class TrainerRuntime:
                 mask,
             )
 
-    def _evaluate_split_metrics(self, mask: torch.Tensor) -> dict[str, float]:
-        """Evaluate one split with progressive CUDA-OOM fallbacks."""
-        eval_model = self.ema_model if self.ema_model is not None else self.model
-        try:
-            return self._evaluate_model(eval_model, mask, use_amp=self.use_amp)
-        except torch.OutOfMemoryError:
-            if self.device.type != "cuda":
-                raise
+    def _prepare_cuda_evaluation_retry(self, eval_model: Any) -> None:
+        """Free CUDA memory before retrying evaluation on the GPU.
 
+        Args:
+            eval_model: Model used for evaluation.
+
+        Returns:
+            None.
+
+        """
         logger.warning(
             "Evaluation hit CUDA OOM; retrying after temporarily offloading "
             "optimizer state to CPU.",
@@ -411,21 +412,77 @@ class TrainerRuntime:
         empty_cuda_cache(self.device)
         self._move_optimizer_state(torch.device("cpu"))
         empty_cuda_cache(self.device)
+
+    def _restore_cuda_evaluation_retry(self, eval_model: Any) -> None:
+        """Restore optimizer and cached state after a CUDA evaluation retry.
+
+        Args:
+            eval_model: Model used for evaluation.
+
+        Returns:
+            None.
+
+        """
+        empty_cuda_cache(self.device)
+        self._move_optimizer_state(self.device)
+        self._invalidate_eval_feature_cache(eval_model)
+        empty_cuda_cache(self.device)
+
+    def _retry_evaluation_after_optimizer_offload(
+        self,
+        eval_model: Any,
+        mask: torch.Tensor,
+    ) -> dict[str, float]:
+        """Retry evaluation after optimizer offload, then fall back to CPU.
+
+        Args:
+            eval_model: Model used for evaluation.
+            mask: Split mask to evaluate.
+
+        Returns:
+            dict[str, float]: Evaluation metrics.
+
+        """
         try:
-            try:
-                return self._evaluate_model(eval_model, mask, use_amp=self.use_amp)
-            except torch.OutOfMemoryError:
-                logger.warning(
-                    "Evaluation still hit CUDA OOM after optimizer offload; retrying on CPU.",
-                )
-                self._invalidate_eval_feature_cache(eval_model)
-                empty_cuda_cache(self.device)
-                return self._evaluate_split_metrics_on_cpu(eval_model, mask)
-        finally:
-            empty_cuda_cache(self.device)
-            self._move_optimizer_state(self.device)
+            return self._evaluate_model(eval_model, mask, use_amp=self.use_amp)
+        except torch.OutOfMemoryError:
+            logger.warning(
+                "Evaluation still hit CUDA OOM after optimizer offload; retrying on CPU.",
+            )
             self._invalidate_eval_feature_cache(eval_model)
             empty_cuda_cache(self.device)
+            return self._evaluate_split_metrics_on_cpu(eval_model, mask)
+
+    def _evaluate_split_metrics_after_cuda_oom(
+        self,
+        eval_model: Any,
+        mask: torch.Tensor,
+    ) -> dict[str, float]:
+        """Handle the shared CUDA-OOM evaluation retry policy.
+
+        Args:
+            eval_model: Model used for evaluation.
+            mask: Split mask to evaluate.
+
+        Returns:
+            dict[str, float]: Evaluation metrics.
+
+        """
+        self._prepare_cuda_evaluation_retry(eval_model)
+        try:
+            return self._retry_evaluation_after_optimizer_offload(eval_model, mask)
+        finally:
+            self._restore_cuda_evaluation_retry(eval_model)
+
+    def _evaluate_split_metrics(self, mask: torch.Tensor) -> dict[str, float]:
+        """Evaluate one split with progressive CUDA-OOM fallbacks."""
+        eval_model = self.ema_model if self.ema_model is not None else self.model
+        try:
+            return self._evaluate_model(eval_model, mask, use_amp=self.use_amp)
+        except torch.OutOfMemoryError:
+            if self.device.type != "cuda":
+                raise
+        return self._evaluate_split_metrics_after_cuda_oom(eval_model, mask)
 
     def _evaluate_validation_metrics(self) -> dict[str, float]:
         """Run the shared validation pass, using EMA weights when available."""

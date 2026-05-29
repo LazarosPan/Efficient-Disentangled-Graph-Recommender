@@ -557,6 +557,210 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         ):
             formal_main._resolve_benchmark_args(cli_args)
 
+    def test_resolve_benchmark_args_builds_fresh_run_when_state_is_missing(self) -> None:
+        """Missing saved state should force a fresh formal benchmark plan."""
+        cli_args = SimpleNamespace(profile=None, overwrite_checkpoint=False)
+
+        with (
+            patch.object(formal_main, "_load_saved_formal_state", return_value=None),
+            patch.object(
+                formal_main,
+                "_build_new_run_args",
+                return_value={"profile_name": default_formal_profile_name(), "fresh": True},
+            ) as build_new_run_args,
+        ):
+            benchmark_args, profile_name, resumed = formal_main._resolve_benchmark_args(
+                cli_args,
+            )
+
+        build_new_run_args.assert_called_once_with(cli_args, default_formal_profile_name())
+        self.assertFalse(resumed)
+        self.assertEqual(profile_name, default_formal_profile_name())
+        self.assertEqual(
+            benchmark_args,
+            {"profile_name": default_formal_profile_name(), "fresh": True},
+        )
+
+    def test_resolve_benchmark_args_builds_fresh_run_when_requested_profile_differs(
+        self,
+    ) -> None:
+        """A different requested profile should restart instead of resuming saved args."""
+        saved_profile_name = default_formal_profile_name()
+        requested_profile_name = next(
+            profile_name
+            for profile_name in formal_profile_names()
+            if profile_name != saved_profile_name
+        )
+        cli_args = SimpleNamespace(profile=requested_profile_name, overwrite_checkpoint=False)
+        saved_state = {
+            "profile_name": saved_profile_name,
+            "profile_slug": "development-signature",
+            "benchmark_args": {"datasets": ["small"], "presets": ["ucagnn"]},
+        }
+
+        with (
+            patch.object(formal_main, "_load_saved_formal_state", return_value=saved_state),
+            patch.object(
+                formal_main,
+                "_build_new_run_args",
+                return_value={"profile_name": requested_profile_name, "fresh": True},
+            ) as build_new_run_args,
+        ):
+            benchmark_args, profile_name, resumed = formal_main._resolve_benchmark_args(
+                cli_args,
+            )
+
+        build_new_run_args.assert_called_once_with(cli_args, requested_profile_name)
+        self.assertFalse(resumed)
+        self.assertEqual(profile_name, requested_profile_name)
+        self.assertEqual(
+            benchmark_args,
+            {"profile_name": requested_profile_name, "fresh": True},
+        )
+
+    def test_resolve_benchmark_args_resumes_saved_run_when_state_matches_without_requested_profile(
+        self,
+    ) -> None:
+        """Unspecified profiles should resume when the saved semantic plan still matches."""
+        saved_profile_name = default_formal_profile_name()
+        cli_args = SimpleNamespace(profile=None, overwrite_checkpoint=True)
+        expected_args = formal_main._build_new_run_args(
+            SimpleNamespace(overwrite_checkpoint=False),
+            saved_profile_name,
+        )
+        saved_state = {
+            "profile_name": saved_profile_name,
+            "profile_slug": expected_args["profile_slug"],
+            "benchmark_args": dict(expected_args),
+        }
+
+        with (
+            patch.object(formal_main, "_load_saved_formal_state", return_value=saved_state),
+            patch.object(
+                formal_main,
+                "_build_new_run_args",
+                return_value=dict(expected_args),
+            ) as build_new_run_args,
+        ):
+            benchmark_args, profile_name, resumed = formal_main._resolve_benchmark_args(
+                cli_args,
+            )
+
+        build_new_run_args.assert_called_once_with(cli_args, saved_profile_name)
+        self.assertTrue(resumed)
+        self.assertEqual(profile_name, saved_profile_name)
+        self.assertEqual(benchmark_args["profile_name"], saved_profile_name)
+        self.assertEqual(benchmark_args["profile_slug"], expected_args["profile_slug"])
+        self.assertTrue(benchmark_args["overwrite_checkpoint"])
+        self.assertTrue(benchmark_args["resume_batch"])
+
+    def test_resolve_benchmark_args_restarts_when_latest_saved_plan_differs(
+        self,
+    ) -> None:
+        """Unspecified profiles should restart when the saved semantic plan changed."""
+        saved_profile_name = default_formal_profile_name()
+        cli_args = SimpleNamespace(profile=None, overwrite_checkpoint=False)
+        expected_args = formal_main._build_new_run_args(
+            SimpleNamespace(overwrite_checkpoint=False),
+            saved_profile_name,
+        )
+        saved_args = dict(expected_args)
+        saved_args["datasets"] = ["__mismatched__"]
+        saved_state = {
+            "profile_name": saved_profile_name,
+            "profile_slug": expected_args["profile_slug"],
+            "benchmark_args": saved_args,
+        }
+
+        with (
+            patch.object(formal_main, "_load_saved_formal_state", return_value=saved_state),
+            patch.object(
+                formal_main,
+                "_build_new_run_args",
+                return_value=dict(expected_args),
+            ) as build_new_run_args,
+        ):
+            benchmark_args, profile_name, resumed = formal_main._resolve_benchmark_args(
+                cli_args,
+            )
+
+        build_new_run_args.assert_called_once_with(cli_args, saved_profile_name)
+        self.assertFalse(resumed)
+        self.assertEqual(profile_name, saved_profile_name)
+        self.assertEqual(benchmark_args, expected_args)
+
+    def test_resolve_benchmark_args_resumes_requested_profile_when_saved_plan_matches(
+        self,
+    ) -> None:
+        """Matching requested and saved profiles should resume when the semantic plan matches."""
+        requested_profile_name = default_formal_profile_name()
+        cli_args = SimpleNamespace(profile=requested_profile_name, overwrite_checkpoint=True)
+        expected_args = formal_main._build_new_run_args(
+            SimpleNamespace(overwrite_checkpoint=False),
+            requested_profile_name,
+        )
+        saved_state = {
+            "profile_name": requested_profile_name,
+            "profile_slug": expected_args["profile_slug"],
+            "benchmark_args": dict(expected_args),
+        }
+
+        with (
+            patch.object(formal_main, "_load_saved_formal_state", return_value=saved_state),
+            patch.object(
+                formal_main,
+                "_build_new_run_args",
+                return_value=dict(expected_args),
+            ) as build_new_run_args,
+        ):
+            benchmark_args, profile_name, resumed = formal_main._resolve_benchmark_args(
+                cli_args,
+            )
+
+        build_new_run_args.assert_called_once_with(cli_args, requested_profile_name)
+        self.assertTrue(resumed)
+        self.assertEqual(profile_name, requested_profile_name)
+        self.assertEqual(benchmark_args["profile_name"], requested_profile_name)
+        self.assertEqual(benchmark_args["profile_slug"], expected_args["profile_slug"])
+        self.assertTrue(benchmark_args["overwrite_checkpoint"])
+        self.assertTrue(benchmark_args["resume_batch"])
+
+    def test_resolve_benchmark_args_restarts_when_requested_profile_plan_differs(
+        self,
+    ) -> None:
+        """Matching profiles should still restart if the saved semantic plan changed."""
+        saved_profile_name = default_formal_profile_name()
+        requested_profile_name = saved_profile_name
+        cli_args = SimpleNamespace(profile=requested_profile_name, overwrite_checkpoint=False)
+        expected_args = formal_main._build_new_run_args(
+            SimpleNamespace(overwrite_checkpoint=False),
+            requested_profile_name,
+        )
+        saved_args = dict(expected_args)
+        saved_args["datasets"] = ["__mismatched__"]
+        saved_state = {
+            "profile_name": saved_profile_name,
+            "profile_slug": expected_args["profile_slug"],
+            "benchmark_args": saved_args,
+        }
+
+        with (
+            patch.object(formal_main, "_load_saved_formal_state", return_value=saved_state),
+            patch.object(
+                formal_main,
+                "_build_new_run_args",
+                return_value=dict(expected_args),
+            ) as build_new_run_args,
+        ):
+            benchmark_args, profile_name, resumed = formal_main._resolve_benchmark_args(
+                cli_args,
+            )
+
+        build_new_run_args.assert_called_once_with(cli_args, requested_profile_name)
+        self.assertFalse(resumed)
+        self.assertEqual(profile_name, requested_profile_name)
+        self.assertEqual(benchmark_args, expected_args)
+
     def test_build_new_run_args_ignores_smoke_only_profile_caps(self) -> None:
         """Formal profiles should not turn the formal wrapper into a sampled run."""
         cli_args = SimpleNamespace(
@@ -681,6 +885,118 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 },
                 fallback_profile_name="development",
             )
+
+    def test_saved_benchmark_resolution_resumes_matching_plan_with_runtime_overrides(self) -> None:
+        """Shared saved-run resolution should resume matching plans and apply runtime overrides."""
+        cli_args = SimpleNamespace(overwrite_checkpoint=True)
+        saved_args = {
+            "datasets": ["small"],
+            "presets": ["ucagnn"],
+            "scoring_weight_modes": ["learned"],
+            "profile_name": "development",
+            "profile_slug": "development-signature",
+            "epochs": 60,
+            "use_early_stopping": False,
+            "batch_size": 4096,
+            "auto_batch_size": True,
+            "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
+            "lr": 1e-3,
+            "single_branch_gnn_layers": None,
+            "interest_gnn_layers": 1,
+            "conformity_gnn_layers": 2,
+            "dropout": 0.1,
+            "num_neighbors": [10, 5],
+            "hard_negative_ratio": 0.0,
+            "auxiliary_losses_start_epoch": 15,
+            "popularity_supervision_start_epoch": 30,
+            "loss_schedule": "baseline",
+            "loader_max_rows": 128,
+            "sample_interactions": 128,
+            "device": "cuda",
+            "data_dir": "data",
+            "no_mlflow": False,
+            "mlflow_tracking_uri": None,
+            "mlflow_experiment_name": "ucagnn-formal",
+            "batch_id": "formal-dev-a",
+            "resume_batch": False,
+            "dry_run": True,
+            "overwrite_checkpoint": False,
+            "change_note": None,
+            "graph_policy_options": None,
+            "preprocessing_preset_options": None,
+        }
+        expected_args = dict(saved_args)
+
+        resolved_args, profile_name, resumed = formal_main._resolve_saved_benchmark_args(
+            saved_args,
+            expected_args,
+            cli_args,
+            profile_name="development",
+            profile_slug="development-signature",
+        )
+
+        self.assertTrue(resumed)
+        self.assertEqual(profile_name, "development")
+        self.assertTrue(resolved_args["overwrite_checkpoint"])
+        self.assertTrue(resolved_args["resume_batch"])
+        self.assertFalse(resolved_args["dry_run"])
+        self.assertIsNone(resolved_args["sample_interactions"])
+        self.assertIsNone(resolved_args["loader_max_rows"])
+        self.assertEqual(resolved_args["profile_name"], "development")
+        self.assertEqual(resolved_args["profile_slug"], "development-signature")
+
+    def test_saved_benchmark_resolution_falls_back_when_plan_differs(self) -> None:
+        """Saved-run resolution should restart when the semantic plan no longer matches."""
+        cli_args = SimpleNamespace(overwrite_checkpoint=False)
+        saved_args = {
+            "datasets": ["small"],
+            "presets": ["ucagnn"],
+            "scoring_weight_modes": ["learned"],
+            "profile_name": "development",
+            "profile_slug": "development-signature",
+            "epochs": 59,
+            "use_early_stopping": False,
+            "batch_size": 4096,
+            "auto_batch_size": True,
+            "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
+            "lr": 1e-3,
+            "single_branch_gnn_layers": None,
+            "interest_gnn_layers": 1,
+            "conformity_gnn_layers": 2,
+            "dropout": 0.1,
+            "num_neighbors": [10, 5],
+            "hard_negative_ratio": 0.0,
+            "auxiliary_losses_start_epoch": 15,
+            "popularity_supervision_start_epoch": 30,
+            "loss_schedule": "baseline",
+            "loader_max_rows": None,
+            "sample_interactions": None,
+            "device": "cuda",
+            "data_dir": "data",
+            "no_mlflow": False,
+            "mlflow_tracking_uri": None,
+            "mlflow_experiment_name": "ucagnn-formal",
+            "batch_id": "formal-dev-a",
+            "resume_batch": True,
+            "dry_run": False,
+            "overwrite_checkpoint": False,
+            "change_note": None,
+            "graph_policy_options": None,
+            "preprocessing_preset_options": None,
+        }
+        expected_args = dict(saved_args, epochs=60)
+
+        resolved_args, profile_name, resumed = formal_main._resolve_saved_benchmark_args(
+            saved_args,
+            expected_args,
+            cli_args,
+            profile_name="development",
+            profile_slug="development-signature",
+        )
+
+        self.assertFalse(resumed)
+        self.assertEqual(profile_name, "development")
+        self.assertEqual(resolved_args, expected_args)
 
     def test_benchmark_plan_signature_ignores_runtime_overrides(self) -> None:
         """Resume matching should compare the semantic plan, not runtime routing flags."""

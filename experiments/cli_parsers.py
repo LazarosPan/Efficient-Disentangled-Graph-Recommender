@@ -8,7 +8,9 @@ from src.utils.cli_parsers import (
     BENCHMARK_TIER_CHOICES,
     PRESET_CHOICES,
     SCORING_WEIGHT_MODE_CHOICES,
+    add_change_note_arg,
     add_execution_tracking_group,
+    add_overwrite_checkpoint_arg,
 )
 
 from experiments.ablation_configs import ABLATION_VARIANTS
@@ -47,10 +49,9 @@ def build_run_experiment_parser() -> argparse.ArgumentParser:
         default=1,
         help="Save checkpoint every N epochs",
     )
-    cp.add_argument(
-        "--overwrite-checkpoint",
-        action="store_true",
-        help="Delete any existing checkpoint at the resolved path and force a fresh run",
+    add_overwrite_checkpoint_arg(
+        cp,
+        help_text="Delete any existing checkpoint at the resolved path and force a fresh run",
     )
 
     tr = parser.add_argument_group("tracking")
@@ -64,10 +65,9 @@ def build_run_experiment_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional thesis experiment identifier tag, e.g. E1",
     )
-    tr.add_argument(
-        "--change-note",
-        default=None,
-        help="Optional short note describing the current code change or run intent",
+    add_change_note_arg(
+        tr,
+        help_text="Optional short note describing the current code change or run intent",
     )
 
     parser.set_defaults(
@@ -139,15 +139,13 @@ def build_benchmark_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional semantic formal profile label to persist alongside batch metadata",
     )
-    ex.add_argument(
-        "--change-note",
-        default=None,
-        help="Optional short note describing the current code change or run intent",
+    add_change_note_arg(
+        ex,
+        help_text="Optional short note describing the current code change or run intent",
     )
-    ex.add_argument(
-        "--overwrite-checkpoint",
-        action="store_true",
-        help="Delete any existing checkpoint for each run and force fresh training",
+    add_overwrite_checkpoint_arg(
+        ex,
+        help_text="Delete any existing checkpoint for each run and force fresh training",
     )
 
     return parser
@@ -185,10 +183,9 @@ def build_formal_run_parser() -> argparse.ArgumentParser:
             "experiments/experiment_catalog.json and exit."
         ),
     )
-    parser.add_argument(
-        "--overwrite-checkpoint",
-        action="store_true",
-        help=("Delete any existing checkpoint for each resolved run and force fresh training."),
+    add_overwrite_checkpoint_arg(
+        parser,
+        help_text="Delete any existing checkpoint for each resolved run and force fresh training.",
     )
     return parser
 
@@ -221,10 +218,9 @@ def build_ablation_parser() -> argparse.ArgumentParser:
         help="Ablation variants to run",
     )
 
-    parser.add_argument(
-        "--overwrite-checkpoint",
-        action="store_true",
-        help="Delete any existing checkpoint for a resolved ablation run and retrain it.",
+    add_overwrite_checkpoint_arg(
+        parser,
+        help_text="Delete any existing checkpoint for a resolved ablation run and retrain it.",
     )
     return parser
 
