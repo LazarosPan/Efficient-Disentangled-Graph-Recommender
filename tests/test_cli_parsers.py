@@ -21,7 +21,6 @@ from experiments.cli_parsers import (
 )
 from src.utils.cli_parsers import (
     build_data_information_parser,
-    build_evaluate_scoring_modes_parser,
     build_explore_all_datasets_parser,
     build_query_results_parser,
     build_quick_validate_parser,
@@ -160,7 +159,7 @@ class BenchmarkParserTests(unittest.TestCase):
         args = build_benchmark_parser().parse_args([])
 
         self.assertEqual(args.datasets, "small,medium")
-        self.assertEqual(args.scoring_weight_modes, ["learned"])
+        self.assertFalse(hasattr(args, "scoring_weight_modes"))
         self.assertEqual(args.device, "cuda")
         self.assertEqual(args.data_dir, "data")
         self.assertFalse(args.no_mlflow)
@@ -205,21 +204,6 @@ class UtilityParserTests(unittest.TestCase):
         self.assertFalse(args.fail_fast)
         self.assertFalse(hasattr(args, "epochs"))
         self.assertFalse(hasattr(args, "graph_policy"))
-
-    def test_evaluate_scoring_modes_defaults(self) -> None:
-        """Scoring-mode evaluation should preserve its public defaults."""
-        args = build_evaluate_scoring_modes_parser().parse_args(
-            ["--checkpoint-path", "checkpoint.pt"],
-        )
-
-        self.assertEqual(args.checkpoint_path, "checkpoint.pt")
-        self.assertEqual(
-            args.modes,
-            ["default", "interest_only", "conformity_suppressed"],
-        )
-        self.assertEqual(args.split, "test")
-        self.assertEqual(args.batch_size, 512)
-        self.assertIsNone(args.device)
 
     def test_query_results_defaults(self) -> None:
         """Query-results should default to the thesis summary view."""

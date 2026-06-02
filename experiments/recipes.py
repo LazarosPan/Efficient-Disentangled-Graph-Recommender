@@ -114,15 +114,13 @@ def resolve_profile_num_neighbors(
 def _resolved_profile_matrix(profile: dict[str, Any]) -> dict[str, Any]:
     """Normalize the catalog matrix shape for a formal profile."""
     matrix = dict(profile.get("matrix", {}))
+    matrix.pop("scoring_weight_modes", None)
     raw_datasets = matrix.get("datasets", "all")
     if isinstance(raw_datasets, str):
         matrix["datasets"] = [raw_datasets]
     else:
         matrix["datasets"] = list(raw_datasets)
     matrix["presets"] = list(matrix.get("presets", []))
-    matrix["scoring_weight_modes"] = list(
-        matrix.get("scoring_weight_modes", ["learned"]),
-    )
     return matrix
 
 
@@ -141,12 +139,6 @@ def _formal_profile_name(profile: dict[str, Any]) -> str:
     """Build a deterministic semantic profile name from the profile payload."""
     matrix = _resolved_profile_matrix(profile)
     overrides = _resolved_profile_overrides(profile)
-    scoring_modes = matrix["scoring_weight_modes"]
-    scoring_mode_slug = (
-        "both"
-        if set(scoring_modes) == {"fixed", "learned"} and len(scoring_modes) == 2
-        else "-".join(_slugify_fragment(mode) for mode in scoring_modes)
-    )
     neighbor_options = resolve_profile_num_neighbors(overrides) or []
     neighbor_slug = (
         "+".join("x".join(str(value) for value in neighbors) for neighbors in neighbor_options)
@@ -166,7 +158,7 @@ def _formal_profile_name(profile: dict[str, Any]) -> str:
     lr_value = str(overrides.get("lr", "na")).replace(".", "p")
     return (
         f"e{_slugify_fragment(overrides.get('epochs', 'na'))}-lr"
-        f"{_slugify_fragment(lr_value)}-{batch_slug}-n{neighbor_slug}-sw{scoring_mode_slug}-"
+        f"{_slugify_fragment(lr_value)}-{batch_slug}-n{neighbor_slug}-"
         f"{digest}"
     )
 

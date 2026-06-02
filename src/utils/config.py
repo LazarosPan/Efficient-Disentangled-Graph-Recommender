@@ -9,12 +9,6 @@ from ..data.canonical import DerivedSplitMode
 from ..data.feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 
 DEFAULT_SEED = 13
-ScoringMode = Literal[
-    "default",
-    "interest_only",
-    "conformity_only",
-    "conformity_suppressed",
-]
 GraphPolicy = Literal["observed", "cagra_augmented"]
 LRSchedulerName = Literal[
     "none",
@@ -47,15 +41,13 @@ _NON_CAUSAL_PRESET_OVERRIDES: PresetOverrides = {
     "use_ipw": False,
     "use_popularity_head": False,
     "use_popularity_emb": False,
+    "use_learned_score_mix": False,
     "loss_weight_contrastive": 0.0,
     "loss_weight_align": 0.0,
     "loss_weight_uniform": 0.0,
     "loss_weight_popularity": 0.0,
     "auxiliary_loss_schedule": "phased",
-    "scoring_weight_mode": "fixed",
     "score_weight_popularity": 0.0,
-    "train_scoring_mode": "default",
-    "eval_scoring_mode": "default",
     "use_features": False,
     "feature_policy": DEFAULT_FEATURE_POLICY,
     "propensity_clip_min": 0.01,
@@ -83,6 +75,7 @@ _FULL_PRESET_OVERRIDES: PresetOverrides = {
     "use_ipw": True,
     "use_popularity_head": True,
     "use_popularity_emb": True,
+    "use_learned_score_mix": True,
     "loss_weight_interest_bpr": 0.02,
     "loss_weight_conformity_bpr": 0.02,
     "loss_weight_independence": 0.005,
@@ -91,12 +84,9 @@ _FULL_PRESET_OVERRIDES: PresetOverrides = {
     "loss_weight_uniform": 0.0,
     "loss_weight_popularity": 0.02,
     "auxiliary_loss_schedule": "linear_ramp",
-    "scoring_weight_mode": "learned",
     "score_weight_interest": 0.5,
     "score_weight_conformity": 0.3,
     "score_weight_popularity": 0.2,
-    "train_scoring_mode": "default",
-    "eval_scoring_mode": "default",
     "auxiliary_losses_start_epoch": 15,
     "popularity_supervision_start_epoch": 30,
     "loss_schedule": "baseline",
@@ -117,6 +107,7 @@ class UCaGNNConfig:
     use_ipw: bool = True
     use_popularity_head: bool = True
     use_popularity_emb: bool = True
+    use_learned_score_mix: bool = True
 
     # ── Graph construction ───────────────────────────────────────────────
     cagra_k: int = 20
@@ -136,12 +127,10 @@ class UCaGNNConfig:
     conformity_gnn_layers: int = 2
     dropout: float = 0.1
 
-    # ── Scoring weights ──────────────────────────────────────────────────
-    scoring_weight_mode: Literal["fixed", "learned"] = "fixed"
+    # ── Scoring priors ───────────────────────────────────────────────────
     score_weight_interest: float = 0.5
     score_weight_conformity: float = 0.3
     score_weight_popularity: float = 0.2
-    train_scoring_mode: ScoringMode = "default"  # score view optimized by the ranking loss
 
     # ── Loss lambdas (0.0 = disabled) ────────────────────────────────────
     loss_weight_recommendation: float = 1.0
@@ -189,7 +178,6 @@ class UCaGNNConfig:
     lr_scheduler_factor: float = 0.5
     lr_scheduler_patience: int = 5
     eval_ks: list[int] = field(default_factory=lambda: [20, 40])
-    eval_scoring_mode: ScoringMode = "default"  # score view used at validation/test time
     # ── Training ─────────────────────────────────────────────────────────
     num_neighbors: list[int] = field(default_factory=lambda: [10, 5])
     sample_interactions: int | None = None
@@ -204,9 +192,9 @@ class UCaGNNConfig:
     # items) rather than uniformly at random. 0.0 = purely uniform; 0.25 = 25% hard.
     hard_negative_ratio: float = 0.0
     # ── Curriculum schedule (epoch thresholds) ───────────────────────────
-    # Phase 1 ends when auxiliary losses begin; phase 2 ends when popularity
-    # supervision begins. Both thresholds stay as explicit config fields so
-    # checkpoints and experiment logs remain stable.
+    # These thresholds control when auxiliary losses and popularity
+    # supervision activate. They stay explicit so checkpoints and experiment
+    # logs keep one stable runtime contract.
     auxiliary_losses_start_epoch: int = 15
     popularity_supervision_start_epoch: int = 30
     loss_schedule: Literal["baseline"] = "baseline"
@@ -297,24 +285,6 @@ class UCaGNNConfig:
             return self.single_branch_gnn_layers
         return max(self.interest_gnn_layers, self.conformity_gnn_layers)
 
-    # ── Scoring contract (authoritative table) ────────────────────────────
-    # Each preset fixes the train/eval scoring modes so the model optimises and
-    # reports results using a consistent score view.  Same-checkpoint
-    # evaluation via ``scripts/evaluate_scoring_modes.py`` may override
-    # ``eval_scoring_mode`` without retraining.
-    #
-    # Preset           | train_scoring_mode | eval_scoring_mode
-    # -----------------|--------------------|------------------
-    # preset_lightgcn  | "default"          | "default"
-    # preset_dice_like | "default"          | "default"
-    # preset_full      | "default"          | "default"
-    # intervention     | "default" (train)  | overridden at eval time
-    #
-    # "default"           = interest + conformity (if dual-branch) + popularity (if enabled)
-    # "interest_only"     = interest branch only (strips popularity bias from ranking score)
-    # "conformity_suppressed" = interest + popularity, no conformity (diagnostic only)
-    # ─────────────────────────────────────────────────────────────────────
-
     def _apply_preset_overrides(
         self,
         overrides: PresetOverrides,
@@ -333,20 +303,13 @@ class UCaGNNConfig:
         return self
 
     def preset_lightgcn(self) -> UCaGNNConfig:
-        """Non-causal LightGCN baseline using the default single-branch score."""
+        """Non-causal LightGCN baseline using the single refined scorer."""
         return self._apply_preset_overrides(_LIGHTGCN_PRESET_OVERRIDES)
 
     def preset_dice_like(self) -> UCaGNNConfig:
-        """DICE-like baseline with fixed interest+conformity scoring."""
+        """DICE-like baseline with the refined scorer and no thesis extras."""
         return self._apply_preset_overrides(_DICE_LIKE_PRESET_OVERRIDES)
 
     def preset_full(self) -> UCaGNNConfig:
-        """U-CaGNN mainline: fused scoring with asymmetric depth.
-
-        The trained checkpoint optimizes and evaluates the fused ``default``
-        score by default. Same-checkpoint intervention scripts may still
-        override ``eval_scoring_mode`` later to measure alternate views without
-        retraining.
-
-        """
+        """U-CaGNN mainline: refined scoring with asymmetric depth."""
         return self._apply_preset_overrides(_FULL_PRESET_OVERRIDES)

@@ -7,7 +7,6 @@ import argparse
 from src.utils.cli_parsers import (
     BENCHMARK_TIER_CHOICES,
     PRESET_CHOICES,
-    SCORING_WEIGHT_MODE_CHOICES,
     add_change_note_arg,
     add_execution_tracking_group,
     add_overwrite_checkpoint_arg,
@@ -107,17 +106,6 @@ def build_benchmark_parser() -> argparse.ArgumentParser:
         choices=PRESET_CHOICES,
         help="Presets to run",
     )
-    mx.add_argument(
-        "--scoring-weight-modes",
-        nargs="*",
-        default=["learned"],
-        choices=SCORING_WEIGHT_MODE_CHOICES,
-        help=(
-            "Score-mixture modes to run. LightGCN stays fixed-only because "
-            "learned weights are inapplicable without dual branches."
-        ),
-    )
-
     ex = add_execution_tracking_group(
         parser,
         experiment_name_default="ucagnn-benchmark",
