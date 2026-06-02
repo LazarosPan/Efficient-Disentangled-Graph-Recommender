@@ -443,14 +443,14 @@ class LossSuite(nn.Module):
             losses["align"] = zero
             losses["uniform"] = zero
 
-        # Popularity regression now supervises the scorer-owned popularity head.
+        # Context regression now supervises the scorer-owned item-only context head.
         if use_dual_branch and cfg.use_popularity_head and popularity_weight > 0:
             pop_target = item_popularity[pos_item_ids].to(
                 device=reference_score.device,
                 dtype=reference_score.dtype,
             )
             losses["pop"] = _popularity_loss(
-                pos_scores["popularity_score"],
+                pos_scores["context_score"],
                 pop_target,
             )
         else:
