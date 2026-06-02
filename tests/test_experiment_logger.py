@@ -262,6 +262,54 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertAlmostEqual(row["avg_gpu_utilization_pct"], 60.0)
         self.assertAlmostEqual(row["max_gpu_utilization_pct"], 65.0)
 
+    def test_get_metrics_for_split_retains_evaluation_diagnostics(self) -> None:
+        """Arbitrary evaluator diagnostics should round-trip through the SQLite metric store."""
+        exp_id = self.logger.log_experiment(
+            dataset="movielens1m",
+            config=_DummyConfig(seed=33),
+        )
+        val_metrics = {
+            "NDCG@20": 0.3,
+            "score_mix_interest_mean": 0.4,
+            "score_mix_interest_std": 0.1,
+            "interest_contribution@20": -1.25,
+            "context_popularity_spearman@20": 0.8,
+        }
+
+        self.logger.log_epoch(
+            exp_id=exp_id,
+            epoch=0,
+            train_loss=1.0,
+            epoch_time_s=0.2,
+            val_metrics=val_metrics,
+            profiler_stages=[],
+            model=None,
+        )
+        self.logger.log_metric(
+            exp_id,
+            "interest_conformity_cosine_mean",
+            0.5,
+            split="test",
+        )
+        self.logger.log_metric(
+            exp_id,
+            "conformity_contribution@40",
+            1.1,
+            split="test",
+        )
+
+        self.assertEqual(
+            self.logger.get_metrics_for_split(exp_id, split="val"),
+            val_metrics,
+        )
+        self.assertEqual(
+            self.logger.get_metrics_for_split(exp_id, split="test"),
+            {
+                "conformity_contribution@40": 1.1,
+                "interest_conformity_cosine_mean": 0.5,
+            },
+        )
+
     def test_comparison_view_exposes_metric_deltas_for_same_semantic_run(self) -> None:
         """Comparison view should show deltas across repeated same-config runs."""
         first_exp = self.logger.log_experiment(

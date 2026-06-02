@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -63,8 +64,6 @@ def _experiment_args(**overrides: object) -> SimpleNamespace:
         "dropout": None,
         "lr": None,
         "use_early_stopping": None,
-        "eval_scoring_mode": None,
-        "scoring_weight_mode": None,
         "use_features": None,
         "feature_policy": None,
         "num_neighbors": None,
@@ -130,7 +129,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         config = build_config(vars(_experiment_args(dropout=0.25, preset="ucagnn")))
 
         self.assertEqual(config.dropout, 0.25)
-        self.assertEqual(config.scoring_weight_mode, "learned")
+        self.assertFalse(hasattr(config, "scoring_weight_mode"))
 
     def test_build_config_resolves_kuairec_default_preprocessing_preset(self) -> None:
         """Default config assembly should pin the causal-ready KuaiRec view."""
@@ -224,9 +223,9 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         """The ucagnn preset should target the fused-score contract."""
         config = build_config(_experiment_args(preset="ucagnn"))
 
-        self.assertEqual(config.scoring_weight_mode, "learned")
-        self.assertEqual(config.train_scoring_mode, "default")
-        self.assertEqual(config.eval_scoring_mode, "default")
+        self.assertFalse(hasattr(config, "scoring_weight_mode"))
+        self.assertFalse(hasattr(config, "train_scoring_mode"))
+        self.assertFalse(hasattr(config, "eval_scoring_mode"))
         self.assertTrue(config.use_popularity_head)
         self.assertEqual(config.interest_gnn_layers, 1)
         self.assertEqual(config.conformity_gnn_layers, 2)
@@ -314,20 +313,18 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertTrue(config.use_dual_branch)
         self.assertFalse(config.use_sign_aware)
         self.assertFalse(config.use_features)
-        self.assertEqual(config.scoring_weight_mode, "fixed")
-        self.assertEqual(config.score_weight_interest, 1.0)
-        self.assertEqual(config.score_weight_conformity, 1.0)
-        self.assertEqual(config.train_scoring_mode, "default")
-        self.assertEqual(config.eval_scoring_mode, "default")
+        self.assertFalse(hasattr(config, "scoring_weight_mode"))
+        self.assertFalse(hasattr(config, "train_scoring_mode"))
+        self.assertFalse(hasattr(config, "eval_scoring_mode"))
         self.assertEqual(config.interest_gnn_layers, 2)
         self.assertEqual(config.conformity_gnn_layers, 2)
         self.assertEqual(config.max_gnn_layers, 2)
 
     def test_training_identity_ignores_eval_only_overrides(self) -> None:
-        """Resume compatibility should ignore evaluation-only config changes."""
+        """Resume compatibility should ignore non-training config changes."""
         base = build_config(_experiment_args(preset="ucagnn"))
         eval_override = build_config(_experiment_args(preset="ucagnn"))
-        eval_override.eval_scoring_mode = "conformity_suppressed"
+        eval_override.eval_ks = [5, 10]
 
         base_identity, base_hash = _build_training_identity(base, "ucagnn", None)
         override_identity, override_hash = _build_training_identity(
@@ -360,6 +357,23 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertNotEqual(base_hash, changed_hash)
 
+    def test_training_identity_changes_when_score_mix_behavior_changes(self) -> None:
+        """Resume compatibility should change when score mixing switches modes."""
+        learned_mix = build_config(_experiment_args(preset="ucagnn"))
+        fixed_mix = dataclasses.replace(learned_mix, use_learned_score_mix=False)
+
+        learned_identity, learned_hash = _build_training_identity(
+            learned_mix,
+            "ucagnn",
+            None,
+        )
+        fixed_identity, fixed_hash = _build_training_identity(fixed_mix, "ucagnn", None)
+
+        self.assertTrue(learned_mix.use_learned_score_mix)
+        self.assertFalse(fixed_mix.use_learned_score_mix)
+        self.assertNotEqual(learned_hash, fixed_hash)
+        self.assertNotEqual(learned_identity["config"], fixed_identity["config"])
+
     def test_formal_profile_defaults_disable_early_stopping(self) -> None:
         """The default formal profile should own the formal support-parameter bundle."""
         profile_name = default_formal_profile_name()
@@ -372,7 +386,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertFalse(profile["config_overrides"]["use_early_stopping"])
         self.assertEqual(profile["id"], "dev-ucagnn")
         self.assertEqual(profile["matrix"]["presets"], ["ucagnn"])
-        self.assertEqual(profile["matrix"]["scoring_weight_modes"], ["learned"])
+        self.assertNotIn("scoring_weight_modes", profile["matrix"])
         self.assertNotIn("batch_size", profile["config_overrides"])
         self.assertNotIn("auto_batch_size", profile["config_overrides"])
         self.assertEqual(
@@ -387,7 +401,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertNotIn("loss_schedule", profile["config_overrides"])
         self.assertFalse(benchmark_args["use_early_stopping"])
         self.assertEqual(benchmark_args["presets"], ["ucagnn"])
-        self.assertEqual(benchmark_args["scoring_weight_modes"], ["learned"])
+        self.assertNotIn("scoring_weight_modes", benchmark_args)
         self.assertEqual(benchmark_args["batch_size"], 4096)
         self.assertTrue(benchmark_args["auto_batch_size"])
         self.assertEqual(
@@ -419,7 +433,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             dataset="movielens1m",
             preset="ucagnn",
             lr_scheduler="plateau",
-            scoring_weight_mode="learned",
             num_neighbors=[10, 5],
             graph_policy="cagra_augmented",
         )
@@ -453,7 +466,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 batch_size=64,
                 auto_batch_size=False,
                 graph_policy="cagra_augmented",
-                eval_scoring_mode="interest_only",
                 sample_interactions=100,
                 loader_max_rows=100,
             ),
@@ -465,7 +477,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.batch_size, 64)
         self.assertFalse(config.auto_batch_size)
         self.assertEqual(config.graph_policy, "cagra_augmented")
-        self.assertEqual(config.eval_scoring_mode, "interest_only")
+        self.assertFalse(hasattr(config, "eval_scoring_mode"))
         self.assertEqual(config.sample_interactions, 100)
         self.assertEqual(config.loader_max_rows, 100)
 
@@ -518,20 +530,14 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             profile["id"],
             "dev-matched-comparison-i1-c2-nn8-4-ep200-lr0-01",
         )
-        self.assertEqual(
-            profile["matrix"]["scoring_weight_modes"],
-            ["learned", "fixed"],
-        )
+        self.assertNotIn("scoring_weight_modes", profile["matrix"])
         self.assertEqual(profile["config_overrides"]["single_branch_gnn_layers"], 2)
         self.assertNotIn("batch_size", profile["config_overrides"])
         self.assertNotIn("auto_batch_size", profile["config_overrides"])
         self.assertEqual(profile["config_overrides"]["interest_gnn_layers"], 1)
         self.assertEqual(profile["config_overrides"]["conformity_gnn_layers"], 2)
         self.assertEqual(profile["config_overrides"]["num_neighbors"], [8, 4])
-        self.assertEqual(
-            benchmark_args["scoring_weight_modes"],
-            ["learned", "fixed"],
-        )
+        self.assertNotIn("scoring_weight_modes", benchmark_args)
         self.assertTrue(benchmark_args["auto_batch_size"])
         self.assertEqual(benchmark_args["single_branch_gnn_layers"], 2)
         self.assertEqual(benchmark_args["interest_gnn_layers"], 1)
@@ -773,7 +779,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             "matrix": {
                 "datasets": ["movielens1m"],
                 "presets": ["ucagnn"],
-                "scoring_weight_modes": ["learned"],
             },
             "config_overrides": {
                 "epochs": 5,
@@ -843,7 +848,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 {
                     "datasets": ["small"],
                     "presets": ["ucagnn"],
-                    "scoring_weight_modes": ["learned"],
                     "epochs": 60,
                     "batch_size": 4096,
                     "lr": 1e-3,
@@ -868,7 +872,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 {
                     "datasets": ["small"],
                     "presets": ["ucagnn"],
-                    "scoring_weight_modes": ["learned"],
                     "epochs": 60,
                     "batch_size": 4096,
                     "lr": 1e-3,
@@ -892,7 +895,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         saved_args = {
             "datasets": ["small"],
             "presets": ["ucagnn"],
-            "scoring_weight_modes": ["learned"],
             "profile_name": "development",
             "profile_slug": "development-signature",
             "epochs": 60,
@@ -951,7 +953,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         saved_args = {
             "datasets": ["small"],
             "presets": ["ucagnn"],
-            "scoring_weight_modes": ["learned"],
             "profile_name": "development",
             "profile_slug": "development-signature",
             "epochs": 59,
@@ -1003,7 +1004,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         base_args = argparse.Namespace(
             datasets=["small"],
             presets=["ucagnn"],
-            scoring_weight_modes=["learned"],
             profile_name="development",
             epochs=60,
             use_early_stopping=False,
@@ -1254,17 +1254,42 @@ class BenchmarkPlanTests(unittest.TestCase):
         args = build_benchmark_parser().parse_args([])
 
         self.assertEqual(args.presets, ["ucagnn", "lightgcn", "dice_like"])
-        self.assertEqual(args.scoring_weight_modes, ["learned"])
+        self.assertFalse(hasattr(args, "scoring_weight_modes"))
 
-    def test_dice_like_score_mix_is_fixed_only(self) -> None:
-        """DICE-like should stay on the fixed score-mix path in formal sweeps."""
-        self.assertEqual(
-            formal_main._scoring_weight_modes_for_preset(
-                "dice_like",
-                ["fixed", "learned"],
+    def test_benchmark_plan_relies_on_preset_owned_score_mix_defaults(self) -> None:
+        """Formal sweeps should no longer expose score-mix modes as a matrix axis."""
+        args = formal_main._normalize_benchmark_args(
+            SimpleNamespace(
+                datasets=["movielens1m"],
+                presets=["ucagnn", "lightgcn", "dice_like"],
+                num_neighbors=[10, 5],
             ),
-            ["fixed"],
         )
+
+        self.assertNotIn("scoring_weight_modes", args)
+        self.assertEqual(
+            build_benchmark_plan(args),
+            [
+                ("movielens1m", "ucagnn", "plateau", None, "observed", (10, 5)),
+                ("movielens1m", "lightgcn", "plateau", None, "observed", (10, 5)),
+                ("movielens1m", "dice_like", "plateau", None, "observed", (10, 5)),
+            ],
+        )
+
+    def test_normalize_benchmark_args_strips_removed_scoring_weight_modes_field(self) -> None:
+        """Legacy saved payloads should drop removed score-mix mode metadata."""
+        args = formal_main._normalize_benchmark_args(
+            {
+                "datasets": ["movielens1m"],
+                "presets": ["ucagnn"],
+                "num_neighbors": [10, 5],
+                "scoring_weight_modes": ["fixed", "learned"],
+            },
+        )
+
+        self.assertNotIn("scoring_weight_modes", args)
+        self.assertEqual(args["presets"], ["ucagnn"])
+        self.assertEqual(args["num_neighbors"], [10, 5])
 
     def test_plan_sweeps_datasets_within_each_method_combo(self) -> None:
         """Datasets should be the innermost loop of the execution plan."""
@@ -1273,30 +1298,28 @@ class BenchmarkPlanTests(unittest.TestCase):
         args = SimpleNamespace(
             datasets=["small"],
             presets=["ucagnn", "lightgcn"],
-            scoring_weight_modes=["fixed", "learned"],
             num_neighbors=[[10, 5], [5, 3]],
         )
 
         plan = build_benchmark_plan(args)
 
         expected_prefix = [
-            ("amazonbook", "ucagnn", "fixed", "plateau", None, "observed", (10, 5)),
-            ("amazonbook", "ucagnn", "fixed", "plateau", None, "observed", (5, 3)),
-            ("movielens1m", "ucagnn", "fixed", "plateau", None, "observed", (10, 5)),
-            ("movielens1m", "ucagnn", "fixed", "plateau", None, "observed", (5, 3)),
-            ("amazonbook", "ucagnn", "learned", "plateau", None, "observed", (10, 5)),
-            ("amazonbook", "ucagnn", "learned", "plateau", None, "observed", (5, 3)),
+            ("amazonbook", "ucagnn", "plateau", None, "observed", (10, 5)),
+            ("amazonbook", "ucagnn", "plateau", None, "observed", (5, 3)),
+            ("movielens1m", "ucagnn", "plateau", None, "observed", (10, 5)),
+            ("movielens1m", "ucagnn", "plateau", None, "observed", (5, 3)),
+            ("amazonbook", "lightgcn", "plateau", None, "observed", (10, 5)),
+            ("amazonbook", "lightgcn", "plateau", None, "observed", (5, 3)),
         ]
 
         self.assertEqual(plan[: len(expected_prefix)], expected_prefix)
-        self.assertEqual(len(plan), 12)
+        self.assertEqual(len(plan), 8)
 
     def test_build_benchmark_plan_sweeps_graph_policies(self) -> None:
         """Benchmark planning should expand graph-policy sweeps into separate runs."""
         args = SimpleNamespace(
             datasets=["movielens1m"],
             presets=["ucagnn"],
-            scoring_weight_modes=["learned"],
             graph_policy="observed",
             graph_policy_options=["observed", "cagra_augmented"],
             num_neighbors=[10, 5],
@@ -1308,11 +1331,10 @@ class BenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(
             plan,
             [
-                ("movielens1m", "ucagnn", "learned", "plateau", None, "observed", (10, 5)),
+                ("movielens1m", "ucagnn", "plateau", None, "observed", (10, 5)),
                 (
                     "movielens1m",
                     "ucagnn",
-                    "learned",
                     "plateau",
                     None,
                     "cagra_augmented",
@@ -1327,7 +1349,6 @@ class BenchmarkPlanTests(unittest.TestCase):
             SimpleNamespace(
                 datasets=["kuairec_v2"],
                 presets=["ucagnn"],
-                scoring_weight_modes=["learned"],
                 preprocessing_preset=["kuairec_fullobs", "kuairec_watchratio"],
                 num_neighbors=[10, 5],
                 lr_scheduler="plateau",
@@ -1342,7 +1363,6 @@ class BenchmarkPlanTests(unittest.TestCase):
                 (
                     "kuairec_v2",
                     "ucagnn",
-                    "learned",
                     "plateau",
                     "kuairec_fullobs",
                     "observed",
@@ -1351,7 +1371,6 @@ class BenchmarkPlanTests(unittest.TestCase):
                 (
                     "kuairec_v2",
                     "ucagnn",
-                    "learned",
                     "plateau",
                     "kuairec_watchratio",
                     "observed",
@@ -1365,7 +1384,6 @@ class BenchmarkPlanTests(unittest.TestCase):
         args = SimpleNamespace(
             datasets=["movielens1m", "small"],
             presets=["ucagnn"],
-            scoring_weight_modes=["learned"],
             num_neighbors=[10, 5],
             lr_scheduler="cosine",
         )
@@ -1373,11 +1391,11 @@ class BenchmarkPlanTests(unittest.TestCase):
         plan = build_benchmark_plan(args)
 
         self.assertIn(
-            ("movielens1m", "ucagnn", "learned", "cosine", None, "observed", (10, 5)),
+            ("movielens1m", "ucagnn", "cosine", None, "observed", (10, 5)),
             plan,
         )
         self.assertIn(
-            ("amazonbook", "ucagnn", "learned", "cosine", None, "observed", (10, 5)),
+            ("amazonbook", "ucagnn", "cosine", None, "observed", (10, 5)),
             plan,
         )
 
@@ -1386,13 +1404,12 @@ class BenchmarkPlanTests(unittest.TestCase):
         args = SimpleNamespace(
             datasets=["movielens1m"],
             presets=["ucagnn"],
-            scoring_weight_modes=["learned"],
             num_neighbors=[10, 5],
             lr_scheduler="all",
         )
 
         plan = build_benchmark_plan(args)
-        schedulers = {entry[3] for entry in plan}
+        schedulers = {entry[2] for entry in plan}
 
         self.assertEqual(schedulers, set(formal_main.SUPPORTED_LR_SCHEDULERS))
 
@@ -1402,7 +1419,6 @@ class BenchmarkPlanTests(unittest.TestCase):
             SimpleNamespace(
                 datasets=["movielens1m"],
                 presets=["ucagnn"],
-                scoring_weight_modes=["learned"],
                 num_neighbors=[10, 5],
                 dry_run=True,
             ),

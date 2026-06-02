@@ -9,7 +9,7 @@ Use this routed doc set for the **current** U-CaGNN codebase. These files are li
 
 ## Read in this order
 
-1. [ucagnn-architecture.md](ucagnn-architecture.md) - model components, score views, and public `UCaGNN` surfaces.
+1. [ucagnn-architecture.md](ucagnn-architecture.md) - model components, the refined scorer contract, and public `UCaGNN` surfaces.
 2. [ucagnn-data-pipeline.md](ucagnn-data-pipeline.md) - loaders, canonical schema, graph construction, and samplers.
 3. [ucagnn-config.md](ucagnn-config.md) - defaults, presets, override precedence, and experiment-facing knobs.
 4. [ucagnn-losses.md](ucagnn-losses.md) - `LossSuite` terms, schedule behavior, and optional auxiliaries.
@@ -20,7 +20,7 @@ Use this routed doc set for the **current** U-CaGNN codebase. These files are li
 
 | File | Owns |
 | --- | --- |
-| `ucagnn-architecture.md` | embedding, propagation, scoring, and propensity components; score views; and `UCaGNN` public API |
+| `ucagnn-architecture.md` | embedding, propagation, scoring, and propensity components; the refined scorer contract; and `UCaGNN` public API |
 | `ucagnn-data-pipeline.md` | loader boundary, feature policy, canonical schema, graph build, and samplers |
 | `ucagnn-config.md` | defaults, presets, precedence, validation rules, and experiment-facing config |
 | `ucagnn-losses.md` | `LossSuite` terms, weighting, and schedule semantics |

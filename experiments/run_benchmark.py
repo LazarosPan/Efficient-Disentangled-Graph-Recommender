@@ -52,7 +52,6 @@ STATE_PATH = FORMAL_RUN_STATE_PATH
 DEFAULT_PROFILE_NAME = default_formal_profile_name()
 
 
-DEFAULT_SCORING_WEIGHT_MODES = ["learned"]
 FORMAL_RUN_STATE_FIELDS = frozenset(
     {
         "profile_name",
@@ -68,7 +67,6 @@ FORMAL_RUN_STATE_FIELDS = frozenset(
 BENCHMARK_MATRIX_FIELDS = (
     "datasets",
     "presets",
-    "scoring_weight_modes",
     "profile_name",
     "profile_slug",
 )
@@ -181,6 +179,7 @@ def _normalize_benchmark_args(
 ) -> dict[str, object]:
     """Return a JSON-safe benchmark payload."""
     benchmark_args = normalize_config_inputs(raw_args)
+    benchmark_args.pop("scoring_weight_modes", None)
     unexpected_fields = sorted(set(benchmark_args) - set(NORMALIZED_BENCHMARK_FIELDS))
     if unexpected_fields:
         raise ValueError(
@@ -206,14 +205,10 @@ def _normalize_benchmark_args(
     normalized_args["batch_id"] = benchmark_args.get("batch_id")
     normalized_args["resume_batch"] = bool(benchmark_args.get("resume_batch", False))
     normalized_args["dry_run"] = bool(benchmark_args.get("dry_run", False))
-    scoring_weight_modes = normalized_args["scoring_weight_modes"]
-    if not isinstance(scoring_weight_modes, (list, tuple)) or not scoring_weight_modes:
-        scoring_weight_modes = DEFAULT_SCORING_WEIGHT_MODES
     normalized_args["datasets"] = normalize_benchmark_datasets_arg(
         benchmark_args.get("datasets"),
     )
     normalized_args["presets"] = list(benchmark_args["presets"])
-    normalized_args["scoring_weight_modes"] = list(scoring_weight_modes)
     normalized_args["profile_name"] = benchmark_args.get("profile_name") or fallback_profile_name
     normalized_args["profile_slug"] = benchmark_args.get("profile_slug")
     return normalized_args
@@ -230,9 +225,9 @@ def _is_normalized_benchmark_args(
             list,
         )
         and isinstance(benchmark_args.get("presets"), list)
-        and isinstance(
-            benchmark_args.get("scoring_weight_modes"),
-            list,
+        and (
+            benchmark_args.get("profile_name") is None
+            or isinstance(benchmark_args.get("profile_name"), str)
         )
     )
 
@@ -277,9 +272,6 @@ def _build_new_run_args(
         {
             "datasets": normalize_benchmark_datasets_arg(datasets_value),
             "presets": list(matrix["presets"]),
-            "scoring_weight_modes": list(
-                matrix.get("scoring_weight_modes", DEFAULT_SCORING_WEIGHT_MODES),
-            ),
             "profile_name": str(profile_bundle["id"]),
             "profile_slug": str(profile_bundle["name"]),
             "change_note": None,
@@ -387,16 +379,6 @@ def _resolve_benchmark_args(
     return benchmark_args, profile_name, False
 
 
-def _scoring_weight_modes_for_preset(
-    preset: str,
-    requested_modes: list[str],
-) -> list[str]:
-    """Return the applicable scoring-weight sweep values for one preset."""
-    if preset in {"lightgcn", "dice_like"}:
-        return ["fixed"] if "fixed" in requested_modes else []
-    return list(requested_modes)
-
-
 def _resolve_benchmark_num_neighbors_for_preset(
     benchmark_args: Mapping[str, object],
     preset: str,
@@ -455,7 +437,7 @@ def _benchmark_num_neighbors_values(
 
 def build_benchmark_plan(
     args: argparse.Namespace | Mapping[str, object] | object,
-) -> list[tuple[str, str, str, str, str | None, str, tuple[int, ...]]]:
+) -> list[tuple[str, str, str, str | None, str, tuple[int, ...]]]:
     """Build the ordered benchmark execution plan.
 
     The semantic thesis matrix remains dataset * preset, but the
@@ -480,17 +462,12 @@ def build_benchmark_plan(
         (
             dataset,
             preset,
-            scoring_weight_mode,
             lr_scheduler,
             None if preprocessing_preset is None else str(preprocessing_preset),
             str(graph_policy),
             tuple(num_neighbors),
         )
         for preset in presets
-        for scoring_weight_mode in _scoring_weight_modes_for_preset(
-            preset,
-            benchmark_args["scoring_weight_modes"],
-        )
         for dataset in datasets
         for lr_scheduler in lr_scheduler_values
         for preprocessing_preset in preprocessing_preset_values
@@ -529,7 +506,6 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
         f"  Datasets: {tiers_label} ({len(datasets)} datasets: {', '.join(datasets)})",
     )
     print(f"  Presets: {', '.join(presets)}")
-    print(f"  Score-mix modes: {', '.join(benchmark_args['scoring_weight_modes'])}")
     if benchmark_args["lr_scheduler"]:
         schedulers = benchmark_args["lr_scheduler"]
         if isinstance(schedulers, str):
@@ -571,17 +547,17 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
     if benchmark_args["dry_run"]:
         print(
             "\n"
-            f"{'#':>4} | {'Dataset':<15} | {'Preset':<12} | {'ScoreMix':<8} | "
-            f"{'Scheduler':<12} | {'Preproc':<24} | {'Graph':<16} | {'Neighbors':<10}",
+            f"{'#':>4} | {'Dataset':<15} | {'Preset':<12} | {'Scheduler':<12} | "
+            f"{'Preproc':<24} | {'Graph':<16} | {'Neighbors':<10}",
         )
-        print("-" * 151)
-        for i, (ds, pr, swm, scheduler, preprocessing_preset, graph_policy, neighbors) in enumerate(
+        print("-" * 140)
+        for i, (ds, pr, scheduler, preprocessing_preset, graph_policy, neighbors) in enumerate(
             experiments,
             1,
         ):
             neighbor_label = "-".join(str(value) for value in neighbors)
             print(
-                f"{i:>4} | {ds:<15} | {pr:<12} | {swm:<8} | {scheduler:<12} | "
+                f"{i:>4} | {ds:<15} | {pr:<12} | {scheduler:<12} | "
                 f"{preprocessing_preset or '-'!s: <24} | "
                 f"{graph_policy:<16} | {neighbor_label:<10}",
             )
@@ -599,7 +575,6 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
     for i, (
         dataset,
         preset,
-        scoring_weight_mode,
         lr_scheduler,
         preprocessing_preset,
         graph_policy,
@@ -621,7 +596,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             failed += 1
             failure_notes.append(
                 (
-                    f"{dataset} / {preset} / {scoring_weight_mode} / {lr_scheduler} "
+                    f"{dataset} / {preset} / {lr_scheduler} "
                     f"/ {preprocessing_preset or 'default'} / {graph_policy} "
                     f"/ nbr{neighbor_label}: {type(e).__name__}: {e}"
                 ),
@@ -633,7 +608,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
         print(f"\n{'=' * 70}")
         print(
             "["
-            f"{i}/{len(experiments)}] {dataset} / {preset} / {scoring_weight_mode} "
+            f"{i}/{len(experiments)}] {dataset} / {preset} / {lr_scheduler} "
             f"/ {preprocessing_preset or 'default'} / {graph_policy} / nbr{neighbor_label}",
         )
         print("=" * 70)
@@ -647,7 +622,6 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             training_mode="mini_batch",
             config_filters={
                 "graph_policy": graph_policy,
-                "scoring_weight_mode": scoring_weight_mode,
                 "num_neighbors": effective_neighbor_list,
                 **(
                     {"preprocessing_preset": preprocessing_preset}
@@ -672,7 +646,6 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                     {
                         "dataset": dataset,
                         "preset": preset,
-                        "scoring_weight_mode": scoring_weight_mode,
                         "preprocessing_preset": preprocessing_preset,
                         "graph_policy": graph_policy,
                         "num_neighbors": neighbor_list,
@@ -697,7 +670,6 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                     dataset=dataset,
                     preset=preset,
                     lr_scheduler=lr_scheduler,
-                    scoring_weight_mode=scoring_weight_mode,
                     num_neighbors=effective_neighbor_list,
                     preprocessing_preset=preprocessing_preset,
                     graph_policy=graph_policy,
@@ -721,7 +693,6 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                 {
                     "dataset": dataset,
                     "preset": preset,
-                    "scoring_weight_mode": scoring_weight_mode,
                     "preprocessing_preset": preprocessing_preset,
                     "graph_policy": graph_policy,
                     "num_neighbors": effective_neighbor_list,
@@ -741,7 +712,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             failed += 1
             failure_notes.append(
                 (
-                    f"{dataset} / {preset} / {scoring_weight_mode} / "
+                    f"{dataset} / {preset} / {lr_scheduler} / "
                     f"{preprocessing_preset or 'default'} / {graph_policy} "
                     f"/ nbr{neighbor_label}: "
                     f"{type(e).__name__}: {e}"
@@ -762,7 +733,6 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             metric_value(r["metrics"], "AveragePopularity@20"),
             metric_value(r["metrics"], "AveragePopularity@40"),
             str(r["preset"]).lower(),
-            str(r["scoring_weight_mode"]).lower(),
             str(r.get("preprocessing_preset") or "").lower(),
             str(r["graph_policy"]).lower(),
             tuple(r["num_neighbors"]),
@@ -781,7 +751,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             (
                 "\n"
                 + (
-                    f"{'Dataset':<15} | {'Preset':<12} | {'ScoreMix':<8} | "
+                    f"{'Dataset':<15} | {'Preset':<12} | "
                     f"{'Preproc':<24} | {'Graph':<16} | {'Neighbors':<10} | {'NDCG@20':>8} | "
                     f"{'Recall@20':>10} | {'AvgPop@20':>10} | {'NDCG@40':>8} | "
                     f"{'Recall@40':>10} | {'AvgPop@40':>10} | {'Epochs':>6} | "
@@ -789,7 +759,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                 )
             ),
         )
-        print("-" * 264)
+        print("-" * 253)
         for r in sorted_results:
             metric_values = thesis_metric_values(
                 r["metrics"],
@@ -813,7 +783,6 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             print(
                 (
                     f"{r['dataset']:<15} | {r['preset']:<12} | "
-                    f"{r['scoring_weight_mode']:<8} | "
                     f"{r.get('preprocessing_preset') or '-'!s: <24} | "
                     f"{r['graph_policy']:<16} | "
                     f"{neighbor_label:<10} | {metric_values['NDCG@20']:>8.4f} | "

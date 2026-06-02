@@ -88,8 +88,6 @@ CONFIG_OVERRIDE_FIELDS = (
     "lr_scheduler_factor",
     "lr_scheduler_patience",
     "use_early_stopping",
-    "eval_scoring_mode",
-    "scoring_weight_mode",
     "use_features",
     "feature_policy",
     "graph_policy",
@@ -199,11 +197,9 @@ _TRAINING_IDENTITY_FIELDS = (
     "score_weight_conformity",
     "score_weight_interest",
     "score_weight_popularity",
-    "scoring_weight_mode",
     "seed",
     "single_branch_gnn_layers",
     "train_ratio",
-    "train_scoring_mode",
     "uniformity_temperature",
     "use_amp",
     "use_conformity_au",
@@ -212,6 +208,7 @@ _TRAINING_IDENTITY_FIELDS = (
     "use_ema",
     "use_features",
     "use_ipw",
+    "use_learned_score_mix",
     "use_popularity_emb",
     "use_popularity_head",
     "use_sign_aware",
@@ -219,10 +216,7 @@ _TRAINING_IDENTITY_FIELDS = (
     "val_ratio",
     "weight_decay",
 )
-_EVALUATION_IDENTITY_FIELDS = (
-    "eval_ks",
-    "eval_scoring_mode",
-)
+_EVALUATION_IDENTITY_FIELDS = ("eval_ks",)
 
 
 def _build_canonical_name(
@@ -258,13 +252,7 @@ def _build_canonical_name(
         parts.append("feat")
     if config.feature_policy != "thesis_default":
         parts.append(f"fpolicy{config.feature_policy}")
-    if config.scoring_weight_mode != "fixed":
-        parts.append(f"scoremix{config.scoring_weight_mode}")
     parts.append(f"lr-{config.lr_scheduler}")
-    if config.train_scoring_mode != "default":
-        parts.append(f"trainscore{config.train_scoring_mode}")
-    if config.eval_scoring_mode != "default":
-        parts.append(f"score{config.eval_scoring_mode}")
     if intervention:
         parts.append(intervention)
     parts.append(f"seed{config.seed}")
@@ -601,10 +589,33 @@ def _train_mask_numpy_from_data(data: Any) -> np.ndarray:
     return train_mask.detach().cpu().numpy()
 
 
-def build_runtime_model(config: UCaGNNConfig, canonical: Any, data: Any) -> UCaGNN:
-    """Instantiate the runtime model for a loaded canonical dataset and graph."""
+def build_runtime_model(
+    config: UCaGNNConfig | Any,
+    canonical: Any,
+    data: Any,
+) -> UCaGNN:
+    """Instantiate the runtime model for a loaded canonical dataset and graph.
+
+    Args:
+        config: Runtime config or, for backward-compatible call sites, the
+            canonical dataset.
+        canonical: Canonical dataset or graph data for backward-compatible calls.
+        data: Graph data or runtime config for backward-compatible calls.
+
+    Returns:
+        Instantiated model.
+    """
+    if not isinstance(config, UCaGNNConfig):
+        config, canonical, data = data, config, canonical
+    assert isinstance(config, UCaGNNConfig)
     train_mask = _train_mask_numpy_from_data(data)
     item_recency = torch.from_numpy(canonical.compute_item_recency(train_mask))
+    recent_train_items, recent_train_mask = canonical.build_recent_train_history(train_mask)
+    item_propensity_targets = (
+        torch.from_numpy(canonical.item_propensity_targets)
+        if canonical.item_propensity_targets is not None
+        else None
+    )
     return UCaGNN(
         canonical.n_users,
         canonical.n_items,
@@ -612,6 +623,9 @@ def build_runtime_model(config: UCaGNNConfig, canonical: Any, data: Any) -> UCaG
         item_features=getattr(data, "item_features", None),
         item_popularity=data.popularity,
         item_recency=item_recency,
+        item_propensity_targets=item_propensity_targets,
+        recent_train_items=torch.from_numpy(recent_train_items),
+        recent_train_mask=torch.from_numpy(recent_train_mask),
     )
 
 
@@ -1060,9 +1074,6 @@ def _build_mlflow_params(
         "auto_batch_size": config.auto_batch_size,
         "embed_dim": config.embed_dim,
         "max_gnn_layers": config.max_gnn_layers,
-        "train_scoring_mode": config.train_scoring_mode,
-        "eval_scoring_mode": config.eval_scoring_mode,
-        "scoring_weight_mode": config.scoring_weight_mode,
         "sample_interactions": config.sample_interactions or 0,
         "loader_max_rows": config.loader_max_rows or 0,
         "lr": config.lr,
@@ -1276,7 +1287,6 @@ def build_benchmark_config_inputs(
     dataset: str,
     preset: str,
     lr_scheduler: str,
-    scoring_weight_mode: str,
     num_neighbors: list[int],
     preprocessing_preset: str | None = None,
     graph_policy: str | None = None,
@@ -1292,7 +1302,6 @@ def build_benchmark_config_inputs(
         ),
         extra_overrides={
             "lr_scheduler": lr_scheduler,
-            "scoring_weight_mode": scoring_weight_mode,
             "num_neighbors": num_neighbors,
             "preprocessing_preset": preprocessing_preset,
             "graph_policy": graph_policy,

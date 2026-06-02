@@ -6,7 +6,7 @@ This file is the integration map for the current implementation. It stays intent
 
 | Need | Open |
 | --- | --- |
-| model modules and score views | `ucagnn-architecture.md` |
+| model modules and refined scorer | `ucagnn-architecture.md` |
 | loaders, canonical schema, graph build, samplers | `ucagnn-data-pipeline.md` |
 | presets and config rules | `ucagnn-config.md` |
 | objectives and schedule semantics | `ucagnn-losses.md` |
@@ -33,7 +33,7 @@ flowchart LR
     K --> N[ExperimentLogger and checkpoints]
 ```
 
-The diagram shows the full runtime join points. Slice-specific rules stay in the owner docs: config precedence in `ucagnn-config.md`, graph policy and propensity-target loading in `ucagnn-data-pipeline.md`, loss activation in `ucagnn-losses.md`, and checkpointing or tracking in `ucagnn-training.md`.
+The diagram shows the full runtime join points. Slice-specific rules stay in the owner docs: config precedence in `ucagnn-config.md`, graph policy and propensity-target loading in `ucagnn-data-pipeline.md`, loss activation in `ucagnn-losses.md`, and checkpointing or tracking in `ucagnn-training.md`. The evaluation path now keeps thesis metrics and refined scorer diagnostics on the same propagated batches and logger pipeline.
 
 ## Source map
 
