@@ -61,7 +61,7 @@ The diagram shows the runtime boundary: the loader always produces `CanonicalInt
 | Split metadata | optional `train_mask`, `val_mask`, `test_mask`, plus `metadata` |
 | Propensity supervision | optional `item_propensity_targets` with shape `(n_items,)` |
 
-`get_splits()` prefers predefined loader masks, otherwise derives validation from an existing train/test split, otherwise falls back to the configured derived split mode. `compute_item_recency()` is intended to run on the training split only.
+`get_splits()` prefers predefined loader masks, otherwise derives validation from an existing train/test split, otherwise falls back to the configured derived split mode. `compute_item_recency()` is intended to run on the training split only, and every train-derived runtime summary reuses that same split mask instead of creating category-specific train/test variants.
 
 ## Feature policy
 
@@ -69,6 +69,7 @@ The diagram shows the runtime boundary: the loader always produces `CanonicalInt
 - `all_optional` keeps exploratory sources such as proxy-only feature files.
 - Post-treatment aggregates stay out of thesis-default model features.
 - Under `thesis_default`, KuaiRand's `video_features_statistic_1k.csv` stays excluded from model features, but its `show_cnt` column is reused separately as a propensity calibration target.
+- Free-text or comment-style columns are not part of the live thesis-default path; the runtime uses only structured numeric, temporal, and categorical-safe features.
 
 `src/utils/csv_features.py` applies one shared encoding policy:
 
@@ -90,7 +91,13 @@ Current graph rules:
 - Optional canonical payloads are copied onto the PyG `Data` object through one shared boundary helper.
 - `cagra_augmented` is strict: it requires item features and raises on CAGRA failures instead of silently degrading.
 
-Only KuaiRand-1K currently populates `item_propensity_targets`; every other dataset leaves that field as `None`.
+## Train-derived user history and exposure context
+
+- `build_recent_train_history()` creates `recent_train_items` and `recent_train_mask` from the final training split only.
+- Those buffers are per-user histories: the latest training interactions for each user, never global "recent" or popularity-only items.
+- Subgraph training reuses the same train-derived user history and does not create separate splits for interest, recency, or context.
+
+Only KuaiRand-1K currently populates `item_propensity_targets`, using `show_cnt` as a train-safe exposure proxy. Every other dataset leaves that field as `None`, so the exposure slot in the context head is zero-filled and propensity calibration stays inactive unless a dataset-specific target is added.
 
 ## Sampling
 
