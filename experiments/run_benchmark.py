@@ -329,7 +329,20 @@ def _resolve_benchmark_args(
     cli_args: argparse.Namespace,
 ) -> tuple[dict[str, object], str, bool]:
     """Resolve whether to create a new formal run or resume the saved one."""
-    saved_state = _load_saved_formal_state()
+    try:
+        saved_state = _load_saved_formal_state()
+    except ValueError as exc:
+        if "no longer defined" in str(exc):
+            raise
+        logger.warning(
+            "Deleting legacy or incompatible formal-run state file because: %s. Starting fresh.",
+            exc,
+        )
+        try:
+            STATE_PATH.unlink(missing_ok=True)
+        except Exception as unlink_exc:
+            logger.debug("Failed to delete legacy state file: %s", unlink_exc)
+        saved_state = None
     current_profile_bundle = None
     saved_benchmark_args: dict[str, object] | None = None
 

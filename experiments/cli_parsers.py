@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import typing
 
 from src.utils.cli_parsers import (
     BENCHMARK_TIER_CHOICES,
@@ -23,7 +24,28 @@ def build_run_experiment_parser() -> argparse.ArgumentParser:
         Configured parser for ``experiments/run_experiment.py``.
 
     """
-    parser = argparse.ArgumentParser(description="Run a U-CaGNN experiment")
+
+    class ExperimentArgumentParser(argparse.ArgumentParser):
+        """Custom ArgumentParser for single-run experiments to handle profile typos."""
+
+        def error(self, message: str) -> typing.NoReturn:
+            """Override error to suggest formal-run command if a profile name is passed."""
+            if "unrecognized arguments" in message:
+                try:
+                    unrecognized_part = message.split("unrecognized arguments:")[-1].strip()
+                    unrecognized = unrecognized_part.split()
+                    profiles = formal_profile_names()
+                    for arg in unrecognized:
+                        if arg in profiles:
+                            message += (
+                                f"\n\nDid you mean to run:\n  uv run formal-run --profile {arg} ?"
+                            )
+                            break
+                except Exception:
+                    pass
+            super().error(message)
+
+    parser = ExperimentArgumentParser(description="Run a U-CaGNN experiment")
 
     sel = parser.add_argument_group("experiment selection")
     sel.add_argument("--dataset", default="movielens1m", help="Dataset name")
