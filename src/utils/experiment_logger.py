@@ -417,6 +417,94 @@ class ExperimentLogger:
                     WHEN m.metric_name = 'AveragePopularity@40' AND m.split = 'test'
                     THEN m.metric_value
                 END) AS test_average_popularity_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'conformity_contribution@20' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_conformity_contribution_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'conformity_contribution@40' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_conformity_contribution_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'conformity_popularity_spearman@20' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_conformity_popularity_spearman_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'conformity_popularity_spearman@40' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_conformity_popularity_spearman_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'context_contribution@20' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_context_contribution_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'context_contribution@40' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_context_contribution_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'context_popularity_spearman@20' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_context_popularity_spearman_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'context_popularity_spearman@40' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_context_popularity_spearman_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'final_popularity_spearman@20' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_final_popularity_spearman_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'final_popularity_spearman@40' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_final_popularity_spearman_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'interest_conformity_cosine_mean' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_interest_conformity_cosine_mean,
+                MAX(CASE
+                    WHEN m.metric_name = 'interest_conformity_cosine_std' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_interest_conformity_cosine_std,
+                MAX(CASE
+                    WHEN m.metric_name = 'interest_contribution@20' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_interest_contribution_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'interest_contribution@40' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_interest_contribution_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'interest_popularity_spearman@20' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_interest_popularity_spearman_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'interest_popularity_spearman@40' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_interest_popularity_spearman_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'score_mix_conformity_mean' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_score_mix_conformity_mean,
+                MAX(CASE
+                    WHEN m.metric_name = 'score_mix_conformity_std' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_score_mix_conformity_std,
+                MAX(CASE
+                    WHEN m.metric_name = 'score_mix_context_mean' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_score_mix_context_mean,
+                MAX(CASE
+                    WHEN m.metric_name = 'score_mix_context_std' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_score_mix_context_std,
+                MAX(CASE
+                    WHEN m.metric_name = 'score_mix_interest_mean' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_score_mix_interest_mean,
+                MAX(CASE
+                    WHEN m.metric_name = 'score_mix_interest_std' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_score_mix_interest_std,
                 AVG(CASE
                     WHEN p.stage = 'forward'
                     THEN p.duration_ms / NULLIF(p.stage_call_count, 0)

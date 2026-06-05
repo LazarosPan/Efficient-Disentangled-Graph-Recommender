@@ -14,18 +14,20 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import sqlite3
 import sys
 from collections import defaultdict
 from contextlib import redirect_stdout
 from io import StringIO
+from pathlib import Path
 
 from experiments.ablation_configs import ABLATION_VARIANTS
 from src.utils.cli_parsers import build_query_results_parser
 from src.utils.experiment_logger import ExperimentLogger
 from src.utils.project_paths import RESULTS_DIR, THESIS_DB_PATH
 
-DB_PATH = THESIS_DB_PATH
+DB_PATH = Path(os.environ.get("THESIS_DB_PATH_OVERRIDE", str(THESIS_DB_PATH)))
 QUERY_RESULTS_MARKDOWN_PATH = RESULTS_DIR / "query_results.md"
 VIEW_TABLES = ExperimentLogger.VIEW_TABLES
 FORMAL_BATCH_PREFIX = "formal-"
@@ -49,8 +51,18 @@ def connect() -> sqlite3.Connection:
         )
         sys.exit(1)
 
-    migrator = ExperimentLogger(db_path=str(DB_PATH))
-    migrator.close()
+    try:
+        migrator = ExperimentLogger(db_path=str(DB_PATH))
+        migrator.close()
+    except sqlite3.OperationalError as e:
+        if "locked" in str(e).lower():
+            print(
+                "Note: Database is locked by another process. "
+                "Querying existing views without schema migrations."
+            )
+        else:
+            raise
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
@@ -67,7 +79,7 @@ def list_experiments(
     print("=" * 80)
     print("EXPERIMENTS")
     print("=" * 80)
-    print(f"Database: {DB_PATH.resolve()}")
+    print(f"Database: {THESIS_DB_PATH.resolve()}")
     print(f"View: {view_name}")
     print()
 
@@ -235,29 +247,79 @@ def _truncate_label(value: str | None, width: int) -> str:
 
 def _query_report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Return completed full-data formal and ablation rows with test metrics."""
-    return conn.execute(
-        """
-        SELECT s.id, s.dataset, s.preset, s.updated_at,
-               s.training_time_s, s.completed_train_epochs, s.peak_vram_mb,
-               s.avg_gpu_utilization_pct,
-               s.test_ndcg_20, s.test_ndcg_40,
-               s.test_recall_20, s.test_recall_40,
-               s.test_hit_ratio_20, s.test_hit_ratio_40,
-               s.test_personalization_20, s.test_personalization_40,
-               s.test_average_popularity_20, s.test_average_popularity_40,
-               e.intervention, e.batch_id, e.profile_name, e.config_json
-        FROM experiment_completed_summary s
-        JOIN experiments e ON s.id = e.id
-        WHERE s.test_ndcg_20 IS NOT NULL
-          AND json_extract(e.config_json, '$.sample_interactions') IS NULL
-          AND json_extract(e.config_json, '$.loader_max_rows') IS NULL
-          AND (
-              e.batch_id LIKE 'formal-%'
-              OR e.batch_id LIKE 'ablation-%'
-          )
-        ORDER BY s.dataset ASC, s.id DESC
-        """,
-    ).fetchall()
+    try:
+        return conn.execute(
+            """
+            SELECT s.id, s.dataset, s.preset, s.updated_at,
+                   s.training_time_s, s.completed_train_epochs, s.peak_vram_mb,
+                   s.avg_gpu_utilization_pct,
+                   s.test_ndcg_20, s.test_ndcg_40,
+                   s.test_recall_20, s.test_recall_40,
+                   s.test_hit_ratio_20, s.test_hit_ratio_40,
+                   s.test_personalization_20, s.test_personalization_40,
+                   s.test_average_popularity_20, s.test_average_popularity_40,
+                   s.test_conformity_contribution_20,
+                   s.test_conformity_contribution_40,
+                   s.test_conformity_popularity_spearman_20,
+                   s.test_conformity_popularity_spearman_40,
+                   s.test_context_contribution_20,
+                   s.test_context_contribution_40,
+                   s.test_context_popularity_spearman_20,
+                   s.test_context_popularity_spearman_40,
+                   s.test_final_popularity_spearman_20,
+                   s.test_final_popularity_spearman_40,
+                   s.test_interest_conformity_cosine_mean,
+                   s.test_interest_conformity_cosine_std,
+                   s.test_interest_contribution_20,
+                   s.test_interest_contribution_40,
+                   s.test_interest_popularity_spearman_20,
+                   s.test_interest_popularity_spearman_40,
+                   s.test_score_mix_conformity_mean,
+                   s.test_score_mix_conformity_std,
+                   s.test_score_mix_context_mean,
+                   s.test_score_mix_context_std,
+                   s.test_score_mix_interest_mean,
+                   s.test_score_mix_interest_std,
+                   e.intervention, e.batch_id, e.profile_name, e.config_json
+            FROM experiment_completed_summary s
+            JOIN experiments e ON s.id = e.id
+            WHERE s.test_ndcg_20 IS NOT NULL
+              AND json_extract(e.config_json, '$.sample_interactions') IS NULL
+              AND json_extract(e.config_json, '$.loader_max_rows') IS NULL
+              AND (
+                  e.batch_id LIKE 'formal-%'
+                  OR e.batch_id LIKE 'ablation-%'
+              )
+            ORDER BY s.dataset ASC, s.id DESC
+            """,
+        ).fetchall()
+    except sqlite3.OperationalError as e:
+        if "no such column" in str(e).lower():
+            # Fallback to core metrics only if database views haven't been recreated/updated yet
+            return conn.execute(
+                """
+                SELECT s.id, s.dataset, s.preset, s.updated_at,
+                       s.training_time_s, s.completed_train_epochs, s.peak_vram_mb,
+                       s.avg_gpu_utilization_pct,
+                       s.test_ndcg_20, s.test_ndcg_40,
+                       s.test_recall_20, s.test_recall_40,
+                       s.test_hit_ratio_20, s.test_hit_ratio_40,
+                       s.test_personalization_20, s.test_personalization_40,
+                       s.test_average_popularity_20, s.test_average_popularity_40,
+                       e.intervention, e.batch_id, e.profile_name, e.config_json
+                FROM experiment_completed_summary s
+                JOIN experiments e ON s.id = e.id
+                WHERE s.test_ndcg_20 IS NOT NULL
+                  AND json_extract(e.config_json, '$.sample_interactions') IS NULL
+                  AND json_extract(e.config_json, '$.loader_max_rows') IS NULL
+                  AND (
+                      e.batch_id LIKE 'formal-%'
+                      OR e.batch_id LIKE 'ablation-%'
+                  )
+                ORDER BY s.dataset ASC, s.id DESC
+                """,
+            ).fetchall()
+        raise
 
 
 def _is_formal_row(row: sqlite3.Row) -> bool:
@@ -336,6 +398,91 @@ def _select_best_ablation_rows(
     )
 
 
+def _print_causal_diagnostics(row: sqlite3.Row) -> None:
+    """Print causal diagnostic and score mix metrics under an experiment if they exist."""
+    try:
+        has_causal = (
+            row["test_conformity_contribution_20"] is not None
+            or row["test_interest_contribution_20"] is not None
+            or row["test_score_mix_interest_mean"] is not None
+        )
+    except (IndexError, KeyError):
+        return
+
+    if not has_causal:
+        return
+
+    def fmt_val(v: float | None) -> str:
+        return f"{v:.4f}" if v is not None else "-"
+
+    def fmt_pair(v20: float | None, v40: float | None) -> str:
+        return f"{{20: {fmt_val(v20)}, 40: {fmt_val(v40)}}}"
+
+    conformity_contrib = fmt_pair(
+        row["test_conformity_contribution_20"], row["test_conformity_contribution_40"]
+    )
+    interest_contrib = fmt_pair(
+        row["test_interest_contribution_20"], row["test_interest_contribution_40"]
+    )
+    context_contrib = fmt_pair(
+        row["test_context_contribution_20"], row["test_context_contribution_40"]
+    )
+
+    print(
+        f"  Diagnostics: conformity_contrib={conformity_contrib} | "
+        f"interest_contrib={interest_contrib} | "
+        f"context_contrib={context_contrib}"
+    )
+
+    interest_pop = fmt_pair(
+        row["test_interest_popularity_spearman_20"], row["test_interest_popularity_spearman_40"]
+    )
+    conformity_pop = fmt_pair(
+        row["test_conformity_popularity_spearman_20"],
+        row["test_conformity_popularity_spearman_40"],
+    )
+    context_pop = fmt_pair(
+        row["test_context_popularity_spearman_20"], row["test_context_popularity_spearman_40"]
+    )
+    final_pop = fmt_pair(
+        row["test_final_popularity_spearman_20"], row["test_final_popularity_spearman_40"]
+    )
+
+    print(
+        f"  Popularity:  Spearman (Interest={interest_pop} | "
+        f"Conformity={conformity_pop} | "
+        f"Context={context_pop} | "
+        f"Final={final_pop})"
+    )
+
+    def fmt_mean_std(mean: float | None, std: float | None) -> str:
+        if mean is None:
+            return "-"
+        if std is None:
+            return f"{mean:.4f}"
+        return f"{mean:.4f}±{std:.4f}"
+
+    score_interest = fmt_mean_std(
+        row["test_score_mix_interest_mean"], row["test_score_mix_interest_std"]
+    )
+    score_conformity = fmt_mean_std(
+        row["test_score_mix_conformity_mean"], row["test_score_mix_conformity_std"]
+    )
+    score_context = fmt_mean_std(
+        row["test_score_mix_context_mean"], row["test_score_mix_context_std"]
+    )
+    cosine_sim = fmt_mean_std(
+        row["test_interest_conformity_cosine_mean"], row["test_interest_conformity_cosine_std"]
+    )
+
+    print(
+        f"  Score Mix:   Interest={score_interest} | "
+        f"Conformity={score_conformity} | "
+        f"Context={score_context} | "
+        f"Cosine={cosine_sim}"
+    )
+
+
 def _print_result_row_experiment(
     *,
     profile_name: str | None = None,
@@ -344,6 +491,7 @@ def _print_result_row_experiment(
     completed_train_epochs: float | None = None,
     peak_vram_mb: float | None = None,
     avg_gpu_utilization_pct: float | None = None,
+    row: sqlite3.Row | None = None,
 ) -> None:
     """Print the full profile, resource, and experiment labels under a metric row."""
     if profile_name:
@@ -359,6 +507,8 @@ def _print_result_row_experiment(
         f"time={training_time} | epochs={epochs} | peak_vram={peak_vram} | "
         f"gpu_util={gpu_utilization}",
     )
+    if row is not None:
+        _print_causal_diagnostics(row)
     print(f"  Experiment: {canonical_name}")
 
 
@@ -420,6 +570,7 @@ def _print_formal_rows(
             completed_train_epochs=row["completed_train_epochs"],
             peak_vram_mb=row["peak_vram_mb"],
             avg_gpu_utilization_pct=row["avg_gpu_utilization_pct"],
+            row=row,
         )
     print()
 
@@ -485,6 +636,7 @@ def _print_ablation_rows(
             completed_train_epochs=row["completed_train_epochs"],
             peak_vram_mb=row["peak_vram_mb"],
             avg_gpu_utilization_pct=row["avg_gpu_utilization_pct"],
+            row=row,
         )
     print()
 
@@ -508,7 +660,7 @@ def show_experiment(conn: sqlite3.Connection, exp_id: int) -> None:
     print("=" * 80)
     print(f"EXPERIMENT {exp_id}")
     print("=" * 80)
-    print(f"Database:     {DB_PATH.resolve()}")
+    print(f"Database:     {THESIS_DB_PATH.resolve()}")
     print(f"Timestamp:    {row['timestamp']}")
     print(f"Dataset:      {row['dataset']}")
     print(f"Preset:       {row['preset'] or '-'}")
@@ -803,7 +955,7 @@ def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
     print("=" * 80)
     print("THESIS TEST RESULTS — formal and ablation runs only (full-data only)")
     print("=" * 80)
-    print(f"Database: {DB_PATH.resolve()}")
+    print(f"Database: {THESIS_DB_PATH.resolve()}")
     print()
 
     rows = _query_report_rows(conn)
