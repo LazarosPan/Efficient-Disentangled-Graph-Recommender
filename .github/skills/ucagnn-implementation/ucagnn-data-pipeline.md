@@ -47,7 +47,7 @@ The diagram shows the runtime boundary: the loader always produces `CanonicalInt
 | `amazonbook` | `amazonbook_graph_only` | none |
 | `kuairand1k` | `kuairand_causal` | `kuairand_random_only` |
 
-`kuairec_watchratio` is the default KuaiRec view and uses `big_matrix`. `kuairec_fullobs` is the explicit `small_matrix` path.
+`kuairec_fullobs` is the default KuaiRec view and uses `small_matrix`. `kuairec_watchratio` is the explicit `big_matrix` path.
 
 ## `CanonicalInteractions`
 

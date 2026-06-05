@@ -161,7 +161,7 @@ def load_kuairec_v2(
     max_rows: int | None = None,
     include_optional_features: bool = True,
     feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY,
-    preprocessing_preset: str | None = None,
+    preprocessing_preset: str | None = "kuairec_fullobs",
     matrix_variant: str = "small_matrix",
 ) -> CanonicalInteractions:
     """Load KuaiRec v2 from ``data_dir/KuaiRec_v2/data/<matrix_variant>.csv``.
@@ -222,7 +222,7 @@ def load_kuairec_v2(
     )
 
     effective_preset = preprocessing_preset or (
-        "kuairec_fullobs" if matrix_variant == "small_matrix" else "kuairec_watchratio"
+        "kuairec_watchratio" if matrix_variant == "big_matrix" else "kuairec_fullobs"
     )
     stabilized_watch_ratio = (
         raw_watch_ratio
