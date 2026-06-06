@@ -21,13 +21,13 @@ ABLATION_VARIANTS: dict[str, dict] = {
     "no_features": {"use_features": False},
 }
 _ABLATION_RECOMMENDED_DEFAULTS: dict[str, object] = {
-    "epochs": 300,
+    "epochs": 100,
     "use_early_stopping": True,
-    "patience": 20,
+    "patience": 10,
     "lr_scheduler": "cosine",
     "interest_gnn_layers": 1,
     "conformity_gnn_layers": 2,
-    "num_neighbors": [20, 10],
+    "num_neighbors": [6, 3],
 }
 
 

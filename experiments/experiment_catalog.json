@@ -121,6 +121,51 @@
       }
     },
     {
+      "id": "ucagnn-learned-cosine-int1-conf2-nn8_4-ep300-aux30-pop60",
+      "description": "Long unattended UCaGNN follow-up across the core datasets with the best current branch asymmetry (interest=1, conformity=2), larger 8-4 fan-out, cosine scheduling, and a 300-epoch budget guarded by early stopping.",
+      "matrix": {
+        "datasets": [
+          "amazonbook",
+          "movielens1m",
+          "kuairec_v2",
+          "kuairand1k"
+        ],
+        "presets": [
+          "ucagnn"
+        ],
+        "scoring_weight_modes": [
+          "learned"
+        ]
+      },
+      "config_overrides": {
+        "epochs": 300,
+        "use_early_stopping": true,
+        "patience": 10,
+        "lr": 0.01,
+        "lr_scheduler": "cosine",
+        "batch_size_candidates": [
+          32768,
+          16384,
+          8192,
+          4096,
+          2048,
+          1024,
+          512,
+          256
+        ],
+        "interest_gnn_layers": 1,
+        "conformity_gnn_layers": 2,
+        "dropout": 0.1,
+        "graph_policy": "observed",
+        "num_neighbors": [
+          8,
+          4
+        ],
+        "auxiliary_losses_start_epoch": 30,
+        "popularity_supervision_start_epoch": 60
+      }
+    },
+    {
       "id": "taobao-preprocessing-sweep",
       "description": "Taobao preprocessing comparison under one strong UCaGNN mainline so the default preset can be chosen once and then left fixed.",
       "matrix": {
@@ -139,7 +184,7 @@
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
         "graph_policy": "observed",
-        "num_neighbors": [20, 10],
+        "num_neighbors": [8, 4],
         "preprocessing_preset": ["taobao_multibehavior", "taobao_multibehavior_raw"],
         "auxiliary_losses_start_epoch": 30,
         "popularity_supervision_start_epoch": 60
@@ -189,7 +234,7 @@
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
         "graph_policy": "observed",
-        "num_neighbors": [20, 10],
+        "num_neighbors": [8, 4],
         "preprocessing_preset": ["kuairand_causal", "kuairand_random_only"],
         "auxiliary_losses_start_epoch": 30,
         "popularity_supervision_start_epoch": 60
@@ -214,7 +259,7 @@
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
         "graph_policy": "observed",
-        "num_neighbors": [20, 10],
+        "num_neighbors": [8, 4],
         "hard_negative_ratio": 0.1,
         "auxiliary_losses_start_epoch": 15,
         "popularity_supervision_start_epoch": 30
@@ -239,7 +284,7 @@
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
         "graph_policy": "observed",
-        "num_neighbors": [20, 10],
+        "num_neighbors": [8, 4],
         "hard_negative_ratio": 0.25,
         "auxiliary_losses_start_epoch": 15,
         "popularity_supervision_start_epoch": 30
@@ -265,7 +310,7 @@
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
         "graph_policy": "observed",
-        "num_neighbors": [20, 10],
+        "num_neighbors": [8, 4],
         "preprocessing_preset": "kuairand_random_only",
         "auxiliary_losses_start_epoch": 15,
         "popularity_supervision_start_epoch": 30
