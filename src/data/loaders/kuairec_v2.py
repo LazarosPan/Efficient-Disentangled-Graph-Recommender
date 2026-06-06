@@ -32,6 +32,16 @@ from ..feature_policy import (
 
 logger = logging.getLogger(__name__)
 
+_KUIREC_PRESET_MATRIX_VARIANTS = {
+    "kuairec_watchratio": "big_matrix",
+    "kuairec_watchratio_raw": "big_matrix",
+    "kuairec_fullobs": "small_matrix",
+}
+_KUIREC_MATRIX_DEFAULT_PRESETS = {
+    "big_matrix": "kuairec_watchratio",
+    "small_matrix": "kuairec_fullobs",
+}
+
 
 def _parse_listlike_ints(raw_value: str) -> list[int]:
     """Parse a list-like CSV field such as ``[27, 9]`` into integers.
@@ -102,6 +112,30 @@ def _load_item_categories(
     return features
 
 
+def _encode_caption_category_features(features: np.ndarray) -> np.ndarray:
+    """Encode dense caption category IDs as bounded categorical codes.
+
+    Args:
+        features: Integer category-ID matrix with ``0`` reserved for missing.
+
+    Returns:
+        Float32 matrix with non-missing IDs mapped to ``1/N..1`` per column.
+
+    """
+    encoded = np.zeros(features.shape, dtype=np.float32)
+    for column_index in range(features.shape[1]):
+        column = features[:, column_index]
+        unique_values, inverse = np.unique(column, return_inverse=True)
+        non_missing = unique_values != 0
+        n_values = int(non_missing.sum())
+        if n_values == 0:
+            continue
+        codes = np.zeros(unique_values.shape, dtype=np.float32)
+        codes[non_missing] = np.arange(1, n_values + 1, dtype=np.float32) / float(n_values)
+        encoded[:, column_index] = codes[inverse]
+    return encoded
+
+
 def _load_caption_categories(
     path: Path,
     id_map: dict[int, int],
@@ -153,10 +187,47 @@ def _load_caption_categories(
                     features[mapped, column_index] = int(float(raw_value))
                 except (TypeError, ValueError):
                     continue
-    return downcast_numeric_array(features)
+    return downcast_numeric_array(
+        _encode_caption_category_features(features),
+        allow_float16=True,
+    )
 
 
-# TODO: preprocessing preset and matrix variant configure the same thing. Remove one if both surfaces are not needed.
+def _resolve_kuairec_view(
+    preprocessing_preset: str | None,
+    matrix_variant: str | None,
+) -> tuple[str, str]:
+    """Resolve the KuaiRec preprocessing preset and backing matrix.
+
+    ``preprocessing_preset`` is the semantic run contract. ``matrix_variant`` is
+    kept for direct loader compatibility and must agree when both are supplied.
+    """
+    if preprocessing_preset is not None:
+        if preprocessing_preset not in _KUIREC_PRESET_MATRIX_VARIANTS:
+            available = ", ".join(sorted(_KUIREC_PRESET_MATRIX_VARIANTS))
+            raise ValueError(
+                (
+                    f"Unknown KuaiRec preprocessing_preset '{preprocessing_preset}'. "
+                    f"Available presets: {available}"
+                ),
+            )
+        expected_matrix = _KUIREC_PRESET_MATRIX_VARIANTS[preprocessing_preset]
+        if matrix_variant is not None and matrix_variant != expected_matrix:
+            raise ValueError(
+                (
+                    "KuaiRec preprocessing_preset and matrix_variant conflict: "
+                    f"preprocessing_preset='{preprocessing_preset}' requires "
+                    f"matrix_variant='{expected_matrix}', got '{matrix_variant}'."
+                ),
+            )
+        return preprocessing_preset, expected_matrix
+
+    if matrix_variant is not None:
+        if matrix_variant not in _KUIREC_MATRIX_DEFAULT_PRESETS:
+            raise ValueError("matrix_variant must be 'big_matrix' or 'small_matrix'")
+        return _KUIREC_MATRIX_DEFAULT_PRESETS[matrix_variant], matrix_variant
+
+    return "kuairec_watchratio", "big_matrix"
 
 
 def load_kuairec_v2(
@@ -164,8 +235,8 @@ def load_kuairec_v2(
     max_rows: int | None = None,
     include_optional_features: bool = True,
     feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY,
-    preprocessing_preset: str | None = "kuairec_fullobs",
-    matrix_variant: str = "small_matrix",
+    preprocessing_preset: str | None = None,
+    matrix_variant: str | None = None,
 ) -> CanonicalInteractions:
     """Load KuaiRec v2 from ``data_dir/KuaiRec_v2/data/<matrix_variant>.csv``.
 
@@ -178,9 +249,11 @@ def load_kuairec_v2(
     Label: watch_ratio >= 0.5 -> positive
     Sign:  (watch_ratio clipped to [0,2] - 1) -> [-1, 1]
     """
+    effective_preset, matrix_variant = _resolve_kuairec_view(
+        preprocessing_preset,
+        matrix_variant,
+    )
     base = Path(data_dir) / "KuaiRec_v2" / "data"
-    if matrix_variant not in {"big_matrix", "small_matrix"}:
-        raise ValueError("matrix_variant must be 'big_matrix' or 'small_matrix'")
     path = base / f"{matrix_variant}.csv"
     if not path.exists():
         raise FileNotFoundError(
@@ -224,9 +297,6 @@ def load_kuairec_v2(
         else np.zeros(len(df), dtype=np.int32)
     )
 
-    effective_preset = preprocessing_preset or (
-        "kuairec_watchratio" if matrix_variant == "big_matrix" else "kuairec_fullobs"
-    )
     stabilized_watch_ratio = (
         raw_watch_ratio
         if effective_preset in {"kuairec_fullobs", "kuairec_watchratio_raw"}

@@ -33,6 +33,7 @@ class SubgraphBatch:
     batch_user_local: torch.Tensor  # local indices for batch users
     batch_pos_local: torch.Tensor  # local indices for batch pos items
     batch_neg_local: torch.Tensor  # local indices for batch neg items
+    dice_negative_mask: torch.Tensor | None = None  # (B,) high-pop DICE mask, if used
 
     def _map_tensors(
         self,
@@ -59,6 +60,7 @@ class SubgraphBatch:
             batch_user_local=fn(self.batch_user_local),  # type: ignore[arg-type]
             batch_pos_local=fn(self.batch_pos_local),  # type: ignore[arg-type]
             batch_neg_local=fn(self.batch_neg_local),  # type: ignore[arg-type]
+            dice_negative_mask=fn(self.dice_negative_mask),
         )
 
     def to(
@@ -329,6 +331,7 @@ class SubgraphSampler:
         batch_pos_items: torch.Tensor,
         batch_neg_items: torch.Tensor,
         generator: torch.Generator | None = None,
+        dice_negative_mask: torch.Tensor | None = None,
     ) -> SubgraphBatch:
         """Extract a subgraph around batch seed nodes.
 
@@ -337,6 +340,8 @@ class SubgraphSampler:
             batch_pos_items: (B,) positive item IDs (0-indexed, NOT offset).
             batch_neg_items: (B,) negative item IDs (0-indexed, NOT offset).
             generator: Optional deterministic RNG for sampled fan-out.
+            dice_negative_mask: Optional DICE high-popularity mask aligned to
+                ``batch_neg_items``.
 
         Returns:
             SubgraphBatch with users-first layout and local indices.
@@ -412,6 +417,7 @@ class SubgraphSampler:
                 sorted_ids=sorted_item_ids,
                 sort_idx=item_sort_idx,
             ),
+            dice_negative_mask=dice_negative_mask,
         )
 
     @staticmethod

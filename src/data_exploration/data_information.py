@@ -1588,15 +1588,6 @@ def infer_graph_info(data_obj: Any, source_path: str) -> dict[str, Any]:
             edge_store = data_obj[edge_type]
             edge_counts[edge_key] = int(getattr(edge_store, "num_edges", 0) or 0)
 
-            # Detect Graph Transformation / Tensor formats
-            layout = "unknown"
-            if hasattr(edge_store, "edge_index") and edge_store.edge_index is not None:
-                layout = "dense_edge_index"
-            elif hasattr(edge_store, "adj_t") and edge_store.adj_t is not None:
-                layout = "sparse_adj_t"
-            if layout not in node_features:
-                pass  # We can capture formatting broadly if wanted, here we focus on counts
-
         splits_info = _collect_splits(data_obj)
 
         result = {
