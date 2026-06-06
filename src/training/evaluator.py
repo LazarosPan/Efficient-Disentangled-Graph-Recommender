@@ -417,8 +417,22 @@ class Evaluator:
         data,
         mask: torch.Tensor,
         batch_size: int = 512,
+        include_refined_diagnostics: bool = True,
     ) -> dict[str, float]:
-        """Evaluate model on users present in mask."""
+        """Evaluate model on users present in mask.
+
+        Args:
+            model: Model exposing the propagated-score evaluation surface.
+            data: Runtime graph data and split masks.
+            mask: Split mask to evaluate.
+            batch_size: Requested user batch size for ranking metrics.
+            include_refined_diagnostics: Whether to append refined scorer
+                diagnostics such as score-mix, Spearman, and cosine stats.
+
+        Returns:
+            Dict of metric name to scalar value.
+
+        """
         model.eval()
         device = model_device(model)
 
@@ -445,9 +459,14 @@ class Evaluator:
         assert popularity is not None
         metrics = self._build_metrics(n_items=n_items, popularity=popularity)
         metrics = metrics.to(device)
-        diagnostics = _EvaluatorDiagnosticsAccumulator(THESIS_EVAL_KS)
+        diagnostics = (
+            _EvaluatorDiagnosticsAccumulator(THESIS_EVAL_KS)
+            if include_refined_diagnostics
+            else None
+        )
         export_score_components = (
-            getattr(model, "get_score_components_from_propagated", None) is not None
+            include_refined_diagnostics
+            and getattr(model, "get_score_components_from_propagated", None) is not None
         )
 
         effective_batch = self._effective_eval_batch_size(
@@ -496,12 +515,14 @@ class Evaluator:
         for start in range(0, unique_users.size(0), effective_batch):
             batch_users = unique_users[start : start + effective_batch]
             batch_user_ids = unique_users_cpu[start : start + effective_batch].tolist()
+            score_components: dict[str, torch.Tensor] | None = None
             with autocast_context(use_amp=use_eval_amp):
-                score_components = self._get_score_components_from_propagated(
-                    model,
-                    propagated,
-                    batch_users,
-                )
+                if include_refined_diagnostics:
+                    score_components = self._get_score_components_from_propagated(
+                        model,
+                        propagated,
+                        batch_users,
+                    )
                 if score_components is None:
                     scores = model.score_users_from_propagated(
                         propagated,
@@ -578,7 +599,7 @@ class Evaluator:
                 }
 
             _, pred_index_mat = torch.topk(scores, max_k, dim=-1)
-            if score_components is not None:
+            if diagnostics is not None and score_components is not None:
                 diagnostics.update(score_components, pred_index_mat, popularity)
 
             # Build edge_label_index from sparse ground truth
@@ -595,5 +616,6 @@ class Evaluator:
             metrics.update(pred_index_mat, edge_label_index)
 
         results = {name: value.item() for name, value in metrics.compute().items()}
-        results.update(diagnostics.compute())
+        if diagnostics is not None:
+            results.update(diagnostics.compute())
         return results

@@ -69,6 +69,7 @@ Important runtime details:
 - `use_torch_compile` is opt-in because sampled subgraphs are too dynamic for a default compile win,
 - best validation state is tracked even when `use_early_stopping=False`,
 - validation retries once on CUDA after optimizer-state offload, then falls back to CPU if evaluation still OOMs,
+- a late auto-batch training OOM releases the failed trainer and resumes the next smaller candidate from the latest completed-epoch checkpoint when one exists,
 - scheduler stepping and early-stopping patience both wait until `max(auxiliary_losses_start_epoch, popularity_supervision_start_epoch)`.
 
 ## `MiniBatchTrainer`
@@ -80,6 +81,7 @@ Important runtime details:
 - CPU-prepared `SubgraphBatch` objects are pinned and copied with `non_blocking=True`.
 - Batch-local auxiliary losses operate on the batch users and selected positive items, not the full sampled frontier.
 - The trainer slices local popularity and local propensity targets by `sub_batch.item_global_ids` before calling `LossSuite`.
+- DEBUG logging emits batch loss components plus IPW, propensity-target, and score summaries for the sampled batch.
 
 ## Evaluator
 
@@ -101,9 +103,10 @@ Current evaluation rules:
 - validation excludes training interactions only,
 - test excludes both training and validation interactions,
 - full-graph propagation happens once per evaluation call,
+- validation logs only the thesis-primary metrics; refined scorer diagnostics are reserved for the final post-training test pass,
 - evaluator batch sizing keeps the 512 MiB score-matrix cap split-aware and budgets extra headroom when refined-score component export materializes the interest, conformity, context, and final full-catalog views,
 - refined scorer diagnostics reuse the same propagated batch state and top-k recommendations as thesis ranking metrics, and gather native-dtype top-k slices before float accumulation math,
-- diagnostics append `score_mix_*` summary stats, weighted branch contributions at `@20/@40`, interest-vs-conformity cosine checks, and per-component popularity Spearman diagnostics when the model exports those components,
+- diagnostics append `score_mix_*` summary stats, weighted branch contributions at `@20/@40`, interest-vs-conformity cosine checks, and per-component popularity Spearman diagnostics when the model exports those components on the final test pass,
 - split-specific ground-truth and exclusion dictionaries are cached by mask identity,
 - `cagra_candidate_k` optionally restricts scoring to ANN candidates on CUDA.
 

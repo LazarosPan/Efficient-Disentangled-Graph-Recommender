@@ -33,7 +33,7 @@ flowchart LR
     K --> N[ExperimentLogger and checkpoints]
 ```
 
-The diagram shows the full runtime join points. Slice-specific rules stay in the owner docs: config precedence in `ucagnn-config.md`, graph policy and propensity-target loading in `ucagnn-data-pipeline.md`, loss activation in `ucagnn-losses.md`, and checkpointing or tracking in `ucagnn-training.md`. The evaluation path now keeps thesis metrics and refined scorer diagnostics on the same propagated batches and logger pipeline.
+The diagram shows the full runtime join points. Slice-specific rules stay in the owner docs: config precedence in `ucagnn-config.md`, graph policy and propensity-target loading in `ucagnn-data-pipeline.md`, loss activation in `ucagnn-losses.md`, and checkpointing or tracking in `ucagnn-training.md`. The evaluation path keeps thesis metrics on the training-validation loop and runs refined scorer diagnostics only on the final post-training test pass.
 
 ## Source map
 

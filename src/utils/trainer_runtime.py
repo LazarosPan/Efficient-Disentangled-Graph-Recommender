@@ -368,12 +368,29 @@ class TrainerRuntime:
         self,
         eval_model: Any,
         mask: torch.Tensor,
+        include_refined_diagnostics: bool = True,
     ) -> dict[str, float]:
-        """Evaluate one split on CPU, restoring the model device afterward."""
+        """Evaluate one split on CPU, restoring the model device afterward.
+
+        Args:
+            eval_model: Model used for evaluation.
+            mask: Split mask to evaluate.
+            include_refined_diagnostics: Whether to append refined scorer
+                diagnostics.
+
+        Returns:
+            dict[str, float]: Evaluation metrics.
+
+        """
         self._invalidate_eval_feature_cache(eval_model)
         eval_model.to(torch.device("cpu"))
         try:
-            return self._evaluate_model(eval_model, mask.cpu(), use_amp=False)
+            return self._evaluate_model(
+                eval_model,
+                mask.cpu(),
+                use_amp=False,
+                include_refined_diagnostics=include_refined_diagnostics,
+            )
         finally:
             self._invalidate_eval_feature_cache(eval_model)
             eval_model.to(self.device)
@@ -384,13 +401,27 @@ class TrainerRuntime:
         mask: torch.Tensor,
         *,
         use_amp: bool,
+        include_refined_diagnostics: bool = True,
     ) -> dict[str, float]:
-        """Run evaluator metrics for one model/split pair under a chosen AMP policy."""
+        """Run evaluator metrics for one model/split pair under a chosen AMP policy.
+
+        Args:
+            eval_model: Model used for evaluation.
+            mask: Split mask to evaluate.
+            use_amp: Whether to enable AMP for the evaluation pass.
+            include_refined_diagnostics: Whether to append refined scorer
+                diagnostics.
+
+        Returns:
+            dict[str, float]: Evaluation metrics.
+
+        """
         with autocast_context(use_amp=use_amp, amp_dtype=self.amp_dtype):
             return self.evaluator.evaluate(
                 eval_model,
                 self.data,
                 mask,
+                include_refined_diagnostics=include_refined_diagnostics,
             )
 
     def _prepare_cuda_evaluation_retry(self, eval_model: Any) -> None:
@@ -432,37 +463,50 @@ class TrainerRuntime:
         self,
         eval_model: Any,
         mask: torch.Tensor,
+        include_refined_diagnostics: bool = True,
     ) -> dict[str, float]:
         """Retry evaluation after optimizer offload, then fall back to CPU.
 
         Args:
             eval_model: Model used for evaluation.
             mask: Split mask to evaluate.
+            include_refined_diagnostics: Whether to include refined diagnostics.
 
         Returns:
             dict[str, float]: Evaluation metrics.
 
         """
         try:
-            return self._evaluate_model(eval_model, mask, use_amp=self.use_amp)
+            return self._evaluate_model(
+                eval_model,
+                mask,
+                use_amp=self.use_amp,
+                include_refined_diagnostics=include_refined_diagnostics,
+            )
         except torch.OutOfMemoryError:
             logger.warning(
                 "Evaluation still hit CUDA OOM after optimizer offload; retrying on CPU.",
             )
             self._invalidate_eval_feature_cache(eval_model)
             empty_cuda_cache(self.device)
-            return self._evaluate_split_metrics_on_cpu(eval_model, mask)
+            return self._evaluate_split_metrics_on_cpu(
+                eval_model,
+                mask,
+                include_refined_diagnostics=include_refined_diagnostics,
+            )
 
     def _evaluate_split_metrics_after_cuda_oom(
         self,
         eval_model: Any,
         mask: torch.Tensor,
+        include_refined_diagnostics: bool = True,
     ) -> dict[str, float]:
         """Handle the shared CUDA-OOM evaluation retry policy.
 
         Args:
             eval_model: Model used for evaluation.
             mask: Split mask to evaluate.
+            include_refined_diagnostics: Whether to include refined diagnostics.
 
         Returns:
             dict[str, float]: Evaluation metrics.
@@ -470,23 +514,59 @@ class TrainerRuntime:
         """
         self._prepare_cuda_evaluation_retry(eval_model)
         try:
-            return self._retry_evaluation_after_optimizer_offload(eval_model, mask)
+            return self._retry_evaluation_after_optimizer_offload(
+                eval_model,
+                mask,
+                include_refined_diagnostics=include_refined_diagnostics,
+            )
         finally:
             self._restore_cuda_evaluation_retry(eval_model)
 
-    def _evaluate_split_metrics(self, mask: torch.Tensor) -> dict[str, float]:
-        """Evaluate one split with progressive CUDA-OOM fallbacks."""
+    def _evaluate_split_metrics(
+        self,
+        mask: torch.Tensor,
+        *,
+        include_refined_diagnostics: bool = True,
+    ) -> dict[str, float]:
+        """Evaluate one split with progressive CUDA-OOM fallbacks.
+
+        Args:
+            mask: Split mask to evaluate.
+            include_refined_diagnostics: Whether to append refined scorer
+                diagnostics.
+
+        Returns:
+            dict[str, float]: Evaluation metrics.
+
+        """
         eval_model = self.ema_model if self.ema_model is not None else self.model
         try:
-            return self._evaluate_model(eval_model, mask, use_amp=self.use_amp)
+            return self._evaluate_model(
+                eval_model,
+                mask,
+                use_amp=self.use_amp,
+                include_refined_diagnostics=include_refined_diagnostics,
+            )
         except torch.OutOfMemoryError:
             if self.device.type != "cuda":
                 raise
-        return self._evaluate_split_metrics_after_cuda_oom(eval_model, mask)
+        return self._evaluate_split_metrics_after_cuda_oom(
+            eval_model,
+            mask,
+            include_refined_diagnostics=include_refined_diagnostics,
+        )
 
     def _evaluate_validation_metrics(self) -> dict[str, float]:
-        """Run the shared validation pass, using EMA weights when available."""
-        return self._evaluate_split_metrics(self.data.val_mask)
+        """Run the shared validation pass, using EMA weights when available.
+
+        Returns:
+            dict[str, float]: Validation metrics without refined diagnostics.
+
+        """
+        return self._evaluate_split_metrics(
+            self.data.val_mask,
+            include_refined_diagnostics=False,
+        )
 
     def _log_epoch_summary(
         self,
@@ -528,7 +608,11 @@ class TrainerRuntime:
         if epoch < self._curriculum_warmup_end:
             return
 
-        self.scheduler.step(metric_value)
+        if isinstance(self.scheduler, ReduceLROnPlateau):
+            self.scheduler.step(metric_value)
+            return
+
+        self.scheduler.step()
 
     def _primary_metric_name(self) -> str:
         """Return the validation metric used for early stopping."""

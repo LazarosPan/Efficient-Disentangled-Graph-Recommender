@@ -18,6 +18,7 @@ import logging
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
+from typing import cast
 
 import torch
 from tqdm.auto import tqdm
@@ -67,6 +68,17 @@ class MiniBatchTrainer(TrainerRuntime):
         self._force_cpu_sampler = False
         self.subgraph_sampler, self.sampler_device = self._build_subgraph_sampler(data)
         self.train_users, self.train_items = self._get_train_interactions()
+
+    @staticmethod
+    def _tensor_stats(tensor: torch.Tensor) -> dict[str, float]:
+        """Return min/mean/median/max summary statistics for one tensor."""
+        values = tensor.detach().float().reshape(-1)
+        return {
+            "min": float(values.min().item()),
+            "mean": float(values.mean().item()),
+            "median": float(values.median().item()),
+            "max": float(values.max().item()),
+        }
 
     def _build_subgraph_sampler(self, data) -> tuple[SubgraphSampler, torch.device]:
         """Stage the full graph on CUDA when possible, else keep the CPU path."""
@@ -221,6 +233,40 @@ class MiniBatchTrainer(TrainerRuntime):
                 epoch,
                 propensity_targets=local_prop_targets,
             )
+
+        if logger.isEnabledFor(logging.DEBUG):
+            debug_losses = {
+                key: float(value.detach().float().cpu())
+                for key, value in losses.items()
+                if torch.is_tensor(value) and value.numel() == 1
+            }
+            logger.debug("Batch loss components: %s", debug_losses)
+
+            ipw_weights = output.get("ipw_weights")
+            if isinstance(ipw_weights, torch.Tensor):
+                logger.debug("IPW stats: %s", self._tensor_stats(ipw_weights))
+
+            if local_prop_targets is not None:
+                prop_targets = local_prop_targets[sub_batch.batch_pos_local]
+                logger.debug("Propensity target stats: %s", self._tensor_stats(prop_targets))
+
+            pos_scores = cast(dict[str, torch.Tensor], output["pos_scores"])
+            neg_scores = cast(dict[str, torch.Tensor], output["neg_scores"])
+            for score_name in (
+                "final_score",
+                "interest_score",
+                "conformity_score",
+                "context_score",
+            ):
+                pos_score = pos_scores.get(score_name)
+                neg_score = neg_scores.get(score_name)
+                if isinstance(pos_score, torch.Tensor) and isinstance(neg_score, torch.Tensor):
+                    logger.debug(
+                        "%s stats: pos=%s neg=%s",
+                        score_name,
+                        self._tensor_stats(pos_score),
+                        self._tensor_stats(neg_score),
+                    )
 
         return losses["total"].detach(), losses
 
