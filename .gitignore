@@ -38,3 +38,7 @@ wheels/
 .github/prompts/
 .github/agents/
 .github/issues/
+
+# Codex
+.codex/
+.agents/
