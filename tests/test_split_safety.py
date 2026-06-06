@@ -14,7 +14,7 @@ from experiments.run_experiment import build_runtime_model
 from src.data.canonical import CanonicalInteractions
 from src.data.graph_builder import build_graph
 from src.data.subgraph_sampler import SubgraphBatch
-from src.losses.loss_suite import LossSuite
+from src.losses.loss_suite import LossSuite, _bpr_loss
 from src.models.lightgcn import DualBranchGCN, LightGCNBranch
 from src.models.ucagnn import UCaGNN
 from src.training.evaluator import (
@@ -818,6 +818,70 @@ class SplitSafetyTests(unittest.TestCase):
             self.assertIn(key, metrics)
             self.assertTrue(np.isfinite(metrics[key]), msg=f"{key} should be finite")
 
+    def test_evaluator_skips_refined_score_diagnostics_when_disabled(self) -> None:
+        """Validation-style evaluation should omit refined diagnostics when disabled."""
+        evaluator = Evaluator(UCaGNNConfig(device="cpu"))
+
+        data = Data(edge_index=torch.empty((2, 0), dtype=torch.long), num_nodes=52)
+        data.edge_sign = torch.empty((0,), dtype=torch.bfloat16)
+        data.train_mask = torch.tensor([True, False, True, False], dtype=torch.bool)
+        data.val_mask = torch.tensor([False, False, False, False], dtype=torch.bool)
+        data.test_mask = torch.tensor([False, True, False, True], dtype=torch.bool)
+        data.user_nodes = torch.tensor([0, 0, 1, 1], dtype=torch.long)
+        data.item_nodes = torch.tensor([1, 50, 3, 2], dtype=torch.long)
+        data.n_users = 2
+        data.n_items = 50
+        data.popularity = torch.arange(50, dtype=torch.float32)
+
+        base = torch.arange(50, dtype=torch.float32).unsqueeze(0).expand(2, -1)
+        model = _ComponentRankingModel(
+            interest_scores=-base,
+            conformity_scores=base,
+            context_scores=base,
+            score_mix_weights=torch.tensor(
+                [[0.25, 0.25, 0.50], [0.75, 0.10, 0.15]],
+                dtype=torch.float32,
+            ),
+            user_interest_emb=torch.tensor([[1.0, 0.0], [1.0, 1.0]], dtype=torch.float32),
+            user_conformity_emb=torch.tensor([[0.0, 1.0], [1.0, 1.0]], dtype=torch.float32),
+        )
+
+        metrics = evaluator.evaluate(
+            model,
+            data,
+            data.test_mask,
+            batch_size=2,
+            include_refined_diagnostics=False,
+        )
+
+        self.assertIn("NDCG@20", metrics)
+        self.assertIn("Recall@40", metrics)
+        for key in (
+            "score_mix_interest_mean",
+            "score_mix_interest_std",
+            "score_mix_conformity_mean",
+            "score_mix_conformity_std",
+            "score_mix_context_mean",
+            "score_mix_context_std",
+            "interest_contribution@20",
+            "interest_contribution@40",
+            "conformity_contribution@20",
+            "conformity_contribution@40",
+            "context_contribution@20",
+            "context_contribution@40",
+            "interest_conformity_cosine_mean",
+            "interest_conformity_cosine_std",
+            "interest_popularity_spearman@20",
+            "interest_popularity_spearman@40",
+            "conformity_popularity_spearman@20",
+            "conformity_popularity_spearman@40",
+            "context_popularity_spearman@20",
+            "context_popularity_spearman@40",
+            "final_popularity_spearman@20",
+            "final_popularity_spearman@40",
+        ):
+            self.assertNotIn(key, metrics)
+
     def test_evaluator_diagnostics_gather_score_components_before_float_cast(self) -> None:
         """Diagnostics should gather native-dtype top-k slices before float math."""
         pred_index_mat = torch.tensor([[3, 1, 0], [0, 2, 3]], dtype=torch.long)
@@ -1150,6 +1214,30 @@ class CausalTrainingContractTests(unittest.TestCase):
         n_params = sum(parameter.numel() for parameter in model.parameters())
 
         self.assertGreater(n_params, 0)
+
+    def test_bpr_loss_is_scale_invariant_under_ipw_weights(self) -> None:
+        """IPW reweighting should not change the loss scale under uniform scaling."""
+        pos_scores = torch.tensor([2.0, 0.5, -1.0], dtype=torch.float32)
+        neg_scores = torch.zeros(3, dtype=torch.float32)
+        weights = torch.tensor([1.0, 2.0, 4.0], dtype=torch.float32)
+
+        base_loss = _bpr_loss(pos_scores, neg_scores, weights)
+        scaled_loss = _bpr_loss(pos_scores, neg_scores, weights * 2.0)
+
+        self.assertAlmostEqual(base_loss.item(), scaled_loss.item(), places=6)
+
+    def test_bpr_loss_detaches_ipw_weights_from_autograd(self) -> None:
+        """Ranking loss should not backpropagate into the IPW sample weights."""
+        pos_scores = torch.tensor([2.0, 0.5, -1.0], dtype=torch.float32, requires_grad=True)
+        neg_scores = torch.zeros(3, dtype=torch.float32, requires_grad=True)
+        weights = torch.tensor([1.0, 2.0, 4.0], dtype=torch.float32, requires_grad=True)
+
+        loss = _bpr_loss(pos_scores, neg_scores, weights)
+        loss.backward()
+
+        self.assertIsNone(weights.grad)
+        self.assertIsNotNone(pos_scores.grad)
+        self.assertIsNotNone(neg_scores.grad)
 
     def test_runtime_model_converts_numpy_propensity_targets_to_tensor(self) -> None:
         """Runtime model construction should convert canonical propensity arrays to tensors."""
@@ -1578,18 +1666,14 @@ class CausalTrainingContractTests(unittest.TestCase):
 
         pos_logit = 1.0
         interest_log_denom = math.log(math.exp(pos_logit) + 2.0)
-        expected_interest = (
-            (0.1 - pos_logit + interest_log_denom)
-            + (0.4 - pos_logit + interest_log_denom)
-            + (0.9 - pos_logit + interest_log_denom)
-        ) / 3.0
-        conformity_loss_0 = -(
-            math.log(1.0 - math.exp(-0.1)) + pos_logit - math.log(math.exp(pos_logit) + 2.0)
-        )
-        conformity_loss_1 = -(
-            math.log(1.0 - math.exp(-0.4)) + pos_logit - math.log(math.exp(pos_logit) + 1.0)
-        )
-        expected_conformity = 0.5 * (conformity_loss_0 + conformity_loss_1)
+        expected_interest = interest_log_denom - pos_logit
+        conformity_loss_0 = math.log(math.exp(pos_logit) + 2.0) - pos_logit
+        conformity_loss_1 = math.log(math.exp(pos_logit) + 1.0) - pos_logit
+        conformity_weight_0 = 1.0 - math.exp(-0.1)
+        conformity_weight_1 = 1.0 - math.exp(-0.4)
+        expected_conformity = (
+            conformity_weight_0 * conformity_loss_0 + conformity_weight_1 * conformity_loss_1
+        ) / (conformity_weight_0 + conformity_weight_1)
 
         self.assertIn("interest_contrastive", losses)
         self.assertIn("conformity_contrastive", losses)

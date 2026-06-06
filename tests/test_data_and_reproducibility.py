@@ -929,6 +929,35 @@ class DataContractTests(unittest.TestCase):
             canonical.metadata["repeat_collapse"]["reason"],
         )
 
+    def test_kuairand_show_cnt_propensity_targets_are_normalized(self) -> None:
+        """KuaiRand show_cnt targets should enter the model as a normalized proxy."""
+        with TemporaryDirectory() as tmp_dir:
+            data_root = Path(tmp_dir) / "KuaiRand-1K" / "data"
+            data_root.mkdir(parents=True)
+            (data_root / "log_standard_4_08_to_4_21_1k.csv").write_text(
+                (
+                    "user_id,video_id,is_click,is_like,is_hate,is_follow,is_comment,long_view,play_time_ms,duration_ms,is_rand,time_ms\n"
+                    "1,10,1,0,0,0,0,1,1000,1000,0,10\n"
+                    "2,11,1,0,0,0,0,1,1000,1000,0,20\n"
+                ),
+                encoding="utf-8",
+            )
+            (data_root / "video_features_statistic_1k.csv").write_text(
+                "video_id,show_cnt\n10,99\n11,101\n",
+                encoding="utf-8",
+            )
+
+            canonical = load_kuairand1k(data_dir=tmp_dir, include_optional_features=False)
+
+        assert canonical.item_propensity_targets is not None
+        self.assertGreaterEqual(float(canonical.item_propensity_targets.min()), 0.0)
+        self.assertLessEqual(float(canonical.item_propensity_targets.max()), 1.0)
+        self.assertAlmostEqual(float(canonical.item_propensity_targets.max()), 1.0, places=6)
+        self.assertLess(
+            float(canonical.item_propensity_targets[0]),
+            float(canonical.item_propensity_targets[1]),
+        )
+
     def test_kuairand_random_only_preset_filters_standard_rows(self) -> None:
         """KuaiRand should expose a random-only causal view through preprocessing presets."""
         with TemporaryDirectory() as tmp_dir:

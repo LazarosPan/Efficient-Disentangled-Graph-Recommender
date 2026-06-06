@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import unittest
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -31,6 +32,7 @@ from experiments.run_experiment import (
     _build_evaluation_identity,
     _build_training_identity,
     _release_cuda_probe_memory,
+    _resume_auto_batch_fallback,
     _train_mask_numpy_from_data,
     build_benchmark_config_inputs,
     build_config,
@@ -1138,6 +1140,49 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertFalse(should_stop)
         self.assertEqual(runtime.patience_counter, 0)
 
+    def test_step_scheduler_uses_metric_only_for_plateau(self) -> None:
+        """ReduceLROnPlateau should consume the validation metric; others should not."""
+        runtime = TrainerRuntime.__new__(TrainerRuntime)
+        runtime.config = SimpleNamespace(
+            auxiliary_losses_start_epoch=0,
+            popularity_supervision_start_epoch=0,
+        )
+
+        plateau_optimizer = torch.optim.SGD([torch.nn.Parameter(torch.ones(()))], lr=0.1)
+        runtime.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(plateau_optimizer)
+        runtime._step_scheduler(metric_value=0.5, epoch=0)
+        self.assertEqual(runtime.scheduler.best, 0.5)
+
+        step_optimizer = torch.optim.SGD([torch.nn.Parameter(torch.ones(()))], lr=0.1)
+        runtime.scheduler = torch.optim.lr_scheduler.StepLR(step_optimizer, step_size=1)
+        step_optimizer.step()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            runtime._step_scheduler(metric_value=0.5, epoch=0)
+
+        self.assertEqual(runtime.scheduler.last_epoch, 1)
+
+    def test_validation_eval_skips_refined_diagnostics(self) -> None:
+        """Validation should keep only the cheap thesis-primary metrics."""
+        runtime = TrainerRuntime.__new__(TrainerRuntime)
+        runtime.device = torch.device("cpu")
+        runtime.config = SimpleNamespace(use_amp=False)
+        runtime.use_amp = False
+        runtime.amp_dtype = torch.float16
+        runtime.ema_model = None
+        runtime.model = object()
+        runtime.data = SimpleNamespace(val_mask=torch.tensor([True, False]))
+        runtime.evaluator = Mock()
+        runtime.evaluator.evaluate.return_value = {"NDCG@40": 0.5}
+
+        metrics = runtime._evaluate_validation_metrics()
+
+        self.assertEqual(metrics, {"NDCG@40": 0.5})
+        runtime.evaluator.evaluate.assert_called_once()
+        self.assertFalse(
+            runtime.evaluator.evaluate.call_args.kwargs["include_refined_diagnostics"],
+        )
+
     def test_validation_eval_retries_after_cuda_oom_with_optimizer_offload(self) -> None:
         """Validation should retry once after offloading optimizer state on CUDA OOM."""
         runtime = TrainerRuntime.__new__(TrainerRuntime)
@@ -1201,6 +1246,26 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             2,
         )
         self.assertGreaterEqual(empty_cache.call_count, 3)
+
+    def test_auto_batch_fallback_resumes_from_last_completed_checkpoint(self) -> None:
+        """Late auto-batch OOM fallback should preserve completed epoch progress."""
+        checkpoint_path = Path("/tmp/auto-batch-recovery.pt")
+        checkpoint_path.touch()
+        self.addCleanup(checkpoint_path.unlink, missing_ok=True)
+        history = {
+            "train_loss": [1.0, 0.5],
+            "val_metrics": [{"NDCG@40": 0.1}, {"NDCG@40": 0.2}],
+        }
+        trainer = Mock(completed_epoch=1, resume_history=history)
+
+        start_epoch, resumed_history = _resume_auto_batch_fallback(
+            trainer,
+            checkpoint_path,
+        )
+
+        trainer.load_checkpoint.assert_called_once_with(checkpoint_path)
+        self.assertEqual(start_epoch, 2)
+        self.assertIs(resumed_history, history)
 
     def test_prepare_batch_falls_back_to_cpu_sampler_after_cuda_oom(self) -> None:
         """Batch preparation should switch back to the CPU sampler after a CUDA OOM."""
