@@ -97,7 +97,7 @@ Current graph rules:
 - Those buffers are per-user histories: the latest training interactions for each user, never global "recent" or popularity-only items.
 - Subgraph training reuses the same train-derived user history and does not create separate splits for interest, recency, or context.
 
-Only KuaiRand-1K currently populates `item_propensity_targets`, using `show_cnt` as a train-safe exposure proxy. Every other dataset leaves that field as `None`, so the exposure slot in the context head is zero-filled and propensity calibration stays inactive unless a dataset-specific target is added.
+Only KuaiRand-1K currently populates `item_propensity_targets`, using log1p-normalized `show_cnt` as a train-safe exposure proxy. Every other dataset leaves that field as `None`, so the exposure slot in the context head is zero-filled and propensity calibration stays inactive unless a dataset-specific target is added.
 
 ## Sampling
 

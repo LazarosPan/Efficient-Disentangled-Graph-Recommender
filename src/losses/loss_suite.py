@@ -16,9 +16,22 @@ def _bpr_loss(
     neg_scores: torch.Tensor,
     weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Compute the ranking loss, optionally reweighted by IPW."""
+    """Compute the ranking loss, optionally reweighted by IPW.
+
+    The score difference is promoted to fp32 so the loss remains stable under
+    AMP. When IPW weights are provided, the result uses a self-normalized
+    weighted mean so the objective scale does not depend on the absolute
+    weight magnitude.
+    """
+    pos_scores = pos_scores.float()
+    neg_scores = neg_scores.float()
     loss = -functional.logsigmoid(pos_scores - neg_scores)
-    return (loss * weights).mean() if weights is not None else loss.mean()
+    if weights is None:
+        return loss.mean()
+    weights = weights.detach().float()
+    weights = torch.nan_to_num(weights, nan=1.0, posinf=10.0, neginf=1.0)
+    weights = weights.clamp(0.1, 10.0)
+    return (loss * weights).sum() / weights.sum().clamp_min(1e-8)
 
 
 def _independence_loss(
@@ -87,13 +100,19 @@ def _branch_contrastive_loss(
     if not valid_rows.any():
         return user_embeddings.new_zeros(())
 
+    user_embeddings = functional.normalize(user_embeddings.float(), dim=-1)
+    item_embeddings = functional.normalize(item_embeddings.float(), dim=-1)
+    temperature = max(float(temperature), 0.05)
     logits = (user_embeddings @ item_embeddings.t()) / temperature
     positive_logits = logits.diag()
     negative_logits = logits.masked_fill(~negative_mask, float("-inf"))
     negative_logsumexp = torch.logsumexp(negative_logits[valid_rows], dim=1)
     log_denom = torch.logaddexp(positive_logits[valid_rows], negative_logsumexp)
-    log_positive_weights = torch.log(positive_weights[valid_rows].clamp_min(1e-8))
-    return -(log_positive_weights + positive_logits[valid_rows] - log_denom).mean()
+    loss = -(positive_logits[valid_rows] - log_denom)
+    row_weights = positive_weights[valid_rows].detach().float()
+    row_weights = torch.nan_to_num(row_weights, nan=1.0, posinf=1.0, neginf=0.0)
+    row_weights = row_weights.clamp_min(1e-4)
+    return (loss * row_weights).sum() / row_weights.sum().clamp_min(1e-8)
 
 
 def _interest_contrastive_loss(
@@ -207,8 +226,8 @@ def _popularity_loss(
     pop_pred: torch.Tensor,
     pop_target: torch.Tensor,
 ) -> torch.Tensor:
-    """Compute MSE between predicted and observed popularity."""
-    return functional.mse_loss(pop_pred, pop_target)
+    """Compute MSE between predicted and observed popularity in fp32."""
+    return functional.mse_loss(pop_pred.float(), pop_target.float())
 
 
 def _au_branch_contrib(
