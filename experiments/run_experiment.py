@@ -218,6 +218,8 @@ _TRAINING_IDENTITY_FIELDS = (
 )
 _EVALUATION_IDENTITY_FIELDS = ("eval_ks",)
 
+# TODO: almost the same function as query_results.py, consider having only 1 function for this.
+
 
 def _build_canonical_name(
     config: UCaGNNConfig,
@@ -1050,6 +1052,31 @@ def _verify_selected_auto_batch_size(
     )
 
 
+def _resume_auto_batch_fallback(
+    trainer: MiniBatchTrainer,
+    checkpoint_path: Path,
+) -> tuple[int, dict[str, list]]:
+    """Load the last completed epoch before retrying a smaller batch size.
+
+    Args:
+        trainer: Fresh trainer configured with the smaller candidate batch size.
+        checkpoint_path: Checkpoint written by the failed larger-batch attempt.
+
+    Returns:
+        Tuple of the next epoch index and recovered training history.
+
+    """
+    trainer.load_checkpoint(checkpoint_path)
+    start_epoch = trainer.completed_epoch + 1
+    logger.info(
+        "Auto batch-size fallback resuming from %s at epoch %d/%d.",
+        checkpoint_path,
+        start_epoch + 1,
+        trainer.config.epochs,
+    )
+    return start_epoch, trainer.resume_history
+
+
 def _build_mlflow_params(
     config: UCaGNNConfig,
     preset: str | None,
@@ -1801,8 +1828,18 @@ def run_experiment(
                     start_index = 0
 
                 selected_batch_size = int(config.batch_size)
+                fallback_checkpoint_path: Path | None = None
                 for candidate in candidates[start_index:]:
                     config.batch_size = candidate
+                    training_identity, training_hash = _build_training_identity(
+                        config,
+                        preset,
+                        intervention,
+                    )
+                    evaluation_identity, evaluation_hash = _build_evaluation_identity(
+                        config,
+                        training_hash,
+                    )
                     current_checkpoint_path = (
                         Path(checkpoint_path)
                         if explicit_checkpoint_path
@@ -1812,15 +1849,6 @@ def run_experiment(
                             intervention,
                             training_hash,
                         )
-                    )
-                    training_identity, training_hash = _build_training_identity(
-                        config,
-                        preset,
-                        intervention,
-                    )
-                    evaluation_identity, evaluation_hash = _build_evaluation_identity(
-                        config,
-                        training_hash,
                     )
                     model = build_runtime_model(config, canonical, data)
                     loss_suite = LossSuite(config)
@@ -1840,10 +1868,17 @@ def run_experiment(
                     trainer.evaluation_hash = evaluation_hash
                     if cuda_:
                         torch.cuda.reset_peak_memory_stats()
+                    candidate_start_epoch = start_epoch
+                    candidate_history = history
+                    if fallback_checkpoint_path is not None:
+                        candidate_start_epoch, candidate_history = _resume_auto_batch_fallback(
+                            trainer,
+                            fallback_checkpoint_path,
+                        )
                     try:
                         history = trainer.train(
-                            start_epoch=start_epoch,
-                            history=history,
+                            start_epoch=candidate_start_epoch,
+                            history=candidate_history,
                             checkpoint_path=current_checkpoint_path
                             if should_persist_checkpoint
                             else None,
@@ -1886,11 +1921,28 @@ def run_experiment(
                     except Exception as exc:
                         if not _iscuda__oom(exc):
                             raise
+                        fallback_checkpoint_path = (
+                            current_checkpoint_path
+                            if should_persist_checkpoint and current_checkpoint_path.exists()
+                            else None
+                        )
                         logger.warning(
-                            "Training with batch_size %d OOM on %s; trying next smaller candidate.",
+                            (
+                                "Training with batch_size %d OOM on %s; trying next smaller "
+                                "candidate%s."
+                            ),
                             candidate,
                             config.dataset,
+                            (
+                                f" from checkpoint {fallback_checkpoint_path}"
+                                if fallback_checkpoint_path is not None
+                                else " from epoch 1 because no recovery checkpoint exists"
+                            ),
                         )
+                        trainer.subgraph_sampler = None
+                        trainer = None
+                        model = None
+                        loss_suite = None
                         _release_cuda_probe_memory()
                         continue
                 else:
@@ -1944,7 +1996,10 @@ def run_experiment(
         )
 
         logger.info("Running test evaluation...")
-        test_metrics = trainer._evaluate_split_metrics(data.test_mask)
+        test_metrics = trainer._evaluate_split_metrics(
+            data.test_mask,
+            include_refined_diagnostics=True,
+        )
         for metric, value in sorted(test_metrics.items()):
             logger.info(f"  {metric}: {value:.4f}")
             experiment_logger.log_metric(exp_id, metric, value, split="test")

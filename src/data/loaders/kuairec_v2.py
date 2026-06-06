@@ -156,6 +156,9 @@ def _load_caption_categories(
     return downcast_numeric_array(features)
 
 
+# TODO: preprocessing preset and matrix variant configure the same thing. Remove one if both surfaces are not needed.
+
+
 def load_kuairec_v2(
     data_dir: str = "data",
     max_rows: int | None = None,
