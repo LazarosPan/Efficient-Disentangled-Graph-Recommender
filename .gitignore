@@ -40,5 +40,5 @@ wheels/
 .github/issues/
 
 # Codex
-.codex/
-.agents/
+# .codex/
+# .agents/
