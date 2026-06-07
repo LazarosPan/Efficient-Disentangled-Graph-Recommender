@@ -120,11 +120,6 @@
 │   │   ├── summary_performance_papers.md
 │   │   ├── summary_propcore.md
 │   │   └── summary_survey_papers_4.md
-│   ├── superpowers
-│   │   ├── plans
-│   │   │   └── 2026-06-04-causal-metrics-integration.md
-│   │   └── specs
-│   │       └── 2026-06-04-causal-metrics-integration-design.md
 │   └── usage
 │       ├── experiments.md
 │       └── scripts.md
@@ -184,7 +179,9 @@
 │   ├── mlflow.db
 │   ├── query_results_20260527.md
 │   ├── query_results.md
-│   └── thesis_experiments.db
+│   ├── thesis_experiments.db
+│   ├── thesis_experiments.db-shm
+│   └── thesis_experiments.db-wal
 ├── scripts
 │   ├── cleanup_experiment_artifacts.py
 │   ├── download_pyg_datasets.py
