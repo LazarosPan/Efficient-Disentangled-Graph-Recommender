@@ -133,6 +133,7 @@ class UCaGNN(nn.Module):
         user_ids: torch.Tensor,
         pos_item_ids: torch.Tensor,
         neg_item_ids: torch.Tensor,
+        dice_negative_mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
         """Build the shared training payload from propagated embeddings."""
         scoring_inputs = propagated
@@ -166,7 +167,10 @@ class UCaGNN(nn.Module):
             "propagated": propagated,
             "ipw_weights": ipw_weights,
             "loss_user_ids": user_ids,
+            "loss_neg_item_ids": neg_item_ids,
         }
+        if dice_negative_mask is not None:
+            output["dice_negative_mask"] = dice_negative_mask
         if propensity is not None:
             output["propensity_scores"] = propensity
         return output
@@ -178,6 +182,8 @@ class UCaGNN(nn.Module):
         pos_item_ids: torch.Tensor,
         neg_item_ids: torch.Tensor,
         edge_sign: torch.Tensor | None = None,
+        edge_norm: torch.Tensor | None = None,
+        dice_negative_mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
         """Full forward pass.
 
@@ -208,6 +214,7 @@ class UCaGNN(nn.Module):
             edge_sign,
             n_users=self.n_users,
             n_items=self.n_items,
+            edge_norm=edge_norm,
         )
 
         return self.build_training_output(
@@ -216,6 +223,7 @@ class UCaGNN(nn.Module):
             user_ids,
             pos_item_ids,
             neg_item_ids,
+            dice_negative_mask=dice_negative_mask,
         )
 
     def forward_subgraph(
@@ -259,6 +267,7 @@ class UCaGNN(nn.Module):
             batch.batch_user_local,
             batch.batch_pos_local,
             batch.batch_neg_local,
+            dice_negative_mask=batch.dice_negative_mask,
         )
 
     def get_propagated_for_eval(

@@ -29,6 +29,45 @@ def _register_bf16_buffer(
     module.register_buffer(name, resolved, persistent=False)
 
 
+def _scale_feature_matrix_to_unit(features: torch.Tensor) -> torch.Tensor:
+    """Scale each feature column to ``[0, 1]`` and map non-finite values to zero.
+
+    Args:
+        features: Item feature matrix with shape ``(n_items, n_features)``.
+
+    Returns:
+        Float32 feature matrix with the same shape and bounded values.
+
+    """
+    values = features.float()
+    finite_mask = torch.isfinite(values)
+    safe_values = torch.where(finite_mask, values, torch.zeros_like(values))
+    has_valid = finite_mask.any(dim=0)
+
+    inf = torch.full_like(safe_values, float("inf"))
+    neg_inf = torch.full_like(safe_values, float("-inf"))
+    min_values = torch.where(finite_mask, safe_values, inf).amin(dim=0)
+    max_values = torch.where(finite_mask, safe_values, neg_inf).amax(dim=0)
+    min_values = torch.where(has_valid, min_values, torch.zeros_like(min_values))
+    max_values = torch.where(has_valid, max_values, torch.zeros_like(max_values))
+
+    ranges = max_values - min_values
+    varying = ranges > 0
+    scaled = torch.where(
+        varying.unsqueeze(0),
+        (safe_values - min_values.unsqueeze(0)) / ranges.clamp_min(1e-12).unsqueeze(0),
+        torch.zeros_like(safe_values),
+    )
+    constant_nonzero = (~varying) & has_valid & (max_values != 0)
+    scaled = torch.where(
+        constant_nonzero.unsqueeze(0) & finite_mask,
+        torch.ones_like(scaled),
+        scaled,
+    )
+    scaled = torch.where(finite_mask, scaled, torch.zeros_like(scaled))
+    return scaled.clamp(0.0, 1.0)
+
+
 class EmbeddingModule(nn.Module):
     """Embedding tables for users and items.
 
@@ -108,7 +147,7 @@ class EmbeddingModule(nn.Module):
             assert item_features is not None
             self.register_buffer(
                 "item_feature_matrix",
-                item_features.to(torch.bfloat16),
+                _scale_feature_matrix_to_unit(item_features).to(torch.bfloat16),
                 persistent=False,
             )
             self.item_feature_proj = nn.Linear(item_features.size(-1), d)

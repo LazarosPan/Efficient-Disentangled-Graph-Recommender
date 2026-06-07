@@ -303,19 +303,7 @@ class ScoringModule(nn.Module):
             Context score vector for the requested items.
         """
         item_ref = self._select_items(self._get_item_interest(propagated), item_ids)
-        if not self.config.use_popularity_head or self.context_head is None:
-            return torch.zeros(item_ref.size(0), device=item_ref.device, dtype=item_ref.dtype)
-        has_context_metadata = any(
-            key in propagated
-            for key in (
-                "item_popularity",
-                "item_recency",
-                "item_propensity_targets",
-                "item_age",
-                "item_safe_features",
-            )
-        )
-        if not has_context_metadata:
+        if not self._has_context_metadata(propagated):
             return torch.zeros(item_ref.size(0), device=item_ref.device, dtype=item_ref.dtype)
         context_inputs = [
             self._get_item_scalar_feature(
@@ -339,12 +327,53 @@ class ScoringModule(nn.Module):
             self._get_item_scalar_feature(propagated, "item_age", item_ids, item_ref).unsqueeze(-1),
             self._get_item_safe_features(propagated, item_ids, item_ref),
         ]
-        if all(float(component.abs().sum().item()) == 0.0 for component in context_inputs):
-            return torch.zeros(item_ref.size(0), device=item_ref.device, dtype=item_ref.dtype)
         head_inputs = torch.cat(context_inputs, dim=-1).to(
             dtype=self._module_dtype(self.context_head),
         )
-        return self.context_head(head_inputs).squeeze(-1).to(dtype=item_ref.dtype)
+        context_scores = self.context_head(head_inputs).squeeze(-1).to(dtype=item_ref.dtype)
+        metadata_present = head_inputs.abs().sum(dim=-1) > 0
+        return torch.where(
+            metadata_present,
+            context_scores,
+            torch.zeros_like(context_scores),
+        )
+
+    def _has_context_metadata(
+        self,
+        propagated: dict[str, torch.Tensor],
+    ) -> bool:
+        """Return whether the context head has configured item metadata to score."""
+        return (
+            self.config.use_popularity_head
+            and self.context_head is not None
+            and any(
+                key in propagated
+                for key in (
+                    "item_popularity",
+                    "item_recency",
+                    "item_propensity_targets",
+                    "item_age",
+                    "item_safe_features",
+                )
+            )
+        )
+
+    def _active_score_components(
+        self,
+        propagated: dict[str, torch.Tensor],
+        *,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Return score components available by model/data contract, not value."""
+        return torch.tensor(
+            [
+                True,
+                self.config.use_dual_branch,
+                self._has_context_metadata(propagated),
+            ],
+            device=device,
+            dtype=torch.bool,
+        )
 
     def _fixed_score_mix_weights(
         self,
@@ -366,12 +395,15 @@ class ScoringModule(nn.Module):
             Fixed score-mix weights with inactive components zeroed out.
         """
         weights = self.score_prior_weights.to(device=device, dtype=dtype)
-        masked_weights = weights * active_components.to(device=device, dtype=dtype)
+        active_weights = active_components.to(device=device, dtype=dtype)
+        masked_weights = weights * active_weights
         total_weight = masked_weights.sum()
-        if float(total_weight.item()) <= 0.0:
-            masked_weights = active_components.to(device=device, dtype=dtype)
-            total_weight = masked_weights.sum().clamp_min(1.0)
-        normalized = masked_weights / total_weight
+        fallback_weights = active_weights / active_weights.sum().clamp_min(1.0)
+        normalized = torch.where(
+            total_weight > 0,
+            masked_weights / total_weight.clamp_min(1e-12),
+            fallback_weights,
+        )
         return normalized.unsqueeze(0).expand(batch_size, -1)
 
     def _score_mix_weights(
@@ -404,15 +436,6 @@ class ScoringModule(nn.Module):
                 dtype=interest_embedding.dtype,
                 batch_size=user_ids.size(0),
             )
-        if int(active_components.sum().item()) == 1:
-            return (
-                active_components.to(
-                    device=interest_embedding.device,
-                    dtype=interest_embedding.dtype,
-                )
-                .unsqueeze(0)
-                .expand(user_ids.size(0), -1)
-            )
         user_conformity = self._get_user_conformity(propagated)[user_ids]
         alpha_inputs = torch.cat([interest_embedding, user_conformity], dim=-1).to(
             dtype=self._module_dtype(self.alpha_mlp),
@@ -425,7 +448,15 @@ class ScoringModule(nn.Module):
             ~active_components.to(device=alpha_inputs.device),
             float("-inf"),
         )
-        return torch.softmax(alpha_logits, dim=-1).to(dtype=interest_embedding.dtype)
+        weights = torch.softmax(alpha_logits, dim=-1)
+        min_weight = float(self.config.score_mix_min_weight)
+        if min_weight > 0:
+            active = active_components.to(device=weights.device, dtype=weights.dtype)
+            active_count = active.sum().clamp_min(1.0)
+            floor = torch.full((), min_weight, device=weights.device, dtype=weights.dtype)
+            floor = torch.minimum(floor, 0.95 / active_count)
+            weights = weights * (1.0 - floor * active_count) + floor * active
+        return weights.to(dtype=interest_embedding.dtype)
 
     def _build_score_dict(
         self,
@@ -540,14 +571,9 @@ class ScoringModule(nn.Module):
             pairwise=True,
         )
         context_score = self._context_scores(propagated, item_ids)
-        active_components = torch.tensor(
-            [
-                True,
-                bool(self.config.use_dual_branch and item_conformity.abs().sum().item() > 0),
-                bool(context_score.abs().sum().item() > 0),
-            ],
+        active_components = self._active_score_components(
+            propagated,
             device=user_interest.device,
-            dtype=torch.bool,
         )
         score_mix_weights = self._score_mix_weights(
             propagated,
@@ -592,14 +618,9 @@ class ScoringModule(nn.Module):
             pairwise=False,
         )
         context_score = self._context_scores(propagated, None)
-        active_components = torch.tensor(
-            [
-                True,
-                bool(self.config.use_dual_branch and item_conformity.abs().sum().item() > 0),
-                bool(context_score.abs().sum().item() > 0),
-            ],
+        active_components = self._active_score_components(
+            propagated,
             device=user_interest.device,
-            dtype=torch.bool,
         )
         score_mix_weights = self._score_mix_weights(
             propagated,

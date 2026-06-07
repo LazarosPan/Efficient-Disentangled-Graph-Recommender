@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 from torch import nn
+from torch.nn import functional
 
 from ..utils.config import UCaGNNConfig
 
@@ -17,9 +18,10 @@ class LightGCNBranch(nn.Module):
     without materializing edge-wise gather-scatter messages.
     """
 
-    def __init__(self, n_layers: int) -> None:
+    def __init__(self, n_layers: int, dropout: float = 0.0) -> None:
         super().__init__()
         self.n_layers = n_layers
+        self.dropout = dropout
         alpha = 1.0 / (n_layers + 1)
         self.register_buffer("alpha", torch.full((n_layers + 1,), alpha))
 
@@ -56,6 +58,8 @@ class LightGCNBranch(nn.Module):
             out = x_work * self.alpha[0].to(dtype=compute_dtype)
             for i in range(self.n_layers):
                 x_work = torch.sparse.mm(adj_work, x_work)
+                if self.dropout > 0:
+                    x_work = functional.dropout(x_work, p=self.dropout, training=self.training)
                 out = out + x_work * self.alpha[i + 1].to(dtype=compute_dtype)
 
         return out.to(dtype=x.dtype) if out.dtype != x.dtype else out
@@ -98,10 +102,10 @@ class DualBranchGCN(nn.Module):
         self.config = config
 
         if config.use_dual_branch:
-            self.interest_branch = LightGCNBranch(config.interest_gnn_layers)
-            self.conformity_branch = LightGCNBranch(config.conformity_gnn_layers)
+            self.interest_branch = LightGCNBranch(config.interest_gnn_layers, config.dropout)
+            self.conformity_branch = LightGCNBranch(config.conformity_gnn_layers, config.dropout)
         else:
-            self.single_branch = LightGCNBranch(config.single_branch_gnn_layers)
+            self.single_branch = LightGCNBranch(config.single_branch_gnn_layers, config.dropout)
 
         if config.use_sign_aware:
             self.alpha_pos = nn.Parameter(torch.tensor(0.7))
@@ -245,9 +249,6 @@ class DualBranchGCN(nn.Module):
         pos_mask = edge_sign > 0
         neg_mask = edge_sign < 0
         neutral_mask = ~(pos_mask | neg_mask)
-
-        if not bool(pos_mask.any() and neg_mask.any()):
-            return torch.ones_like(edge_sign)
 
         pos_weight = pos_mask.to(edge_sign.dtype)
         neutral_weight = neutral_mask.to(edge_sign.dtype)
