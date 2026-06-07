@@ -428,6 +428,16 @@ class LossSuite(nn.Module):
         losses: dict[str, torch.Tensor] = {}
         reference_score = pos_scores["final_score"]
         zero = reference_score.new_zeros(())
+        pos_interest_branch = pos_scores.get("branch_interest_score", pos_scores["interest_score"])
+        neg_interest_branch = neg_scores.get("branch_interest_score", neg_scores["interest_score"])
+        pos_conformity_branch = pos_scores.get(
+            "branch_conformity_score",
+            pos_scores["conformity_score"],
+        )
+        neg_conformity_branch = neg_scores.get(
+            "branch_conformity_score",
+            neg_scores["conformity_score"],
+        )
 
         # Curriculum: check phase thresholds.
         auxiliary_losses_active = epoch >= cfg.auxiliary_losses_start_epoch
@@ -444,8 +454,8 @@ class LossSuite(nn.Module):
         )
         weights = ipw_weights if use_calibrated_ipw else None
         if cfg.recommendation_loss_mode == "dice_sum" and use_dual_branch:
-            rec_pos = pos_scores["interest_score"] + pos_scores["conformity_score"]
-            rec_neg = neg_scores["interest_score"] + neg_scores["conformity_score"]
+            rec_pos = pos_interest_branch + pos_conformity_branch
+            rec_neg = neg_interest_branch + neg_conformity_branch
         else:
             rec_pos = pos_scores["final_score"]
             rec_neg = neg_scores["final_score"]
@@ -540,32 +550,32 @@ class LossSuite(nn.Module):
                 )
                 popular_negative_mask = neg_popularity > (pos_popularity + branch_margin)
             losses["interest_bpr"] = _masked_bpr_loss(
-                pos_scores["interest_score"],
-                neg_scores["interest_score"],
+                pos_interest_branch,
+                neg_interest_branch,
                 popular_negative_mask,
             )
             losses["conformity_bpr"] = _masked_bpr_loss(
-                neg_scores["conformity_score"],
-                pos_scores["conformity_score"],
+                neg_conformity_branch,
+                pos_conformity_branch,
                 popular_negative_mask,
             ) + _masked_bpr_loss(
-                pos_scores["conformity_score"],
-                neg_scores["conformity_score"],
+                pos_conformity_branch,
+                neg_conformity_branch,
                 ~popular_negative_mask,
             )
         else:
             if use_dual_branch and interest_weight > 0:
                 losses["interest_bpr"] = _bpr_loss(
-                    pos_scores["interest_score"],
-                    neg_scores["interest_score"],
+                    pos_interest_branch,
+                    neg_interest_branch,
                 )
             else:
                 losses["interest_bpr"] = zero
 
             if use_dual_branch and conformity_weight > 0:
                 losses["conformity_bpr"] = _bpr_loss(
-                    pos_scores["conformity_score"],
-                    neg_scores["conformity_score"],
+                    pos_conformity_branch,
+                    neg_conformity_branch,
                 )
             else:
                 losses["conformity_bpr"] = zero
@@ -672,8 +682,12 @@ class LossSuite(nn.Module):
                 device=reference_score.device,
                 dtype=reference_score.dtype,
             )
-            losses["pop"] = _popularity_loss(
+            context_for_supervision = pos_scores.get(
+                "raw_context_score",
                 pos_scores["context_score"],
+            )
+            losses["pop"] = _popularity_loss(
+                context_for_supervision,
                 pop_target,
             )
         else:
