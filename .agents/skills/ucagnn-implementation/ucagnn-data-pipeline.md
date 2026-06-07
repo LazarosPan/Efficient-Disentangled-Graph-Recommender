@@ -34,7 +34,7 @@ The diagram shows the runtime boundary: the loader always produces `CanonicalInt
 - `load_dataset(...)` is the public loader surface.
 - Default preprocessing presets are resolved in `src/data/loaders/_registry.py`.
 - Full loads are uncached. Capped loads (`max_rows` set) are cached in-process so tiny validation can reuse the same canonical dataset.
-- `feature_policy` and `preprocessing_preset` cross the same loader boundary as the dataset name.
+- `feature_policy` and `preprocessing_preset` cross the same loader boundary as the dataset name. A preprocessing preset may own a stricter or broader feature policy; the registry resolves that before calling the concrete loader.
 
 ### Repository preprocessing defaults
 
@@ -47,7 +47,7 @@ The diagram shows the runtime boundary: the loader always produces `CanonicalInt
 | `amazonbook` | `amazonbook_graph_only` | none |
 | `kuairand1k` | `kuairand_causal` | `kuairand_random_only` |
 
-`kuairec_fullobs` is the default KuaiRec view and uses `small_matrix`. `kuairec_watchratio` is the explicit `big_matrix` path.
+`kuairec_watchratio` is the default KuaiRec view and uses `big_matrix`. `kuairec_fullobs` remains available as an explicit `small_matrix` comparison path. The preprocessing preset is the semantic source of truth for KuaiRec matrix selection; direct `matrix_variant=...` calls are kept only for loader compatibility and must not conflict with an explicit preset.
 
 ## `CanonicalInteractions`
 
@@ -63,6 +63,8 @@ The diagram shows the runtime boundary: the loader always produces `CanonicalInt
 
 `get_splits()` prefers predefined loader masks, otherwise derives validation from an existing train/test split, otherwise falls back to the configured derived split mode. `compute_item_recency()` is intended to run on the training split only, and every train-derived runtime summary reuses that same split mask instead of creating category-specific train/test variants.
 
+Repeated raw user-item pairs are collapsed before split derivation for loaders that need one pair to belong to only one split. The retained row is selected by maximum priority with timestamp as a tie-breaker, while `repeat_count`, `repeat_mean_target`, `repeat_max_target`, `repeat_latest_target`, and first/last timestamps preserve the discarded observations in the retained-row encounter order.
+
 ## Feature policy
 
 - `thesis_default` loads only safe pre-treatment features from the structured registry.
@@ -73,9 +75,10 @@ The diagram shows the runtime boundary: the loader always produces `CanonicalInt
 
 `src/utils/csv_features.py` applies one shared encoding policy:
 
-- numeric columns stay numeric,
-- temporal columns become Unix seconds,
-- categorical-like columns become deterministic `float32` values in `[0, 1]`.
+- repeated entity rows are collapsed to the first source row before encoding, so daily feature files cannot let later rows overwrite the thesis-default static item descriptor or influence categorical/min-max scaling,
+- numeric and temporal columns are min-max scaled to `[0, 1]` within the loaded source,
+- categorical-like columns become deterministic codes in `[0, 1]` with `0` reserved for missing values,
+- embedding-time feature buffers are normalized again before the context head, so custom loader features cannot reintroduce raw timestamp or ID scale.
 
 ## Graph construction
 
@@ -86,7 +89,10 @@ The diagram shows the runtime boundary: the loader always produces `CanonicalInt
 
 Current graph rules:
 
-- `build_graph()` always recomputes `data.popularity` from the final training split.
+- `build_graph()` attaches original observed split masks plus label-aware `*_positive_mask` fields.
+- Interaction graph edges, BPR training positives, and train-time popularity use only positive training labels.
+- Original observed masks remain available for seen-item exclusion and split bookkeeping.
+- `build_graph()` always recomputes `data.popularity` from positive rows in the final training split.
 - `build_graph()` precomputes `data.edge_norm` once, so training and evaluation share the same degree normalization.
 - Optional canonical payloads are copied onto the PyG `Data` object through one shared boundary helper.
 - `cagra_augmented` is strict: it requires item features and raises on CAGRA failures instead of silently degrading.
@@ -97,13 +103,16 @@ Current graph rules:
 - Those buffers are per-user histories: the latest training interactions for each user, never global "recent" or popularity-only items.
 - Subgraph training reuses the same train-derived user history and does not create separate splits for interest, recency, or context.
 
-Only KuaiRand-1K currently populates `item_propensity_targets`, using log1p-normalized `show_cnt` as a train-safe exposure proxy. Every other dataset leaves that field as `None`, so the exposure slot in the context head is zero-filled and propensity calibration stays inactive unless a dataset-specific target is added.
+Only KuaiRand-1K currently populates `item_propensity_targets`, using log1p-normalized `show_cnt` as an exposure proxy. Every other dataset leaves that field as `None`, so the exposure slot in the context head is zero-filled and propensity calibration stays inactive unless a dataset-specific target is added. IPW is not enabled by default; it requires an explicit calibrated propensity objective.
 
 ## Sampling
 
-- `NegativeSampler` is fully vectorized and mixes uniform and popularity-weighted draws via `hard_negative_ratio`.
+- `NegativeSampler` is vectorized and mixes uniform and popularity-weighted draws via `hard_negative_ratio`.
+- It receives train-positive `(user, item)` pairs from `TrainerRuntime` and filters sampled negatives against every known positive training item for the same user, not only the current positive item.
+- With `negative_sampling_strategy="dice"`, `sample_with_metadata()` also returns the DICE high-popularity mask aligned to each sampled negative. It filters known train positives before applying DICE's high/low pool-size routing, mirrors the external sampler's `mask_type`, and is consumed directly by `LossSuite`; threshold reconstruction is only a fallback for older/manual payloads.
 - `SubgraphSampler` extracts sampled k-hop subgraphs with per-hop fan-out limits from `num_neighbors`.
 - `SubgraphBatch` carries:
   - `sub_edge_index`, `sub_edge_sign`, `sub_edge_norm`,
   - global user and item ids for metadata lookup,
-  - local user, positive-item, and negative-item ids for scoring and loss computation.
+  - local user, positive-item, and negative-item ids for scoring and loss computation,
+  - optional `dice_negative_mask` batch metadata for DICE-style branch losses.

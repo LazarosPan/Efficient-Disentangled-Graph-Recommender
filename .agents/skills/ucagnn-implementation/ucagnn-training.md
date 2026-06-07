@@ -27,7 +27,7 @@ flowchart LR
     D --> H[MLflow optional]
 ```
 
-The diagram shows the single-run path: config resolution, data and graph load, model construction, sampled-subgraph training, full-graph evaluation, and tracking. The benchmark and ablation entry points reuse the same runtime pieces.
+The diagram shows the single-run path: config resolution, data and graph load, model construction, sampled-subgraph or full-graph training, full-graph evaluation, and tracking. The benchmark and ablation entry points reuse the same runtime pieces.
 
 ## Supported entry points
 
@@ -36,7 +36,7 @@ The diagram shows the single-run path: config resolution, data and graph load, m
 | `uv run experiment` | One explicit run. |
 | `uv run ablation` | Thesis-facing ablation sweep over named variants. |
 | `uv run formal-run` | Profile-driven formal matrix with strict resume state. |
-| `uv run quick_validate` | Fixed smoke suite over the shared runtime path. |
+| `uv run quick-validate` | Fixed smoke suite over the shared runtime path. |
 
 The public CLIs are intentionally selection-focused. Recipes, presets, ablation variants, and formal profiles own the training semantics.
 
@@ -44,10 +44,10 @@ The public CLIs are intentionally selection-focused. Recipes, presets, ablation 
 
 1. `build_config()` resolves one `UCaGNNConfig`.
 2. `load_runtime_data()` loads the canonical dataset and builds the requested graph policy.
-3. `build_runtime_model()` derives item recency and per-user recent-train histories from `data.train_mask`, converts any canonical propensity targets to tensors, and instantiates `UCaGNN`.
+3. `build_runtime_model()` instantiates explicit paper adapters for `lightgcn_paper` and `dice_paper`; otherwise it derives item recency and per-user recent-train histories from `data.train_mask`, converts any canonical propensity targets to tensors, and instantiates `UCaGNN`.
 4. `run_experiment()` attaches optional `data.propensity_targets`, resolves auto batch size, and builds checkpoint identities.
-5. `MiniBatchTrainer.train()` runs sampled-subgraph training.
-6. `Evaluator.evaluate()` runs full-graph evaluation from one propagated full-graph state.
+5. `MiniBatchTrainer.train()` runs sampled-subgraph training from `data.train_positive_mask` when `training_graph_mode="sampled"` and full-graph propagation per optimizer step when `training_graph_mode="full"`.
+6. `Evaluator.evaluate()` runs full-graph evaluation from one propagated full-graph state and treats only `labels > 0` rows as relevant.
 7. `ExperimentLogger` writes SQLite records; MLflow mirrors runs when enabled.
 
 ## `TrainerRuntime`
@@ -55,12 +55,13 @@ The public CLIs are intentionally selection-focused. Recipes, presets, ablation 
 `TrainerRuntime` owns:
 
 - device setup and shared move helpers,
-- `AdamW` construction,
+- optimizer construction: U-CaGNN uses AdamW with fused CUDA kernels when available; `lightgcn_paper` uses Adam plus explicit LightGCN embedding L2 in the loss; `dice_paper` uses Adam with DICE's `(0.5, 0.99)` betas and AMSGrad,
 - default CUDA AMP (`bfloat16` on CUDA),
 - optional EMA state,
 - scheduler and early-stopping state,
 - checkpoint save and load,
 - cached `popularity` and optional `propensity_targets`,
+- cached raw train-only `popularity_count` for DICE-style branch masks and negative sampling,
 - evaluator construction and shared logging hooks.
 
 Important runtime details:
@@ -71,16 +72,23 @@ Important runtime details:
 - validation retries once on CUDA after optimizer-state offload, then falls back to CPU if evaluation still OOMs,
 - a late auto-batch training OOM releases the failed trainer and resumes the next smaller candidate from the latest completed-epoch checkpoint when one exists,
 - scheduler stepping and early-stopping patience both wait until `max(auxiliary_losses_start_epoch, popularity_supervision_start_epoch)`.
+- training interaction tensors use `data.train_positive_mask` when present, falling back to `train_mask & labels > 0`.
 
 ## `MiniBatchTrainer`
 
 `MiniBatchTrainer` is the only trainer.
 
-- On CUDA it first tries to stage the full graph into a CUDA-resident `SubgraphSampler`.
-- If graph staging or later batch preparation hits OOM, it falls back to the CPU sampler path.
+- In sampled mode, on CUDA it first tries to stage the full graph into a CUDA-resident `SubgraphSampler`.
+- If sampled graph staging or later batch preparation reports a CUDA OOM, including plain RuntimeError messages from CUDA kernels, it falls back to the CPU sampler path.
+- In full-graph mode, it bypasses subgraph extraction and calls the model with the full train graph for every optimizer step. This mode is used by `lightgcn_paper` and `dice_paper`.
+- Full-graph mode stages `edge_index`, `edge_sign`, and `edge_norm` once per trainer/device instead of copying graph tensors every batch, then releases the CUDA graph cache before validation to avoid duplicating evaluator graph memory.
+- `lightgcn_paper` is backed by `PaperLightGCN`: no dropout, no side features, no learned score mixer, observed graph only, Adam optimizer, and explicit ego-embedding L2 regularization.
+- `dice_paper` is backed by `PaperGCNDICE`: separate interest/conformity embedding tables, DICE self-looped LightGCN backbone propagation, DICE dropout, and summed interest+conformity final scores.
+- `negative_sampling_strategy="dice"` uses DICE popularity-conditioned negative pools with raw train-only item counts, `dice_sampler_margin`, and `dice_sampler_pool`. `dice_paper` keeps the external-code `n_negatives=4`; `ucagnn` uses `n_negatives=1` to keep sampled-subgraph cost close to standard BPR while still training on DICE-conditioned negatives.
+- Sampled and full-graph training both pass the current epoch into the negative sampler. The DICE sampler margin decays only when `dice_adaptive_decay=True`.
 - CPU-prepared `SubgraphBatch` objects are pinned and copied with `non_blocking=True`.
 - Batch-local auxiliary losses operate on the batch users and selected positive items, not the full sampled frontier.
-- The trainer slices local popularity and local propensity targets by `sub_batch.item_global_ids` before calling `LossSuite`.
+- The trainer slices local normalized popularity, local raw branch popularity, and local propensity targets by `sub_batch.item_global_ids` before calling `LossSuite`.
 - DEBUG logging emits batch loss components plus IPW, propensity-target, and score summaries for the sampled batch.
 
 ## Evaluator
@@ -100,8 +108,9 @@ Important runtime details:
 
 Current evaluation rules:
 
+- relevance ground truth is `target_mask & labels > 0`; non-positive observed rows are never counted as relevant,
 - validation excludes training interactions only,
-- test excludes both training and validation interactions,
+- test excludes both training and validation interactions, including when the caller passes an equivalent copied test mask,
 - full-graph propagation happens once per evaluation call,
 - validation logs only the thesis-primary metrics; refined scorer diagnostics are reserved for the final post-training test pass,
 - evaluator batch sizing keeps the 512 MiB score-matrix cap split-aware and budgets extra headroom when refined-score component export materializes the interest, conformity, context, and final full-catalog views,
@@ -109,6 +118,8 @@ Current evaluation rules:
 - diagnostics append `score_mix_*` summary stats, weighted branch contributions at `@20/@40`, interest-vs-conformity cosine checks, and per-component popularity Spearman diagnostics when the model exports those components on the final test pass,
 - split-specific ground-truth and exclusion dictionaries are cached by mask identity,
 - `cagra_candidate_k` optionally restricts scoring to ANN candidates on CUDA.
+
+Quick validation uses larger tiny caps for sparse-positive Taobao and KuaiRand slices so label-aware validation/test splits contain positive targets.
 
 `cagra_candidate_k` is evaluation-only. It is separate from `graph_policy="cagra_augmented"`, which changes the training graph itself.
 
@@ -133,5 +144,6 @@ Current rules:
 - evaluator diagnostics go through the same metric logging path as thesis metrics; no parallel diagnostics store exists.
 - `formal-run` persists `results/formal_run_state.json` as a strict resume pointer, not as a profile definition.
 - Per-epoch GPU utilization and peak VRAM are logged when available.
+- Canonical experiment names are shared by runtime checkpointing and `query-results` through `src/utils/experiment_naming.py`.
 - Query surfaces are centralized in `ExperimentLogger.VIEW_TABLES`, which powers the `completed`, `attention`, `errors`, and `comparison` views used by `scripts/query_results.py`.
 - The default `query-results` thesis summary now keeps CRRU inline: it prints a short CRRU framing block, adds dataset-local `CRRU@20` and `CRRU@40` columns to the existing formal and ablation tables, and does not emit a separate CRRU table.

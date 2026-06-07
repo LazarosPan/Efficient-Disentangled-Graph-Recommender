@@ -120,16 +120,11 @@
 │   │   ├── summary_performance_papers.md
 │   │   ├── summary_propcore.md
 │   │   └── summary_survey_papers_4.md
-│   ├── ucagnn_implementation
-│   │   ├── architecture.md
-│   │   ├── config-reference.md
-│   │   ├── data-pipeline.md
-│   │   ├── losses.md
-│   │   ├── models.md
-│   │   ├── README.md
-│   │   ├── theoretical_justifications.md
-│   │   ├── training.md
-│   │   └── ucagnn_full.md
+│   ├── superpowers
+│   │   ├── plans
+│   │   │   └── 2026-06-04-causal-metrics-integration.md
+│   │   └── specs
+│   │       └── 2026-06-04-causal-metrics-integration-design.md
 │   └── usage
 │       ├── experiments.md
 │       └── scripts.md
@@ -143,6 +138,34 @@
 │   ├── run_benchmark.py
 │   └── run_experiment.py
 ├── LICENCE
+├── Papers_Causal_Embeddings_Recommendation_Systems
+│   ├── A Comprehensive Survey of Evaluation Techniques for Recommendation Systems.pdf
+│   ├── A Survey on Causal Inference for Recommendation.pdf
+│   ├── CAGRA_ Highly Parallel Graph Construction and Approximate Nearest Neighbor Search for GPUs.pdf
+│   ├── causal-augmented-disentanglement-for-contrastive-recommendation.pdf
+│   ├── CausalCDR: Causal Embedding Learning for Cross-domain Recommendation.pdf
+│   ├── Causal_Disentanglement_for_Semantic-Aware_Intent_Learning_in_Recommendation.pdf
+│   ├── Causal Embeddings for Recommendation.pdf
+│   ├── Causal Inference for Recommendation_ Foundations, Methods, and Applications.pdf
+│   ├── Causal Inference for Recommendation.pdf
+│   ├── Causal Inference in Recommender Systems - A Survey and Future Directions.pdf
+│   ├── Causal Inference in Recommender Systems_ A Survey of Strategies for Bias Mitigation, Explanation, and Generalization.pdf
+│   ├── Causality-Inspired Fair Representation Learning for Multimodal Recommendation.pdf
+│   ├── Causal Representation Learning from Multimodal Biomedical Observations.pdf
+│   ├── CIDGMed_ Causal Inference-Driven Medication Recommendation with.pdf
+│   ├── Disentangled Causal Embedding With Contrastive Learning For Recommender System.pdf
+│   ├── Disentangling User Interest and Conformity for Recommendation with Causal Embedding.pdf
+│   ├── Dual disentanglement of user–item interaction for recommendation with causal embedding.pdf
+│   ├── FULL-GRAPH VS. MINI-BATCH TRAINING_ COMPRE- HENSIVE ANALYSIS FROM A BATCH SIZE AND FAN- OUT SIZE PERSPECTIVE.pdf
+│   ├── Layer-refined Graph Convolutional Networks for_Recommendation.pdf
+│   ├── Learning Causal Explanations for Recommendation.pdf
+│   ├── LightGCN: Simplifying and Powering Graph Convolution Network for Recommendation.pdf
+│   ├── Multimodal Counterfactual Learning Network for Multimedia-based Recommendation.pdf
+│   ├── Multimodal_Graph_Causal_Embedding_for_Multimedia-Based_Recommendation.pdf
+│   ├── NeurIPS-2023-estimating-propensity-for-causality-based-recommendation-without-exposure-data-Paper-Conference.pdf
+│   ├── PANORAMA_ FAST-TRACK NEAREST NEIGHBORS.pdf
+│   ├── RecFlow_ An Industrial Full Flow Recommendation Dataset.pdf
+│   └── Revisiting LightGCN: Unexpected Inflexibility, Inconsistency, and A Remedy Towards Improved Recommendation.pdf
 ├── pyproject.toml
 ├── README.md
 ├── results
@@ -159,12 +182,12 @@
 │   ├── experiments.db
 │   ├── formal_run_state.json
 │   ├── mlflow.db
+│   ├── query_results_20260527.md
 │   ├── query_results.md
 │   └── thesis_experiments.db
 ├── scripts
 │   ├── cleanup_experiment_artifacts.py
 │   ├── download_pyg_datasets.py
-│   ├── evaluate_scoring_modes.py
 │   ├── __init__.py
 │   ├── query_results.py
 │   ├── quick_validate.py
@@ -176,6 +199,7 @@
 │   │   ├── feature_policy.py
 │   │   ├── graph_builder.py
 │   │   ├── __init__.py
+│   │   ├── interaction_masks.py
 │   │   ├── loaders
 │   │   │   ├── amazonbook.py
 │   │   │   ├── _explicit_ratings.py
@@ -198,6 +222,11 @@
 │   │   ├── __init__.py
 │   │   └── loss_suite.py
 │   ├── models
+│   │   ├── baselines
+│   │   │   ├── common.py
+│   │   │   ├── dice.py
+│   │   │   ├── __init__.py
+│   │   │   └── lightgcn.py
 │   │   ├── embeddings.py
 │   │   ├── __init__.py
 │   │   ├── lightgcn.py
@@ -217,6 +246,7 @@
 │       ├── csv_features.py
 │       ├── dataset_loader_utils.py
 │       ├── experiment_logger.py
+│       ├── experiment_naming.py
 │       ├── __init__.py
 │       ├── interaction_indexing.py
 │       ├── project_paths.py

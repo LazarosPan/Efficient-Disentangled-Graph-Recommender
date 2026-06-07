@@ -40,6 +40,7 @@ The diagram shows the full runtime join points. Slice-specific rules stay in the
 | Path | Responsibility |
 | --- | --- |
 | `src/utils/config.py` | `UCaGNNConfig` defaults, validation, preset overrides |
+| `src/utils/experiment_naming.py` | shared canonical experiment names for checkpoints and result reports |
 | `src/data/loaders/_registry.py` | dataset registry and default preprocessing presets |
 | `src/data/canonical.py` | canonical interaction schema, split logic, item recency |
 | `src/data/feature_policy.py` | safe-vs-optional feature registry |
@@ -48,6 +49,8 @@ The diagram shows the full runtime join points. Slice-specific rules stay in the
 | `src/data/negative_sampler.py` | vectorized negative sampling |
 | `src/models/embeddings.py` | embedding layer |
 | `src/models/lightgcn.py` | propagation layer |
+| `src/models/baselines/lightgcn.py` | canonical paper LightGCN adapter |
+| `src/models/baselines/dice.py` | canonical paper GCN-DICE adapter |
 | `src/models/scoring.py` | scoring layer |
 | `src/models/propensity.py` | propensity layer |
 | `src/models/ucagnn.py` | model orchestration and public train/eval surfaces |

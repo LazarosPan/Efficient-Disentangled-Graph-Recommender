@@ -7,10 +7,10 @@ This repository implements U-CaGNN, a resource-aware causal-disentangled graph r
 U-CaGNN synthesizes techniques from multiple causal recommendation papers (CausE, DICE, MCLN, SIGformer) into a single framework. It uses dual-branch graph convolution to separate genuine user preferences from conformity-driven behavior, with multi-task losses and inverse propensity weighting driven by an item-side propensity proxy rather than a fully identified treatment/control model.
 
 Key features:
-- Config-driven architecture with presets for LightGCN, DICE-like, and full U-CaGNN variants
-- Mini-batch training only, with k-hop subgraph extraction per batch
+- Config-driven architecture with explicit U-CaGNN, paper LightGCN, and paper GCN-DICE model adapters
+- Mini-batch U-CaGNN training plus full-graph training for paper baselines
 - Graph construction methods: observed train-interaction graphs by default, with optional CAGRA ANN augmentation
-- Formal experiment matrix across datasets, presets, and graph methods, with a score-mix sweep for dual-branch presets
+- Formal experiment matrix across datasets and presets, with paper baselines kept on observed interaction graphs
 - SQLite primary logging with MLflow secondary tracking
 - Automatic checkpointing and resume from crashes
 
