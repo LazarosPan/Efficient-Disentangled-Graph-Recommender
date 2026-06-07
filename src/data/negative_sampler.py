@@ -26,6 +26,7 @@ class NegativeSampler:
         dice_margin: float = 40.0,
         dice_pool: int = 40,
         dice_margin_decay: float = 1.0,
+        exact_dice_pool_counts: bool = False,
     ) -> None:
         self.n_items = n_items
         self.n_negatives = n_negatives
@@ -35,6 +36,7 @@ class NegativeSampler:
         self.dice_margin = dice_margin
         self.dice_pool = dice_pool
         self.dice_margin_decay = dice_margin_decay
+        self.exact_dice_pool_counts = exact_dice_pool_counts
 
         # Pre-compute popularity sampling weights
         pop = popularity.float()
@@ -51,7 +53,9 @@ class NegativeSampler:
             positive_user_ids,
             positive_item_ids,
         )
-        self._positive_user_index_cpu = self._build_positive_user_index()
+        self._positive_user_index_cpu = (
+            self._build_positive_user_index() if exact_dice_pool_counts else None
+        )
         self._positive_keys_by_device: dict[torch.device, torch.Tensor] = {}
         self._positive_user_index_by_device: dict[
             torch.device,
@@ -252,7 +256,7 @@ class NegativeSampler:
         )
         raw_low_count = low_end
         low_count = raw_low_count
-        if expanded_user_ids is not None:
+        if expanded_user_ids is not None and self.exact_dice_pool_counts:
             high_positive_count, low_positive_count = self._known_positive_pool_counts(
                 expanded_user_ids,
                 pos_popularity,

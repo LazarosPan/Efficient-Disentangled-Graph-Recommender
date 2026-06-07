@@ -102,8 +102,9 @@ class SubgraphSampler:
 
     When ``max_neighbors_per_hop`` is provided the sampler uses a vectorised
     sampled-BFS that applies per-hop fan-out *during* expansion.  For each hop
-    a CSR adjacency precomputed at construction time lets all frontier nodes be
-    processed in parallel with a single argsort-based subsampling pass.
+    a CSR adjacency precomputed at construction time lets frontier nodes be
+    processed with bounded random CSR offsets, so memory scales with the fan-out
+    budget rather than the frontier's total incident degree.
 
     Without ``max_neighbors_per_hop`` the original PyG ``k_hop_subgraph`` path
     is used unchanged (full k-hop neighbourhood, no sampling).
@@ -177,8 +178,9 @@ class SubgraphSampler:
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Sample up to ``max_nb`` neighbours for every node in ``frontier``.
 
-        All frontier nodes are processed simultaneously via vectorised
-        scatter/sort operations; there is no Python loop over nodes.
+        All frontier nodes are processed simultaneously with bounded CSR offset
+        gathers; there is no Python loop over nodes and no sort over the full
+        incident edge set.
 
         Args:
             frontier: (F,) global node IDs to expand from.
@@ -204,47 +206,28 @@ class SubgraphSampler:
             empty = frontier.new_empty(0)
             return empty, empty
 
-        a_starts = ptr_start[has_nb]
-        a_degrees = degrees[has_nb]
-        n_active = a_starts.size(0)
-        total = int(a_degrees.sum().item())
+        active_starts = ptr_start[has_nb]
+        active_degrees = degrees[has_nb]
+        n_active = active_starts.size(0)
+        max_take = min(max_nb, int(active_degrees.max().item()))
 
-        # Build a flat index of all CSR positions for every active frontier node.
-        # flat_e[i] is the i-th edge across all active nodes, ordered by node then offset.
-        cum = torch.zeros(n_active + 1, dtype=torch.long, device=device)
-        cum[1:] = a_degrees.cumsum(0)
+        offsets = torch.arange(max_take, device=device).expand(n_active, max_take)
+        keep = offsets < active_degrees.unsqueeze(1)
+        overcrowded = active_degrees > max_take
+        if overcrowded.any():
+            random_offsets = torch.floor(
+                torch.rand(
+                    (n_active, max_take),
+                    device=device,
+                    generator=generator,
+                )
+                * active_degrees.unsqueeze(1),
+            ).to(dtype=torch.long)
+            offsets = torch.where(overcrowded.unsqueeze(1), random_offsets, offsets)
 
-        flat_e = torch.arange(total, device=device)
-        # owner_idx: which active-frontier node (0..n_active-1) owns flat_e[i]
-        owner_idx = torch.searchsorted(cum[1:].contiguous(), flat_e, right=True)
-        owner_idx.clamp_(max=n_active - 1)
-        flat_csr = a_starts[owner_idx] + (flat_e - cum[owner_idx])
-
-        all_edge_ids = self._csr_edge_id[flat_csr]  # (total,)
-        all_neighbors = self._csr_col[flat_csr]  # (total,)
-
-        # Fan-out: for nodes with degree > max_nb keep a random max_nb.
-        if (a_degrees > max_nb).any():
-            rand_keys = torch.rand(total, device=device, generator=generator)
-            overcrowded = a_degrees > max_nb  # (n_active,)
-            rand_keys[~overcrowded[owner_idx]] = 2.0  # always keep uncrowded
-
-            sort_key = owner_idx.float() * 4.0 + rand_keys
-            sorted_idx = sort_key.argsort()
-            sorted_owner = owner_idx[sorted_idx]
-
-            grp_cnt = torch.zeros(n_active + 1, dtype=torch.long, device=device)
-            grp_cnt.scatter_add_(
-                0,
-                sorted_owner + 1,
-                torch.ones(total, dtype=torch.long, device=device),
-            )
-            grp_cnt.cumsum_(0)
-            rank = torch.arange(total, device=device) - grp_cnt[sorted_owner]
-            keep = rank < max_nb
-
-            all_edge_ids = all_edge_ids[sorted_idx[keep]]
-            all_neighbors = all_neighbors[sorted_idx[keep]]
+        flat_csr = (active_starts.unsqueeze(1) + offsets)[keep]
+        all_edge_ids = self._csr_edge_id[flat_csr]
+        all_neighbors = self._csr_col[flat_csr]
 
         return all_edge_ids, all_neighbors
 
