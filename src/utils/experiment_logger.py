@@ -16,6 +16,8 @@ from typing import ClassVar
 class ExperimentLogger:
     """Persist experiment configs, per-epoch metrics, and profiling data to SQLite."""
 
+    BUSY_TIMEOUT_MS = 60_000
+    STARTUP_MAINTENANCE_BUSY_TIMEOUT_MS = 100
     TERMINAL_STATUSES = ("completed", "failed", "oom")
     SUMMARY_VIEWS = (
         "experiment_summary",
@@ -31,6 +33,11 @@ class ExperimentLogger:
         "errors": "experiment_error_summary",
         "comparison": "experiment_code_comparison",
     }
+    _SUMMARY_VIEW_SENTINEL_COLUMNS: ClassVar[tuple[str, ...]] = (
+        "runtime_probe_estimated_remaining_train_time_s",
+        "test_final_popularity_spearman_40",
+        "max_gpu_utilization_pct",
+    )
 
     _SQLITE_NOW_UTC = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
     _EXPECTED_EXPERIMENT_COLUMNS: ClassVar[tuple[str, ...]] = (
@@ -98,40 +105,114 @@ class ExperimentLogger:
 
     def __init__(self, db_path: str = "results/thesis_experiments.db") -> None:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(db_path)
+        self.conn = sqlite3.connect(db_path, timeout=self.BUSY_TIMEOUT_MS / 1000)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute(f"PRAGMA busy_timeout={self.BUSY_TIMEOUT_MS}")
         self.conn.execute("PRAGMA foreign_keys=ON")
-        self.conn.execute("PRAGMA journal_mode=WAL")
+        if self._journal_mode() != "wal":
+            self.conn.execute("PRAGMA journal_mode=WAL")
         self._create_tables()
 
     # ── Schema ────────────────────────────────────────────────────────────
 
+    def _journal_mode(self) -> str:
+        row = self.conn.execute("PRAGMA journal_mode").fetchone()
+        return str(row[0]).lower() if row is not None else ""
+
     def _create_tables(self) -> None:
-        self._ensure_current_schema()
-        self._repair_experiment_statuses()
-        self._create_indexes_and_views()
+        schema_changed = self._ensure_current_schema()
+        self._refresh_summary_views_if_needed(required=schema_changed)
+        self._repair_experiment_statuses_if_needed()
         self.conn.commit()
 
-    def _ensure_current_schema(self) -> None:
-        for view_name in self.SUMMARY_VIEWS:
-            self.conn.execute(f"DROP VIEW IF EXISTS {view_name}")
-        self._ensure_table(
+    def _ensure_current_schema(self) -> bool:
+        schema_changed = self._ensure_table(
             "experiments",
             self._EXPECTED_EXPERIMENT_COLUMNS,
             self._create_experiments_table,
         )
-        self._ensure_table(
-            "profiling",
-            self._EXPECTED_PROFILING_COLUMNS,
-            self._create_profiling_table,
-            expected_fks=frozenset({"experiments"}),
+        schema_changed = (
+            self._ensure_table(
+                "profiling",
+                self._EXPECTED_PROFILING_COLUMNS,
+                self._create_profiling_table,
+                expected_fks=frozenset({"experiments"}),
+            )
+            or schema_changed
         )
-        self._ensure_table(
-            "metrics",
-            self._EXPECTED_METRIC_COLUMNS,
-            self._create_metrics_table,
-            expected_fks=frozenset({"experiments"}),
+        schema_changed = (
+            self._ensure_table(
+                "metrics",
+                self._EXPECTED_METRIC_COLUMNS,
+                self._create_metrics_table,
+                expected_fks=frozenset({"experiments"}),
+            )
+            or schema_changed
         )
+        return schema_changed
+
+    def _refresh_summary_views_if_needed(self, *, required: bool) -> None:
+        if not required and not self._summary_views_need_refresh():
+            return
+        self._run_startup_write(self._create_indexes_and_views, required=required)
+
+    def _summary_views_need_refresh(self) -> bool:
+        for view_name in self.SUMMARY_VIEWS:
+            if not self._view_exists(view_name):
+                return True
+        summary_columns = set(self._view_columns("experiment_summary"))
+        return not set(self._SUMMARY_VIEW_SENTINEL_COLUMNS).issubset(summary_columns)
+
+    def _repair_experiment_statuses_if_needed(self) -> None:
+        if not self._has_repairable_status_rows():
+            return
+        self._run_startup_write(self._repair_experiment_statuses, required=False)
+
+    def _run_startup_write(self, fn: Callable[[], None], *, required: bool) -> None:
+        previous_timeout_ms = int(self.conn.execute("PRAGMA busy_timeout").fetchone()[0])
+        self.conn.execute(
+            f"PRAGMA busy_timeout={self.STARTUP_MAINTENANCE_BUSY_TIMEOUT_MS}",
+        )
+        try:
+            fn()
+        except sqlite3.OperationalError as exc:
+            self.conn.rollback()
+            if not required and "locked" in str(exc).lower():
+                return
+            raise
+        finally:
+            self.conn.execute(f"PRAGMA busy_timeout={previous_timeout_ms}")
+
+    def _has_repairable_status_rows(self) -> bool:
+        row = self.conn.execute(
+            """
+            SELECT 1
+            FROM experiments e
+            WHERE e.status IN ('running', 'unknown')
+              AND (
+                  e.oom_flag = 1
+                  OR e.failure_reason IS NOT NULL
+                  OR EXISTS (
+                      SELECT 1
+                      FROM metrics m
+                      WHERE m.experiment_id = e.id
+                        AND m.split = 'test'
+                  )
+              )
+            LIMIT 1
+            """,
+        ).fetchone()
+        return row is not None
+
+    def _view_exists(self, view_name: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = ?",
+            (view_name,),
+        ).fetchone()
+        return row is not None
+
+    def _view_columns(self, view_name: str) -> tuple[str, ...]:
+        return tuple(row[1] for row in self.conn.execute(f"PRAGMA table_info({view_name})"))
 
     def _ensure_table(
         self,
@@ -139,7 +220,7 @@ class ExperimentLogger:
         expected_columns: tuple[str, ...],
         create_fn: Callable[[], None],
         expected_fks: frozenset[str] | None = None,
-    ) -> None:
+    ) -> bool:
         """Create *table_name* if absent, else validate its schema.
 
         Args:
@@ -151,13 +232,13 @@ class ExperimentLogger:
         """
         if not self._table_exists(table_name):
             create_fn()
-            return
+            return True
 
         current_columns = self._table_columns(table_name)
         if expected_fks is not None:
             fk_targets = self._foreign_key_targets(table_name)
             if current_columns == expected_columns and fk_targets == expected_fks:
-                return
+                return False
             raise RuntimeError(
                 (
                     f"{table_name} must already use the current schema. Expected "
@@ -166,12 +247,12 @@ class ExperimentLogger:
                 ),
             )
         if current_columns == expected_columns:
-            return
+            return False
         if table_name == "experiments" and current_columns == self._LEGACY_EXPERIMENT_COLUMNS:
             self._migrate_legacy_experiments_table()
             current_columns = self._table_columns(table_name)
             if current_columns == expected_columns:
-                return
+                return True
         raise RuntimeError(
             (
                 f"{table_name} must already use the current schema. Expected "
@@ -327,6 +408,41 @@ class ExperimentLogger:
                     WHEN m.metric_name = 'training_time_s' AND m.split = 'train'
                     THEN m.metric_value
                 END) AS training_time_s,
+                MAX(CASE
+                    WHEN m.metric_name = 'runtime_probe_target_epochs'
+                         AND m.split = 'approximation'
+                    THEN m.metric_value
+                END) AS runtime_probe_target_epochs,
+                MAX(CASE
+                    WHEN m.metric_name = 'runtime_probe_observed_epochs'
+                         AND m.split = 'approximation'
+                    THEN m.metric_value
+                END) AS runtime_probe_observed_epochs,
+                MAX(CASE
+                    WHEN m.metric_name = 'runtime_probe_train_batches_per_epoch'
+                         AND m.split = 'approximation'
+                    THEN m.metric_value
+                END) AS runtime_probe_train_batches_per_epoch,
+                MAX(CASE
+                    WHEN m.metric_name = 'runtime_probe_observed_batches_per_second'
+                         AND m.split = 'approximation'
+                    THEN m.metric_value
+                END) AS runtime_probe_observed_batches_per_second,
+                MAX(CASE
+                    WHEN m.metric_name = 'runtime_probe_seconds_per_epoch'
+                         AND m.split = 'approximation'
+                    THEN m.metric_value
+                END) AS runtime_probe_seconds_per_epoch,
+                MAX(CASE
+                    WHEN m.metric_name = 'runtime_probe_estimated_train_time_s'
+                         AND m.split = 'approximation'
+                    THEN m.metric_value
+                END) AS runtime_probe_estimated_train_time_s,
+                MAX(CASE
+                    WHEN m.metric_name = 'runtime_probe_estimated_remaining_train_time_s'
+                         AND m.split = 'approximation'
+                    THEN m.metric_value
+                END) AS runtime_probe_estimated_remaining_train_time_s,
                 COALESCE(
                     MAX(CASE
                         WHEN m.metric_name = 'loss' AND m.split = 'train'
@@ -510,11 +626,18 @@ class ExperimentLogger:
                     THEN p.duration_ms / NULLIF(p.stage_call_count, 0)
                 END) AS avg_forward_ms,
                 AVG(CASE
-                    WHEN m.metric_name = 'gpu_utilization_pct' AND m.split = 'train'
+                    WHEN m.metric_name IN (
+                        'gpu_utilization_pct',
+                        'train_avg_gpu_utilization_pct'
+                    ) AND m.split = 'train'
                     THEN m.metric_value
                 END) AS avg_gpu_utilization_pct,
                 MAX(CASE
-                    WHEN m.metric_name = 'gpu_utilization_pct' AND m.split = 'train'
+                    WHEN m.metric_name IN (
+                        'gpu_utilization_pct',
+                        'max_gpu_utilization_pct',
+                        'train_max_gpu_utilization_pct'
+                    ) AND m.split = 'train'
                     THEN m.metric_value
                 END) AS max_gpu_utilization_pct,
                 COALESCE(

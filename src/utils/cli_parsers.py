@@ -27,7 +27,6 @@ PRESET_CHOICES = [
     "dice_paper",
     "dice_like",
     "dice_like_ablation",
-    "lgndice_paper",
 ]
 _VALIDATION_CATEGORIES = ["recipes", "ablations", "observability", "evaluation"]
 

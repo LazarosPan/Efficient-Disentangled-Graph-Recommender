@@ -36,6 +36,7 @@ SUPPORTED_LR_SCHEDULERS: tuple[LRSchedulerName, ...] = (
     "polynomial",
     "linear",
 )
+PAPER_BASELINE_PRESETS = frozenset(("lightgcn_paper", "dice_paper"))
 GRAPH_POLICY_CHOICES: tuple[GraphPolicy, ...] = ("observed", "cagra_augmented")
 PresetOverrideValue = bool | int | float | str | list[int]
 PresetOverrides = dict[str, PresetOverrideValue]
@@ -78,6 +79,7 @@ _LIGHTGCN_PAPER_PRESET_OVERRIDES: PresetOverrides = _LIGHTGCN_PRESET_OVERRIDES |
     "num_neighbors": [10, 5, 5],
     "dropout": 0.0,
     "lr": 0.001,
+    "lr_scheduler": "none",
     "weight_decay": 1e-4,
     "batch_size": 2048,
     "auto_batch_size": False,
@@ -109,6 +111,7 @@ _DICE_PAPER_PRESET_OVERRIDES: PresetOverrides = _NON_CAUSAL_PRESET_OVERRIDES | {
     "num_neighbors": [10, 5],
     "dropout": 0.2,
     "lr": 0.001,
+    "lr_scheduler": "none",
     "weight_decay": 5e-8,
     "batch_size": 128,
     "auto_batch_size": False,
@@ -148,6 +151,7 @@ _LIGHTGCN_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
         "num_neighbors",
         "dropout",
         "lr",
+        "lr_scheduler",
         "weight_decay",
         "batch_size",
         "auto_batch_size",
@@ -180,6 +184,7 @@ _DICE_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
         "num_neighbors",
         "dropout",
         "lr",
+        "lr_scheduler",
         "weight_decay",
         "batch_size",
         "auto_batch_size",
@@ -489,8 +494,8 @@ class UCaGNNConfig:
 
         Shared benchmark profiles may pass fields such as ``dropout`` and
         ``num_neighbors`` for U-CaGNN. Paper baselines keep their paper-owned
-        architecture and sampler contract instead of silently accepting those
-        shared tuning knobs.
+        architecture, scheduler, optimizer, and sampler contract instead of
+        silently accepting those shared tuning knobs.
         """
         if self.baseline_family == "lightgcn_paper":
             return self._apply_preset_overrides(_LIGHTGCN_PAPER_LOCKED_OVERRIDES)
@@ -514,10 +519,6 @@ class UCaGNNConfig:
     def preset_dice_paper(self) -> UCaGNNConfig:
         """Paper-faithful GCN-DICE baseline using DICE sampling and loss."""
         return self._apply_preset_overrides(_DICE_PAPER_PRESET_OVERRIDES)
-
-    def preset_lgndice_paper(self) -> UCaGNNConfig:
-        """Compatibility alias for the paper-faithful GCN-DICE baseline."""
-        return self.preset_dice_paper()
 
     def preset_full(self) -> UCaGNNConfig:
         """U-CaGNN mainline: refined scoring with asymmetric depth."""
