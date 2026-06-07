@@ -4,7 +4,7 @@ Use this file for the live model structure: embeddings, propagation, scoring, an
 
 ## Key files
 
-- `.github/skills/ucagnn-implementation/ucagnn-architecture.md`
+- `.agents/skills/ucagnn-implementation/ucagnn-architecture.md`
 - `src/models/embeddings.py`
 - `src/models/lightgcn.py`
 - `src/models/baselines/lightgcn.py`
@@ -48,12 +48,13 @@ The diagram shows the runtime path: the embedding layer prepares tables and meta
 
 ## Score fusion
 
-- `ScoringModule` always emits the diagnostic components `interest_score`, `conformity_score`, `context_score`, `score_mix_weights`, and `final_score`.
+- `ScoringModule` always emits calibrated diagnostic components `interest_score`, `conformity_score`, `context_score`, `score_mix_weights`, and `final_score`, plus raw branch scores as `branch_interest_score`, `branch_conformity_score`, and `raw_context_score`.
+- `final_score` is fused from norm-invariant branch logits and bounded context logits, not raw dot-product magnitudes. This keeps score-mix weights meaningful: a small conformity/context weight cannot dominate ranking only because that branch has larger embedding norms.
 - `preset_full()` keeps the learned structured mixer active and applies `score_mix_min_weight` across available components so conformity/context cannot silently collapse to zero contribution. Availability is determined by the model contract (`use_dual_branch`, context head enabled, and item context metadata present), not by whether a batch's current component scores are nonzero. Its branch losses are fed by DICE-conditioned popularity negatives by default.
 - `preset_lightgcn()` fixes the mixer to interest-only weights for the sampled LightGCN approximation.
 - `preset_lightgcn_paper()` instantiates `PaperLightGCN`, which exposes the shared train/eval payload with interest-only dot-product scores.
 - `preset_dice_like()` fixes the mixer to interest+conformity weights for the legacy DICE-like ablation.
-- `preset_dice_paper()` instantiates `PaperGCNDICE`, which exposes interest, conformity, and summed final scores for DICE sampler/loss training. `preset_lgndice_paper()` remains a compatibility alias because the external repository class is named `LGNDICE`.
+- `preset_dice_paper()` instantiates `PaperGCNDICE`, which exposes interest, conformity, and summed final scores for DICE sampler/loss training.
 - The `no_popularity_head` ablation removes only the context head; learned per-user mixing still applies over the active interest and conformity branches.
 - The context head remains item-only. Popularity is now just one context field alongside recency, propensity targets, item age, and bounded safe item features, with zero fill for any missing field.
 - Fixed-weight normalization stays tensor-native inside the scorer, avoiding `.item()`-style device synchronization during pairwise and full-catalog scoring.

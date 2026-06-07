@@ -4,7 +4,7 @@ Use this file for the live objective contract. `LossSuite` is the only public lo
 
 ## Key files
 
-- `.github/skills/ucagnn-implementation/ucagnn-losses.md`
+- `.agents/skills/ucagnn-implementation/ucagnn-losses.md`
 - `src/losses/loss_suite.py`
 - `src/models/ucagnn.py`
 - `src/training/mini_batch_trainer.py`
@@ -27,13 +27,13 @@ The diagram shows the weighted-sum structure only. Whether a term contributes in
 
 | Term | Source tensors | Base weight | Enabled when |
 | --- | --- | --- | --- |
-| `L_rec` | `final_score(pos)` vs `final_score(neg)`, or `interest+conformity` when `recommendation_loss_mode="dice_sum"` | `loss_weight_recommendation = 1.0` | Always on; IPW-reweighted only when `use_ipw=True`, propensity calibration is weighted, and batch propensity targets exist |
-| `L_interest_bpr` | Symmetric branch BPR, or DICE popular-negative masked BPR when `branch_loss_mode="dice"` | `0.02` for U-CaGNN, `0.1` for GCN-DICE | Dual-branch only |
-| `L_conformity_bpr` | Symmetric branch BPR, or DICE popularity BPR with reversed direction for popular negatives when `branch_loss_mode="dice"` | `0.02` for U-CaGNN, `0.1` for GCN-DICE | Dual-branch only |
+| `L_rec` | Calibrated `final_score(pos)` vs `final_score(neg)`, or raw branch `interest+conformity` when `recommendation_loss_mode="dice_sum"` | `loss_weight_recommendation = 1.0` | Always on; IPW-reweighted only when `use_ipw=True`, propensity calibration is weighted, and batch propensity targets exist |
+| `L_interest_bpr` | Raw `branch_interest_score` when present, otherwise `interest_score`; symmetric branch BPR, or DICE popular-negative masked BPR when `branch_loss_mode="dice"` | `0.02` for U-CaGNN, `0.1` for GCN-DICE | Dual-branch only |
+| `L_conformity_bpr` | Raw `branch_conformity_score` when present, otherwise `conformity_score`; symmetric branch BPR, or DICE popularity BPR with reversed direction for popular negatives when `branch_loss_mode="dice"` | `0.02` for U-CaGNN, `0.1` for GCN-DICE | Dual-branch only |
 | `L_independence` | Cosine-squared branch decorrelation, or distance-correlation discrepancy when `branch_loss_mode="dice"` | `0.005` for U-CaGNN, `0.01` for GCN-DICE | Dual-branch only |
 | `L_contrastive` | Branch-local positive-pair contrastive terms | `0.02` | Dual-branch only and weight > 0; weights are applied outside the log-probability |
 | `L_align` / `L_uniform` | DirectAU-style branch geometry | `0.02` | Dual-branch only and weight > 0 |
-| `L_pop` | `context_score(pos)` vs train-split item popularity target | `0.02` | Dual branch + context head + weight > 0 |
+| `L_pop` | Raw `raw_context_score(pos)` when present, otherwise `context_score(pos)`, vs train-split item popularity target | `0.02` | Dual branch + context head + weight > 0 |
 | `L_prop_calib` | `propensity_scores(pos)` vs `propensity_targets(pos)` | `0.0` | Weight > 0 and batch propensity targets available |
 | `L_embedding_reg` | LightGCN initial user, positive-item, and negative-item embeddings | `weight_decay=1e-4` for `lightgcn_paper` | `baseline_family="lightgcn_paper"` only |
 
@@ -55,7 +55,7 @@ L_total =
 
 `LossSuite` resolves the effective auxiliary weights first, then applies this weighted sum.
 
-`L_rec`, `L_pop`, and `L_prop_calib` are computed in fp32 so AMP does not change the loss scale. Contrastive branches normalize embeddings before their dot products and apply detached row weights after the log-probability.
+`L_rec`, `L_pop`, and `L_prop_calib` are computed in fp32 so AMP does not change the loss scale. For U-CaGNN, `final_score` is fused from calibrated component logits while branch BPR and popularity-context supervision still use raw branch/context scores. Contrastive branches normalize embeddings before their dot products and apply detached row weights after the log-probability.
 
 When `branch_loss_mode="dice"`, the branch terms follow DICE semantics:
 
