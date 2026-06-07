@@ -48,7 +48,7 @@ The diagram shows the runtime path: the embedding layer prepares tables and meta
 
 ## Score fusion
 
-- `ScoringModule` always emits calibrated diagnostic components `interest_score`, `conformity_score`, `context_score`, `score_mix_weights`, and `final_score`, plus raw branch scores as `branch_interest_score`, `branch_conformity_score`, and `raw_context_score`.
+- `ScoringModule` always emits calibrated diagnostic components `interest_score`, `conformity_score`, `context_score`, `score_mix_weights`, and `final_score`, plus raw branch scores as `branch_interest_score`, `branch_conformity_score`, and `raw_context_score`. The context head can use train-derived popularity/recency and safe item features by default; post-treatment propensity targets enter the context input, and count as active context metadata for score mixing, only for explicitly calibrated IPW runs.
 - `final_score` is fused from norm-invariant branch logits and bounded context logits, not raw dot-product magnitudes. This keeps score-mix weights meaningful: a small conformity/context weight cannot dominate ranking only because that branch has larger embedding norms.
 - `preset_full()` keeps the learned structured mixer active and applies `score_mix_min_weight` across available components so conformity/context cannot silently collapse to zero contribution. Availability is determined by the model contract (`use_dual_branch`, context head enabled, and item context metadata present), not by whether a batch's current component scores are nonzero. Its branch losses are fed by DICE-conditioned popularity negatives by default.
 - `preset_lightgcn()` fixes the mixer to interest-only weights for the sampled LightGCN approximation.

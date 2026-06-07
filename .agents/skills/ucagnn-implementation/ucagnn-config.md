@@ -4,7 +4,7 @@ Use this file for the config contract: presets, grouped knobs, and how runtime c
 
 ## Key files
 
-- `.github/skills/ucagnn-implementation/ucagnn-config.md`
+- `.agents/skills/ucagnn-implementation/ucagnn-config.md`
 - `src/utils/config.py`
 - `experiments/run_experiment.py`
 - `experiments/recipes.py`
@@ -51,7 +51,7 @@ For paper baselines, `build_config()` re-applies the paper-owned contract after 
 | Eval prefilter | `cagra_candidate_k` | Optional evaluation-only ANN candidate filter; `0` means full-catalog scoring. |
 | Model depth | `single_branch_gnn_layers`, `interest_gnn_layers`, `conformity_gnn_layers`, `num_neighbors` | Couples propagation depth to sampled fan-out. |
 | Score fusion | `score_weight_interest`, `score_weight_conformity`, `score_weight_popularity`, `score_mix_min_weight`, `use_popularity_head` | Sets preset-owned default priors; baselines keep fixed mixing while `preset_full()` keeps learned `score_mix_weights`, and `score_mix_min_weight` applies only to learned components available by the model/data contract. |
-| Loss and schedule | `loss_weight_*`, `branch_loss_mode`, `recommendation_loss_mode`, `auxiliary_loss_schedule`, `auxiliary_ramp_rate`, `independence_ramp_rate`, `distance_correlation_max_pairs`, `uniformity_max_pairs`, `loss_weight_propensity_calibration` | Enables auxiliaries, selects symmetric-vs-DICE branch supervision, caps quadratic auxiliary estimators, and controls how weights activate over time. |
+| Loss and schedule | `loss_weight_*`, `branch_loss_mode`, `recommendation_loss_mode`, `auxiliary_loss_schedule`, `auxiliary_ramp_rate`, `independence_ramp_rate`, `distance_correlation_max_pairs`, `contrastive_max_pairs`, `contrastive_temperature`, `uniformity_max_pairs`, `uniformity_temperature`, `use_conformity_au`, `loss_weight_propensity_calibration` | Enables auxiliaries, selects symmetric-vs-DICE branch supervision, caps quadratic auxiliary estimators, and controls how weights activate over time. |
 | Training mode | `training_graph_mode`, `negative_sampling_strategy`, `n_negatives`, `dice_sampler_margin`, `dice_sampler_pool`, `dice_branch_margin`, `dice_loss_decay`, `dice_margin_decay`, `dice_adaptive_decay` | Selects sampled-subgraph vs full-graph training and standard vs DICE popularity-conditioned negative sampling. |
 | Propensity | `use_ipw`, `propensity_hidden`, `propensity_clip_min`, `propensity_clip_max` | Controls the item-side propensity estimator; `use_ipw=True` requires positive `loss_weight_propensity_calibration`. |
 | Runtime | `batch_size`, `auto_batch_size`, `batch_size_candidates`, `epochs`, `patience`, `use_early_stopping`, `use_amp`, `use_torch_compile`, `use_ema`, `lr_scheduler`, `eval_ks` | Controls optimization and execution behavior. CUDA runs default to `bfloat16` AMP; the experiment CLIs do not expose a separate public AMP mode. |
@@ -75,6 +75,7 @@ For paper baselines, `build_config()` re-applies the paper-owned contract after 
 
 - The formal experiment grid is **dataset x preset**.
 - Support parameters such as `batch_size`, `num_neighbors`, `graph_policy`, and `lr_scheduler` are profile-owned runtime choices for U-CaGNN and tuned/fallback baselines, not thesis axes. Paper baselines lock their paper-owned values, including constant LR scheduling.
+- Formal profiles and runtime config mappings may override existing score-fusion, loss-weight, auxiliary-schedule, and bounded-pair estimator fields so controlled causal-loss ablations are reproducible through the same checkpoint identity surface as the mainline.
 - Formal profiles may sweep `num_neighbors`, `graph_policy`, or preprocessing presets as lists, but each resolved run still receives one concrete value in the final `UCaGNNConfig`.
-- The default formal profiles target the practical core datasets: `amazonbook`, `movielens1m`, `kuairec_v2`, and `kuairand1k`. `taobao` and `movielens20m` remain explicit stress/optional runs instead of default catalog entries.
-- Public ablation variants start from `preset_full()`: `mainline`, `no_popularity_head`, `no_independence`, and `no_features`.
+- The default formal profile is `core-ucagnn-mainline` and targets the practical core datasets: `amazonbook`, `movielens1m`, `kuairec_v2`, and `kuairand1k`. Development, preprocessing-sweep, runtime-probe, `taobao`, and `movielens20m` profiles remain explicit instead of default catalog entries.
+- Public ablation variants start from `preset_full()`: `mainline`, `with_contrastive`, `no_popularity_head`, `no_independence`, and `no_features`. `with_contrastive` is the only additive variant; it enables the bounded DCCL-style branch contrastive auxiliary that remains off in the default mainline.
