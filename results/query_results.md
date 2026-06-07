@@ -23,12 +23,12 @@ Dataset        | Preset       | ScoreMix | Neighbors  |  NDCG@20 |  Recall@20 | 
 amazonbook     | ucagnn       | learned  | 8-4        |   0.0214 |     0.0274 |   0.1801 |    0.9069 |     0.1994 |   0.0284 |     0.0463 |   0.2741 |    0.8944 |     0.1683 |   0.8767 |   0.8837
   Profile:    dev-matched-comparison-i1-c2-nn8-4-ep200-lr0-01
   Resources:  time=803.6s | epochs=168 | peak_vram=1139MB | gpu_util=-
-  Experiment: amazonbook_ucagnn_ep200_bs16384_dim64_layers2_branchL1-2_nbr8-4_feat_scoremixlearned_lr-plateau_seed13
+  Experiment: amazonbook_ucagnn_ep200_bs16384_dim64_layers2_branchL1-2_nbr8-4_feat_lr-plateau_seed13
 amazonbook     | ucagnn       | fixed    | 8-4        |   0.0210 |     0.0269 |   0.1769 |    0.8748 |     0.2103 |   0.0282 |     0.0460 |   0.2731 |    0.8606 |     0.1778 |   0.8289 |   0.8499
   Profile:    dev-matched-comparison-i1-c2-nn8-4-ep200-lr0-01
   Resources:  time=774.4s | epochs=169 | peak_vram=1138MB | gpu_util=-
   Experiment: amazonbook_ucagnn_ep200_bs16384_dim64_layers2_branchL1-2_nbr8-4_feat_lr-plateau_seed13
-amazonbook     | ucagnn       | fixed    | 8-4        |   0.0197 |     0.0252 |   0.1688 |    0.8992 |     0.1867 |   0.0264 |     0.0431 |   0.2589 |    0.8846 |     0.1583 |   0.7638 |   0.7793
+amazonbook     | ucagnn       | learned  | 8-4        |   0.0197 |     0.0252 |   0.1688 |    0.8992 |     0.1867 |   0.0264 |     0.0431 |   0.2589 |    0.8846 |     0.1583 |   0.7638 |   0.7793
   Profile:    ucagnn-learned-cosine-int1-conf2-nn8-4-ep300-aux30-pop60
   Resources:  time=575.9s | epochs=145 | peak_vram=1304MB | gpu_util=81%
   Diagnostics: conformity_contrib={20: 0.0000, 40: 0.0000} | interest_contrib={20: 34.3612, 40: 32.2024} | context_contrib={20: 0.0000, 40: 0.0000}
@@ -42,7 +42,7 @@ amazonbook     | dice_like    | fixed    | 10-5       |   0.0195 |     0.0249 | 
 amazonbook     | ucagnn       | learned  | 5-3-2      |   0.0193 |     0.0249 |   0.1665 |    0.8263 |     0.2255 |   0.0260 |     0.0427 |   0.2569 |    0.8112 |     0.1904 |   0.6990 |   0.7129
   Profile:    dev-matched-comparison-i2-c3
   Resources:  time=739.4s | epochs=100 | peak_vram=1138MB | gpu_util=-
-  Experiment: amazonbook_ucagnn_ep100_bs8192_dim64_layers3_branchL2-3_nbr5-3-2_feat_scoremixlearned_lr-plateau_seed13
+  Experiment: amazonbook_ucagnn_ep100_bs8192_dim64_layers3_branchL2-3_nbr5-3-2_feat_lr-plateau_seed13
 amazonbook     | lightgcn     | fixed    | 5-3        |   0.0202 |     0.0259 |   0.1708 |    0.8700 |     0.2077 |   0.0270 |     0.0439 |   0.2610 |    0.8539 |     0.1795 |   0.6903 |   0.6924
   Profile:    e100-lr0p01-bs4096-n5x3-swboth-c90aaaa1
   Resources:  time=598.9s | epochs=100 | peak_vram=1625MB | gpu_util=-
@@ -50,11 +50,11 @@ amazonbook     | lightgcn     | fixed    | 5-3        |   0.0202 |     0.0259 | 
 amazonbook     | ucagnn       | learned  | 10-5-3     |   0.0189 |     0.0243 |   0.1636 |    0.8296 |     0.2312 |   0.0257 |     0.0421 |   0.2552 |    0.8148 |     0.1955 |   0.6651 |   0.6895
   Profile:    dev-matched-comparison-i2-c3
   Resources:  time=825.8s | epochs=100 | peak_vram=1138MB | gpu_util=-
-  Experiment: amazonbook_ucagnn_ep100_bs8192_dim64_layers3_branchL2-3_nbr10-5-3_feat_scoremixlearned_lr-plateau_seed13
+  Experiment: amazonbook_ucagnn_ep100_bs8192_dim64_layers3_branchL2-3_nbr10-5-3_feat_lr-plateau_seed13
 amazonbook     | dice_like    | fixed    | 5-3        |   0.0209 |     0.0265 |   0.1738 |    0.9219 |     0.1913 |   0.0278 |     0.0449 |   0.2667 |    0.9098 |     0.1637 |   0.6510 |   0.6577
   Profile:    e100-lr0p01-bs4096-n5x3-swboth-c90aaaa1
   Resources:  time=739.1s | epochs=100 | peak_vram=1735MB | gpu_util=-
-  Experiment: amazonbook_dice_like_ep100_bs4096_dim64_layers2_branchL1-2_nbr5-3_feat_lr-plateau_trainscoreinterest_only_scoreinterest_only_seed13
+  Experiment: amazonbook_dice_like_ep100_bs4096_dim64_layers2_branchL1-2_nbr5-3_feat_lr-plateau_seed13
 amazonbook     | lightgcn     | fixed    | 10-5       |   0.0187 |     0.0239 |   0.1617 |    0.8283 |     0.2449 |   0.0252 |     0.0413 |   0.2513 |    0.8138 |     0.2067 |   0.6471 |   0.6676
   Profile:    dev-matched-comparison
   Resources:  time=492.9s | epochs=100 | peak_vram=1042MB | gpu_util=-
@@ -70,15 +70,15 @@ amazonbook     | lightgcn     | fixed    | 10-5       |   0.0194 |     0.0244 | 
 amazonbook     | ucagnn       | learned  | 10-5       |   0.0224 |     0.0288 |   0.1844 |    0.9086 |     0.1748 |   0.0297 |     0.0482 |   0.2797 |    0.8983 |     0.1500 |   0.6170 |   0.6175
   Profile:    e100-lr0p01-bs1024-n10x5-swboth-617195e1
   Resources:  time=2100.2s | epochs=77 | peak_vram=1753MB | gpu_util=-
-  Experiment: amazonbook_ucagnn_ep100_bs1024_dim64_layers2_branchL1-2_nbr10-5_feat_scoremixlearned_lr-plateau_seed13
+  Experiment: amazonbook_ucagnn_ep100_bs1024_dim64_layers2_branchL1-2_nbr10-5_feat_lr-plateau_seed13
 amazonbook     | dice_like    | fixed    | 10-5       |   0.0188 |     0.0236 |   0.1608 |    0.9223 |     0.1941 |   0.0252 |     0.0404 |   0.2493 |    0.9100 |     0.1653 |   0.5342 |   0.5436
   Profile:    e100-lr0p01-bs1024-n10x5-swboth-617195e1
   Resources:  time=1354.1s | epochs=69 | peak_vram=1735MB | gpu_util=-
-  Experiment: amazonbook_dice_like_ep100_bs1024_dim64_layers2_branchL1-2_nbr10-5_feat_lr-plateau_trainscoreinterest_only_scoreinterest_only_seed13
+  Experiment: amazonbook_dice_like_ep100_bs1024_dim64_layers2_branchL1-2_nbr10-5_feat_lr-plateau_seed13
 amazonbook     | dice_like    | fixed    | 10-5       |   0.0192 |     0.0245 |   0.1638 |    0.8475 |     0.2206 |   0.0258 |     0.0419 |   0.2527 |    0.8323 |     0.1916 |   0.5241 |   0.5292
   Profile:    e100-lr0p001-bs4096-n10x5-swboth-b04a595e
   Resources:  time=1028.6s | epochs=100 | peak_vram=1737MB | gpu_util=-
-  Experiment: amazonbook_dice_like_ep100_bs4096_dim64_layers2_branchL1-2_nbr10-5_feat_lr-plateau_trainscoreinterest_only_scoreinterest_only_seed13
+  Experiment: amazonbook_dice_like_ep100_bs4096_dim64_layers2_branchL1-2_nbr10-5_feat_lr-plateau_seed13
 amazonbook     | dice_like    | fixed    | 5-3-2      |   0.0175 |     0.0224 |   0.1521 |    0.7642 |     0.2601 |   0.0238 |     0.0389 |   0.2390 |    0.7514 |     0.2192 |   0.5181 |   0.5400
   Profile:    dev-matched-comparison-i2-c3
   Resources:  time=594.4s | epochs=100 | peak_vram=1111MB | gpu_util=-
@@ -90,7 +90,7 @@ amazonbook     | dice_like    | fixed    | 10-5-3     |   0.0175 |     0.0224 | 
 amazonbook     | ucagnn       | learned  | 20-10      |   0.0170 |     0.0212 |   0.1495 |    0.7452 |     0.2917 |   0.0225 |     0.0360 |   0.2314 |    0.7292 |     0.2442 |   0.4338 |   0.4274
   Profile:    ucagnn-learned-cosine-int1-conf2-nn20-10-ep300-aux30-pop60
   Resources:  time=350.6s | epochs=84 | peak_vram=1050MB | gpu_util=-
-  Experiment: amazonbook_ucagnn_ep300_bs32768_dim64_layers2_branchL1-2_nbr20-10_ppresetamazonbook_graph_only_feat_scoremixlearned_lr-cosine_seed13
+  Experiment: amazonbook_ucagnn_ep300_bs32768_dim64_layers2_branchL1-2_nbr20-10_ppresetamazonbook_graph_only_feat_lr-cosine_seed13
 amazonbook     | lightgcn     | fixed    | 10-5       |   0.0169 |     0.0216 |   0.1472 |    0.7567 |     0.2264 |   0.0228 |     0.0371 |   0.2310 |    0.7422 |     0.2015 |   0.4335 |   0.4349
   Profile:    e100-lr0p001-bs4096-n10x5-swboth-b04a595e
   Resources:  time=765.6s | epochs=100 | peak_vram=1625MB | gpu_util=-
@@ -98,7 +98,7 @@ amazonbook     | lightgcn     | fixed    | 10-5       |   0.0169 |     0.0216 | 
 amazonbook     | ucagnn       | learned  | 10-5       |   0.0199 |     0.0253 |   0.1682 |    0.8637 |     0.2005 |   0.0267 |     0.0434 |   0.2594 |    0.8498 |     0.1740 |   0.2013 |   0.2042
   Profile:    e100-lr0p001-bs4096-n10x5-swboth-b04a595e
   Resources:  time=1312.4s | epochs=100 | peak_vram=1756MB | gpu_util=-
-  Experiment: amazonbook_ucagnn_ep100_bs4096_dim64_layers2_branchL1-2_nbr10-5_feat_scoremixlearned_lr-plateau_seed13
+  Experiment: amazonbook_ucagnn_ep100_bs4096_dim64_layers2_branchL1-2_nbr10-5_feat_lr-plateau_seed13
 
 kuairand1k     | lightgcn     | fixed    | 10-5       |   0.0181 |     0.0007 |   0.2760 |    0.9780 |     0.3087 |   0.0171 |     0.0011 |   0.4190 |    0.9724 |     0.2860 |   0.4827 |   0.4699
   Profile:    dev-matched-comparison
@@ -121,28 +121,28 @@ kuairand1k     | dice_like    | fixed    | 10-5       |   0.0160 |     0.0006 | 
   Resources:  time=2323.9s | epochs=12 | peak_vram=13060MB | gpu_util=-
   Experiment: kuairand1k_dice_like_ep100_bs2048_dim64_layers2_branchL1-2_nbr10-5_lr-plateau_seed13
 
-kuairec_v2     | ucagnn       | fixed    | 20-10      |   0.8839 |     0.0531 |   1.0000 |    0.9834 |     0.7713 |   0.8887 |     0.1072 |   1.0000 |    0.9759 |     0.8152 |   0.6880 |   0.6441
+kuairec_v2     | ucagnn       | learned  | 20-10      |   0.8839 |     0.0531 |   1.0000 |    0.9834 |     0.7713 |   0.8887 |     0.1072 |   1.0000 |    0.9759 |     0.8152 |   0.6880 |   0.6441
   Profile:    kuairec-v2-preprocessing-sweep
   Resources:  time=558.2s | epochs=70 | peak_vram=1288MB | gpu_util=56%
   Diagnostics: conformity_contrib={20: 3.2659, 40: 3.2623} | interest_contrib={20: 2.9665, 40: 2.5191} | context_contrib={20: 0.3327, 40: 0.3327}
   Popularity:  Spearman (Interest={20: -0.4580, 40: -0.3391} | Conformity={20: 0.7931, 40: 0.8353} | Context={20: 0.0000, 40: 0.0000} | Final={20: -0.0513, 40: 0.0968})
   Score Mix:   Interest=0.4994±0.3365 | Conformity=0.1319±0.0917 | Context=0.3687±0.2509 | Cosine=0.4737±0.0718
   Experiment: kuairec_v2_ucagnn_ep120_bs16384_dim64_layers2_branchL1-2_nbr20-10_ppresetkuairec_fullobs_feat_lr-cosine_seed13
-kuairec_v2     | ucagnn       | fixed    | 20-10      |   0.1390 |     0.0199 |   0.7202 |    0.9610 |     0.1398 |   0.1238 |     0.0330 |   0.8155 |    0.9572 |     0.1292 |   0.3403 |   0.3118
+kuairec_v2     | ucagnn       | learned  | 20-10      |   0.1390 |     0.0199 |   0.7202 |    0.9610 |     0.1398 |   0.1238 |     0.0330 |   0.8155 |    0.9572 |     0.1292 |   0.3403 |   0.3118
   Profile:    kuairec-v2-preprocessing-sweep
   Resources:  time=3213.3s | epochs=70 | peak_vram=3204MB | gpu_util=81%
   Diagnostics: conformity_contrib={20: 3.6484, 40: 3.5374} | interest_contrib={20: 7.0652, 40: 6.6412} | context_contrib={20: 0.1271, 40: 0.1271}
   Popularity:  Spearman (Interest={20: -0.1863, 40: -0.1722} | Conformity={20: 0.8494, 40: 0.8618} | Context={20: 0.0000, 40: 0.0000} | Final={20: 0.2180, 40: 0.2323})
   Score Mix:   Interest=0.3079±0.1187 | Conformity=0.0811±0.1329 | Context=0.6111±0.1571 | Cosine=0.3159±0.1666
   Experiment: kuairec_v2_ucagnn_ep120_bs16384_dim64_layers2_branchL1-2_nbr20-10_ppresetkuairec_watchratio_raw_feat_lr-cosine_seed13
-kuairec_v2     | ucagnn       | fixed    | 20-10      |   0.1177 |     0.0183 |   0.7029 |    0.9719 |     0.4717 |   0.1082 |     0.0318 |   0.8303 |    0.9618 |     0.4585 |   0.2934 |   0.2748
+kuairec_v2     | ucagnn       | learned  | 20-10      |   0.1177 |     0.0183 |   0.7029 |    0.9719 |     0.4717 |   0.1082 |     0.0318 |   0.8303 |    0.9618 |     0.4585 |   0.2934 |   0.2748
   Profile:    kuairec-v2-preprocessing-sweep
   Resources:  time=3282.3s | epochs=81 | peak_vram=2653MB | gpu_util=81%
   Diagnostics: conformity_contrib={20: 6.5175, 40: 6.4306} | interest_contrib={20: 5.6030, 40: 5.2104} | context_contrib={20: 0.2425, 40: 0.2425}
   Popularity:  Spearman (Interest={20: -0.4304, 40: -0.4133} | Conformity={20: 0.8598, 40: 0.8712} | Context={20: 0.0000, 40: 0.0000} | Final={20: 0.2215, 40: 0.2557})
   Score Mix:   Interest=0.3138±0.1355 | Conformity=0.1668±0.1215 | Context=0.5195±0.1779 | Cosine=0.2950±0.1881
   Experiment: kuairec_v2_ucagnn_ep120_bs16384_dim64_layers2_branchL1-2_nbr20-10_ppresetkuairec_watchratio_feat_lr-cosine_seed13
-kuairec_v2     | ucagnn       | fixed    | 8-4        |   0.0773 |     0.0148 |   0.5921 |    0.9685 |     0.5598 |   0.0720 |     0.0255 |   0.7411 |    0.9568 |     0.5438 |   0.2390 |   0.2211
+kuairec_v2     | ucagnn       | learned  | 8-4        |   0.0773 |     0.0148 |   0.5921 |    0.9685 |     0.5598 |   0.0720 |     0.0255 |   0.7411 |    0.9568 |     0.5438 |   0.2390 |   0.2211
   Profile:    ucagnn-learned-cosine-int1-conf2-nn8-4-ep300-aux30-pop60
   Resources:  time=722.4s | epochs=70 | peak_vram=2725MB | gpu_util=80%
   Diagnostics: conformity_contrib={20: 5.3621, 40: 5.2563} | interest_contrib={20: 2.6418, 40: 2.5537} | context_contrib={20: 0.0492, 40: 0.0492}
@@ -152,7 +152,7 @@ kuairec_v2     | ucagnn       | fixed    | 8-4        |   0.0773 |     0.0148 | 
 kuairec_v2     | ucagnn       | learned  | 8-4        |   0.0765 |     0.0138 |   0.5860 |    0.9770 |     0.5706 |   0.0705 |     0.0237 |   0.7450 |    0.9672 |     0.5484 |   0.2340 |   0.2165
   Profile:    dev-matched-comparison-i1-c2-nn8-4-ep200-lr0-01
   Resources:  time=738.4s | epochs=40 | peak_vram=2651MB | gpu_util=-
-  Experiment: kuairec_v2_ucagnn_ep200_bs16384_dim64_layers2_branchL1-2_nbr8-4_feat_scoremixlearned_lr-plateau_seed13
+  Experiment: kuairec_v2_ucagnn_ep200_bs16384_dim64_layers2_branchL1-2_nbr8-4_feat_lr-plateau_seed13
 kuairec_v2     | dice_like    | fixed    | 5-3-2      |   0.0797 |     0.0148 |   0.6001 |    0.9790 |     0.4658 |   0.0728 |     0.0249 |   0.7453 |    0.9714 |     0.4519 |   0.2337 |   0.2135
   Profile:    dev-matched-comparison-i2-c3
   Resources:  time=4426.5s | epochs=100 | peak_vram=2018MB | gpu_util=-
@@ -184,11 +184,11 @@ kuairec_v2     | lightgcn     | fixed    | 10-5       |   0.0804 |     0.0177 | 
 kuairec_v2     | ucagnn       | learned  | 10-5       |   0.0752 |     0.0103 |   0.6108 |    0.9062 |     0.7069 |   0.0709 |     0.0191 |   0.7738 |    0.8803 |     0.6693 |   0.1682 |   0.1521
   Profile:    e60-lr0p001-bs4096-n10x5-swlearned-2116e6e2
   Resources:  time=4057.5s | epochs=60 | peak_vram=2089MB | gpu_util=-
-  Experiment: kuairec_v2_ucagnn_ep60_bs4096_dim64_layers2_branchL1-2_nbr10-5_feat_scoremixlearned_lr-plateau_seed13
+  Experiment: kuairec_v2_ucagnn_ep60_bs4096_dim64_layers2_branchL1-2_nbr10-5_feat_lr-plateau_seed13
 kuairec_v2     | dice_like    | fixed    | 5-3        |   0.0724 |     0.0175 |   0.6070 |    0.8944 |     0.2840 |   0.0641 |     0.0287 |   0.7436 |    0.8639 |     0.2742 |   0.1434 |   0.1140
   Profile:    e100-lr0p01-bs4096-n5x3-swboth-c90aaaa1
   Resources:  time=1706.4s | epochs=40 | peak_vram=5372MB | gpu_util=-
-  Experiment: kuairec_v2_dice_like_ep100_bs4096_dim64_layers2_branchL1-2_nbr5-3_feat_lr-plateau_trainscoreinterest_only_scoreinterest_only_seed13
+  Experiment: kuairec_v2_dice_like_ep100_bs4096_dim64_layers2_branchL1-2_nbr5-3_feat_lr-plateau_seed13
 kuairec_v2     | lightgcn     | fixed    | 8-4        |   0.0471 |     0.0092 |   0.4617 |    0.9499 |     0.7149 |   0.0455 |     0.0167 |   0.6421 |    0.9337 |     0.6777 |   0.1394 |   0.1290
   Profile:    dev-matched-comparison-i1-c2-nn8-4-ep200-lr0-01
   Resources:  time=610.0s | epochs=46 | peak_vram=2635MB | gpu_util=-
@@ -196,11 +196,11 @@ kuairec_v2     | lightgcn     | fixed    | 8-4        |   0.0471 |     0.0092 | 
 kuairec_v2     | ucagnn       | learned  | 5-3-2      |   0.0534 |     0.0082 |   0.4843 |    0.9277 |     0.6998 |   0.0496 |     0.0155 |   0.6467 |    0.9101 |     0.6664 |   0.1373 |   0.1238
   Profile:    dev-matched-comparison-i2-c3
   Resources:  time=2622.1s | epochs=40 | peak_vram=2024MB | gpu_util=-
-  Experiment: kuairec_v2_ucagnn_ep100_bs4096_dim64_layers3_branchL2-3_nbr5-3-2_feat_scoremixlearned_lr-plateau_seed13
+  Experiment: kuairec_v2_ucagnn_ep100_bs4096_dim64_layers3_branchL2-3_nbr5-3-2_feat_lr-plateau_seed13
 kuairec_v2     | ucagnn       | learned  | 10-5-3     |   0.0452 |     0.0085 |   0.4215 |    0.9378 |     0.7005 |   0.0429 |     0.0162 |   0.5832 |    0.9212 |     0.6680 |   0.1230 |   0.1103
   Profile:    dev-matched-comparison-i2-c3
   Resources:  time=2720.6s | epochs=40 | peak_vram=2089MB | gpu_util=-
-  Experiment: kuairec_v2_ucagnn_ep100_bs4096_dim64_layers3_branchL2-3_nbr10-5-3_feat_scoremixlearned_lr-plateau_seed13
+  Experiment: kuairec_v2_ucagnn_ep100_bs4096_dim64_layers3_branchL2-3_nbr10-5-3_feat_lr-plateau_seed13
 kuairec_v2     | ucagnn       | fixed    | 8-4        |   0.0438 |     0.0081 |   0.4530 |    0.9403 |     0.7413 |   0.0437 |     0.0154 |   0.6486 |    0.9213 |     0.7015 |   0.1214 |   0.1160
   Profile:    dev-matched-comparison-i1-c2-nn8-4-ep200-lr0-01
   Resources:  time=738.6s | epochs=42 | peak_vram=2650MB | gpu_util=-
@@ -208,7 +208,7 @@ kuairec_v2     | ucagnn       | fixed    | 8-4        |   0.0438 |     0.0081 | 
 kuairec_v2     | ucagnn       | learned  | 10-5       |   0.0415 |     0.0070 |   0.4451 |    0.9291 |     0.6062 |   0.0399 |     0.0123 |   0.6263 |    0.9128 |     0.5659 |   0.1206 |   0.1020
   Profile:    dev-matched-comparison
   Resources:  time=1087.0s | epochs=40 | peak_vram=2107MB | gpu_util=-
-  Experiment: kuairec_v2_ucagnn_ep100_bs4096_dim64_layers2_branchL1-2_nbr10-5_feat_scoremixlearned_lr-plateau_seed13
+  Experiment: kuairec_v2_ucagnn_ep100_bs4096_dim64_layers2_branchL1-2_nbr10-5_feat_lr-plateau_seed13
 kuairec_v2     | ucagnn       | fixed    | 10-5-3     |   0.0440 |     0.0077 |   0.4122 |    0.9151 |     0.6124 |   0.0398 |     0.0127 |   0.5595 |    0.8936 |     0.5994 |   0.1116 |   0.0830
   Profile:    dev-matched-comparison-i2-c3
   Resources:  time=4812.0s | epochs=74 | peak_vram=2089MB | gpu_util=-
@@ -229,16 +229,16 @@ movielens1m    | lightgcn     | fixed    | 10-5       |   0.0902 |     0.0966 | 
 movielens1m    | dice_like    | fixed    | 5-3        |   0.0903 |     0.0959 |   0.5326 |    0.7889 |     0.5207 |   0.1102 |     0.1621 |   0.6839 |    0.7252 |     0.4649 |   0.7217 |   0.6870
   Profile:    e100-lr0p01-bs4096-n5x3-swboth-c90aaaa1
   Resources:  time=121.9s | epochs=40 | peak_vram=608MB | gpu_util=-
-  Experiment: movielens1m_dice_like_ep100_bs4096_dim64_layers2_branchL1-2_nbr5-3_feat_lr-plateau_trainscoreinterest_only_scoreinterest_only_seed13
+  Experiment: movielens1m_dice_like_ep100_bs4096_dim64_layers2_branchL1-2_nbr5-3_feat_lr-plateau_seed13
 movielens1m    | ucagnn       | learned  | 10-5       |   0.0818 |     0.0938 |   0.5094 |    0.9192 |     0.3591 |   0.1041 |     0.1631 |   0.6818 |    0.8840 |     0.3312 |   0.6779 |   0.7311
   Profile:    e100-lr0p01-bs1024-n10x5-swboth-617195e1
   Resources:  time=378.6s | epochs=40 | peak_vram=610MB | gpu_util=-
-  Experiment: movielens1m_ucagnn_ep100_bs1024_dim64_layers2_branchL1-2_nbr10-5_feat_scoremixlearned_lr-plateau_seed13
+  Experiment: movielens1m_ucagnn_ep100_bs1024_dim64_layers2_branchL1-2_nbr10-5_feat_lr-plateau_seed13
 movielens1m    | dice_like    | fixed    | 10-5       |   0.0853 |     0.0907 |   0.5134 |    0.8335 |     0.4653 |   0.1050 |     0.1554 |   0.6752 |    0.7892 |     0.4130 |   0.6694 |   0.6759
   Profile:    e100-lr0p001-bs4096-n10x5-swboth-b04a595e
   Resources:  time=309.1s | epochs=100 | peak_vram=608MB | gpu_util=-
-  Experiment: movielens1m_dice_like_ep100_bs4096_dim64_layers2_branchL1-2_nbr10-5_feat_lr-plateau_trainscoreinterest_only_scoreinterest_only_seed13
-movielens1m    | ucagnn       | fixed    | 8-4        |   0.0871 |     0.0946 |   0.5116 |    0.8429 |     0.4669 |   0.1082 |     0.1633 |   0.6732 |    0.8018 |     0.4113 |   0.6263 |   0.6477
+  Experiment: movielens1m_dice_like_ep100_bs4096_dim64_layers2_branchL1-2_nbr10-5_feat_lr-plateau_seed13
+movielens1m    | ucagnn       | learned  | 8-4        |   0.0871 |     0.0946 |   0.5116 |    0.8429 |     0.4669 |   0.1082 |     0.1633 |   0.6732 |    0.8018 |     0.4113 |   0.6263 |   0.6477
   Profile:    ucagnn-learned-cosine-int1-conf2-nn8-4-ep300-aux30-pop60
   Resources:  time=168.9s | epochs=78 | peak_vram=611MB | gpu_util=80%
   Diagnostics: conformity_contrib={20: 0.0007, 40: 0.0007} | interest_contrib={20: 18.0334, 40: 17.1377} | context_contrib={20: 0.0000, 40: 0.0000}
@@ -264,15 +264,15 @@ movielens1m    | ucagnn       | fixed    | 10-5       |   0.0868 |     0.0915 | 
 movielens1m    | ucagnn       | learned  | 10-5       |   0.0869 |     0.0902 |   0.5166 |    0.7698 |     0.5280 |   0.1062 |     0.1538 |   0.6632 |    0.7280 |     0.4583 |   0.5904 |   0.5867
   Profile:    movielens1m-all-lr-schedules
   Resources:  time=99.8s | epochs=40 | peak_vram=610MB | gpu_util=-
-  Experiment: movielens1m_ucagnn_ep60_bs16384_dim64_layers2_branchL1-2_nbr10-5_feat_scoremixlearned_lr-plateau_seed13
+  Experiment: movielens1m_ucagnn_ep60_bs16384_dim64_layers2_branchL1-2_nbr10-5_feat_lr-plateau_seed13
 movielens1m    | ucagnn       | learned  | 10-5       |   0.0868 |     0.0902 |   0.5167 |    0.7704 |     0.5275 |   0.1059 |     0.1533 |   0.6627 |    0.7287 |     0.4579 |   0.5902 |   0.5831
   Profile:    movielens1m-all-lr-schedules
   Resources:  time=99.4s | epochs=40 | peak_vram=610MB | gpu_util=-
-  Experiment: movielens1m_ucagnn_ep60_bs16384_dim64_layers2_branchL1-2_nbr10-5_feat_scoremixlearned_lr-linear_seed13
+  Experiment: movielens1m_ucagnn_ep60_bs16384_dim64_layers2_branchL1-2_nbr10-5_feat_lr-linear_seed13
 movielens1m    | ucagnn       | learned  | 10-5       |   0.0868 |     0.0904 |   0.5180 |    0.7701 |     0.5276 |   0.1059 |     0.1536 |   0.6632 |    0.7285 |     0.4581 |   0.5898 |   0.5827
   Profile:    movielens1m-all-lr-schedules
   Resources:  time=99.5s | epochs=40 | peak_vram=610MB | gpu_util=-
-  Experiment: movielens1m_ucagnn_ep60_bs16384_dim64_layers2_branchL1-2_nbr10-5_feat_scoremixlearned_lr-polynomial_seed13
+  Experiment: movielens1m_ucagnn_ep60_bs16384_dim64_layers2_branchL1-2_nbr10-5_feat_lr-polynomial_seed13
 movielens1m    | ucagnn       | fixed    | 10-5       |   0.0867 |     0.0914 |   0.5242 |    0.7540 |     0.5276 |   0.1068 |     0.1578 |   0.6783 |    0.7089 |     0.4569 |   0.5897 |   0.6034
   Profile:    movielens1m-all-lr-schedules
   Resources:  time=134.9s | epochs=56 | peak_vram=610MB | gpu_util=-
@@ -292,11 +292,11 @@ movielens1m    | ucagnn       | fixed    | 10-5       |   0.0867 |     0.0913 | 
 movielens1m    | ucagnn       | learned  | 10-5       |   0.0868 |     0.0900 |   0.5159 |    0.7705 |     0.5273 |   0.1061 |     0.1538 |   0.6632 |    0.7289 |     0.4577 |   0.5888 |   0.5871
   Profile:    movielens1m-all-lr-schedules
   Resources:  time=99.4s | epochs=40 | peak_vram=610MB | gpu_util=-
-  Experiment: movielens1m_ucagnn_ep60_bs16384_dim64_layers2_branchL1-2_nbr10-5_feat_scoremixlearned_lr-exponential_seed13
+  Experiment: movielens1m_ucagnn_ep60_bs16384_dim64_layers2_branchL1-2_nbr10-5_feat_lr-exponential_seed13
 movielens1m    | ucagnn       | learned  | 10-5       |   0.0868 |     0.0902 |   0.5156 |    0.7703 |     0.5276 |   0.1060 |     0.1536 |   0.6626 |    0.7285 |     0.4581 |   0.5886 |   0.5838
   Profile:    movielens1m-all-lr-schedules
   Resources:  time=99.3s | epochs=40 | peak_vram=610MB | gpu_util=-
-  Experiment: movielens1m_ucagnn_ep60_bs16384_dim64_layers2_branchL1-2_nbr10-5_feat_scoremixlearned_lr-multi_step_seed13
+  Experiment: movielens1m_ucagnn_ep60_bs16384_dim64_layers2_branchL1-2_nbr10-5_feat_lr-multi_step_seed13
 
 ================================================================================
 ABLATION FULL-DATA TEST RUNS — best run per dataset and variant ranked by CRRU@20 then CRRU@40
@@ -305,23 +305,23 @@ Dataset        | Variant              | ScoreMix | Neighbors  |  NDCG@20 |  Reca
 ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 amazonbook     | no_contrastive       | learned  | 20-10      |   0.0182 |     0.0230 |   0.1590 |    0.8236 |     0.2499 |   0.0246 |     0.0399 |   0.2483 |    0.8066 |     0.2120 |   0.5669 |   0.5850
   Resources:  time=3539.5s | epochs=300 | peak_vram=1048MB | gpu_util=-
-  Experiment: amazonbook_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_scoremixlearned_lr-cosine_no_contrastive_seed13
+  Experiment: amazonbook_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_no_contrastive_seed13
 amazonbook     | fixed_score_mix      | fixed    | 20-10      |   0.0186 |     0.0234 |   0.1599 |    0.7641 |     0.2748 |   0.0251 |     0.0404 |   0.2492 |    0.7466 |     0.2330 |   0.5356 |   0.5447
   Resources:  time=3521.6s | epochs=300 | peak_vram=1048MB | gpu_util=-
   Experiment: amazonbook_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_fixed_score_mix_seed13
 amazonbook     | no_independence      | learned  | 20-10      |   0.0178 |     0.0223 |   0.1552 |    0.7600 |     0.2824 |   0.0240 |     0.0388 |   0.2431 |    0.7387 |     0.2382 |   0.4776 |   0.4902
   Resources:  time=3089.1s | epochs=249 | peak_vram=1048MB | gpu_util=-
-  Experiment: amazonbook_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_scoremixlearned_lr-cosine_no_independence_seed13
+  Experiment: amazonbook_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_no_independence_seed13
 amazonbook     | no_ipw               | learned  | 20-10      |   0.0173 |     0.0218 |   0.1498 |    0.7436 |     0.2963 |   0.0234 |     0.0379 |   0.2352 |    0.7275 |     0.2493 |   0.4299 |   0.4438
   Resources:  time=1923.7s | epochs=156 | peak_vram=1047MB | gpu_util=-
-  Experiment: amazonbook_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_scoremixlearned_lr-cosine_no_ipw_seed13
+  Experiment: amazonbook_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_no_ipw_seed13
 amazonbook     | no_features          | learned  | 20-10      |   0.0171 |     0.0213 |   0.1495 |    0.7439 |     0.2953 |   0.0231 |     0.0373 |   0.2367 |    0.7228 |     0.2484 |   0.4041 |   0.4207
   Resources:  time=3711.9s | epochs=295 | peak_vram=1048MB | gpu_util=-
-  Experiment: amazonbook_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_scoremixlearned_lr-cosine_no_features_seed13
+  Experiment: amazonbook_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_lr-cosine_no_features_seed13
 amazonbook     | mainline             | learned  | 20-10      |   0.0170 |     0.0213 |   0.1491 |    0.7376 |     0.2948 |   0.0230 |     0.0372 |   0.2367 |    0.7166 |     0.2481 |   0.4027 |   0.4191
   Resources:  time=3064.0s | epochs=244 | peak_vram=1048MB | gpu_util=-
-  Experiment: amazonbook_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_scoremixlearned_lr-cosine_mainline_seed13
-amazonbook     | no_popularity_head   | fixed    | 6-3        |   0.0137 |     0.0175 |   0.1268 |    0.7124 |     0.2545 |   0.0186 |     0.0304 |   0.2019 |    0.7053 |     0.2126 |   0.1004 |   0.1135
+  Experiment: amazonbook_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_mainline_seed13
+amazonbook     | no_popularity_head   | learned  | 6-3        |   0.0137 |     0.0175 |   0.1268 |    0.7124 |     0.2545 |   0.0186 |     0.0304 |   0.2019 |    0.7053 |     0.2126 |   0.1004 |   0.1135
   Resources:  time=16199.4s | epochs=100 | peak_vram=1178MB | gpu_util=80%
   Diagnostics: conformity_contrib={20: 0.3843, 40: 0.3646} | interest_contrib={20: 21.7995, 40: 20.4426} | context_contrib={20: 0.0000, 40: 0.0000}
   Popularity:  Spearman (Interest={20: 0.4874, 40: 0.5093} | Conformity={20: 0.7515, 40: 0.7621} | Context={20: 0.0000, 40: 0.0000} | Final={20: 0.4903, 40: 0.5131})
@@ -330,45 +330,45 @@ amazonbook     | no_popularity_head   | fixed    | 6-3        |   0.0137 |     0
 
 kuairec_v2     | no_contrastive       | learned  | 20-10      |   0.9557 |     0.0573 |   1.0000 |    0.9287 |     0.7091 |   0.9404 |     0.1124 |   1.0000 |    0.9389 |     0.7838 |   0.7084 |   0.6551
   Resources:  time=1016.9s | epochs=67 | peak_vram=1236MB | gpu_util=-
-  Experiment: kuairec_v2_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_scoremixlearned_lr-cosine_no_contrastive_seed13
+  Experiment: kuairec_v2_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_no_contrastive_seed13
 kuairec_v2     | mainline             | learned  | 20-10      |   0.9195 |     0.0550 |   1.0000 |    0.8961 |     0.6212 |   0.9151 |     0.1097 |   1.0000 |    0.8893 |     0.6942 |   0.7003 |   0.6462
   Resources:  time=1197.4s | epochs=73 | peak_vram=1236MB | gpu_util=-
-  Experiment: kuairec_v2_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_scoremixlearned_lr-cosine_mainline_seed13
+  Experiment: kuairec_v2_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_mainline_seed13
 kuairec_v2     | no_independence      | learned  | 20-10      |   0.8987 |     0.0537 |   1.0000 |    0.9304 |     0.7257 |   0.9008 |     0.1082 |   1.0000 |    0.9253 |     0.7711 |   0.6819 |   0.6441
   Resources:  time=881.6s | epochs=54 | peak_vram=1236MB | gpu_util=-
-  Experiment: kuairec_v2_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_scoremixlearned_lr-cosine_no_independence_seed13
+  Experiment: kuairec_v2_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_no_independence_seed13
 kuairec_v2     | no_features          | learned  | 20-10      |   0.9360 |     0.0562 |   1.0000 |    0.9159 |     0.8046 |   0.9289 |     0.1114 |   1.0000 |    0.9127 |     0.8180 |   0.6266 |   0.6003
   Resources:  time=804.4s | epochs=50 | peak_vram=1233MB | gpu_util=-
-  Experiment: kuairec_v2_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_scoremixlearned_lr-cosine_no_features_seed13
+  Experiment: kuairec_v2_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_lr-cosine_no_features_seed13
 kuairec_v2     | no_ipw               | learned  | 20-10      |   0.9711 |     0.0583 |   1.0000 |    0.8910 |     0.8004 |   0.9672 |     0.1162 |   1.0000 |    0.8852 |     0.7935 |   0.6168 |   0.6005
   Resources:  time=807.9s | epochs=50 | peak_vram=1234MB | gpu_util=-
-  Experiment: kuairec_v2_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_scoremixlearned_lr-cosine_no_ipw_seed13
+  Experiment: kuairec_v2_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_no_ipw_seed13
 kuairec_v2     | fixed_score_mix      | fixed    | 20-10      |   0.8935 |     0.0539 |   1.0000 |    0.9598 |     0.9222 |   0.8977 |     0.1084 |   1.0000 |    0.9554 |     0.9150 |   0.3403 |   0.3485
   Resources:  time=749.0s | epochs=50 | peak_vram=1234MB | gpu_util=-
   Experiment: kuairec_v2_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_fixed_score_mix_seed13
 kuairec_v2     | no_popularity_head   | learned  | 20-10      |   0.9046 |     0.0545 |   1.0000 |    0.9577 |     0.9256 |   0.9025 |     0.1086 |   1.0000 |    0.9520 |     0.9188 |   0.0343 |   0.0343
   Resources:  time=782.6s | epochs=50 | peak_vram=1234MB | gpu_util=-
-  Experiment: kuairec_v2_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_scoremixlearned_lr-cosine_no_popularity_head_seed13
+  Experiment: kuairec_v2_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_no_popularity_head_seed13
 
 movielens1m    | no_features          | learned  | 20-10      |   0.0869 |     0.0941 |   0.5237 |    0.8248 |     0.4933 |   0.1083 |     0.1626 |   0.6848 |    0.7886 |     0.4284 |   0.6701 |   0.7001
   Resources:  time=382.5s | epochs=90 | peak_vram=609MB | gpu_util=-
-  Experiment: movielens1m_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_scoremixlearned_lr-cosine_no_features_seed13
+  Experiment: movielens1m_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_lr-cosine_no_features_seed13
 movielens1m    | fixed_score_mix      | fixed    | 20-10      |   0.0830 |     0.0860 |   0.4978 |    0.8738 |     0.4207 |   0.1022 |     0.1478 |   0.6444 |    0.8475 |     0.3654 |   0.6094 |   0.6212
   Resources:  time=420.6s | epochs=104 | peak_vram=609MB | gpu_util=-
   Experiment: movielens1m_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_fixed_score_mix_seed13
 movielens1m    | no_contrastive       | learned  | 20-10      |   0.0792 |     0.0835 |   0.4833 |    0.8623 |     0.4181 |   0.0977 |     0.1428 |   0.6268 |    0.8203 |     0.3760 |   0.5466 |   0.5413
   Resources:  time=256.6s | epochs=63 | peak_vram=609MB | gpu_util=-
-  Experiment: movielens1m_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_scoremixlearned_lr-cosine_no_contrastive_seed13
+  Experiment: movielens1m_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_no_contrastive_seed13
 movielens1m    | no_popularity_head   | learned  | 20-10      |   0.0835 |     0.0889 |   0.4955 |    0.9043 |     0.3838 |   0.1032 |     0.1530 |   0.6507 |    0.8753 |     0.3373 |   0.1760 |   0.1817
   Resources:  time=1263.8s | epochs=300 | peak_vram=610MB | gpu_util=-
-  Experiment: movielens1m_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_scoremixlearned_lr-cosine_no_popularity_head_seed13
+  Experiment: movielens1m_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_no_popularity_head_seed13
 movielens1m    | no_ipw               | learned  | 20-10      |   0.0677 |     0.0722 |   0.4343 |    0.8390 |     0.4178 |   0.0846 |     0.1240 |   0.5768 |    0.7990 |     0.3767 |   0.1366 |   0.1422
   Resources:  time=213.4s | epochs=50 | peak_vram=609MB | gpu_util=-
-  Experiment: movielens1m_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_scoremixlearned_lr-cosine_no_ipw_seed13
+  Experiment: movielens1m_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_no_ipw_seed13
 movielens1m    | mainline             | learned  | 20-10      |   0.0696 |     0.0710 |   0.4477 |    0.7202 |     0.5400 |   0.0843 |     0.1206 |   0.5747 |    0.6702 |     0.4604 |   0.1213 |   0.0014
   Resources:  time=292.3s | epochs=67 | peak_vram=609MB | gpu_util=-
-  Experiment: movielens1m_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_scoremixlearned_lr-cosine_mainline_seed13
+  Experiment: movielens1m_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_mainline_seed13
 movielens1m    | no_independence      | learned  | 20-10      |   0.0667 |     0.0708 |   0.4318 |    0.8496 |     0.4401 |   0.0836 |     0.1245 |   0.5909 |    0.8079 |     0.3891 | 3.045e-05 |   0.0026
   Resources:  time=302.2s | epochs=70 | peak_vram=609MB | gpu_util=-
-  Experiment: movielens1m_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_scoremixlearned_lr-cosine_no_independence_seed13
+  Experiment: movielens1m_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_no_independence_seed13
 ```

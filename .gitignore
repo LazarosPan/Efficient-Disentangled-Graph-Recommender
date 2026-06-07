@@ -42,3 +42,6 @@ wheels/
 # Codex
 # .codex/
 # .agents/
+
+# Papers
+/Papers_Causal_Embeddings_Recommendation_Systems/
