@@ -37,6 +37,23 @@ ABLATION_VARIANT_ORDER = {
     variant_name: index for index, variant_name in enumerate(ABLATION_VARIANTS)
 }
 CRRU_EPSILON = 1e-8
+FINAL_FORMAL_PROFILE_NAMES = frozenset(
+    {
+        "core-ucagnn-mainline",
+        "core-paper-architecture-comparison",
+        "paper-lightgcn-small-baselines",
+        "paper-lightgcn-baselines",
+    }
+)
+RUNTIME_PROBE_COLUMNS = (
+    "runtime_probe_target_epochs",
+    "runtime_probe_observed_epochs",
+    "runtime_probe_train_batches_per_epoch",
+    "runtime_probe_observed_batches_per_second",
+    "runtime_probe_seconds_per_epoch",
+    "runtime_probe_estimated_train_time_s",
+    "runtime_probe_estimated_remaining_train_time_s",
+)
 
 
 def connect() -> sqlite3.Connection:
@@ -229,6 +246,18 @@ def _query_report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                    s.test_hit_ratio_20, s.test_hit_ratio_40,
                    s.test_personalization_20, s.test_personalization_40,
                    s.test_average_popularity_20, s.test_average_popularity_40,
+                   {summary_column("test_interest_branch_ndcg_20")},
+                   {summary_column("test_interest_branch_ndcg_40")},
+                   {summary_column("test_interest_branch_recall_20")},
+                   {summary_column("test_interest_branch_recall_40")},
+                   {summary_column("test_interest_branch_average_popularity_20")},
+                   {summary_column("test_interest_branch_average_popularity_40")},
+                   {summary_column("test_conformity_branch_ndcg_20")},
+                   {summary_column("test_conformity_branch_ndcg_40")},
+                   {summary_column("test_conformity_branch_recall_20")},
+                   {summary_column("test_conformity_branch_recall_40")},
+                   {summary_column("test_conformity_branch_average_popularity_20")},
+                   {summary_column("test_conformity_branch_average_popularity_40")},
                    s.test_conformity_contribution_20,
                    s.test_conformity_contribution_40,
                    s.test_conformity_popularity_spearman_20,
@@ -308,6 +337,37 @@ def _is_formal_row(row: sqlite3.Row) -> bool:
     return isinstance(batch_id, str) and batch_id.startswith(FORMAL_BATCH_PREFIX)
 
 
+def _is_runtime_probe_row(row: sqlite3.Row) -> bool:
+    """Return whether a report row is a timing probe rather than a final run."""
+    for column_name in RUNTIME_PROBE_COLUMNS:
+        try:
+            if row[column_name] is not None:
+                return True
+        except (IndexError, KeyError):
+            continue
+    return False
+
+
+def _is_reportable_formal_row(row: sqlite3.Row) -> bool:
+    """Return whether a formal row is a full-run row rather than a timing probe."""
+    return _is_formal_row(row) and not _is_runtime_probe_row(row)
+
+
+def _is_final_formal_row(row: sqlite3.Row) -> bool:
+    """Return whether a formal row belongs in final thesis metric rankings."""
+    profile_name = row["profile_name"]
+    return (
+        _is_reportable_formal_row(row)
+        and isinstance(profile_name, str)
+        and profile_name in FINAL_FORMAL_PROFILE_NAMES
+    )
+
+
+def _is_supporting_formal_row(row: sqlite3.Row) -> bool:
+    """Return whether a formal row is supporting historical or diagnostic evidence."""
+    return _is_reportable_formal_row(row) and not _is_final_formal_row(row)
+
+
 def _is_ablation_row(row: sqlite3.Row) -> bool:
     """Return whether a report row came from the ablation workflow."""
     batch_id = row["batch_id"]
@@ -321,7 +381,9 @@ def _is_supported_ablation_row(row: sqlite3.Row) -> bool:
 
 def _is_default_report_row(row: sqlite3.Row) -> bool:
     """Return whether a row participates in the default thesis report."""
-    return _is_formal_row(row) or _is_supported_ablation_row(row)
+    return _is_reportable_formal_row(row) or (
+        _is_supported_ablation_row(row) and not _is_runtime_probe_row(row)
+    )
 
 
 def _crru_sort_key(
@@ -344,10 +406,12 @@ def _select_top_formal_rows(
     *,
     n: int,
     crru_scores: dict[int, dict[int, float]],
+    supporting: bool = False,
 ) -> list[sqlite3.Row]:
     """Return the top completed formal rows per dataset ranked by CRRU."""
+    row_filter = _is_supporting_formal_row if supporting else _is_final_formal_row
     ranked_rows = sorted(
-        (row for row in rows if _is_formal_row(row)),
+        (row for row in rows if row_filter(row)),
         key=lambda row: (row["dataset"] or "-", *_crru_sort_key(row, crru_scores)),
     )
 
@@ -397,6 +461,8 @@ def _print_causal_diagnostics(row: sqlite3.Row) -> None:
             or row["test_context_contribution_20"] is not None
             or row["test_final_popularity_spearman_20"] is not None
             or row["test_score_mix_interest_mean"] is not None
+            or _row_value(row, "test_interest_branch_ndcg_20") is not None
+            or _row_value(row, "test_conformity_branch_ndcg_20") is not None
         )
     except (IndexError, KeyError):
         return
@@ -474,6 +540,40 @@ def _print_causal_diagnostics(row: sqlite3.Row) -> None:
         f"Cosine={cosine_sim}"
     )
 
+    interest_branch_ndcg = fmt_pair(
+        _row_value(row, "test_interest_branch_ndcg_20"),
+        _row_value(row, "test_interest_branch_ndcg_40"),
+    )
+    interest_branch_recall = fmt_pair(
+        _row_value(row, "test_interest_branch_recall_20"),
+        _row_value(row, "test_interest_branch_recall_40"),
+    )
+    interest_branch_pop = fmt_pair(
+        _row_value(row, "test_interest_branch_average_popularity_20"),
+        _row_value(row, "test_interest_branch_average_popularity_40"),
+    )
+    conformity_branch_ndcg = fmt_pair(
+        _row_value(row, "test_conformity_branch_ndcg_20"),
+        _row_value(row, "test_conformity_branch_ndcg_40"),
+    )
+    conformity_branch_recall = fmt_pair(
+        _row_value(row, "test_conformity_branch_recall_20"),
+        _row_value(row, "test_conformity_branch_recall_40"),
+    )
+    conformity_branch_pop = fmt_pair(
+        _row_value(row, "test_conformity_branch_average_popularity_20"),
+        _row_value(row, "test_conformity_branch_average_popularity_40"),
+    )
+    if interest_branch_ndcg == "{20: -, 40: -}" and conformity_branch_ndcg == "{20: -, 40: -}":
+        return
+
+    print(
+        f"  Branch Rank: Interest NDCG={interest_branch_ndcg} | "
+        f"Recall={interest_branch_recall} | AvgPop={interest_branch_pop} || "
+        f"Conformity NDCG={conformity_branch_ndcg} | "
+        f"Recall={conformity_branch_recall} | AvgPop={conformity_branch_pop}"
+    )
+
 
 def _row_value(row: sqlite3.Row, key: str) -> float | None:
     """Return a row value when present, else ``None`` for older DB views."""
@@ -547,13 +647,15 @@ def _print_formal_rows(
     rows: list[sqlite3.Row],
     *,
     crru_scores: dict[int, dict[int, float]],
+    title: str,
+    empty_message: str,
 ) -> None:
     """Print the formal-run ranking table."""
     print("=" * 80)
-    print("FORMAL FULL-DATA TEST RUNS — top runs per dataset ranked by CRRU@20 then CRRU@40")
+    print(title)
     print("=" * 80)
     if not rows:
-        print("No completed formal full-data runs with test metrics found.")
+        print(empty_message)
         print()
         return
 
@@ -1003,7 +1105,7 @@ def _print_crru_summary() -> None:
     print("  Bias@K     = Pers@K^0.40 * (1-AvgPop@K_n)^0.60")
     print("  Efficiency = (1-log(1+VRAM)_n)^0.50 * (1-log(1+time/epoch)_n)^0.50")
     print("  CRRU@K     = Accuracy@K^0.55 * Bias@K^0.30 * Efficiency^0.15")
-    print(f"  Normalization: dataset-local report-row min-max with epsilon={CRRU_EPSILON:g}")
+    print(f"  Normalization: dataset-local section-row min-max with epsilon={CRRU_EPSILON:g}")
     print("  Note: CRRU is not a causal-effect estimator.")
     print()
 
@@ -1017,19 +1119,40 @@ def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
     print()
 
     rows = [row for row in _query_report_rows(conn) if _is_default_report_row(row)]
-    if not rows:
+    final_formal_rows = [row for row in rows if _is_final_formal_row(row)]
+    supporting_formal_rows = [row for row in rows if _is_supporting_formal_row(row)]
+    ablation_rows = [row for row in rows if _is_supported_ablation_row(row)]
+    if not (final_formal_rows or supporting_formal_rows or ablation_rows):
         print("No completed formal or ablation full-data runs with test metrics found.")
         print("Use --view all to inspect every logged experiment row.")
         return
 
-    crru_scores = _compute_dataset_crru_scores(rows)
+    crru_scores: dict[int, dict[int, float]] = {}
+    for section_rows in (final_formal_rows, supporting_formal_rows, ablation_rows):
+        crru_scores.update(_compute_dataset_crru_scores(section_rows))
     _print_crru_summary()
     _print_formal_rows(
-        _select_top_formal_rows(rows, n=n, crru_scores=crru_scores),
+        _select_top_formal_rows(final_formal_rows, n=n, crru_scores=crru_scores),
         crru_scores=crru_scores,
+        title=("FINAL FORMAL FULL-DATA TEST RUNS — thesis profiles ranked by CRRU@20 then CRRU@40"),
+        empty_message="No completed final formal full-data runs with test metrics found.",
+    )
+    _print_formal_rows(
+        _select_top_formal_rows(
+            supporting_formal_rows,
+            n=n,
+            crru_scores=crru_scores,
+            supporting=True,
+        ),
+        crru_scores=crru_scores,
+        title=(
+            "SUPPORTING FORMAL FULL-DATA RUNS — historical, diagnostic, and "
+            "preprocessing-sweep rows"
+        ),
+        empty_message="No supporting formal full-data runs with test metrics found.",
     )
     _print_ablation_rows(
-        _select_best_ablation_rows(rows, crru_scores=crru_scores),
+        _select_best_ablation_rows(ablation_rows, crru_scores=crru_scores),
         crru_scores=crru_scores,
     )
 

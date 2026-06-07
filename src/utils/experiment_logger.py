@@ -36,6 +36,7 @@ class ExperimentLogger:
     _SUMMARY_VIEW_SENTINEL_COLUMNS: ClassVar[tuple[str, ...]] = (
         "runtime_probe_estimated_remaining_train_time_s",
         "test_final_popularity_spearman_40",
+        "test_interest_branch_ndcg_20",
         "max_gpu_utilization_pct",
     )
 
@@ -533,6 +534,58 @@ class ExperimentLogger:
                     WHEN m.metric_name = 'AveragePopularity@40' AND m.split = 'test'
                     THEN m.metric_value
                 END) AS test_average_popularity_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'interest_branch_NDCG@20' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_interest_branch_ndcg_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'interest_branch_NDCG@40' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_interest_branch_ndcg_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'interest_branch_Recall@20' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_interest_branch_recall_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'interest_branch_Recall@40' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_interest_branch_recall_40,
+                MIN(CASE
+                    WHEN m.metric_name = 'interest_branch_AveragePopularity@20'
+                        AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_interest_branch_average_popularity_20,
+                MIN(CASE
+                    WHEN m.metric_name = 'interest_branch_AveragePopularity@40'
+                        AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_interest_branch_average_popularity_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'conformity_branch_NDCG@20' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_conformity_branch_ndcg_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'conformity_branch_NDCG@40' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_conformity_branch_ndcg_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'conformity_branch_Recall@20' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_conformity_branch_recall_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'conformity_branch_Recall@40' AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_conformity_branch_recall_40,
+                MIN(CASE
+                    WHEN m.metric_name = 'conformity_branch_AveragePopularity@20'
+                        AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_conformity_branch_average_popularity_20,
+                MIN(CASE
+                    WHEN m.metric_name = 'conformity_branch_AveragePopularity@40'
+                        AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_conformity_branch_average_popularity_40,
                 MAX(CASE
                     WHEN m.metric_name = 'conformity_contribution@20' AND m.split = 'test'
                     THEN m.metric_value
