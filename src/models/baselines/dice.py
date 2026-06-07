@@ -21,11 +21,10 @@ from .common import (
 class PaperGCNDICE(CanonicalBaselineRecommender):
     """DICE paper GCN variant over canonical data and shared evaluation.
 
-    The external DICE repository names this model ``LGNDICE`` because ``LGN``
-    is its LightGCN-style graph backbone. The paper-facing name is GCN-DICE:
-    separate interest/conformity embedding tables, LightGCN-style propagation
-    for each channel, dropout after each propagation layer, summed
-    interest+conformity click score, and self-looped graph propagation.
+    The paper-facing name is GCN-DICE: separate interest/conformity embedding
+    tables, LightGCN-style propagation for each channel, dropout after each
+    propagation layer, summed interest+conformity click score, and self-looped
+    graph propagation.
     """
 
     def __init__(
