@@ -20,6 +20,7 @@ from torch.optim.lr_scheduler import (
     StepLR,
 )
 
+from ..data.interaction_masks import positive_interaction_mask
 from ..data.negative_sampler import NegativeSampler
 from ..losses.loss_suite import LossSuite
 from ..models.ucagnn import UCaGNN
@@ -201,6 +202,8 @@ class TrainerRuntime:
         self.model.to(self.device)
         self.loss_suite.to(self.device)
         self.popularity = move_tensor_to_device(data.popularity, self.device)
+        branch_popularity_source = getattr(data, "popularity_count", data.popularity)
+        self.branch_popularity = move_tensor_to_device(branch_popularity_source, self.device)
         self.propensity_targets = move_optional_tensor_to_device(
             getattr(data, "propensity_targets", None), self.device
         )
@@ -222,25 +225,24 @@ class TrainerRuntime:
         sign_param_ids = {id(p) for p in sign_params}
         main_params = [p for p in self.trainable_parameters if id(p) not in sign_param_ids]
 
-        use_fused = self.device.type == "cuda"
-        param_groups: list[dict] = [
-            {"params": main_params, "weight_decay": config.weight_decay},
-        ]
-        if sign_params:
-            param_groups.append({"params": sign_params, "weight_decay": 0.0})
-        self.optimizer = optim.AdamW(
-            param_groups,
-            lr=config.lr,
-            fused=use_fused,
-        )
+        self.optimizer = self._build_optimizer(main_params, sign_params)
 
         self.scheduler = self._build_scheduler()
 
+        sampler_train_users, sampler_train_items = self._get_train_interactions()
         self.sampler = NegativeSampler(
             n_items=data.n_items,
-            popularity=data.popularity,
+            popularity=branch_popularity_source
+            if config.negative_sampling_strategy == "dice"
+            else data.popularity,
             n_negatives=config.n_negatives,
             hard_negative_ratio=config.hard_negative_ratio,
+            positive_user_ids=sampler_train_users,
+            positive_item_ids=sampler_train_items,
+            strategy=config.negative_sampling_strategy,
+            dice_margin=config.dice_sampler_margin,
+            dice_pool=config.dice_sampler_pool,
+            dice_margin_decay=config.dice_margin_decay if config.dice_adaptive_decay else 1.0,
         )
 
         # Optional EMA model for smoother generalization
@@ -264,6 +266,36 @@ class TrainerRuntime:
             "train_loss": [],
             "val_metrics": [],
         }
+
+    def _build_optimizer(
+        self,
+        main_params: list[torch.nn.Parameter],
+        sign_params: list[torch.nn.Parameter],
+    ) -> optim.Optimizer:
+        """Build the optimizer required by the active model family."""
+        if self.config.baseline_family == "lightgcn_paper":
+            return optim.Adam(
+                [{"params": main_params, "weight_decay": 0.0}],
+                lr=self.config.lr,
+            )
+        if self.config.baseline_family == "dice_paper":
+            return optim.Adam(
+                [{"params": main_params, "weight_decay": self.config.weight_decay}],
+                lr=self.config.lr,
+                betas=(0.5, 0.99),
+                amsgrad=True,
+            )
+
+        param_groups: list[dict] = [
+            {"params": main_params, "weight_decay": self.config.weight_decay},
+        ]
+        if sign_params:
+            param_groups.append({"params": sign_params, "weight_decay": 0.0})
+        return optim.AdamW(
+            param_groups,
+            lr=self.config.lr,
+            fused=self.device.type == "cuda",
+        )
 
     def _build_scheduler(self) -> Any:
         """Build the configured learning-rate scheduler for the optimizer."""
@@ -328,7 +360,12 @@ class TrainerRuntime:
 
     def _get_train_interactions(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Return training user/item tensors in the shared index space."""
-        train_mask = self.data.train_mask
+        train_mask = getattr(self.data, "train_positive_mask", None)
+        if train_mask is None:
+            train_mask = positive_interaction_mask(
+                self.data.train_mask,
+                getattr(self.data, "labels", None),
+            )
         train_users = self.data.user_nodes[train_mask]
         train_items = self.data.item_nodes[train_mask] - self.data.n_users
         return train_users, train_items

@@ -125,39 +125,68 @@ def _is_categorical_feature(column_name: str, dtype: pl.DataType) -> bool:
     )
 
 
+def _scale_valid_values_to_unit(values: np.ndarray) -> np.ndarray:
+    """Min-max scale finite values to ``[0, 1]`` with missing values at zero.
+
+    Args:
+        values: Numeric vector with finite values and optional NaN/Inf entries.
+
+    Returns:
+        Float32 vector in ``[0, 1]`` aligned to ``values``.
+
+    """
+    value_array = np.asarray(values, dtype=np.float32)
+    output = np.zeros(value_array.shape, dtype=np.float32)
+    valid_mask = np.isfinite(value_array)
+    if not np.any(valid_mask):
+        return output
+
+    valid_values = value_array[valid_mask]
+    min_value = float(valid_values.min())
+    max_value = float(valid_values.max())
+    if max_value <= min_value:
+        if max_value != 0.0:
+            output[valid_mask] = 1.0
+        return output
+
+    output[valid_mask] = (valid_values - min_value) / (max_value - min_value)
+    return np.clip(output, 0.0, 1.0)
+
+
 def _encode_temporal_series(series: pl.Series) -> np.ndarray:
-    """Encode a temporal feature series as integer Unix seconds.
+    """Encode a temporal feature series as bounded relative time.
 
     Args:
         series: Polars series for one temporal feature column.
 
     Returns:
-        Encoded integer timestamp values aligned to the input series.
+        Float32 values in ``[0, 1]`` aligned to the input series.
 
     """
     frame = pl.DataFrame({"value": series})
     if _is_numeric_dtype(series.dtype):
-        return frame.select(
-            pl.col("value").cast(pl.Int64, strict=False).fill_null(0).alias("value"),
+        values = frame.select(
+            pl.col("value").cast(pl.Float64, strict=False).alias("value"),
         )["value"].to_numpy()
+        return _scale_valid_values_to_unit(values)
     encoded = frame.select(
         pl.coalesce(
             pl.col("value").str.strptime(pl.Datetime, strict=False).dt.epoch("s"),
             pl.col("value").str.strptime(pl.Date, strict=False).cast(pl.Datetime).dt.epoch("s"),
         )
-        .fill_null(0)
-        .cast(pl.Int64)
+        .cast(pl.Float64)
         .alias("value"),
     )["value"].to_numpy()
-    return encoded
+    return _scale_valid_values_to_unit(encoded)
 
 
 def _encode_categorical_series(series: pl.Series) -> np.ndarray:
-    """Encode a categorical feature series as deterministic positive IDs.
+    """Encode a categorical feature series as bounded deterministic codes.
 
     Categories are sorted lexicographically and mapped to contiguous IDs
-    ``1..N``. Missing values are reserved as ``0.0`` so the output remains
-    dense and deterministic across repeated loads of the same file subset.
+    ``1/N..1``. Missing values are reserved as ``0.0`` so the output remains
+    bounded, dense, and deterministic across repeated loads of the same file
+    subset.
 
     Args:
         series: Polars series for one categorical feature column.
@@ -180,26 +209,28 @@ def _encode_categorical_series(series: pl.Series) -> np.ndarray:
             "code": np.arange(1, n_unique + 1, dtype=np.int32),
         },
     )
-    return frame.join(lut, on="value", how="left")["code"].fill_null(0).cast(pl.Float32).to_numpy()
+    encoded = (
+        frame.join(lut, on="value", how="left")["code"].fill_null(0).cast(pl.Float32).to_numpy()
+    )
+    return (encoded / float(n_unique)).astype(np.float32, copy=False)
 
 
 def _encode_numeric_series(series: pl.Series) -> np.ndarray:
-    """Encode a numeric feature series with null-safe float casting.
+    """Encode a numeric feature series as bounded relative magnitude.
 
     Args:
         series: Polars series for one numeric feature column.
 
     Returns:
-        Float32 values aligned to the input series.
+        Float32 values in ``[0, 1]`` aligned to the input series.
 
     """
-    return (
+    values = (
         pl.DataFrame({"value": series})
-        .select(pl.col("value").cast(pl.Float32, strict=False).fill_null(0.0).alias("value"))[
-            "value"
-        ]
+        .select(pl.col("value").cast(pl.Float64, strict=False).alias("value"))["value"]
         .to_numpy()
     )
+    return _scale_valid_values_to_unit(values)
 
 
 def _encode_feature_series(column_name: str, series: pl.Series) -> np.ndarray:
@@ -238,9 +269,10 @@ def load_csv_features(
 
     Returns:
         A numeric feature matrix of shape ``(n_entities, n_features)`` or ``None``.
-        Numeric columns stay numeric, temporal columns are normalized to integer
-        Unix seconds, and categorical-like columns are ordinal-encoded with
-        deterministic positive IDs while reserving ``0`` for missing values.
+        Numeric and temporal columns are min-max scaled to ``[0, 1]`` within
+        the loaded source, and categorical-like columns are deterministic
+        ordinal codes scaled to ``[0, 1]`` while reserving ``0`` for missing
+        values.
 
     """
     if not path.exists():
@@ -270,6 +302,12 @@ def load_csv_features(
 
     if df.is_empty():
         return None
+    df = df.group_by("_mapped_id", maintain_order=True).agg(
+        [
+            pl.col(id_col).first(),
+            *(pl.col(column_name).first() for column_name in feat_cols),
+        ],
+    )
 
     mapped_ids = df["_mapped_id"].to_numpy()
     encoded_columns = [

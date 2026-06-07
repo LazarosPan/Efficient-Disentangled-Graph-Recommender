@@ -20,8 +20,15 @@ BENCHMARK_DATASET_TIERS: dict[str, list[str]] = {
 }
 BENCHMARK_DATASET_TIERS["all"] = BENCHMARK_DATASETS
 BENCHMARK_TIER_CHOICES = list(BENCHMARK_DATASET_TIERS)
-PRESET_CHOICES = ["ucagnn", "lightgcn", "dice_like"]
-SCORING_WEIGHT_MODE_CHOICES = ["fixed", "learned"]
+PRESET_CHOICES = [
+    "ucagnn",
+    "lightgcn",
+    "lightgcn_paper",
+    "dice_paper",
+    "dice_like",
+    "dice_like_ablation",
+    "lgndice_paper",
+]
 _VALIDATION_CATEGORIES = ["recipes", "ablations", "observability", "evaluation"]
 
 
@@ -376,7 +383,6 @@ __all__ = [
     "BENCHMARK_DATASET_TIERS",
     "BENCHMARK_TIER_CHOICES",
     "PRESET_CHOICES",
-    "SCORING_WEIGHT_MODE_CHOICES",
     "add_batch_execution_args",
     "add_change_note_arg",
     "add_device_and_data_dir_args",
