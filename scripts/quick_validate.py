@@ -41,8 +41,10 @@ _TINY_DATASET_LIMITS = {
     "movielens1m": 100,
     "movielens20m": 100,
     "kuairec_v2": 100,
-    "taobao": 100,
-    "kuairand1k": 100,
+    # Sparse-positive implicit datasets need a slightly larger smoke slice so
+    # label-aware temporal validation/test splits contain positive targets.
+    "taobao": 1000,
+    "kuairand1k": 1000,
 }
 
 

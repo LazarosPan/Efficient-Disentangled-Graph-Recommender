@@ -22,7 +22,7 @@ uv run formal-run --profile <slug-from-list-profiles> --overwrite-checkpoint
 - Formal profiles may also set `config_overrides.preprocessing_preset` to either one preset or a list. The benchmark planner expands that sweep internally so each concrete run still carries one preprocessing preset.
 - Formal runs always use the full datasets and keep OOM rows as thesis evidence while continuing to the next item. Smoke-only caps such as `sample_interactions` and `loader_max_rows` are ignored by `formal-run` even if they appear in a profile override block.
 - The current default formal profile is development-focused: it runs only the `ucagnn` preset, disables early stopping, keeps the full 60-epoch budget, uses learned fused scoring, and makes the mainline branch asymmetry explicit with `interest_gnn_layers=1`, `conformity_gnn_layers=2`, `num_neighbors=[10, 5]`, and `loss_schedule="baseline"` so BPR is active from the start.
-- A second formal profile is reserved for the final matched comparison pass, where `lightgcn` and `dice_like` re-enter under the same pipeline.
+- A second formal profile is reserved for the final matched comparison pass, where `lightgcn_paper` and `dice_paper` run beside U-CaGNN under the same canonical data and evaluation pipeline. The sampled `lightgcn` and legacy `dice_like` presets remain ablations, not paper-default baselines.
 
 ## Low-Level Single Experiments
 

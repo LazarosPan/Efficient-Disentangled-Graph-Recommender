@@ -25,6 +25,7 @@ from pathlib import Path
 from experiments.ablation_configs import ABLATION_VARIANTS
 from src.utils.cli_parsers import build_query_results_parser
 from src.utils.experiment_logger import ExperimentLogger
+from src.utils.experiment_naming import build_canonical_experiment_name
 from src.utils.project_paths import RESULTS_DIR, THESIS_DB_PATH
 
 DB_PATH = Path(os.environ.get("THESIS_DB_PATH_OVERRIDE", str(THESIS_DB_PATH)))
@@ -141,73 +142,13 @@ def _load_config_json(config_json: str | None) -> dict[str, object]:
         return {}
 
 
-# TODO: almost the same function as run_experiment.py, consider having only 1 function for this.
-
-
 def _build_canonical_name_from_config(
     config: dict[str, object],
     preset: str | None,
     intervention: str | None,
 ) -> str:
     """Reconstruct the canonical experiment name from stored config."""
-    dataset = str(config.get("dataset", "-"))
-    epochs = int(config.get("epochs", 0)) if config.get("epochs") is not None else 0
-    batch_size = int(config.get("batch_size", 0)) if config.get("batch_size") is not None else 0
-    embed_dim = int(config.get("embed_dim", 0)) if config.get("embed_dim") is not None else 0
-
-    use_dual_branch = bool(config.get("use_dual_branch", True))
-    interest_layers = int(config.get("interest_gnn_layers", 0))
-    conformity_layers = int(config.get("conformity_gnn_layers", 0))
-    single_branch_layers = int(config.get("single_branch_gnn_layers", 0))
-    max_gnn_layers = (
-        single_branch_layers if not use_dual_branch else max(interest_layers, conformity_layers)
-    )
-
-    parts = [
-        dataset,
-        preset or "custom",
-        f"ep{epochs}",
-        f"bs{batch_size}",
-        f"dim{embed_dim}",
-        f"layers{max_gnn_layers}",
-    ]
-
-    if use_dual_branch and interest_layers != conformity_layers:
-        parts.append(f"branchL{interest_layers}-{conformity_layers}")
-
-    num_neighbors = config.get("num_neighbors")
-    if isinstance(num_neighbors, list):
-        parts.append(f"nbr{'-'.join(str(value) for value in num_neighbors)}")
-    elif num_neighbors is not None:
-        parts.append(f"nbr{num_neighbors}")
-
-    if config.get("sample_interactions") is not None:
-        parts.append(f"sample{int(config['sample_interactions'])}")
-    if config.get("loader_max_rows") is not None:
-        parts.append(f"loadrows{int(config['loader_max_rows'])}")
-    if config.get("preprocessing_preset") is not None:
-        parts.append(f"ppreset{config['preprocessing_preset']}")
-    derived_split_mode = str(config.get("derived_split_mode", "per_user_temporal"))
-    if derived_split_mode != "per_user_temporal":
-        parts.append(f"split{derived_split_mode}")
-    if config.get("use_features"):
-        parts.append("feat")
-    if config.get("feature_policy") not in (None, "thesis_default"):
-        parts.append(f"fpolicy{config['feature_policy']}")
-    scoring_weight_mode = str(config.get("scoring_weight_mode", "fixed"))
-    if scoring_weight_mode != "fixed":
-        parts.append(f"scoremix{scoring_weight_mode}")
-    parts.append(f"lr-{config.get('lr_scheduler', 'none')}")
-    train_scoring_mode = str(config.get("train_scoring_mode", "default"))
-    if train_scoring_mode != "default":
-        parts.append(f"trainscore{train_scoring_mode}")
-    eval_scoring_mode = str(config.get("eval_scoring_mode", "default"))
-    if eval_scoring_mode != "default":
-        parts.append(f"score{eval_scoring_mode}")
-    if intervention:
-        parts.append(intervention)
-    parts.append(f"seed{int(config.get('seed', 0))}")
-    return "_".join(parts)
+    return build_canonical_experiment_name(config, preset, intervention)
 
 
 def _format_metric_value(value: float | None) -> str:
@@ -236,7 +177,10 @@ def _format_neighbors(config: dict[str, object]) -> str:
 
 def _format_scoremix(config: dict[str, object]) -> str:
     """Return the stored scoring-weight mode, defaulting to the fixed thesis path."""
-    return str(config.get("scoring_weight_mode", "fixed"))
+    legacy_mode = config.get("scoring_weight_mode")
+    if legacy_mode is not None:
+        return str(legacy_mode)
+    return "learned" if bool(config.get("use_learned_score_mix", False)) else "fixed"
 
 
 def _truncate_label(value: str | None, width: int) -> str:

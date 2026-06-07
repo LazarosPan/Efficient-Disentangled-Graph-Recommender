@@ -43,7 +43,6 @@ uv run query-results --view completed
 uv run query-results --view attention
 uv run query-results --view errors
 uv run query-results --view comparison
-uv run evaluate-scoring-modes --checkpoint-path results/checkpoints/<checkpoint>.pt
 uv run python src/data_exploration/explore_all_datasets.py
 uv run python src/data_exploration/explore_all_datasets.py --output-dir results/dataset_visualizations
 ```
@@ -53,7 +52,6 @@ uv run python src/data_exploration/explore_all_datasets.py --output-dir results/
 - `query-results --view attention`: show anything not yet cleanly completed, including running, unknown, OOM, and failed rows.
 - `query-results --view errors`: show only the failed and OOM rows.
 - `query-results --view comparison`: align same-config runs across code versions for side-by-side inspection.
-- `evaluate-scoring-modes --checkpoint-path ...`: reload one saved checkpoint and compare the thesis metrics under multiple evaluation-time scoring modes without retraining.
 - `python src/data_exploration/explore_all_datasets.py`: load the six benchmark datasets through the canonical loader path, always use the full selected datasets, and rewrite the fixed benchmark/profile PNGs in `results/dataset_visualizations/`.
 
 ## Data
