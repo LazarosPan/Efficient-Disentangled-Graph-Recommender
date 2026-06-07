@@ -284,6 +284,7 @@ def _run_single_case(
         checkpoint_path=checkpoint_path,
         checkpoint_every=1,
         auto_resume=auto_resume,
+        include_refined_diagnostics=False,
     )
     elapsed = time.perf_counter() - started
 
@@ -502,6 +503,7 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
                 checkpoint_path=str(checkpoint_path),
                 checkpoint_every=1,
                 auto_resume=True,
+                include_refined_diagnostics=False,
             )
             second_elapsed = time.perf_counter() - second_started
             if not resumed_result.get("resumed"):
@@ -544,7 +546,7 @@ def _run_evaluation_category(args: argparse.Namespace, results: list[dict]) -> N
     preferred = ["movielens1m", "kuairec_v2", "taobao"]
     eval_dataset = next((c for c in preferred if c in args.datasets), args.datasets[0])
     config = _build_tiny_recipe_config(args, eval_dataset, recipe="ucagnn")
-    label = "eval:refined"
+    label = "eval:primary"
     try:
         _, elapsed = _run_single_case(
             category="evaluation",

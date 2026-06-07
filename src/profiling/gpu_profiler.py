@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -28,6 +29,43 @@ class StageMetrics:
             f"{self.name}: {self.elapsed_ms:.1f}ms | VRAM: {self.vram_before_mb:.0f} -> "
             f"{self.vram_after_mb:.0f} MB (peak {self.vram_peak_mb:.0f} MB, "
             f"delta {self.vram_delta_mb:+.0f} MB)"
+        )
+
+
+@dataclass(frozen=True)
+class GPUResourceSnapshot:
+    """One nvidia-smi sample for GPU utilization and memory use."""
+
+    utilization_pct: float | None
+    memory_used_mb: float | None
+
+
+@dataclass(frozen=True)
+class TrainingResourceStats:
+    """Aggregate training-window GPU resource measurements."""
+
+    pytorch_peak_allocated_mb: float | None = None
+    pytorch_peak_reserved_mb: float | None = None
+    nvidia_peak_memory_used_mb: float | None = None
+    avg_gpu_utilization_pct: float | None = None
+    max_gpu_utilization_pct: float | None = None
+
+    @property
+    def peak_vram_mb(self) -> float | None:
+        """Return the peak VRAM value to use for summary reporting."""
+        if self.nvidia_peak_memory_used_mb is not None:
+            return self.nvidia_peak_memory_used_mb
+        return self.pytorch_peak_allocated_mb
+
+    @classmethod
+    def from_current_cuda_peaks(cls, device: torch.device) -> TrainingResourceStats:
+        """Build stats from PyTorch allocator peaks for the active CUDA device."""
+        if device.type != "cuda" or not torch.cuda.is_available():
+            return cls()
+        mib = 1024 * 1024
+        return cls(
+            pytorch_peak_allocated_mb=torch.cuda.max_memory_allocated() / mib,
+            pytorch_peak_reserved_mb=torch.cuda.max_memory_reserved() / mib,
         )
 
 
@@ -122,27 +160,39 @@ class GPUProfiler:
         return f"Data size: {size_bytes / 1024 / 1024:.1f} MB"
 
 
-def sample_gpu_utilization_percent(device: torch.device) -> float | None:
-    """Return current GPU utilization via ``nvidia-smi`` when available.
+def _parse_optional_float(value: str) -> float | None:
+    """Parse a numeric nvidia-smi field, returning None for unsupported values."""
+    cleaned = value.strip()
+    if not cleaned or cleaned.upper() in {"N/A", "[N/A]", "NOT SUPPORTED"}:
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def sample_gpu_resource_snapshot(device: torch.device) -> GPUResourceSnapshot | None:
+    """Return current GPU utilization and memory use via ``nvidia-smi``.
 
     Args:
         device: Active runtime device.
 
     Returns:
-        Utilization percentage for the current CUDA device, or ``None`` when the
+        GPUResourceSnapshot for the current CUDA device, or ``None`` when the
         device is not CUDA or the system utility is unavailable.
 
     """
     if device.type != "cuda" or not torch.cuda.is_available():
         return None
+    device_id = device.index if device.index is not None else torch.cuda.current_device()
     try:
         output = subprocess.check_output(
             [
                 "nvidia-smi",
-                "--query-gpu=utilization.gpu",
+                "--query-gpu=utilization.gpu,memory.used",
                 "--format=csv,noheader,nounits",
                 "--id",
-                str(torch.cuda.current_device()),
+                str(device_id),
             ],
             stderr=subprocess.DEVNULL,
             text=True,
@@ -151,10 +201,94 @@ def sample_gpu_utilization_percent(device: torch.device) -> float | None:
         return None
     if not output:
         return None
-    try:
-        return float(output.splitlines()[0].strip())
-    except ValueError:
+    fields = [part.strip() for part in output.splitlines()[0].split(",")]
+    if len(fields) < 2:
         return None
+    return GPUResourceSnapshot(
+        utilization_pct=_parse_optional_float(fields[0]),
+        memory_used_mb=_parse_optional_float(fields[1]),
+    )
+
+
+def sample_gpu_utilization_percent(device: torch.device) -> float | None:
+    """Return current GPU utilization via ``nvidia-smi`` when available."""
+    snapshot = sample_gpu_resource_snapshot(device)
+    if snapshot is None:
+        return None
+    return snapshot.utilization_pct
+
+
+class TrainingResourceMonitor:
+    """Sample GPU resources while the training batch loop is active."""
+
+    def __init__(
+        self,
+        device: torch.device,
+        *,
+        sample_interval_s: float = 0.5,
+    ) -> None:
+        """Initialize a monitor for one training window.
+
+        Args:
+            device: Active training device.
+            sample_interval_s: Background nvidia-smi sampling interval.
+
+        """
+        self.device = device
+        self.sample_interval_s = max(0.05, float(sample_interval_s))
+        self._samples: list[GPUResourceSnapshot] = []
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._enabled = device.type == "cuda" and torch.cuda.is_available()
+
+    def start(self) -> TrainingResourceMonitor:
+        """Start collecting training-window samples."""
+        if not self._enabled:
+            return self
+        self._record_sample()
+        self._thread = threading.Thread(
+            target=self._sample_loop,
+            name="gpu-training-resource-monitor",
+            daemon=True,
+        )
+        self._thread.start()
+        return self
+
+    def stop(self) -> TrainingResourceStats:
+        """Stop sampling and return aggregate training-window stats."""
+        if not self._enabled:
+            return TrainingResourceStats()
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=max(1.0, self.sample_interval_s * 2.0))
+        self._record_sample()
+        stats = TrainingResourceStats.from_current_cuda_peaks(self.device)
+        utilization_values = [
+            sample.utilization_pct for sample in self._samples if sample.utilization_pct is not None
+        ]
+        memory_values = [
+            sample.memory_used_mb for sample in self._samples if sample.memory_used_mb is not None
+        ]
+        return TrainingResourceStats(
+            pytorch_peak_allocated_mb=stats.pytorch_peak_allocated_mb,
+            pytorch_peak_reserved_mb=stats.pytorch_peak_reserved_mb,
+            nvidia_peak_memory_used_mb=max(memory_values) if memory_values else None,
+            avg_gpu_utilization_pct=(
+                sum(utilization_values) / len(utilization_values) if utilization_values else None
+            ),
+            max_gpu_utilization_pct=max(utilization_values) if utilization_values else None,
+        )
+
+    def _sample_loop(self) -> None:
+        """Collect nvidia-smi samples until the monitor is stopped."""
+        while not self._stop_event.wait(self.sample_interval_s):
+            self._record_sample()
+
+    def _record_sample(self) -> None:
+        """Append one nvidia-smi sample when available."""
+        snapshot = sample_gpu_resource_snapshot(self.device)
+        if snapshot is not None:
+            self._samples.append(snapshot)
 
 
 @contextmanager
