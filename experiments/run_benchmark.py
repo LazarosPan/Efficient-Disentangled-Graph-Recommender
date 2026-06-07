@@ -477,7 +477,26 @@ def _resolve_benchmark_args(
         assert isinstance(raw_saved_benchmark_args, dict)
         saved_benchmark_args = dict(raw_saved_benchmark_args)
 
-    should_resume_latest = requested_profile is None and saved_state is not None
+    if (
+        requested_profile is None
+        and saved_state is not None
+        and saved_profile != DEFAULT_PROFILE_NAME
+    ):
+        logger.warning(
+            (
+                "Ignoring saved formal-run state for profile '%s'. Pass "
+                "--profile %s to resume it; starting default profile '%s' fresh."
+            ),
+            saved_profile,
+            saved_profile,
+            DEFAULT_PROFILE_NAME,
+        )
+
+    should_resume_latest = (
+        requested_profile is None
+        and saved_state is not None
+        and saved_profile == DEFAULT_PROFILE_NAME
+    )
     if should_resume_latest:
         assert saved_benchmark_args is not None
         profile_name = saved_profile or DEFAULT_PROFILE_NAME

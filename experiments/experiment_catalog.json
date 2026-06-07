@@ -3,8 +3,8 @@
     {
       "id": "dev-ucagnn",
       "aliases": [
-        "default",
-        "latest"
+        "dev",
+        "development"
       ],
       "description": "Development-focused formal profile: UCaGNN over the practical core thesis datasets with explicit 1/2 branch depth and the default observed train-interaction graph.",
       "matrix": {
@@ -47,6 +47,8 @@
     {
       "id": "core-ucagnn-mainline",
       "aliases": [
+        "default",
+        "latest",
         "core-paper-architecture-comparison"
       ],
       "description": "Core U-CaGNN thesis mainline across practical datasets. Paper baselines are split into separate run-once profiles so U-CaGNN tuning can iterate without rerunning fixed paper defaults.",

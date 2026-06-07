@@ -188,7 +188,7 @@ def _formal_profile_id(profile: dict[str, Any]) -> str:
 def _resolved_formal_profiles() -> list[dict[str, Any]]:
     """Return formal profiles with resolved names, payloads, and aliases."""
     resolved_profiles: list[dict[str, Any]] = []
-    for index, profile in enumerate(
+    for _index, profile in enumerate(
         load_experiment_catalog().get("formal_profiles", []),
     ):
         resolved_id = _formal_profile_id(profile)
@@ -196,8 +196,6 @@ def _resolved_formal_profiles() -> list[dict[str, Any]]:
         aliases = {resolved_id, resolved_name}
         raw_aliases = profile.get("aliases", [])
         aliases.update(_slugify_fragment(alias) for alias in raw_aliases)
-        if index == 0:
-            aliases.update({"default", "latest"})
         resolved_profiles.append(
             {
                 "id": resolved_id,
@@ -232,6 +230,9 @@ def default_formal_profile_name() -> str:
     profiles = _resolved_formal_profiles()
     if not profiles:
         raise ValueError("No formal profiles are defined in the experiment catalog.")
+    for profile in profiles:
+        if "default" in profile["aliases"]:
+            return str(profile["id"])
     return str(profiles[0]["id"])
 
 

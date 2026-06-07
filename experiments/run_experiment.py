@@ -96,6 +96,7 @@ CONFIG_OVERRIDE_FIELDS = (
     "lr_scheduler_factor",
     "lr_scheduler_patience",
     "use_early_stopping",
+    "patience",
     "use_features",
     "feature_policy",
     "graph_policy",
@@ -108,14 +109,35 @@ CONFIG_OVERRIDE_FIELDS = (
     "num_neighbors",
     "hard_negative_ratio",
     "score_mix_min_weight",
+    "score_weight_interest",
+    "score_weight_conformity",
+    "score_weight_popularity",
     "dice_sampler_margin",
     "dice_sampler_pool",
     "dice_branch_margin",
     "dice_loss_decay",
     "dice_margin_decay",
     "dice_adaptive_decay",
+    "n_negatives",
     "distance_correlation_max_pairs",
+    "contrastive_max_pairs",
+    "contrastive_temperature",
     "uniformity_max_pairs",
+    "uniformity_temperature",
+    "use_conformity_au",
+    "loss_weight_recommendation",
+    "loss_weight_interest_bpr",
+    "loss_weight_conformity_bpr",
+    "loss_weight_independence",
+    "loss_weight_contrastive",
+    "loss_weight_align",
+    "loss_weight_uniform",
+    "loss_weight_popularity",
+    "loss_weight_propensity_calibration",
+    "use_ipw",
+    "auxiliary_loss_schedule",
+    "auxiliary_ramp_rate",
+    "independence_ramp_rate",
     "auxiliary_losses_start_epoch",
     "popularity_supervision_start_epoch",
     "loss_schedule",
@@ -126,6 +148,7 @@ _BENCHMARK_SHARED_CONFIG_FIELD_SET = frozenset(
     {
         "epochs",
         "use_early_stopping",
+        "patience",
         "batch_size",
         "auto_batch_size",
         "batch_size_candidates",
@@ -140,6 +163,9 @@ _BENCHMARK_SHARED_CONFIG_FIELD_SET = frozenset(
         "num_neighbors",
         "hard_negative_ratio",
         "score_mix_min_weight",
+        "score_weight_interest",
+        "score_weight_conformity",
+        "score_weight_popularity",
         "training_graph_mode",
         "branch_loss_mode",
         "recommendation_loss_mode",
@@ -150,8 +176,26 @@ _BENCHMARK_SHARED_CONFIG_FIELD_SET = frozenset(
         "dice_loss_decay",
         "dice_margin_decay",
         "dice_adaptive_decay",
+        "n_negatives",
         "distance_correlation_max_pairs",
+        "contrastive_max_pairs",
+        "contrastive_temperature",
         "uniformity_max_pairs",
+        "uniformity_temperature",
+        "use_conformity_au",
+        "loss_weight_recommendation",
+        "loss_weight_interest_bpr",
+        "loss_weight_conformity_bpr",
+        "loss_weight_independence",
+        "loss_weight_contrastive",
+        "loss_weight_align",
+        "loss_weight_uniform",
+        "loss_weight_popularity",
+        "loss_weight_propensity_calibration",
+        "use_ipw",
+        "auxiliary_loss_schedule",
+        "auxiliary_ramp_rate",
+        "independence_ramp_rate",
         "auxiliary_losses_start_epoch",
         "popularity_supervision_start_epoch",
         "loss_schedule",
@@ -1627,10 +1671,41 @@ def normalize_benchmark_config_overrides(
     normalized["hard_negative_ratio"] = float(
         raw_config.get("hard_negative_ratio", default_config.hard_negative_ratio),
     )
-    score_mix_min_weight = raw_config.get("score_mix_min_weight")
-    normalized["score_mix_min_weight"] = (
-        float(score_mix_min_weight) if score_mix_min_weight is not None else None
+    optional_float_fields = (
+        "score_mix_min_weight",
+        "score_weight_interest",
+        "score_weight_conformity",
+        "score_weight_popularity",
+        "loss_weight_recommendation",
+        "loss_weight_interest_bpr",
+        "loss_weight_conformity_bpr",
+        "loss_weight_independence",
+        "loss_weight_contrastive",
+        "loss_weight_align",
+        "loss_weight_uniform",
+        "loss_weight_popularity",
+        "loss_weight_propensity_calibration",
+        "auxiliary_ramp_rate",
+        "independence_ramp_rate",
+        "contrastive_temperature",
+        "uniformity_temperature",
     )
+    for field_name in optional_float_fields:
+        field_value = raw_config.get(field_name)
+        normalized[field_name] = float(field_value) if field_value is not None else None
+
+    optional_bool_fields = ("use_ipw", "use_conformity_au")
+    for field_name in optional_bool_fields:
+        field_value = raw_config.get(field_name)
+        normalized[field_name] = bool(field_value) if field_value is not None else None
+
+    auxiliary_loss_schedule = raw_config.get("auxiliary_loss_schedule")
+    normalized["auxiliary_loss_schedule"] = (
+        str(auxiliary_loss_schedule) if auxiliary_loss_schedule is not None else None
+    )
+
+    n_negatives = raw_config.get("n_negatives")
+    normalized["n_negatives"] = int(n_negatives) if n_negatives is not None else None
     dice_sampler_margin = raw_config.get("dice_sampler_margin")
     normalized["dice_sampler_margin"] = (
         float(dice_sampler_margin) if dice_sampler_margin is not None else None
@@ -1656,6 +1731,10 @@ def normalize_benchmark_config_overrides(
     distance_correlation_max_pairs = raw_config.get("distance_correlation_max_pairs")
     normalized["distance_correlation_max_pairs"] = (
         int(distance_correlation_max_pairs) if distance_correlation_max_pairs is not None else None
+    )
+    contrastive_max_pairs = raw_config.get("contrastive_max_pairs")
+    normalized["contrastive_max_pairs"] = (
+        int(contrastive_max_pairs) if contrastive_max_pairs is not None else None
     )
     uniformity_max_pairs = raw_config.get("uniformity_max_pairs")
     normalized["uniformity_max_pairs"] = (

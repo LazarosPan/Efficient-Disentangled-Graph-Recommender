@@ -1,8 +1,9 @@
 """Thesis-facing ablation variants for U-CaGNN component analysis.
 
 Each variant starts from ``preset_full()`` and removes one reviewer-relevant
-component from the mainline configuration. The default surface stays intentionally
-small so ablation runs remain interpretable and compute-bounded.
+component from the mainline configuration, or enables one implemented
+literature-backed auxiliary that is off by default. The default surface stays
+intentionally small so ablation runs remain interpretable and compute-bounded.
 """
 
 from __future__ import annotations
@@ -12,6 +13,9 @@ from src.utils.config import DEFAULT_SEED, UCaGNNConfig
 # Variants beyond this set require a thesis rationale; do not extend casually.
 ABLATION_VARIANTS: dict[str, dict] = {
     "mainline": {},
+    "with_contrastive": {
+        "loss_weight_contrastive": 0.02,
+    },
     "no_popularity_head": {
         "use_popularity_head": False,
         "score_weight_popularity": 0.0,
