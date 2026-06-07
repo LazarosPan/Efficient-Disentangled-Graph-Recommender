@@ -243,6 +243,7 @@ class TrainerRuntime:
             dice_margin=config.dice_sampler_margin,
             dice_pool=config.dice_sampler_pool,
             dice_margin_decay=config.dice_margin_decay if config.dice_adaptive_decay else 1.0,
+            exact_dice_pool_counts=config.baseline_family == "dice_paper",
         )
 
         # Optional EMA model for smoother generalization

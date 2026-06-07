@@ -289,6 +289,8 @@ class UCaGNNConfig:
     independence_ramp_rate: float = 0.00025
     contrastive_temperature: float = 0.2
     contrastive_max_pairs: int = 256
+    distance_correlation_max_pairs: int = 1024
+    uniformity_max_pairs: int = 2048
     uniformity_temperature: float = 2.0
     use_conformity_au: bool = False
 
@@ -432,6 +434,10 @@ class UCaGNNConfig:
             raise ValueError("contrastive_temperature must be > 0")
         if self.contrastive_max_pairs < 2:
             raise ValueError("contrastive_max_pairs must be >= 2")
+        if self.distance_correlation_max_pairs < 2:
+            raise ValueError("distance_correlation_max_pairs must be >= 2")
+        if self.uniformity_max_pairs < 2:
+            raise ValueError("uniformity_max_pairs must be >= 2")
         if (
             min(
                 self.score_weight_interest,

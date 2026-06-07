@@ -76,6 +76,57 @@ def _distance_correlation_loss(
     return torch.sqrt(dcov_xy.clamp_min(1e-12)) / denom.clamp_min(1e-12)
 
 
+def _sample_quadratic_auxiliary_embeddings(
+    x: torch.Tensor,
+    y: torch.Tensor,
+    entity_ids: torch.Tensor,
+    max_pairs: int,
+    salt: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return a bounded hash sample for quadratic auxiliary losses.
+
+    Args:
+        x: First embedding tensor with shape ``(N, D)``.
+        y: Second embedding tensor aligned with ``x``.
+        entity_ids: Stable IDs aligned with ``x`` and ``y``.
+        max_pairs: Maximum number of rows to keep.
+        salt: Epoch-dependent salt for deterministic variation across training.
+
+    Returns:
+        Pair of tensors sampled to at most ``max_pairs`` rows.
+
+    """
+    if x.size(0) <= max_pairs:
+        return x, y
+    modulus = 2_147_483_647
+    salted_ids = (
+        entity_ids.to(dtype=torch.long).remainder(modulus) + ((max(int(salt), 0) + 1) * 1_000_003)
+    ).remainder(modulus)
+    hash_keys = (salted_ids * 1_103_515_245 + 12_345).remainder(modulus)
+    indices = torch.topk(hash_keys, k=max_pairs, largest=False, sorted=False).indices
+    indices = indices.sort().values
+    return x[indices], y[indices]
+
+
+def _sample_quadratic_rows(
+    embeddings: torch.Tensor,
+    max_pairs: int,
+    salt: int,
+) -> torch.Tensor:
+    """Return a bounded deterministic row sample for quadratic single-tensor losses."""
+    if embeddings.size(0) <= max_pairs:
+        return embeddings
+    row_ids = torch.arange(embeddings.size(0), device=embeddings.device, dtype=torch.long)
+    modulus = 2_147_483_647
+    salted_ids = (row_ids.remainder(modulus) + ((max(int(salt), 0) + 1) * 1_000_003)).remainder(
+        modulus
+    )
+    hash_keys = (salted_ids * 1_103_515_245 + 12_345).remainder(modulus)
+    indices = torch.topk(hash_keys, k=max_pairs, largest=False, sorted=False).indices
+    indices = indices.sort().values
+    return embeddings[indices]
+
+
 def _prepare_contrastive_pairs(
     user_embeddings: torch.Tensor,
     item_embeddings: torch.Tensor,
@@ -244,10 +295,13 @@ def _directau_alignment_loss(
 def _directau_uniformity_loss(
     embeddings: torch.Tensor,
     temperature: float,
+    max_pairs: int,
+    salt: int,
 ) -> torch.Tensor:
     """DirectAU-style uniformity loss on normalized embeddings."""
     if embeddings.size(0) <= 1:
         return embeddings.new_zeros(())
+    embeddings = _sample_quadratic_rows(embeddings, max_pairs, salt)
     normalized = functional.normalize(embeddings, dim=-1)
     pairwise_dist = torch.pdist(normalized, p=2)
     if pairwise_dist.numel() == 0:
@@ -267,6 +321,8 @@ def _au_branch_contrib(
     users: torch.Tensor,
     items: torch.Tensor,
     temperature: float,
+    max_pairs: int,
+    epoch: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute DirectAU alignment and uniformity for one branch.
 
@@ -281,8 +337,18 @@ def _au_branch_contrib(
     """
     align = _directau_alignment_loss(users, items)
     uniform = 0.5 * (
-        _directau_uniformity_loss(users, temperature=temperature)
-        + _directau_uniformity_loss(items, temperature=temperature)
+        _directau_uniformity_loss(
+            users,
+            temperature=temperature,
+            max_pairs=max_pairs,
+            salt=epoch,
+        )
+        + _directau_uniformity_loss(
+            items,
+            temperature=temperature,
+            max_pairs=max_pairs,
+            salt=epoch + 10_000,
+        )
     )
     return align, uniform
 
@@ -396,11 +462,7 @@ class LossSuite(nn.Module):
             neg_ego = embeddings["item"][neg_item_ids].float()
             losses["embedding_reg"] = (
                 0.5
-                * (
-                    user_ego.norm(2).pow(2)
-                    + pos_ego.norm(2).pow(2)
-                    + neg_ego.norm(2).pow(2)
-                )
+                * (user_ego.norm(2).pow(2) + pos_ego.norm(2).pow(2) + neg_ego.norm(2).pow(2))
                 / max(1, int(loss_user_ids.numel()))
             )
         else:
@@ -514,9 +576,23 @@ class LossSuite(nn.Module):
                 branch_user_ids = torch.unique(loss_user_ids)
                 user_interest = propagated["user_interest"][branch_user_ids]
                 user_conformity = propagated["user_conformity"][branch_user_ids]
+                user_interest, user_conformity = _sample_quadratic_auxiliary_embeddings(
+                    user_interest,
+                    user_conformity,
+                    branch_user_ids,
+                    cfg.distance_correlation_max_pairs,
+                    epoch,
+                )
                 branch_item_ids = torch.unique(torch.cat([pos_item_ids, neg_item_ids]))
                 item_interest = propagated["item_interest"][branch_item_ids]
                 item_conformity = propagated["item_conformity"][branch_item_ids]
+                item_interest, item_conformity = _sample_quadratic_auxiliary_embeddings(
+                    item_interest,
+                    item_conformity,
+                    branch_item_ids,
+                    cfg.distance_correlation_max_pairs,
+                    epoch,
+                )
                 losses["independence"] = _distance_correlation_loss(
                     user_interest,
                     user_conformity,
@@ -565,6 +641,8 @@ class LossSuite(nn.Module):
                 interest_users,
                 interest_items,
                 cfg.uniformity_temperature,
+                cfg.uniformity_max_pairs,
+                epoch,
             )
             branch_align_losses: list[torch.Tensor] = [i_align]
             branch_uniform_losses: list[torch.Tensor] = [i_uniform]
@@ -576,6 +654,8 @@ class LossSuite(nn.Module):
                     conformity_users,
                     conformity_items,
                     cfg.uniformity_temperature,
+                    cfg.uniformity_max_pairs,
+                    epoch + 20_000,
                 )
                 branch_align_losses.append(c_align)
                 branch_uniform_losses.append(c_uniform)

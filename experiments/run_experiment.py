@@ -24,8 +24,11 @@ from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any
 
-if "PYTORCH_ALLOC_CONF" not in os.environ and "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
-    os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+if "PYTORCH_ALLOC_CONF" not in os.environ:
+    os.environ["PYTORCH_ALLOC_CONF"] = os.environ.get(
+        "PYTORCH_CUDA_ALLOC_CONF",
+        "expandable_segments:True",
+    )
 
 import numpy as np
 import torch
@@ -112,6 +115,8 @@ CONFIG_OVERRIDE_FIELDS = (
     "dice_loss_decay",
     "dice_margin_decay",
     "dice_adaptive_decay",
+    "distance_correlation_max_pairs",
+    "uniformity_max_pairs",
     "auxiliary_losses_start_epoch",
     "popularity_supervision_start_epoch",
     "loss_schedule",
@@ -146,6 +151,8 @@ _BENCHMARK_SHARED_CONFIG_FIELD_SET = frozenset(
         "dice_loss_decay",
         "dice_margin_decay",
         "dice_adaptive_decay",
+        "distance_correlation_max_pairs",
+        "uniformity_max_pairs",
         "auxiliary_losses_start_epoch",
         "popularity_supervision_start_epoch",
         "loss_schedule",
@@ -186,6 +193,8 @@ _TRAINING_IDENTITY_FIELDS = (
     "conformity_gnn_layers",
     "contrastive_max_pairs",
     "contrastive_temperature",
+    "distance_correlation_max_pairs",
+    "uniformity_max_pairs",
     "auxiliary_losses_start_epoch",
     "popularity_supervision_start_epoch",
     "dataset",
@@ -802,8 +811,83 @@ def _iscuda__oom(exc: BaseException) -> bool:
     return "out of memory" in message and "cuda" in message
 
 
+def _exception_summary(exc: BaseException, *, max_chars: int = 500) -> str:
+    """Return a compact one-line exception summary for run logs."""
+    message = str(exc).strip()
+    message = message.splitlines()[0] if message else repr(exc)
+    if len(message) > max_chars:
+        message = f"{message[: max_chars - 3]}..."
+    return f"{type(exc).__name__}: {message}"
+
+
+def _cuda_memory_snapshot() -> str:
+    """Return PyTorch CUDA allocator state for diagnosing OOM decisions."""
+    if not torch.cuda.is_available():
+        return "cuda_memory=unavailable"
+    try:
+        mib = 1024**2
+        allocated_mb = torch.cuda.memory_allocated() / mib
+        reserved_mb = torch.cuda.memory_reserved() / mib
+        peak_allocated_mb = torch.cuda.max_memory_allocated() / mib
+        peak_reserved_mb = torch.cuda.max_memory_reserved() / mib
+    except Exception as exc:
+        message = str(exc).strip().splitlines()[0] if str(exc).strip() else repr(exc)
+        return f"cuda_memory=unavailable ({type(exc).__name__}: {message})"
+    return (
+        "cuda_memory="
+        f"allocated={allocated_mb:.0f}MB "
+        f"reserved={reserved_mb:.0f}MB "
+        f"peak_allocated={peak_allocated_mb:.0f}MB "
+        f"peak_reserved={peak_reserved_mb:.0f}MB"
+    )
+
+
+def _reset_cuda_peak_memory_stats() -> None:
+    """Reset CUDA peak stats when available without disturbing CPU-only tests."""
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+
+
 _AUTO_BATCH_PROBE_STEPS = 3
 _AUTO_BATCH_VERIFY_STEPS = 1
+
+
+class _AutoBatchProbeOOMError(RuntimeError):
+    """CUDA OOM annotated with the auto-batch probe stage and subgraph size."""
+
+    def __init__(
+        self,
+        stage: str,
+        candidate_batch_size: int,
+        sub_batch: Any,
+        exc: BaseException,
+    ) -> None:
+        self.stage = stage
+        self.candidate_batch_size = candidate_batch_size
+        self.original = exc
+        details = _subgraph_batch_summary(sub_batch)
+        super().__init__(
+            (
+                "CUDA out of memory during auto-batch probe "
+                f"stage={stage} candidate_batch_size={candidate_batch_size} "
+                f"{details} caused_by={_exception_summary(exc)}"
+            ),
+        )
+
+
+def _subgraph_batch_summary(sub_batch: Any) -> str:
+    """Return compact subgraph dimensions for probe OOM diagnostics."""
+    if sub_batch is None:
+        return "subgraph=unavailable"
+    try:
+        return (
+            f"effective_batch={int(sub_batch.batch_user_local.numel())} "
+            f"sub_users={int(sub_batch.n_sub_users)} "
+            f"sub_items={int(sub_batch.n_sub_items)} "
+            f"sub_edges={int(sub_batch.sub_edge_index.size(1))}"
+        )
+    except Exception:
+        return "subgraph=unavailable"
 
 
 def _release_cuda_probe_memory() -> None:
@@ -879,8 +963,10 @@ def _probe_batch_size_candidate(
     probe_trainer = None
     sub_batch = None
     losses = None
+    stage = "build_runtime_model"
     try:
         probe_model = build_runtime_model(config, canonical, data)
+        stage = "build_trainer"
         probe_loss_suite = LossSuite(config)
         probe_trainer = MiniBatchTrainer(
             model=probe_model,
@@ -896,18 +982,30 @@ def _probe_batch_size_candidate(
         if batch_size <= 0:
             return
 
+        stage = "prepare_batch"
         sub_batch = probe_trainer._prepare_batch(
             batch_users[:batch_size],
             batch_items[:batch_size],
             random_seed=random_seed,
             epoch=0,
         )
+        stage = "forward_loss"
         _, losses = probe_trainer._run_training_batch(
             sub_batch,
             probe_trainer.popularity,
             epoch=0,
         )
+        stage = "backward_step"
         probe_trainer._apply_optimization_step(losses["total"])
+    except Exception as exc:
+        if _iscuda__oom(exc):
+            raise _AutoBatchProbeOOMError(
+                stage,
+                candidate_batch_size,
+                sub_batch,
+                exc,
+            ) from exc
+        raise
     finally:
         if probe_trainer is not None:
             probe_trainer.optimizer.zero_grad(set_to_none=True)
@@ -955,6 +1053,7 @@ def _resolve_auto_batch_size(
     for candidate in candidates:
         config.batch_size = candidate
         _release_cuda_probe_memory()
+        _reset_cuda_peak_memory_stats()
         try:
             for probe_index in range(_AUTO_BATCH_PROBE_STEPS):
                 start = probe_index * candidate
@@ -975,9 +1074,11 @@ def _resolve_auto_batch_size(
                 raise
             failures.append(candidate)
             logger.info(
-                "Auto batch-size probe rejected %d on %s due to CUDA OOM.",
+                "Auto batch-size probe rejected %d on %s due to CUDA OOM (%s; %s).",
                 candidate,
                 config.dataset,
+                _exception_summary(exc),
+                _cuda_memory_snapshot(),
             )
             continue
 
@@ -1029,6 +1130,7 @@ def _verify_selected_auto_batch_size(
     for candidate in candidates[start_index:]:
         config.batch_size = candidate
         _release_cuda_probe_memory()
+        _reset_cuda_peak_memory_stats()
         try:
             for probe_index in range(_AUTO_BATCH_VERIFY_STEPS):
                 start = probe_index * candidate
@@ -1048,9 +1150,14 @@ def _verify_selected_auto_batch_size(
             if not _iscuda__oom(exc):
                 raise
             logger.warning(
-                "Auto batch-size verification rejected %d on %s; retrying a smaller candidate.",
+                (
+                    "Auto batch-size verification rejected %d on %s; "
+                    "retrying a smaller candidate (%s; %s)."
+                ),
                 candidate,
                 config.dataset,
+                _exception_summary(exc),
+                _cuda_memory_snapshot(),
             )
             continue
 
@@ -1547,6 +1654,14 @@ def normalize_benchmark_config_overrides(
     normalized["dice_adaptive_decay"] = (
         bool(dice_adaptive_decay) if dice_adaptive_decay is not None else None
     )
+    distance_correlation_max_pairs = raw_config.get("distance_correlation_max_pairs")
+    normalized["distance_correlation_max_pairs"] = (
+        int(distance_correlation_max_pairs) if distance_correlation_max_pairs is not None else None
+    )
+    uniformity_max_pairs = raw_config.get("uniformity_max_pairs")
+    normalized["uniformity_max_pairs"] = (
+        int(uniformity_max_pairs) if uniformity_max_pairs is not None else None
+    )
     normalized["auxiliary_losses_start_epoch"] = int(
         raw_config.get(
             "auxiliary_losses_start_epoch",
@@ -1985,7 +2100,7 @@ def run_experiment(
                         logger.warning(
                             (
                                 "Training with batch_size %d OOM on %s; trying next smaller "
-                                "candidate%s."
+                                "candidate%s (%s; %s)."
                             ),
                             candidate,
                             config.dataset,
@@ -1994,6 +2109,8 @@ def run_experiment(
                                 if fallback_checkpoint_path is not None
                                 else " from epoch 1 because no recovery checkpoint exists"
                             ),
+                            _exception_summary(exc),
+                            _cuda_memory_snapshot(),
                         )
                         trainer.subgraph_sampler = None
                         trainer = None
