@@ -40,6 +40,14 @@ from ..utils.trainer_runtime import (
 logger = logging.getLogger(__name__)
 
 
+def _is_cuda_oom_error(exc: BaseException) -> bool:
+    """Return whether an exception represents CUDA out-of-memory."""
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    message = str(exc).lower()
+    return "cuda" in message and "out of memory" in message
+
+
 class MiniBatchTrainer(TrainerRuntime):
     """Train U-CaGNN with mini-batch subgraph sampling."""
 
@@ -66,7 +74,15 @@ class MiniBatchTrainer(TrainerRuntime):
         )
 
         self._force_cpu_sampler = False
-        self.subgraph_sampler, self.sampler_device = self._build_subgraph_sampler(data)
+        self._full_graph_tensors: (
+            tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None] | None
+        ) = None
+        self._full_graph_tensor_device: torch.device | None = None
+        if self.config.training_graph_mode == "sampled":
+            self.subgraph_sampler, self.sampler_device = self._build_subgraph_sampler(data)
+        else:
+            self.subgraph_sampler = None
+            self.sampler_device = self.device
         self.train_users, self.train_items = self._get_train_interactions()
 
     @staticmethod
@@ -107,7 +123,9 @@ class MiniBatchTrainer(TrainerRuntime):
 
         try:
             sampler = _sampler_for(target_device)
-        except torch.cuda.OutOfMemoryError as exc:
+        except Exception as exc:
+            if not _is_cuda_oom_error(exc):
+                raise
             empty_cuda_cache(target_device)
             logger.warning(
                 "Falling back to CPU subgraph sampling after CUDA graph staging failed: %s",
@@ -134,6 +152,8 @@ class MiniBatchTrainer(TrainerRuntime):
 
     def _ensure_subgraph_sampler(self) -> None:
         """Rebuild the sampler after validation if its CUDA copy was released."""
+        if self.config.training_graph_mode != "sampled":
+            return
         if self.subgraph_sampler is None:
             self.subgraph_sampler, self.sampler_device = self._build_subgraph_sampler(
                 self.data,
@@ -148,11 +168,30 @@ class MiniBatchTrainer(TrainerRuntime):
         empty_cuda_cache(self.device)
         return True
 
+    def _get_full_graph_training_tensors(
+        self,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        """Return cached full-graph tensors for full-graph optimizer steps."""
+        if self._full_graph_tensors is None or self._full_graph_tensor_device != self.device:
+            self._full_graph_tensors = stage_graph_tensors_for_device(self.data, self.device)
+            self._full_graph_tensor_device = self.device
+        return self._full_graph_tensors
+
+    def _release_full_graph_cache_for_eval(self) -> bool:
+        """Release cached CUDA graph tensors before validation/test scoring."""
+        if self._full_graph_tensor_device is None or self._full_graph_tensor_device.type != "cuda":
+            return False
+        self._full_graph_tensors = None
+        self._full_graph_tensor_device = None
+        empty_cuda_cache(self.device)
+        return True
+
     def _prepare_batch_on_sampler_device(
         self,
         batch_users: torch.Tensor,
         batch_pos_items: torch.Tensor,
         random_seed: int,
+        epoch: int,
     ) -> SubgraphBatch:
         """Sample negatives and extract a subgraph for one batch.
 
@@ -171,17 +210,31 @@ class MiniBatchTrainer(TrainerRuntime):
 
         generator = build_torch_generator(random_seed, self.sampler_device)
         batch_size = batch_users.size(0)
-        batch_neg_items = self.sampler.sample(
+        batch_neg_items, dice_negative_mask = self.sampler.sample_with_metadata(
             batch_size,
             batch_pos_items,
-            self.sampler_device,
+            user_ids=batch_users,
+            device=self.sampler_device,
             generator=generator,
-        ).squeeze(-1)
+            epoch=epoch,
+        )
+        if self.config.n_negatives > 1:
+            batch_neg_matrix = batch_neg_items.reshape(batch_size, self.config.n_negatives)
+            batch_users = batch_users.repeat_interleave(self.config.n_negatives)
+            batch_pos_items = batch_pos_items.repeat_interleave(self.config.n_negatives)
+            batch_neg_items = batch_neg_matrix.reshape(-1)
+            if dice_negative_mask is not None:
+                dice_negative_mask = dice_negative_mask.reshape(-1)
+        else:
+            batch_neg_items = batch_neg_items.squeeze(-1)
+            if dice_negative_mask is not None:
+                dice_negative_mask = dice_negative_mask.squeeze(-1)
         prepared = self.subgraph_sampler.sample(
             batch_users,
             batch_pos_items,
             batch_neg_items,
             generator=generator,
+            dice_negative_mask=dice_negative_mask,
         )
         if self.sampler_device.type == "cpu" and self.device.type == "cuda":
             return prepared.pin_memory()
@@ -192,6 +245,7 @@ class MiniBatchTrainer(TrainerRuntime):
         batch_users: torch.Tensor,
         batch_pos_items: torch.Tensor,
         random_seed: int,
+        epoch: int,
     ) -> SubgraphBatch:
         """Prepare one batch, retrying on the CPU sampler after a CUDA OOM."""
         try:
@@ -199,13 +253,17 @@ class MiniBatchTrainer(TrainerRuntime):
                 batch_users,
                 batch_pos_items,
                 random_seed,
+                epoch,
             )
-        except torch.OutOfMemoryError as exc:
+        except Exception as exc:
+            if not _is_cuda_oom_error(exc):
+                raise
             self._fallback_subgraph_sampler_to_cpu(exc)
             return self._prepare_batch_on_sampler_device(
                 batch_users,
                 batch_pos_items,
                 random_seed,
+                epoch,
             )
 
     def _run_training_batch(
@@ -223,6 +281,7 @@ class MiniBatchTrainer(TrainerRuntime):
             if self.propensity_targets is not None
             else None
         )
+        local_branch_popularity = self.branch_popularity[sub_batch.item_global_ids]
         with autocast_context(use_amp=self.use_amp, amp_dtype=self.amp_dtype):
             output = self.model.forward_subgraph(sub_batch)
             local_popularity = popularity[sub_batch.item_global_ids]
@@ -232,6 +291,7 @@ class MiniBatchTrainer(TrainerRuntime):
                 sub_batch.batch_pos_local,
                 epoch,
                 propensity_targets=local_prop_targets,
+                branch_item_popularity=local_branch_popularity,
             )
 
         if logger.isEnabledFor(logging.DEBUG):
@@ -269,6 +329,95 @@ class MiniBatchTrainer(TrainerRuntime):
                     )
 
         return losses["total"].detach(), losses
+
+    def _run_full_graph_training_batch(
+        self,
+        batch_users: torch.Tensor,
+        batch_pos_items: torch.Tensor,
+        popularity: torch.Tensor,
+        epoch: int,
+        random_seed: int,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Run one paper-baseline batch using full-graph propagation."""
+        batch_users = move_tensor_to_device(batch_users, self.device)
+        batch_pos_items = move_tensor_to_device(batch_pos_items, self.device)
+        generator = build_torch_generator(random_seed, self.device)
+        batch_size = batch_users.size(0)
+        batch_neg_items, dice_negative_mask = self.sampler.sample_with_metadata(
+            batch_size,
+            batch_pos_items,
+            user_ids=batch_users,
+            device=self.device,
+            generator=generator,
+            epoch=epoch,
+        )
+        if self.config.n_negatives > 1:
+            batch_users = batch_users.repeat_interleave(self.config.n_negatives)
+            batch_pos_items = batch_pos_items.repeat_interleave(self.config.n_negatives)
+            batch_neg_items = batch_neg_items.reshape(-1)
+            if dice_negative_mask is not None:
+                dice_negative_mask = dice_negative_mask.reshape(-1)
+        else:
+            batch_neg_items = batch_neg_items.squeeze(-1)
+            if dice_negative_mask is not None:
+                dice_negative_mask = dice_negative_mask.squeeze(-1)
+
+        edge_index, edge_sign, edge_norm = self._get_full_graph_training_tensors()
+        with autocast_context(use_amp=self.use_amp, amp_dtype=self.amp_dtype):
+            forward_kwargs = (
+                {"dice_negative_mask": dice_negative_mask} if dice_negative_mask is not None else {}
+            )
+            output = self.model(
+                edge_index,
+                batch_users,
+                batch_pos_items,
+                batch_neg_items,
+                edge_sign=edge_sign,
+                edge_norm=edge_norm,
+                **forward_kwargs,
+            )
+            losses = self.loss_suite(
+                output,
+                popularity,
+                batch_pos_items,
+                epoch,
+                propensity_targets=self.propensity_targets,
+                branch_item_popularity=self.branch_popularity,
+            )
+        return losses["total"].detach(), losses
+
+    def _dispatch_full_graph_batch(
+        self,
+        batch_users: torch.Tensor,
+        batch_pos_items: torch.Tensor,
+        popularity: torch.Tensor,
+        epoch: int,
+        random_seed: int,
+        batch_idx: int,
+        n_batches: int,
+        progress_bar: tqdm | None,
+        n_skipped: int,
+    ) -> torch.Tensor | None:
+        """Run one full-graph training step."""
+        total_loss, losses = self._run_full_graph_training_batch(
+            batch_users,
+            batch_pos_items,
+            popularity,
+            epoch,
+            random_seed,
+        )
+        if not torch.isfinite(total_loss).all():
+            self.optimizer.zero_grad(set_to_none=True)
+            if progress_bar is not None:
+                progress_bar.update(1)
+                progress_bar.set_postfix(skipped=n_skipped + 1)
+            return None
+        self._apply_optimization_step(losses["total"])
+        if progress_bar is not None:
+            progress_bar.update(1)
+            if batch_idx + 1 == n_batches or batch_idx % self.config.progress_bar_loss_cadence == 0:
+                progress_bar.set_postfix(loss=f"{float(total_loss.item()):.4f}")
+        return total_loss
 
     def _dispatch_batch(
         self,
@@ -349,6 +498,7 @@ class MiniBatchTrainer(TrainerRuntime):
                         train_users_shuffled[start:end],
                         train_items_shuffled[start:end],
                         int(self.config.seed + epoch * batches_per_epoch + batch_index),
+                        epoch,
                     )
                 for batch_idx in range(len(starts)):
                     sub_batch = pending.pop(batch_idx).result()
@@ -363,6 +513,7 @@ class MiniBatchTrainer(TrainerRuntime):
                             int(
                                 self.config.seed + epoch * batches_per_epoch + next_batch_idx,
                             ),
+                            epoch,
                         )
                     yield batch_idx, sub_batch
         else:
@@ -372,6 +523,7 @@ class MiniBatchTrainer(TrainerRuntime):
                     train_users_shuffled[start:end],
                     train_items_shuffled[start:end],
                     int(self.config.seed + epoch * batches_per_epoch + batch_idx),
+                    epoch,
                 )
                 yield batch_idx, sub_batch
 
@@ -404,7 +556,8 @@ class MiniBatchTrainer(TrainerRuntime):
         n_batches = (n_train + batch_sz - 1) // batch_sz
 
         for epoch in range(start_epoch, self.config.epochs):
-            self._ensure_subgraph_sampler()
+            if self.config.training_graph_mode == "sampled":
+                self._ensure_subgraph_sampler()
             self._reset_epoch_vram_stats()
 
             epoch_start = time.perf_counter()
@@ -443,29 +596,49 @@ class MiniBatchTrainer(TrainerRuntime):
             sub_batch: SubgraphBatch | None = None
             total_loss: torch.Tensor | None = None
             try:
-                for batch_idx, sub_batch in self._iter_epoch_batches(
-                    starts,
-                    train_users_shuffled,
-                    train_items_shuffled,
-                    n_train,
-                    batch_sz,
-                    epoch,
-                    batches_per_epoch,
-                ):
-                    total_loss = self._dispatch_batch(
-                        sub_batch,
-                        popularity,
+                if self.config.training_graph_mode == "full":
+                    for batch_idx, start in enumerate(starts):
+                        end = min(start + batch_sz, n_train)
+                        total_loss = self._dispatch_full_graph_batch(
+                            train_users_shuffled[start:end],
+                            train_items_shuffled[start:end],
+                            popularity,
+                            epoch,
+                            int(self.config.seed + epoch * batches_per_epoch + batch_idx),
+                            batch_idx,
+                            n_batches,
+                            progress_bar,
+                            skipped_batches,
+                        )
+                        if total_loss is None:
+                            skipped_batches += 1
+                            continue
+                        epoch_loss_total = epoch_loss_total + total_loss.to(torch.bfloat16)
+                        completed_batches += 1
+                else:
+                    for batch_idx, sub_batch in self._iter_epoch_batches(
+                        starts,
+                        train_users_shuffled,
+                        train_items_shuffled,
+                        n_train,
+                        batch_sz,
                         epoch,
-                        batch_idx,
-                        n_batches,
-                        progress_bar,
-                        skipped_batches,
-                    )
-                    if total_loss is None:
-                        skipped_batches += 1
-                        continue
-                    epoch_loss_total = epoch_loss_total + total_loss.to(torch.bfloat16)
-                    completed_batches += 1
+                        batches_per_epoch,
+                    ):
+                        total_loss = self._dispatch_batch(
+                            sub_batch,
+                            popularity,
+                            epoch,
+                            batch_idx,
+                            n_batches,
+                            progress_bar,
+                            skipped_batches,
+                        )
+                        if total_loss is None:
+                            skipped_batches += 1
+                            continue
+                        epoch_loss_total = epoch_loss_total + total_loss.to(torch.bfloat16)
+                        completed_batches += 1
             finally:
                 if progress_bar is not None:
                     progress_bar.close()
@@ -485,7 +658,11 @@ class MiniBatchTrainer(TrainerRuntime):
             avg_loss = float((epoch_loss_total / completed_batches).item())
 
             history["train_loss"].append(avg_loss)
-            released_cuda_sampler = self._release_cuda_sampler_for_eval()
+            released_cuda_sampler = False
+            if self.config.training_graph_mode == "sampled":
+                released_cuda_sampler = self._release_cuda_sampler_for_eval()
+            elif self.config.training_graph_mode == "full":
+                self._release_full_graph_cache_for_eval()
             try:
                 val_metrics = self._evaluate_validation_metrics()
             finally:

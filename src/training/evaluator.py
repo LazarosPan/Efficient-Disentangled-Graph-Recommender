@@ -14,6 +14,7 @@ from torch_geometric.metrics import (
     LinkPredRecall,
 )
 
+from ..data.interaction_masks import positive_interaction_mask
 from ..utils.config import UCaGNNConfig
 from ..utils.trainer_runtime import (
     autocast_context,
@@ -295,6 +296,19 @@ class Evaluator:
         return LinkPredMetricCollection(metrics)
 
     @staticmethod
+    def _matches_split_mask(target_mask: torch.Tensor, split_mask: torch.Tensor) -> bool:
+        """Return whether ``target_mask`` identifies the same split as ``split_mask``."""
+        if target_mask is split_mask:
+            return True
+        if target_mask.shape != split_mask.shape:
+            return False
+        split_mask_on_target_device = move_tensor_to_device(
+            split_mask.bool(),
+            target_mask.device,
+        )
+        return torch.equal(target_mask.bool(), split_mask_on_target_device)
+
+    @staticmethod
     def _observed_non_target_mask(data, target_mask: torch.Tensor) -> torch.Tensor:
         """Return interactions to exclude from the recommendation scoring pool.
 
@@ -316,11 +330,12 @@ class Evaluator:
                 exclude_mask.device,
             )
 
-        # When the caller passes exactly data.test_mask (identity check), also
-        # exclude validation interactions so the test pool contains only items
-        # the model has never encountered during training or validation.
+        # When the caller evaluates the test split, also exclude validation
+        # interactions so the test pool contains only items the model has never
+        # encountered during training or validation. Accept equivalent copied
+        # masks as test masks to keep downstream evaluation scripts safe.
         test_mask = getattr(data, "test_mask", None)
-        if test_mask is not None and target_mask is test_mask:
+        if test_mask is not None and Evaluator._matches_split_mask(target_mask, test_mask):
             val_mask = getattr(data, "val_mask", None)
             if val_mask is not None:
                 exclude_mask |= move_tensor_to_device(
@@ -371,7 +386,10 @@ class Evaluator:
         """
         key = id(mask)
         if key not in self._split_cache:
-            target_mask = mask.bool()
+            target_mask = positive_interaction_mask(
+                mask.bool(),
+                getattr(data, "labels", None),
+            )
             if target_mask.device.type != "cpu":
                 target_mask = target_mask.cpu()
             exclude_mask = self._observed_non_target_mask(data, mask)
