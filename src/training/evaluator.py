@@ -37,6 +37,10 @@ THESIS_PRIMARY_METRICS: Final[tuple[str, ...]] = (
     "Personalization@40",
 )
 
+# Keep the thesis metric contract limited to PyG-standard metrics plus
+# diagnostics that are easy to interpret and defend. Do not reintroduce custom
+# Novelty, TrainPop Avoidance, or item-pop IoU surrogates unless a paper-faithful
+# definition is implemented and explicitly justified.
 LOWER_IS_BETTER_METRICS: Final[frozenset[str]] = frozenset(
     {"AveragePopularity@20", "AveragePopularity@40"},
 )
@@ -435,7 +439,7 @@ class Evaluator:
         data,
         mask: torch.Tensor,
         batch_size: int = 512,
-        include_refined_diagnostics: bool = True,
+        include_refined_diagnostics: bool = False,
     ) -> dict[str, float]:
         """Evaluate model on users present in mask.
 
@@ -444,8 +448,10 @@ class Evaluator:
             data: Runtime graph data and split masks.
             mask: Split mask to evaluate.
             batch_size: Requested user batch size for ranking metrics.
-            include_refined_diagnostics: Whether to append refined scorer
-                diagnostics such as score-mix, Spearman, and cosine stats.
+            include_refined_diagnostics: Whether to append the expensive
+                refined scorer diagnostics such as score-mix, Spearman, and
+                cosine stats. Keep this opt-in so epoch validation remains
+                cheap; the training runner enables it for the final test pass.
 
         Returns:
             Dict of metric name to scalar value.
@@ -593,6 +599,10 @@ class Evaluator:
                 seen_rows = move_tensor_to_device(torch.cat(seen_row_parts), device)
                 seen_cols = move_tensor_to_device(torch.cat(seen_col_parts), device)
                 scores[seen_rows, seen_cols] = float("-inf")
+                if score_components is not None:
+                    for component_score in score_components.values():
+                        if component_score.ndim == 2 and component_score.shape == scores.shape:
+                            component_score[seen_rows, seen_cols] = float("-inf")
 
             # Build batch ground truth on-the-fly (small: batch_size * n_items)
             gt_rows: list[torch.Tensor] = []

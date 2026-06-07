@@ -26,7 +26,7 @@ from tqdm.auto import tqdm
 from ..data.subgraph_sampler import SubgraphBatch, SubgraphSampler
 from ..losses.loss_suite import LossSuite
 from ..models.ucagnn import UCaGNN
-from ..profiling.gpu_profiler import GPUProfiler
+from ..profiling.gpu_profiler import GPUProfiler, TrainingResourceMonitor
 from ..utils.config import UCaGNNConfig
 from ..utils.reproducibility import build_torch_generator
 from ..utils.trainer_runtime import (
@@ -595,6 +595,8 @@ class MiniBatchTrainer(TrainerRuntime):
 
             sub_batch: SubgraphBatch | None = None
             total_loss: torch.Tensor | None = None
+            resource_monitor = TrainingResourceMonitor(self.device).start()
+            resource_stats = None
             try:
                 if self.config.training_graph_mode == "full":
                     for batch_idx, start in enumerate(starts):
@@ -640,6 +642,7 @@ class MiniBatchTrainer(TrainerRuntime):
                         epoch_loss_total = epoch_loss_total + total_loss.to(torch.bfloat16)
                         completed_batches += 1
             finally:
+                resource_stats = resource_monitor.stop()
                 if progress_bar is not None:
                     progress_bar.close()
 
@@ -679,12 +682,14 @@ class MiniBatchTrainer(TrainerRuntime):
                 current_ndcg,
                 primary_metric,
                 skipped_batches=skipped_batches,
+                resource_stats=resource_stats,
             )
             self._log_epoch_to_sqlite(
                 epoch,
                 avg_loss,
                 epoch_time_s,
                 val_metrics,
+                resource_stats=resource_stats,
             )
             self.completed_epoch = epoch
             self.resume_history = history
