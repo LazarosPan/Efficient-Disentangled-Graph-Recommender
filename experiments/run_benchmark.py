@@ -399,7 +399,7 @@ def _resolve_benchmark_num_neighbors_for_preset(
 ) -> list[int]:
     """Return the fan-out prefix needed by the preset's active depth."""
     default_config = UCaGNNConfig()
-    if preset == "lightgcn":
+    if preset in {"lightgcn", "lightgcn_paper"}:
         required_hops = int(
             benchmark_args.get("single_branch_gnn_layers")
             or default_config.single_branch_gnn_layers,

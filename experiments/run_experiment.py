@@ -33,10 +33,12 @@ from scripts._workflow_helpers import configure_cli_logging
 from src.data.graph_builder import build_graph
 from src.data.loaders import default_preprocessing_preset, load_dataset
 from src.losses.loss_suite import LossSuite
+from src.models.baselines import PaperGCNDICE, PaperLightGCN
 from src.models.ucagnn import UCaGNN
 from src.training.mini_batch_trainer import MiniBatchTrainer
 from src.utils.config import DEFAULT_SEED, GRAPH_POLICY_CHOICES, UCaGNNConfig
 from src.utils.experiment_logger import ExperimentLogger
+from src.utils.experiment_naming import build_canonical_experiment_name
 from src.utils.interaction_indexing import compute_normalized_popularity
 from src.utils.project_paths import (
     CHECKPOINT_DIR,
@@ -71,7 +73,11 @@ REQUIRED_CHECKPOINT_KEYS = frozenset(
 PRESETS = {
     "ucagnn": "preset_full",
     "lightgcn": "preset_lightgcn",
+    "lightgcn_paper": "preset_lightgcn_paper",
+    "dice_paper": "preset_dice_paper",
     "dice_like": "preset_dice_like",
+    "dice_like_ablation": "preset_dice_like",
+    "lgndice_paper": "preset_lgndice_paper",
 }
 CONFIG_OVERRIDE_FIELDS = (
     "epochs",
@@ -91,10 +97,21 @@ CONFIG_OVERRIDE_FIELDS = (
     "use_features",
     "feature_policy",
     "graph_policy",
+    "training_graph_mode",
+    "branch_loss_mode",
+    "recommendation_loss_mode",
+    "negative_sampling_strategy",
     "preprocessing_preset",
     "derived_split_mode",
     "num_neighbors",
     "hard_negative_ratio",
+    "score_mix_min_weight",
+    "dice_sampler_margin",
+    "dice_sampler_pool",
+    "dice_branch_margin",
+    "dice_loss_decay",
+    "dice_margin_decay",
+    "dice_adaptive_decay",
     "auxiliary_losses_start_epoch",
     "popularity_supervision_start_epoch",
     "loss_schedule",
@@ -118,6 +135,17 @@ _BENCHMARK_SHARED_CONFIG_FIELD_SET = frozenset(
         "dropout",
         "num_neighbors",
         "hard_negative_ratio",
+        "score_mix_min_weight",
+        "training_graph_mode",
+        "branch_loss_mode",
+        "recommendation_loss_mode",
+        "negative_sampling_strategy",
+        "dice_sampler_margin",
+        "dice_sampler_pool",
+        "dice_branch_margin",
+        "dice_loss_decay",
+        "dice_margin_decay",
+        "dice_adaptive_decay",
         "auxiliary_losses_start_epoch",
         "popularity_supervision_start_epoch",
         "loss_schedule",
@@ -170,6 +198,17 @@ _TRAINING_IDENTITY_FIELDS = (
     "graph_policy",
     "grad_clip_norm",
     "hard_negative_ratio",
+    "score_mix_min_weight",
+    "training_graph_mode",
+    "branch_loss_mode",
+    "recommendation_loss_mode",
+    "negative_sampling_strategy",
+    "dice_sampler_margin",
+    "dice_sampler_pool",
+    "dice_branch_margin",
+    "dice_loss_decay",
+    "dice_margin_decay",
+    "dice_adaptive_decay",
     "independence_ramp_rate",
     "interest_gnn_layers",
     "loss_weight_align",
@@ -218,8 +257,6 @@ _TRAINING_IDENTITY_FIELDS = (
 )
 _EVALUATION_IDENTITY_FIELDS = ("eval_ks",)
 
-# TODO: almost the same function as query_results.py, consider having only 1 function for this.
-
 
 def _build_canonical_name(
     config: UCaGNNConfig,
@@ -227,38 +264,7 @@ def _build_canonical_name(
     intervention: str | None,
 ) -> str:
     """Build a descriptive canonical experiment name from the effective config."""
-    parts = [
-        config.dataset,
-        preset or "custom",
-        f"ep{config.epochs}",
-        f"bs{config.batch_size}",
-        f"dim{config.embed_dim}",
-        f"layers{config.max_gnn_layers}",
-    ]
-    if config.use_dual_branch and (config.interest_gnn_layers != config.conformity_gnn_layers):
-        parts.append(
-            f"branchL{config.interest_gnn_layers}-{config.conformity_gnn_layers}",
-        )
-    parts.append(f"nbr{'-'.join(str(value) for value in config.num_neighbors)}")
-    if config.sample_interactions is not None:
-        parts.append(f"sample{config.sample_interactions}")
-    if config.loader_max_rows is not None:
-        parts.append(f"loadrows{config.loader_max_rows}")
-    if config.preprocessing_preset is not None:
-        parts.append(f"ppreset{config.preprocessing_preset}")
-    if config.graph_policy != "observed":
-        parts.append(f"graph{config.graph_policy}")
-    if config.derived_split_mode != "per_user_temporal":
-        parts.append(f"split{config.derived_split_mode}")
-    if config.use_features:
-        parts.append("feat")
-    if config.feature_policy != "thesis_default":
-        parts.append(f"fpolicy{config.feature_policy}")
-    parts.append(f"lr-{config.lr_scheduler}")
-    if intervention:
-        parts.append(intervention)
-    parts.append(f"seed{config.seed}")
-    return "_".join(parts)
+    return build_canonical_experiment_name(config, preset, intervention)
 
 
 def _stable_identity_hash(payload: dict[str, Any]) -> str:
@@ -595,7 +601,7 @@ def build_runtime_model(
     config: UCaGNNConfig | Any,
     canonical: Any,
     data: Any,
-) -> UCaGNN:
+) -> torch.nn.Module:
     """Instantiate the runtime model for a loaded canonical dataset and graph.
 
     Args:
@@ -610,6 +616,19 @@ def build_runtime_model(
     if not isinstance(config, UCaGNNConfig):
         config, canonical, data = data, config, canonical
     assert isinstance(config, UCaGNNConfig)
+    if config.baseline_family == "lightgcn_paper":
+        return PaperLightGCN(
+            canonical.n_users,
+            canonical.n_items,
+            config,
+        )
+    if config.baseline_family == "dice_paper":
+        return PaperGCNDICE(
+            canonical.n_users,
+            canonical.n_items,
+            config,
+        )
+
     train_mask = _train_mask_numpy_from_data(data)
     item_recency = torch.from_numpy(canonical.compute_item_recency(train_mask))
     recent_train_items, recent_train_mask = canonical.build_recent_train_history(train_mask)
@@ -881,6 +900,7 @@ def _probe_batch_size_candidate(
             batch_users[:batch_size],
             batch_items[:batch_size],
             random_seed=random_seed,
+            epoch=0,
         )
         _, losses = probe_trainer._run_training_batch(
             sub_batch,
@@ -1444,6 +1464,14 @@ def normalize_benchmark_config_overrides(
     normalized["derived_split_mode"] = (
         str(derived_split_mode) if derived_split_mode is not None else None
     )
+    for string_field in (
+        "training_graph_mode",
+        "branch_loss_mode",
+        "recommendation_loss_mode",
+        "negative_sampling_strategy",
+    ):
+        value = raw_config.get(string_field)
+        normalized[string_field] = str(value) if value is not None else None
     batch_size = raw_config.get("batch_size")
     normalized["batch_size"] = (
         int(batch_size) if batch_size is not None else default_config.batch_size
@@ -1492,6 +1520,32 @@ def normalize_benchmark_config_overrides(
     )
     normalized["hard_negative_ratio"] = float(
         raw_config.get("hard_negative_ratio", default_config.hard_negative_ratio),
+    )
+    score_mix_min_weight = raw_config.get("score_mix_min_weight")
+    normalized["score_mix_min_weight"] = (
+        float(score_mix_min_weight) if score_mix_min_weight is not None else None
+    )
+    dice_sampler_margin = raw_config.get("dice_sampler_margin")
+    normalized["dice_sampler_margin"] = (
+        float(dice_sampler_margin) if dice_sampler_margin is not None else None
+    )
+    dice_sampler_pool = raw_config.get("dice_sampler_pool")
+    normalized["dice_sampler_pool"] = (
+        int(dice_sampler_pool) if dice_sampler_pool is not None else None
+    )
+    dice_branch_margin = raw_config.get("dice_branch_margin")
+    normalized["dice_branch_margin"] = (
+        float(dice_branch_margin) if dice_branch_margin is not None else None
+    )
+    dice_loss_decay = raw_config.get("dice_loss_decay")
+    normalized["dice_loss_decay"] = float(dice_loss_decay) if dice_loss_decay is not None else None
+    dice_margin_decay = raw_config.get("dice_margin_decay")
+    normalized["dice_margin_decay"] = (
+        float(dice_margin_decay) if dice_margin_decay is not None else None
+    )
+    dice_adaptive_decay = raw_config.get("dice_adaptive_decay")
+    normalized["dice_adaptive_decay"] = (
+        bool(dice_adaptive_decay) if dice_adaptive_decay is not None else None
     )
     normalized["auxiliary_losses_start_epoch"] = int(
         raw_config.get(
@@ -1582,6 +1636,8 @@ def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfi
     for override_group in (recipe_overrides, explicit_overrides):
         for key, val in override_group.items():
             setattr(config, key, val)
+
+    config.enforce_paper_baseline_contract()
 
     if config.preprocessing_preset is None:
         config.preprocessing_preset = default_preprocessing_preset(config.dataset)

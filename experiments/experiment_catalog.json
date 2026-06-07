@@ -2,127 +2,11 @@
   "formal_profiles": [
     {
       "id": "dev-ucagnn",
-      "aliases": ["default", "latest"],
-      "description": "Development-focused formal profile: ucagnn with learned fused scoring, explicit 1/2 branch depth, and the default observed train-interaction graph across all thesis datasets.",
-      "matrix": {
-        "datasets": "all",
-        "presets": ["ucagnn"],
-        "scoring_weight_modes": ["learned"]
-      },
-      "config_overrides": {
-        "epochs": 60,
-        "use_early_stopping": false,
-        "lr": 0.001,
-        "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
-        "interest_gnn_layers": 1,
-        "conformity_gnn_layers": 2,
-        "dropout": 0.1,
-        "graph_policy": "observed",
-        "num_neighbors": [10, 5],
-        "auxiliary_losses_start_epoch": 15,
-        "popularity_supervision_start_epoch": 30
-      }
-    },
-    {
-      "id": "dev-matched-comparison-i1-c2-nn8-4-ep200-lr0.01",
-      "description": "Development-focused matched-comparison profile: one end-stage shared-pipeline pass where ucagnn runs learned and fixed score mixing while LightGCN and DICE-like stay on their fixed baseline path.",
-      "matrix": {
-        "datasets": ["movielens1m", "amazonbook", "kuairec_v2", "kuairand1k", "taobao"],
-        "presets": ["ucagnn", "lightgcn", "dice_like"],
-        "scoring_weight_modes": ["learned", "fixed"]
-      },
-      "config_overrides": {
-        "epochs": 200,
-        "use_early_stopping": true,
-        "patience": 10,
-        "lr": 0.01,
-        "batch_size_candidates": [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
-        "single_branch_gnn_layers": 2,
-        "interest_gnn_layers": 1,
-        "conformity_gnn_layers": 2,
-        "dropout": 0.1,
-        "graph_policy": "observed",
-        "num_neighbors": [8, 4],
-        "auxiliary_losses_start_epoch": 15,
-        "popularity_supervision_start_epoch": 30
-      }
-    },
-    {
-      "id": "dev-matched-comparison-i2-c3",
-      "description": "Development-focused matched-comparison profile: one end-stage shared-pipeline pass where ucagnn runs learned and fixed score mixing while LightGCN and DICE-like stay on their fixed baseline path.",
-      "matrix": {
-        "datasets": ["small", "medium"],
-        "presets": ["ucagnn", "lightgcn", "dice_like"],
-        "scoring_weight_modes": ["learned", "fixed"]
-      },
-      "config_overrides": {
-        "epochs": 100,
-        "use_early_stopping": true,
-        "patience": 10,
-        "lr": 0.01,
-        "batch_size_candidates": [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
-        "single_branch_gnn_layers": 2,
-        "interest_gnn_layers": 2,
-        "conformity_gnn_layers": 3,
-        "dropout": 0.1,
-        "graph_policy": "observed",
-        "num_neighbors": [[10, 5, 3], [5, 3, 2]],
-        "auxiliary_losses_start_epoch": 15,
-        "popularity_supervision_start_epoch": 30
-      }
-    },
-    {
-      "id": "movielens1m-all-lr-schedules",
-      "description": "Movielens1M end-stage profile comparing all three presets across all learning rate schedules.",
-      "matrix": {
-        "datasets": ["movielens1m"],
-        "presets": ["ucagnn", "lightgcn", "dice_like"],
-        "scoring_weight_modes": ["learned", "fixed"]
-      },
-      "config_overrides": {
-        "epochs": 60,
-        "use_early_stopping": true,
-        "patience": 10,
-        "lr": 0.01,
-        "lr_scheduler": "all",
-        "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
-        "single_branch_gnn_layers": 2,
-        "interest_gnn_layers": 1,
-        "conformity_gnn_layers": 2,
-        "dropout": 0.1,
-        "graph_policy": "observed",
-        "num_neighbors": [10, 5],
-        "auxiliary_losses_start_epoch": 15,
-        "popularity_supervision_start_epoch": 30
-      }
-    },
-    {
-      "id": "ucagnn-learned-cosine-int1-conf2-nn20_10-ep300-aux30-pop60",
-      "description": "Long unattended UCaGNN follow-up across the core datasets with the best current branch asymmetry (interest=1, conformity=2), larger 20-10 fan-out, cosine scheduling, and a 300-epoch budget guarded by early stopping.",
-      "matrix": {
-        "datasets": ["amazonbook", "kuairec_v2", "movielens1m", "kuairand1k", "taobao"],
-        "presets": ["ucagnn"],
-        "scoring_weight_modes": ["learned"]
-      },
-      "config_overrides": {
-        "epochs": 300,
-        "use_early_stopping": true,
-        "patience": 10,
-        "lr": 0.01,
-        "lr_scheduler": "cosine",
-        "batch_size_candidates": [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
-        "interest_gnn_layers": 1,
-        "conformity_gnn_layers": 2,
-        "dropout": 0.1,
-        "graph_policy": "observed",
-        "num_neighbors": [20, 10],
-        "auxiliary_losses_start_epoch": 30,
-        "popularity_supervision_start_epoch": 60
-      }
-    },
-    {
-      "id": "ucagnn-learned-cosine-int1-conf2-nn8_4-ep300-aux30-pop60",
-      "description": "Long unattended UCaGNN follow-up across the core datasets with the best current branch asymmetry (interest=1, conformity=2), larger 8-4 fan-out, cosine scheduling, and a 300-epoch budget guarded by early stopping.",
+      "aliases": [
+        "default",
+        "latest"
+      ],
+      "description": "Development-focused formal profile: UCaGNN over the practical core thesis datasets with explicit 1/2 branch depth and the default observed train-interaction graph.",
       "matrix": {
         "datasets": [
           "amazonbook",
@@ -132,9 +16,222 @@
         ],
         "presets": [
           "ucagnn"
+        ]
+      },
+      "config_overrides": {
+        "epochs": 60,
+        "use_early_stopping": false,
+        "lr": 0.001,
+        "batch_size_candidates": [
+          16384,
+          8192,
+          4096,
+          2048,
+          1024,
+          512,
+          256
         ],
-        "scoring_weight_modes": [
-          "learned"
+        "interest_gnn_layers": 1,
+        "conformity_gnn_layers": 2,
+        "dropout": 0.1,
+        "graph_policy": "observed",
+        "num_neighbors": [
+          10,
+          5
+        ],
+        "auxiliary_losses_start_epoch": 15,
+        "popularity_supervision_start_epoch": 30
+      }
+    },
+    {
+      "id": "core-paper-architecture-comparison",
+      "description": "Core thesis comparison across practical datasets using U-CaGNN against paper-faithful LightGCN and GCN-DICE architectures; Taobao and MovieLens20M remain explicit stress profiles.",
+      "matrix": {
+        "datasets": [
+          "amazonbook",
+          "movielens1m",
+          "kuairec_v2",
+          "kuairand1k"
+        ],
+        "presets": [
+          "ucagnn",
+          "lightgcn_paper",
+          "dice_paper"
+        ]
+      },
+      "config_overrides": {
+        "epochs": 200,
+        "use_early_stopping": true,
+        "patience": 10,
+        "lr": 0.01,
+        "batch_size_candidates": [
+          32768,
+          16384,
+          8192,
+          4096,
+          2048,
+          1024,
+          512,
+          256
+        ],
+        "single_branch_gnn_layers": 2,
+        "interest_gnn_layers": 1,
+        "conformity_gnn_layers": 2,
+        "dropout": 0.1,
+        "graph_policy": "observed",
+        "num_neighbors": [
+          8,
+          4
+        ],
+        "auxiliary_losses_start_epoch": 15,
+        "popularity_supervision_start_epoch": 30
+      }
+    },
+    {
+      "id": "core-deeper-comparison-i2-c3",
+      "description": "Core deeper-branch matched comparison for checking whether interest=2 and conformity=3 help before spending full stress-run time.",
+      "matrix": {
+        "datasets": [
+          "small",
+          "medium"
+        ],
+        "presets": [
+          "ucagnn",
+          "lightgcn_paper",
+          "dice_paper"
+        ]
+      },
+      "config_overrides": {
+        "epochs": 100,
+        "use_early_stopping": true,
+        "patience": 10,
+        "lr": 0.01,
+        "batch_size_candidates": [
+          32768,
+          16384,
+          8192,
+          4096,
+          2048,
+          1024,
+          512,
+          256
+        ],
+        "single_branch_gnn_layers": 2,
+        "interest_gnn_layers": 2,
+        "conformity_gnn_layers": 3,
+        "dropout": 0.1,
+        "graph_policy": "observed",
+        "num_neighbors": [
+          [
+            10,
+            5,
+            3
+          ],
+          [
+            5,
+            3,
+            2
+          ]
+        ],
+        "auxiliary_losses_start_epoch": 15,
+        "popularity_supervision_start_epoch": 30
+      }
+    },
+    {
+      "id": "movielens1m-all-lr-schedules",
+      "description": "Movielens1M end-stage profile comparing all three presets across all learning rate schedules.",
+      "matrix": {
+        "datasets": [
+          "movielens1m"
+        ],
+        "presets": [
+          "ucagnn",
+          "lightgcn_paper",
+          "dice_paper"
+        ]
+      },
+      "config_overrides": {
+        "epochs": 60,
+        "use_early_stopping": true,
+        "patience": 10,
+        "lr": 0.01,
+        "lr_scheduler": "all",
+        "batch_size_candidates": [
+          16384,
+          8192,
+          4096,
+          2048,
+          1024,
+          512,
+          256
+        ],
+        "single_branch_gnn_layers": 2,
+        "interest_gnn_layers": 1,
+        "conformity_gnn_layers": 2,
+        "dropout": 0.1,
+        "graph_policy": "observed",
+        "num_neighbors": [
+          10,
+          5
+        ],
+        "auxiliary_losses_start_epoch": 15,
+        "popularity_supervision_start_epoch": 30
+      }
+    },
+    {
+      "id": "ucagnn-learned-cosine-int1-conf2-nn20_10-ep300-aux30-pop60",
+      "description": "Long unattended UCaGNN follow-up across the practical core datasets with the current branch asymmetry (interest=1, conformity=2), larger 20-10 fan-out, cosine scheduling, and a 300-epoch budget guarded by early stopping.",
+      "matrix": {
+        "datasets": [
+          "amazonbook",
+          "movielens1m",
+          "kuairec_v2",
+          "kuairand1k"
+        ],
+        "presets": [
+          "ucagnn"
+        ]
+      },
+      "config_overrides": {
+        "epochs": 300,
+        "use_early_stopping": true,
+        "patience": 10,
+        "lr": 0.01,
+        "lr_scheduler": "cosine",
+        "batch_size_candidates": [
+          32768,
+          16384,
+          8192,
+          4096,
+          2048,
+          1024,
+          512,
+          256
+        ],
+        "interest_gnn_layers": 1,
+        "conformity_gnn_layers": 2,
+        "dropout": 0.1,
+        "graph_policy": "observed",
+        "num_neighbors": [
+          20,
+          10
+        ],
+        "auxiliary_losses_start_epoch": 30,
+        "popularity_supervision_start_epoch": 60
+      }
+    },
+    {
+      "id": "ucagnn-learned-cosine-int1-conf2-nn8_4-ep300-aux30-pop60",
+      "description": "Long unattended UCaGNN follow-up across the practical core datasets with the current branch asymmetry (interest=1, conformity=2), 8-4 fan-out, cosine scheduling, and a 300-epoch budget guarded by early stopping.",
+      "matrix": {
+        "datasets": [
+          "amazonbook",
+          "movielens1m",
+          "kuairec_v2",
+          "kuairand1k"
+        ],
+        "presets": [
+          "ucagnn"
         ]
       },
       "config_overrides": {
@@ -169,9 +266,12 @@
       "id": "taobao-preprocessing-sweep",
       "description": "Taobao preprocessing comparison under one strong UCaGNN mainline so the default preset can be chosen once and then left fixed.",
       "matrix": {
-        "datasets": ["taobao"],
-        "presets": ["ucagnn"],
-        "scoring_weight_modes": ["learned"]
+        "datasets": [
+          "taobao"
+        ],
+        "presets": [
+          "ucagnn"
+        ]
       },
       "config_overrides": {
         "epochs": 120,
@@ -179,13 +279,27 @@
         "patience": 10,
         "lr": 0.01,
         "lr_scheduler": "cosine",
-        "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
+        "batch_size_candidates": [
+          16384,
+          8192,
+          4096,
+          2048,
+          1024,
+          512,
+          256
+        ],
         "interest_gnn_layers": 1,
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
         "graph_policy": "observed",
-        "num_neighbors": [8, 4],
-        "preprocessing_preset": ["taobao_multibehavior", "taobao_multibehavior_raw"],
+        "num_neighbors": [
+          8,
+          4
+        ],
+        "preprocessing_preset": [
+          "taobao_multibehavior",
+          "taobao_multibehavior_raw"
+        ],
         "auxiliary_losses_start_epoch": 30,
         "popularity_supervision_start_epoch": 60
       }
@@ -194,9 +308,12 @@
       "id": "kuairec-v2-preprocessing-sweep",
       "description": "KuaiRec_v2 preprocessing comparison across the available causal-ready views so one repository default can be selected and then kept stable.",
       "matrix": {
-        "datasets": ["kuairec_v2"],
-        "presets": ["ucagnn"],
-        "scoring_weight_modes": ["learned"]
+        "datasets": [
+          "kuairec_v2"
+        ],
+        "presets": [
+          "ucagnn"
+        ]
       },
       "config_overrides": {
         "epochs": 120,
@@ -204,13 +321,28 @@
         "patience": 10,
         "lr": 0.01,
         "lr_scheduler": "cosine",
-        "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
+        "batch_size_candidates": [
+          16384,
+          8192,
+          4096,
+          2048,
+          1024,
+          512,
+          256
+        ],
         "interest_gnn_layers": 1,
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
         "graph_policy": "observed",
-        "num_neighbors": [20, 10],
-        "preprocessing_preset": ["kuairec_fullobs", "kuairec_watchratio", "kuairec_watchratio_raw"],
+        "num_neighbors": [
+          20,
+          10
+        ],
+        "preprocessing_preset": [
+          "kuairec_fullobs",
+          "kuairec_watchratio",
+          "kuairec_watchratio_raw"
+        ],
         "auxiliary_losses_start_epoch": 30,
         "popularity_supervision_start_epoch": 60
       }
@@ -219,9 +351,12 @@
       "id": "kuairand1k-preprocessing-sweep",
       "description": "KuaiRand-1K preprocessing comparison between the causal-default and randomized-only evaluation views under the same UCaGNN mainline.",
       "matrix": {
-        "datasets": ["kuairand1k"],
-        "presets": ["ucagnn"],
-        "scoring_weight_modes": ["learned"]
+        "datasets": [
+          "kuairand1k"
+        ],
+        "presets": [
+          "ucagnn"
+        ]
       },
       "config_overrides": {
         "epochs": 120,
@@ -229,13 +364,27 @@
         "patience": 10,
         "lr": 0.01,
         "lr_scheduler": "cosine",
-        "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
+        "batch_size_candidates": [
+          16384,
+          8192,
+          4096,
+          2048,
+          1024,
+          512,
+          256
+        ],
         "interest_gnn_layers": 1,
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
         "graph_policy": "observed",
-        "num_neighbors": [8, 4],
-        "preprocessing_preset": ["kuairand_causal", "kuairand_random_only"],
+        "num_neighbors": [
+          8,
+          4
+        ],
+        "preprocessing_preset": [
+          "kuairand_causal",
+          "kuairand_random_only"
+        ],
         "auxiliary_losses_start_epoch": 30,
         "popularity_supervision_start_epoch": 60
       }
@@ -244,22 +393,36 @@
       "id": "amazonbook-ucagnn-hardneg-010",
       "description": "AmazonBook follow-up: reuse the strong UCaGNN learned-fusion setting and test a small popularity-weighted hard-negative fraction.",
       "matrix": {
-        "datasets": ["amazonbook"],
-        "presets": ["ucagnn"],
-        "scoring_weight_modes": ["learned"]
+        "datasets": [
+          "amazonbook"
+        ],
+        "presets": [
+          "ucagnn"
+        ]
       },
       "config_overrides": {
         "epochs": 300,
         "use_early_stopping": true,
         "patience": 20,
-        "lr": 0.001,
+        "lr": 0.01,
         "lr_scheduler": "cosine",
-        "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
+        "batch_size_candidates": [
+          16384,
+          8192,
+          4096,
+          2048,
+          1024,
+          512,
+          256
+        ],
         "interest_gnn_layers": 1,
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
         "graph_policy": "observed",
-        "num_neighbors": [8, 4],
+        "num_neighbors": [
+          8,
+          4
+        ],
         "hard_negative_ratio": 0.1,
         "auxiliary_losses_start_epoch": 15,
         "popularity_supervision_start_epoch": 30
@@ -269,22 +432,36 @@
       "id": "amazonbook-ucagnn-hardneg-025",
       "description": "AmazonBook follow-up: same learned-fusion UCaGNN setting with a stronger popularity-weighted hard-negative mix.",
       "matrix": {
-        "datasets": ["amazonbook"],
-        "presets": ["ucagnn"],
-        "scoring_weight_modes": ["learned"]
+        "datasets": [
+          "amazonbook"
+        ],
+        "presets": [
+          "ucagnn"
+        ]
       },
       "config_overrides": {
         "epochs": 300,
         "use_early_stopping": true,
         "patience": 20,
-        "lr": 0.001,
+        "lr": 0.01,
         "lr_scheduler": "cosine",
-        "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
+        "batch_size_candidates": [
+          16384,
+          8192,
+          4096,
+          2048,
+          1024,
+          512,
+          256
+        ],
         "interest_gnn_layers": 1,
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
         "graph_policy": "observed",
-        "num_neighbors": [8, 4],
+        "num_neighbors": [
+          8,
+          4
+        ],
         "hard_negative_ratio": 0.25,
         "auxiliary_losses_start_epoch": 15,
         "popularity_supervision_start_epoch": 30
@@ -294,23 +471,38 @@
       "id": "kuairand1k-random-only-diagnostic",
       "description": "KuaiRand-1K diagnostic: switch to the randomized-exposure-only preset so Recall@K is measured on a much smaller, more interpretable future-positive set.",
       "matrix": {
-        "datasets": ["kuairand1k"],
-        "presets": ["ucagnn", "lightgcn"],
-        "scoring_weight_modes": ["learned", "fixed"]
+        "datasets": [
+          "kuairand1k"
+        ],
+        "presets": [
+          "ucagnn",
+          "lightgcn"
+        ]
       },
       "config_overrides": {
         "epochs": 300,
         "use_early_stopping": true,
         "patience": 20,
-        "lr": 0.001,
+        "lr": 0.01,
         "lr_scheduler": "cosine",
-        "batch_size_candidates": [16384, 8192, 4096, 2048, 1024, 512, 256],
+        "batch_size_candidates": [
+          16384,
+          8192,
+          4096,
+          2048,
+          1024,
+          512,
+          256
+        ],
         "single_branch_gnn_layers": 2,
         "interest_gnn_layers": 1,
         "conformity_gnn_layers": 2,
         "dropout": 0.1,
         "graph_policy": "observed",
-        "num_neighbors": [8, 4],
+        "num_neighbors": [
+          8,
+          4
+        ],
         "preprocessing_preset": "kuairand_random_only",
         "auxiliary_losses_start_epoch": 15,
         "popularity_supervision_start_epoch": 30
@@ -323,12 +515,24 @@
       "preset": "ucagnn"
     },
     "lightgcn": {
-      "description": "LightGCN baseline with mini-batch training on the default observed train-interaction graph.",
+      "description": "Scalable sampled-neighborhood LightGCN approximation with mini-batch training on the default observed train-interaction graph.",
       "preset": "lightgcn"
     },
+    "lightgcn_paper": {
+      "description": "Paper-faithful LightGCN adapter with full-graph propagation, observed graph only, and no dropout.",
+      "preset": "lightgcn_paper"
+    },
     "dice_like": {
-      "description": "DICE-like preset with mini-batch training on the default observed train-interaction graph.",
+      "description": "Legacy DICE-like ablation with mini-batch training; not the official DICE paper baseline.",
       "preset": "dice_like"
+    },
+    "dice_like_ablation": {
+      "description": "Explicit name for the legacy DICE-like ablation; use dice_paper for the paper baseline.",
+      "preset": "dice_like"
+    },
+    "dice_paper": {
+      "description": "Paper-faithful GCN-DICE adapter with full-graph self-looped LightGCN propagation, DICE negative sampling, and DICE branch losses.",
+      "preset": "dice_paper"
     }
   }
 }

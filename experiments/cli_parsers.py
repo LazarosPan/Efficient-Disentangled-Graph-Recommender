@@ -124,7 +124,7 @@ def build_benchmark_parser() -> argparse.ArgumentParser:
     mx.add_argument(
         "--presets",
         nargs="*",
-        default=["ucagnn", "lightgcn", "dice_like"],
+        default=["ucagnn", "lightgcn_paper", "dice_paper"],
         choices=PRESET_CHOICES,
         help="Presets to run",
     )
