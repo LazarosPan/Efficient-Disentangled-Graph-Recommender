@@ -24,6 +24,7 @@ from src.data.loaders.kuairec_v2 import load_kuairec_v2
 from src.data.loaders.movielens1m import load_movielens1m
 from src.data.loaders.movielens20m import load_movielens20m
 from src.data.loaders.taobao import load_taobao
+from src.data.negative_sampler import NegativeSampler
 from src.data.subgraph_sampler import SubgraphSampler
 from src.data_exploration.data_exploration import _derive_ucagnn_requirements
 from src.data_exploration.explore_all_datasets import (
@@ -265,6 +266,136 @@ class DataContractTests(unittest.TestCase):
             ),
         )
 
+    def test_negative_sampler_avoids_user_positive_train_items(self) -> None:
+        """BPR negatives should not include any positive training item for that user."""
+        sampler = NegativeSampler(
+            n_items=4,
+            popularity=torch.ones(4),
+            positive_user_ids=torch.tensor([0, 0, 1], dtype=torch.long),
+            positive_item_ids=torch.tensor([1, 2, 3], dtype=torch.long),
+        )
+
+        negatives = sampler.sample(
+            batch_size=128,
+            positive_items=torch.full((128,), 1, dtype=torch.long),
+            user_ids=torch.zeros(128, dtype=torch.long),
+            device=torch.device("cpu"),
+            generator=build_torch_generator(7, torch.device("cpu")),
+        )
+
+        self.assertFalse(torch.isin(negatives.reshape(-1), torch.tensor([1, 2])).any())
+
+    def test_dice_negative_sampler_avoids_duplicate_negatives_per_positive(self) -> None:
+        """DICE sampling should mirror the original no-duplicate per-positive contract."""
+        sampler = NegativeSampler(
+            n_items=12,
+            popularity=torch.arange(1, 13, dtype=torch.float32),
+            n_negatives=4,
+            positive_user_ids=torch.tensor([0], dtype=torch.long),
+            positive_item_ids=torch.tensor([5], dtype=torch.long),
+            strategy="dice",
+            dice_margin=2.0,
+            dice_pool=1,
+        )
+
+        negatives = sampler.sample(
+            batch_size=16,
+            positive_items=torch.full((16,), 5, dtype=torch.long),
+            user_ids=torch.zeros(16, dtype=torch.long),
+            device=torch.device("cpu"),
+            generator=build_torch_generator(11, torch.device("cpu")),
+        )
+
+        self.assertEqual(tuple(negatives.shape), (16, 4))
+        for row in negatives.tolist():
+            self.assertEqual(len(set(row)), len(row))
+
+    def test_dice_negative_sampler_returns_high_popularity_mask(self) -> None:
+        """DICE metadata should expose the original sampler mask consumed by the loss."""
+        popularity = torch.tensor([1.0, 2.0, 3.0, 4.0, 10.0, 12.0])
+        sampler = NegativeSampler(
+            n_items=6,
+            popularity=popularity,
+            n_negatives=2,
+            positive_user_ids=torch.tensor([0], dtype=torch.long),
+            positive_item_ids=torch.tensor([2], dtype=torch.long),
+            strategy="dice",
+            dice_margin=2.0,
+            dice_pool=1,
+        )
+
+        negatives, dice_mask = sampler.sample_with_metadata(
+            batch_size=32,
+            positive_items=torch.full((32,), 2, dtype=torch.long),
+            user_ids=torch.zeros(32, dtype=torch.long),
+            device=torch.device("cpu"),
+            generator=build_torch_generator(19, torch.device("cpu")),
+        )
+
+        self.assertIsNotNone(dice_mask)
+        assert dice_mask is not None
+        self.assertEqual(tuple(negatives.shape), (32, 2))
+        self.assertEqual(tuple(dice_mask.shape), (32, 2))
+        expected_mask = popularity[negatives] > popularity[2] + 2.0
+        self.assertTrue(torch.equal(dice_mask, expected_mask))
+
+    def test_dice_negative_sampler_counts_pools_after_user_positive_exclusion(self) -> None:
+        """DICE pool-size routing should match the external sampler after user-pos filtering."""
+        popularity = torch.tensor([1.0, 2.0, 3.0, 4.0, 10.0, 11.0, 12.0, 13.0])
+        sampler = NegativeSampler(
+            n_items=8,
+            popularity=popularity,
+            n_negatives=1,
+            positive_user_ids=torch.tensor([0, 0, 0, 0], dtype=torch.long),
+            positive_item_ids=torch.tensor([3, 4, 5, 6], dtype=torch.long),
+            strategy="dice",
+            dice_margin=2.0,
+            dice_pool=2,
+            max_resample_attempts=8,
+        )
+
+        negatives, dice_mask = sampler.sample_with_metadata(
+            batch_size=64,
+            positive_items=torch.full((64,), 3, dtype=torch.long),
+            user_ids=torch.zeros(64, dtype=torch.long),
+            device=torch.device("cpu"),
+            generator=build_torch_generator(1, torch.device("cpu")),
+        )
+
+        self.assertIsNotNone(dice_mask)
+        assert dice_mask is not None
+        self.assertTrue(torch.equal(negatives, torch.zeros_like(negatives)))
+        self.assertFalse(dice_mask.any())
+
+    def test_dice_negative_sampler_keeps_valid_high_items_after_filtered_positives(self) -> None:
+        """User-positive count adjustment must not shrink the raw high candidate range."""
+        popularity = torch.tensor([1.0, 2.0, 3.0, 4.0, 10.0, 11.0, 12.0, 13.0, 14.0])
+        sampler = NegativeSampler(
+            n_items=9,
+            popularity=popularity,
+            n_negatives=1,
+            positive_user_ids=torch.tensor([0, 0, 0], dtype=torch.long),
+            positive_item_ids=torch.tensor([3, 4, 5], dtype=torch.long),
+            strategy="dice",
+            dice_margin=2.0,
+            dice_pool=2,
+            max_resample_attempts=8,
+        )
+
+        negatives, dice_mask = sampler.sample_with_metadata(
+            batch_size=64,
+            positive_items=torch.full((64,), 3, dtype=torch.long),
+            user_ids=torch.zeros(64, dtype=torch.long),
+            device=torch.device("cpu"),
+            generator=build_torch_generator(2, torch.device("cpu")),
+        )
+
+        self.assertIsNotNone(dice_mask)
+        assert dice_mask is not None
+        self.assertTrue(torch.isin(negatives, torch.tensor([6, 7, 8])).all())
+        self.assertGreater(torch.unique(negatives).numel(), 1)
+        self.assertTrue(dice_mask.all())
+
     def test_load_policy_csv_features_respects_feature_policy(self) -> None:
         """Policy-gated CSV helpers should load only enabled feature sources."""
         with TemporaryDirectory() as tmp_dir:
@@ -296,7 +427,7 @@ class DataContractTests(unittest.TestCase):
         self.assertIsNotNone(enabled)
         assert enabled is not None
         self.assertEqual(enabled.dtype, np.dtype(np.float16))
-        np.testing.assert_allclose(enabled, np.array([[7.0]], dtype=np.float16))
+        np.testing.assert_allclose(enabled, np.array([[1.0]], dtype=np.float16))
 
     def test_load_csv_features_encodes_temporal_and_categorical_columns(self) -> None:
         """Mixed-type CSV features should keep temporal and categorical signal."""
@@ -318,12 +449,48 @@ class DataContractTests(unittest.TestCase):
 
         self.assertIsNotNone(features)
         assert features is not None
+        self.assertGreaterEqual(float(features.min()), 0.0)
+        self.assertLessEqual(float(features.max()), 1.0)
         np.testing.assert_allclose(
             features,
             np.array(
                 [
-                    [2.0, 1649548800.0, 720.0, 1.0],
-                    [1.0, 1649635200.0, 1080.0, 2.0],
+                    [1.0, 0.0, 0.0, 0.5],
+                    [0.5, 1.0, 1.0, 1.0],
+                ],
+                dtype=np.float32,
+            ),
+        )
+
+    def test_load_csv_features_deduplicates_entities_before_encoding(self) -> None:
+        """Repeated entity feature rows should not let later rows leak into encoding."""
+        with TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "item_daily_features.csv"
+            path.write_text(
+                (
+                    "video_id,video_type,upload_dt,server_width,music_id\n"
+                    "10,NORMAL,2022-04-10,720,77\n"
+                    "10,AD,2022-05-10,1080,88\n"
+                    "11,LIVE,2022-04-11,1080,99\n"
+                ),
+                encoding="utf-8",
+            )
+            features = load_csv_features(
+                path,
+                id_col="video_id",
+                id_map={10: 0, 11: 1},
+                n_entities=2,
+                include_columns=("video_type", "upload_dt", "server_width", "music_id"),
+            )
+
+        self.assertIsNotNone(features)
+        assert features is not None
+        np.testing.assert_allclose(
+            features.astype(np.float32),
+            np.array(
+                [
+                    [1.0, 0.0, 0.0, 0.5],
+                    [0.5, 1.0, 1.0, 1.0],
                 ],
                 dtype=np.float32,
             ),
@@ -417,8 +584,8 @@ class DataContractTests(unittest.TestCase):
             thesis_default,
             np.array(
                 [
-                    [1.0, 2.0, 1649548800.0, 2.0, 1.0, 720.0, 1280.0, 1.0, 1.0],
-                    [2.0, 1.0, 1649635200.0, 1.0, 2.0, 1080.0, 1920.0, 2.0, 2.0],
+                    [0.5, 1.0, 0.0, 1.0, 0.5, 0.0, 0.0, 0.5, 0.5],
+                    [1.0, 0.5, 1.0, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0],
                 ],
                 dtype=np.float32,
             ),
@@ -427,8 +594,8 @@ class DataContractTests(unittest.TestCase):
             all_optional,
             np.array(
                 [
-                    [1.0, 2.0, 1649548800.0, 2.0, 1.0, 720.0, 1280.0, 1.0, 1.0, 99.0],
-                    [2.0, 1.0, 1649635200.0, 1.0, 2.0, 1080.0, 1920.0, 2.0, 2.0, 101.0],
+                    [0.5, 1.0, 0.0, 1.0, 0.5, 0.0, 0.0, 0.5, 0.5, 0.0],
+                    [1.0, 0.5, 1.0, 0.5, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
                 ],
                 dtype=np.float32,
             ),
@@ -499,8 +666,8 @@ class DataContractTests(unittest.TestCase):
             canonical.item_features,
             np.array(
                 [
-                    [1.0, 1.0, 2.0, 1585526400.0, 2.0, 2.0],
-                    [2.0, 2.0, 1.0, 1585612800.0, 1.0, 1.0],
+                    [0.5, 0.5, 1.0, 0.0, 1.0, 1.0],
+                    [1.0, 1.0, 0.5, 1.0, 0.5, 0.5],
                 ],
                 dtype=np.float32,
             ),
@@ -557,8 +724,8 @@ class DataContractTests(unittest.TestCase):
             all_optional[:, -4:],
             np.array(
                 [
-                    [90.0, 80.0, 70.0, 60.0],
-                    [50.0, 40.0, 30.0, 20.0],
+                    [1.0, 1.0, 1.0, 1.0],
+                    [0.0, 0.0, 0.0, 0.0],
                 ],
                 dtype=np.float32,
             ),
@@ -680,6 +847,38 @@ class DataContractTests(unittest.TestCase):
             np.array([200, 150], dtype=np.int64),
         )
 
+    def test_pairwise_priority_collapse_aligns_latest_stats_to_kept_rows(self) -> None:
+        """Latest-priority summaries should follow retained-row encounter order."""
+        summary = summarize_pairwise_max_priority_collapse(
+            np.array([20, 10, 20, 10, 20], dtype=np.int64),
+            np.array([1, 5, 1, 5, 2], dtype=np.int64),
+            np.array([0.9, 0.1, 0.2, 0.7, 0.4], dtype=np.float32),
+            np.array([10, 5, 30, 20, 25], dtype=np.int64),
+        )
+
+        np.testing.assert_array_equal(summary.keep_idx, np.array([0, 3, 4], dtype=np.int64))
+        np.testing.assert_array_equal(summary.repeat_count, np.array([2, 2, 1], dtype=np.int64))
+        np.testing.assert_allclose(
+            summary.priority_mean,
+            np.array([0.55, 0.4, 0.4], dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            summary.priority_max,
+            np.array([0.9, 0.7, 0.4], dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            summary.latest_priority,
+            np.array([0.2, 0.7, 0.4], dtype=np.float32),
+        )
+        np.testing.assert_array_equal(
+            summary.first_timestamp,
+            np.array([10, 5, 25], dtype=np.int64),
+        )
+        np.testing.assert_array_equal(
+            summary.last_timestamp,
+            np.array([30, 20, 25], dtype=np.int64),
+        )
+
     def test_pairwise_priority_collapse_rows_reuses_kept_indices_for_all_arrays(self) -> None:
         """Plain collapse should slice all aligned arrays with the retained rows."""
         collapsed_arrays, dropped_rows = collapse_pairwise_max_priority_rows(
@@ -758,12 +957,12 @@ class DataContractTests(unittest.TestCase):
             canonical.metadata["repeat_collapse"]["reason"],
         )
 
-    def test_kuairec_loader_direct_default_is_small_matrix_fullobs(self) -> None:
-        """The loader function's own default should keep small_matrix/kuairec_fullobs."""
+    def test_kuairec_loader_direct_default_is_watchratio_big_matrix(self) -> None:
+        """The direct loader default should match the registry's thesis view."""
         with TemporaryDirectory() as tmp_dir:
             data_root = Path(tmp_dir) / "KuaiRec_v2" / "data"
             data_root.mkdir(parents=True)
-            (data_root / "small_matrix.csv").write_text(
+            (data_root / "big_matrix.csv").write_text(
                 ("user_id,video_id,watch_ratio,timestamp\n1,10,573.4572,100\n2,11,0.8,300\n"),
                 encoding="utf-8",
             )
@@ -773,18 +972,27 @@ class DataContractTests(unittest.TestCase):
                 include_optional_features=False,
             )
 
-        self.assertEqual(direct_canonical.preprocessing_preset, "kuairec_fullobs")
-        self.assertEqual(direct_canonical.metadata["matrix_variant"], "small_matrix")
-        self.assertEqual(direct_canonical.metadata["watch_ratio_policy"], "raw")
+        self.assertEqual(direct_canonical.preprocessing_preset, "kuairec_watchratio")
+        self.assertEqual(direct_canonical.metadata["matrix_variant"], "big_matrix")
+        self.assertEqual(direct_canonical.metadata["watch_ratio_policy"], "clipped_to_5")
         np.testing.assert_array_equal(
             direct_canonical.source_domain,
-            np.array(["small_matrix", "small_matrix"]),
+            np.array(["big_matrix", "big_matrix"]),
         )
         np.testing.assert_allclose(
             direct_canonical.raw_target,
-            np.array([573.4572, 0.8], dtype=np.float32),
+            np.array([5.0, 0.8], dtype=np.float32),
         )
-        self.assertFalse(direct_canonical.metadata["repeat_collapse"]["applied"])
+        self.assertTrue(direct_canonical.metadata["repeat_collapse"]["applied"])
+        self.assertEqual(direct_canonical.metadata["repeat_collapse"]["dropped_rows"], 0)
+
+    def test_kuairec_loader_rejects_conflicting_preset_and_matrix_variant(self) -> None:
+        """KuaiRec preset and matrix selection should have one source of truth."""
+        with self.assertRaisesRegex(ValueError, "preprocessing_preset.*matrix_variant"):
+            load_kuairec_v2(
+                preprocessing_preset="kuairec_watchratio",
+                matrix_variant="small_matrix",
+            )
 
     def test_kuairec_registry_default_is_watchratio_big_matrix(self) -> None:
         """Registry default for kuairec_v2 should be kuairec_watchratio (big_matrix)."""
@@ -1006,11 +1214,22 @@ class DataContractTests(unittest.TestCase):
 
             thesis_default = load_movielens20m(data_dir=tmp_dir)
             all_optional = load_movielens20m(data_dir=tmp_dir, feature_policy="all_optional")
+            registry_dense = load_dataset(
+                "movielens20m",
+                data_dir=tmp_dir,
+                preprocessing_preset="movielens_explicit_dense_genome",
+            )
 
         assert thesis_default.item_features is not None
         assert all_optional.item_features is not None
+        assert registry_dense.item_features is not None
         self.assertEqual(thesis_default.item_features.shape[1], 3)
         self.assertEqual(all_optional.item_features.shape[1], 5)
+        self.assertEqual(registry_dense.item_features.shape[1], 5)
+        self.assertEqual(
+            registry_dense.preprocessing_preset,
+            "movielens_explicit_dense_genome",
+        )
 
     def test_movielens20m_single_row_input_still_loads(self) -> None:
         """Single-row ML-20M fixtures should still parse into a 2D numeric table."""
@@ -1110,8 +1329,8 @@ class DataContractTests(unittest.TestCase):
             canonical.item_features,
             np.array(
                 [
-                    [1.0, 1.0, 1.0, 1585526400.0, 1.0, 2.0, 0.0, 1.0, 1.0, 27.0, 124.0, 9.0],
-                    [2.0, 2.0, 1.0, 1585526400.0, 1.0, 1.0, 1.0, 0.0, 0.0, 8.0, 673.0, -124.0],
+                    [0.5, 0.5, 1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.5, 1.0],
+                    [1.0, 1.0, 1.0, 1.0, 1.0, 0.5, 1.0, 0.0, 0.0, 0.5, 1.0, 0.5],
                 ],
                 dtype=np.float32,
             ),

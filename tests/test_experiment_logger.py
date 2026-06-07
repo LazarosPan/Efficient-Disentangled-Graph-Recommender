@@ -763,7 +763,7 @@ class ExperimentLoggerTests(unittest.TestCase):
             output,
         )
         self.assertIn(
-            "amazonbook_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_scoremixlearned_lr-cosine_no_ipw_seed13",
+            "amazonbook_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_no_ipw_seed13",
             output,
         )
         self.assertNotIn("_train-formalhash", output)

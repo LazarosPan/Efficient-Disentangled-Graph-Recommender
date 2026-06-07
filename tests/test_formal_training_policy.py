@@ -37,13 +37,21 @@ from experiments.run_experiment import (
     build_benchmark_config_inputs,
     build_config,
     build_runtime_config_inputs,
+    build_runtime_model,
     normalize_benchmark_config_overrides,
 )
+from scripts.query_results import _build_canonical_name_from_config, _format_scoremix
+from src.data.canonical import CanonicalInteractions
+from src.data.graph_builder import build_graph
+from src.losses.loss_suite import LossSuite
+from src.models.baselines.dice import PaperGCNDICE
+from src.models.baselines.lightgcn import PaperLightGCN
 from src.profiling.gpu_profiler import GPUProfiler
 from src.training.mini_batch_trainer import MiniBatchTrainer
 from src.utils.config import UCaGNNConfig
 from src.utils.reproducibility import build_torch_generator
 from src.utils.trainer_runtime import TrainerRuntime
+from torch.nn import functional
 
 
 def _experiment_args(**overrides: object) -> SimpleNamespace:
@@ -78,6 +86,51 @@ def _experiment_args(**overrides: object) -> SimpleNamespace:
     }
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+def _tiny_canonical() -> CanonicalInteractions:
+    """Return a small split-safe canonical interaction table for model factory tests."""
+    return CanonicalInteractions(
+        user_id=np.array([0, 0, 1, 1, 2, 2], dtype=np.int64),
+        item_id=np.array([0, 1, 1, 2, 2, 3], dtype=np.int64),
+        label=np.ones(6, dtype=np.float32),
+        timestamp=np.arange(1, 7, dtype=np.int64),
+        sign=np.ones(6, dtype=np.float32),
+        popularity=np.ones(4, dtype=np.float32),
+        n_users=3,
+        n_items=4,
+        user_map={0: 0, 1: 1, 2: 2},
+        item_map={0: 0, 1: 1, 2: 2, 3: 3},
+        train_mask=np.array([True, True, True, True, False, False], dtype=bool),
+        val_mask=np.array([False, False, False, False, True, False], dtype=bool),
+        test_mask=np.array([False, False, False, False, False, True], dtype=bool),
+    )
+
+
+def _positive_dcor(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """Return the positive DICE distance-correlation discrepancy."""
+    distance_x = torch.cdist(x.float(), x.float(), p=2)
+    distance_y = torch.cdist(y.float(), y.float(), p=2)
+    centered_x = (
+        distance_x
+        - distance_x.mean(dim=0, keepdim=True)
+        - distance_x.mean(dim=1, keepdim=True)
+        + distance_x.mean()
+    )
+    centered_y = (
+        distance_y
+        - distance_y.mean(dim=0, keepdim=True)
+        - distance_y.mean(dim=1, keepdim=True)
+        + distance_y.mean()
+    )
+    n = float(x.size(0) * x.size(0))
+    dcov_xy = (centered_x * centered_y).sum() / n
+    dcov_xx = (centered_x * centered_x).sum() / n
+    dcov_yy = (centered_y * centered_y).sum() / n
+    denominator = torch.sqrt(
+        dcov_xx.clamp_min(1e-12).sqrt() * dcov_yy.clamp_min(1e-12).sqrt(),
+    )
+    return torch.sqrt(dcov_xy.clamp_min(1e-12)) / denominator.clamp_min(1e-12)
 
 
 class FormalTrainingPolicyTests(unittest.TestCase):
@@ -170,6 +223,32 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertIn("lr-cosine", canonical)
 
+    def test_query_results_reuses_runtime_canonical_name_contract(self) -> None:
+        """Stored configs should render the same canonical label as live runs."""
+        config = build_config(
+            _experiment_args(
+                preset="ucagnn",
+                graph_policy="cagra_augmented",
+                sample_interactions=500,
+                loader_max_rows=1000,
+            ),
+        )
+        stored_config = dataclasses.asdict(config)
+
+        self.assertEqual(
+            _build_canonical_name_from_config(stored_config, "ucagnn", None),
+            _build_canonical_name(config, "ucagnn", None),
+        )
+
+    def test_query_results_scoremix_uses_current_config_field(self) -> None:
+        """Result tables should not label learned UCaGNN score fusion as fixed."""
+        learned = dataclasses.asdict(build_config(_experiment_args(preset="ucagnn")))
+        fixed = learned | {"use_learned_score_mix": False}
+
+        self.assertEqual(_format_scoremix(learned), "learned")
+        self.assertEqual(_format_scoremix(fixed), "fixed")
+        self.assertEqual(_format_scoremix({"scoring_weight_mode": "learned"}), "learned")
+
     def test_build_config_rejects_invalid_lr_scheduler_override(self) -> None:
         """Invalid scheduler names should be rejected by config validation."""
         with self.assertRaises(ValueError):
@@ -238,6 +317,10 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.loss_weight_contrastive, 0.0)
         self.assertEqual(config.loss_weight_align, 0.0)
         self.assertEqual(config.loss_weight_uniform, 0.0)
+        self.assertEqual(config.negative_sampling_strategy, "dice")
+        self.assertEqual(config.n_negatives, 1)
+        self.assertEqual(config.dice_branch_margin, config.dice_sampler_margin)
+        self.assertFalse(config.dice_adaptive_decay)
 
     def test_ucagnn_preset_keeps_explicit_branch_depth_and_neighbor_overrides(self) -> None:
         """Explicit depth overrides must survive preset application for checkpoint identity."""
@@ -300,6 +383,484 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertFalse(config.use_features)
         self.assertEqual(config.single_branch_gnn_layers, 2)
         self.assertEqual(config.max_gnn_layers, 2)
+
+    def test_lightgcn_paper_preset_uses_full_graph_training(self) -> None:
+        """Paper LightGCN must not use sampled-neighborhood training."""
+        config = build_config(_experiment_args(preset="lightgcn_paper"))
+
+        self.assertFalse(config.use_dual_branch)
+        self.assertFalse(config.use_features)
+        self.assertFalse(config.use_learned_score_mix)
+        self.assertEqual(config.training_graph_mode, "full")
+        self.assertEqual(config.baseline_family, "lightgcn_paper")
+        self.assertEqual(config.single_branch_gnn_layers, 3)
+        self.assertEqual(config.dropout, 0.0)
+        self.assertEqual(config.lr, 0.001)
+        self.assertEqual(config.weight_decay, 1e-4)
+        self.assertEqual(config.batch_size, 2048)
+        self.assertFalse(config.auto_batch_size)
+
+    def test_lightgcn_paper_ignores_shared_dropout_override(self) -> None:
+        """Paper LightGCN should keep architecture and optimizer paper defaults."""
+        config = build_config(
+            _experiment_args(
+                preset="lightgcn_paper",
+                dropout=0.25,
+                graph_policy="cagra_augmented",
+                lr=0.01,
+                weight_decay=1e-2,
+                batch_size=8192,
+                auto_batch_size=True,
+            ),
+        )
+
+        self.assertEqual(config.dropout, 0.0)
+        self.assertEqual(config.graph_policy, "observed")
+        self.assertEqual(config.lr, 0.001)
+        self.assertEqual(config.weight_decay, 1e-4)
+        self.assertEqual(config.batch_size, 2048)
+        self.assertFalse(config.auto_batch_size)
+
+    def test_lightgcn_paper_propagation_has_no_self_loops(self) -> None:
+        """Paper LightGCN should average ego and neighbor layers without self-loops."""
+        config = UCaGNNConfig(device="cpu", embed_dim=1).preset_lightgcn_paper()
+        config.single_branch_gnn_layers = 1
+        model = PaperLightGCN(n_users=1, n_items=1, config=config)
+        with torch.no_grad():
+            model.user_embedding.weight.fill_(2.0)
+            model.item_embedding.weight.fill_(10.0)
+
+        edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
+        edge_norm = torch.ones(edge_index.size(1), dtype=torch.float32)
+
+        propagated = model.get_propagated_for_eval(edge_index, edge_norm=edge_norm)
+
+        expected = torch.tensor([[6.0]])
+        torch.testing.assert_close(propagated["user"], expected)
+        torch.testing.assert_close(propagated["item"], expected)
+
+    def test_dice_paper_preset_matches_dice_gcn_training_contract(self) -> None:
+        """DICE paper baseline should expose the external GCN-DICE sampler/loss defaults."""
+        config = build_config(_experiment_args(preset="dice_paper"))
+
+        self.assertTrue(config.use_dual_branch)
+        self.assertFalse(config.use_features)
+        self.assertFalse(config.use_learned_score_mix)
+        self.assertEqual(config.training_graph_mode, "full")
+        self.assertEqual(config.baseline_family, "dice_paper")
+        self.assertEqual(config.branch_loss_mode, "dice")
+        self.assertEqual(config.negative_sampling_strategy, "dice")
+        self.assertEqual(config.n_negatives, 4)
+        self.assertEqual(config.single_branch_gnn_layers, 2)
+        self.assertEqual(config.interest_gnn_layers, 2)
+        self.assertEqual(config.conformity_gnn_layers, 2)
+        self.assertEqual(config.dropout, 0.2)
+        self.assertEqual(config.dice_branch_margin, config.dice_sampler_margin)
+        self.assertEqual(config.graph_policy, "observed")
+        self.assertEqual(config.lr, 0.001)
+        self.assertEqual(config.batch_size, 128)
+
+    def test_dice_paper_ignores_shared_runtime_overrides(self) -> None:
+        """Paper GCN-DICE should keep external-code optimizer and sampler defaults."""
+        config = build_config(
+            _experiment_args(
+                preset="dice_paper",
+                dropout=0.05,
+                graph_policy="cagra_augmented",
+                lr=0.01,
+                batch_size=8192,
+                auto_batch_size=True,
+            ),
+        )
+
+        self.assertEqual(config.dropout, 0.2)
+        self.assertEqual(config.graph_policy, "observed")
+        self.assertEqual(config.lr, 0.001)
+        self.assertEqual(config.weight_decay, 5e-8)
+        self.assertEqual(config.batch_size, 128)
+        self.assertFalse(config.auto_batch_size)
+        self.assertEqual(config.negative_sampling_strategy, "dice")
+        self.assertEqual(config.n_negatives, 4)
+
+    def test_legacy_lgndice_paper_preset_aliases_to_dice_paper_contract(self) -> None:
+        """Old lgndice_paper commands should resolve to the canonical DICE paper baseline."""
+        config = build_config(_experiment_args(preset="lgndice_paper"))
+
+        self.assertEqual(config.baseline_family, "dice_paper")
+        self.assertEqual(config.branch_loss_mode, "dice")
+        self.assertEqual(config.negative_sampling_strategy, "dice")
+
+    def test_build_runtime_model_uses_explicit_paper_baseline_classes(self) -> None:
+        """Paper baselines should not be hidden as UCaGNN config variants."""
+        canonical = _tiny_canonical()
+
+        lightgcn_config = build_config(_experiment_args(preset="lightgcn_paper", device="cpu"))
+        lightgcn_graph = build_graph(canonical, lightgcn_config)
+        lightgcn_model = build_runtime_model(lightgcn_config, canonical, lightgcn_graph)
+
+        dice_config = build_config(_experiment_args(preset="dice_paper", device="cpu"))
+        dice_graph = build_graph(canonical, dice_config)
+        dice_model = build_runtime_model(dice_config, canonical, dice_graph)
+
+        self.assertIsInstance(lightgcn_model, PaperLightGCN)
+        self.assertIsInstance(dice_model, PaperGCNDICE)
+
+        dice_propagated = dice_model.get_propagated_for_eval(
+            dice_graph.edge_index,
+            edge_norm=dice_graph.edge_norm,
+        )
+        dice_scores = dice_model.get_score_components_from_propagated(
+            dice_propagated,
+            torch.tensor([0], dtype=torch.long),
+        )
+        self.assertTrue(
+            torch.equal(
+                dice_scores["score_mix_weights"],
+                torch.tensor([[1.0, 1.0, 0.0]]),
+            ),
+        )
+        self.assertTrue(
+            torch.allclose(
+                dice_scores["final_score"],
+                dice_scores["interest_score"] + dice_scores["conformity_score"],
+            ),
+        )
+
+    def test_paper_baselines_use_paper_optimizer_families(self) -> None:
+        """Paper adapters should not inherit U-CaGNN's AdamW optimizer."""
+        canonical = _tiny_canonical()
+
+        lightgcn_config = build_config(_experiment_args(preset="lightgcn_paper", device="cpu"))
+        lightgcn_graph = build_graph(canonical, lightgcn_config)
+        lightgcn_trainer = MiniBatchTrainer(
+            model=build_runtime_model(lightgcn_config, canonical, lightgcn_graph),
+            loss_suite=LossSuite(lightgcn_config),
+            data=lightgcn_graph,
+            config=lightgcn_config,
+        )
+
+        dice_config = build_config(_experiment_args(preset="dice_paper", device="cpu"))
+        dice_graph = build_graph(canonical, dice_config)
+        dice_trainer = MiniBatchTrainer(
+            model=build_runtime_model(dice_config, canonical, dice_graph),
+            loss_suite=LossSuite(dice_config),
+            data=dice_graph,
+            config=dice_config,
+        )
+
+        ucagnn_config = build_config(_experiment_args(preset="ucagnn", device="cpu"))
+        ucagnn_graph = build_graph(canonical, ucagnn_config)
+        ucagnn_trainer = MiniBatchTrainer(
+            model=build_runtime_model(ucagnn_config, canonical, ucagnn_graph),
+            loss_suite=LossSuite(ucagnn_config),
+            data=ucagnn_graph,
+            config=ucagnn_config,
+        )
+
+        self.assertIsInstance(lightgcn_trainer.optimizer, torch.optim.Adam)
+        self.assertNotIsInstance(lightgcn_trainer.optimizer, torch.optim.AdamW)
+        self.assertEqual(lightgcn_trainer.optimizer.param_groups[0]["weight_decay"], 0.0)
+
+        self.assertIsInstance(dice_trainer.optimizer, torch.optim.Adam)
+        self.assertNotIsInstance(dice_trainer.optimizer, torch.optim.AdamW)
+        self.assertEqual(dice_trainer.optimizer.defaults["betas"], (0.5, 0.99))
+        self.assertTrue(dice_trainer.optimizer.defaults["amsgrad"])
+        self.assertEqual(dice_trainer.optimizer.param_groups[0]["weight_decay"], 5e-8)
+
+        self.assertIsInstance(ucagnn_trainer.optimizer, torch.optim.AdamW)
+
+    def test_lightgcn_paper_loss_includes_embedding_l2_regularization(self) -> None:
+        """Paper LightGCN should use explicit ego-embedding L2 regularization."""
+        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_lightgcn_paper()
+        config.weight_decay = 0.1
+        loss_suite = LossSuite(config)
+        pos_scores = {
+            "final_score": torch.tensor([2.0]),
+            "interest_score": torch.tensor([2.0]),
+            "conformity_score": torch.zeros(1),
+            "context_score": torch.zeros(1),
+        }
+        neg_scores = {
+            "final_score": torch.tensor([0.0]),
+            "interest_score": torch.tensor([0.0]),
+            "conformity_score": torch.zeros(1),
+            "context_score": torch.zeros(1),
+        }
+        model_output = {
+            "pos_scores": pos_scores,
+            "neg_scores": neg_scores,
+            "embeddings": {
+                "user": torch.tensor([[1.0, 2.0]]),
+                "item": torch.tensor([[3.0, 4.0], [5.0, 6.0]]),
+            },
+            "propagated": {},
+            "ipw_weights": torch.ones(1),
+            "loss_user_ids": torch.tensor([0], dtype=torch.long),
+            "loss_neg_item_ids": torch.tensor([1], dtype=torch.long),
+        }
+
+        losses = loss_suite(
+            model_output,
+            item_popularity=torch.ones(2),
+            pos_item_ids=torch.tensor([0], dtype=torch.long),
+            epoch=0,
+        )
+
+        expected_reg = 0.5 * (5.0 + 25.0 + 61.0)
+        self.assertAlmostEqual(losses["embedding_reg"].item(), expected_reg, places=6)
+        self.assertAlmostEqual(
+            losses["total"].item(),
+            losses["rec"].item() + 0.1 * expected_reg,
+            places=6,
+        )
+
+    def test_dice_paper_loss_matches_external_branch_objective(self) -> None:
+        """Paper DICE should train on summed branches and masked DICE auxiliaries."""
+        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_dice_paper()
+        loss_suite = LossSuite(config)
+        pos_interest = torch.tensor([1.8, 0.2])
+        neg_interest = torch.tensor([0.1, 1.0])
+        pos_conformity = torch.tensor([0.3, 1.5])
+        neg_conformity = torch.tensor([1.2, 0.4])
+        user_interest = torch.tensor([[1.0, 0.1], [0.2, 1.1]])
+        user_conformity = torch.tensor([[0.4, 1.2], [1.3, 0.3]])
+        item_interest = torch.tensor([[1.5, 0.2], [0.4, 1.0], [1.0, 1.0]])
+        item_conformity = torch.tensor([[0.1, 1.4], [1.2, 0.5], [0.7, 1.1]])
+        model_output = {
+            "pos_scores": {
+                "final_score": torch.tensor([-100.0, -100.0]),
+                "interest_score": pos_interest,
+                "conformity_score": pos_conformity,
+                "context_score": torch.zeros(2),
+            },
+            "neg_scores": {
+                "final_score": torch.tensor([100.0, 100.0]),
+                "interest_score": neg_interest,
+                "conformity_score": neg_conformity,
+                "context_score": torch.zeros(2),
+            },
+            "propagated": {
+                "user_interest": user_interest,
+                "user_conformity": user_conformity,
+                "item_interest": item_interest,
+                "item_conformity": item_conformity,
+            },
+            "ipw_weights": torch.ones(2),
+            "loss_user_ids": torch.tensor([0, 1], dtype=torch.long),
+            "loss_neg_item_ids": torch.tensor([2, 0], dtype=torch.long),
+            "dice_negative_mask": torch.tensor([False, True]),
+        }
+
+        losses = loss_suite(
+            model_output,
+            item_popularity=torch.tensor([0.1, 0.6, 1.0]),
+            branch_item_popularity=torch.tensor([10.0, 60.0, 100.0]),
+            pos_item_ids=torch.tensor([0, 1], dtype=torch.long),
+            epoch=0,
+        )
+
+        threshold_mask = torch.tensor([True, False])
+        mask = torch.tensor([False, True])
+        self.assertFalse(torch.equal(mask, threshold_mask))
+        expected_rec = -functional.logsigmoid(
+            (pos_interest + pos_conformity) - (neg_interest + neg_conformity),
+        ).mean()
+        expected_interest = -(
+            mask.float() * functional.logsigmoid(pos_interest - neg_interest)
+        ).mean()
+        expected_conformity = (
+            -(mask.float() * functional.logsigmoid(neg_conformity - pos_conformity)).mean()
+            - ((~mask).float() * functional.logsigmoid(pos_conformity - neg_conformity)).mean()
+        )
+        expected_independence = _positive_dcor(user_interest, user_conformity) + _positive_dcor(
+            item_interest,
+            item_conformity,
+        )
+        expected_total = (
+            expected_rec
+            + 0.1 * expected_interest
+            + 0.1 * expected_conformity
+            + 0.01 * expected_independence
+        )
+
+        self.assertAlmostEqual(losses["rec"].item(), expected_rec.item(), places=6)
+        self.assertAlmostEqual(
+            losses["interest_bpr"].item(),
+            expected_interest.item(),
+            places=6,
+        )
+        self.assertAlmostEqual(
+            losses["conformity_bpr"].item(),
+            expected_conformity.item(),
+            places=6,
+        )
+        self.assertAlmostEqual(
+            losses["independence"].item(),
+            expected_independence.item(),
+            places=6,
+        )
+        self.assertAlmostEqual(losses["total"].item(), expected_total.item(), places=6)
+
+    def test_dice_paper_discrepancy_uses_unique_users_like_external_code(self) -> None:
+        """DICE discrepancy should not overweight users repeated by multiple negatives."""
+        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_dice_paper()
+        config.loss_weight_recommendation = 0.0
+        config.loss_weight_interest_bpr = 0.0
+        config.loss_weight_conformity_bpr = 0.0
+        config.loss_weight_independence = 1.0
+        loss_suite = LossSuite(config)
+        loss_user_ids = torch.tensor([0, 0, 0, 1, 2], dtype=torch.long)
+        pos_item_ids = torch.tensor([0, 0, 1, 1, 2], dtype=torch.long)
+        neg_item_ids = torch.tensor([1, 2, 2, 0, 0], dtype=torch.long)
+        user_interest = torch.tensor([[0.0, 0.0], [1.0, 0.0], [0.0, 2.0]])
+        user_conformity = torch.tensor([[0.0, 1.0], [2.0, 0.0], [1.0, 3.0]])
+        item_interest = torch.tensor([[0.0, 0.0], [1.0, 2.0], [3.0, 1.0]])
+        item_conformity = torch.tensor([[0.0, 1.0], [2.0, 2.0], [1.0, 4.0]])
+        score_zeros = torch.zeros(loss_user_ids.numel())
+        model_output = {
+            "pos_scores": {
+                "final_score": score_zeros,
+                "interest_score": score_zeros,
+                "conformity_score": score_zeros,
+                "context_score": score_zeros,
+            },
+            "neg_scores": {
+                "final_score": score_zeros,
+                "interest_score": score_zeros,
+                "conformity_score": score_zeros,
+                "context_score": score_zeros,
+            },
+            "propagated": {
+                "user_interest": user_interest,
+                "user_conformity": user_conformity,
+                "item_interest": item_interest,
+                "item_conformity": item_conformity,
+            },
+            "ipw_weights": torch.ones(loss_user_ids.numel()),
+            "loss_user_ids": loss_user_ids,
+            "loss_neg_item_ids": neg_item_ids,
+            "dice_negative_mask": torch.zeros(loss_user_ids.numel(), dtype=torch.bool),
+        }
+
+        losses = loss_suite(
+            model_output,
+            item_popularity=torch.ones(3),
+            branch_item_popularity=torch.ones(3),
+            pos_item_ids=pos_item_ids,
+            epoch=0,
+        )
+
+        unique_user_ids = torch.unique(loss_user_ids)
+        unique_item_ids = torch.unique(torch.cat([pos_item_ids, neg_item_ids]))
+        expected = _positive_dcor(
+            user_interest[unique_user_ids],
+            user_conformity[unique_user_ids],
+        ) + _positive_dcor(item_interest[unique_item_ids], item_conformity[unique_item_ids])
+        duplicated_user_value = _positive_dcor(
+            user_interest[loss_user_ids],
+            user_conformity[loss_user_ids],
+        ) + _positive_dcor(item_interest[unique_item_ids], item_conformity[unique_item_ids])
+
+        self.assertGreater(abs(expected.item() - duplicated_user_value.item()), 1e-4)
+        self.assertAlmostEqual(losses["independence"].item(), expected.item(), places=6)
+        self.assertAlmostEqual(losses["total"].item(), expected.item(), places=6)
+
+    def test_ucagnn_preset_keeps_causal_branches_active(self) -> None:
+        """Main U-CaGNN should train causal branches instead of allowing collapse."""
+        config = build_config(_experiment_args(preset="ucagnn"))
+
+        self.assertEqual(config.baseline_family, "ucagnn")
+        self.assertEqual(config.branch_loss_mode, "dice")
+        self.assertGreater(config.score_mix_min_weight, 0.0)
+        self.assertGreater(config.loss_weight_interest_bpr, 0.0)
+        self.assertGreater(config.loss_weight_conformity_bpr, 0.0)
+        self.assertEqual(config.negative_sampling_strategy, "dice")
+        self.assertEqual(config.dice_branch_margin, config.dice_sampler_margin)
+
+    def test_ucagnn_linear_ramp_keeps_branch_bpr_active_at_epoch_zero(self) -> None:
+        """DICE branch BPR is primary causal supervision, not ramped auxiliary loss."""
+        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_full()
+        config.loss_weight_recommendation = 0.0
+        config.loss_weight_independence = 0.0
+        config.loss_weight_contrastive = 0.0
+        config.loss_weight_align = 0.0
+        config.loss_weight_uniform = 0.0
+        config.loss_weight_popularity = 0.0
+        config.loss_weight_propensity_calibration = 0.0
+        loss_suite = LossSuite(config)
+        pos_interest = torch.tensor([2.0, 1.0])
+        neg_interest = torch.tensor([0.0, 0.0])
+        pos_conformity = torch.tensor([0.0, 2.0])
+        neg_conformity = torch.tensor([2.0, 0.0])
+        model_output = {
+            "pos_scores": {
+                "final_score": torch.zeros(2),
+                "interest_score": pos_interest,
+                "conformity_score": pos_conformity,
+                "context_score": torch.zeros(2),
+            },
+            "neg_scores": {
+                "final_score": torch.zeros(2),
+                "interest_score": neg_interest,
+                "conformity_score": neg_conformity,
+                "context_score": torch.zeros(2),
+            },
+            "propagated": {},
+            "ipw_weights": torch.ones(2),
+            "loss_user_ids": torch.tensor([0, 1], dtype=torch.long),
+            "loss_neg_item_ids": torch.tensor([2, 0], dtype=torch.long),
+            "dice_negative_mask": torch.tensor([True, False]),
+        }
+
+        losses = loss_suite(
+            model_output,
+            item_popularity=torch.tensor([0.1, 0.6, 1.0]),
+            branch_item_popularity=torch.tensor([10.0, 60.0, 100.0]),
+            pos_item_ids=torch.tensor([0, 1], dtype=torch.long),
+            epoch=0,
+        )
+
+        mask = torch.tensor([True, False])
+        expected_interest = -(
+            mask.float() * functional.logsigmoid(pos_interest - neg_interest)
+        ).mean()
+        expected_conformity = (
+            -(mask.float() * functional.logsigmoid(neg_conformity - pos_conformity)).mean()
+            - ((~mask).float() * functional.logsigmoid(pos_conformity - neg_conformity)).mean()
+        )
+        expected_total = (
+            config.loss_weight_interest_bpr * expected_interest
+            + config.loss_weight_conformity_bpr * expected_conformity
+        )
+
+        self.assertEqual(config.auxiliary_loss_schedule, "linear_ramp")
+        self.assertGreater(config.loss_weight_interest_bpr, 0.0)
+        self.assertGreater(config.loss_weight_conformity_bpr, 0.0)
+        self.assertGreater(losses["total"].item(), 0.0)
+        self.assertAlmostEqual(losses["interest_bpr"].item(), expected_interest.item(), places=6)
+        self.assertAlmostEqual(
+            losses["conformity_bpr"].item(),
+            expected_conformity.item(),
+            places=6,
+        )
+        self.assertAlmostEqual(losses["total"].item(), expected_total.item(), places=6)
+
+    def test_ucagnn_sampler_margin_does_not_decay_without_adaptive_dice(self) -> None:
+        """U-CaGNN should keep a stable DICE margin unless adaptive decay is explicit."""
+        canonical = _tiny_canonical()
+        config = UCaGNNConfig(device="cpu").preset_full()
+        graph = build_graph(canonical, config)
+        model = build_runtime_model(config, canonical, graph)
+        trainer = MiniBatchTrainer(
+            model=model,
+            loss_suite=LossSuite(config),
+            data=graph,
+            config=config,
+        )
+
+        self.assertEqual(config.negative_sampling_strategy, "dice")
+        self.assertFalse(config.dice_adaptive_decay)
+        self.assertEqual(trainer.sampler.dice_margin_decay, 1.0)
 
     def test_dice_like_preset_keeps_explicit_branch_depth_overrides(self) -> None:
         """DICE-like should preserve explicit branch depths without a shared fallback."""
@@ -387,6 +948,12 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertFalse(profile["config_overrides"]["use_early_stopping"])
         self.assertEqual(profile["id"], "dev-ucagnn")
+        self.assertEqual(
+            profile["matrix"]["datasets"],
+            ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+        )
+        self.assertNotIn("taobao", profile["matrix"]["datasets"])
+        self.assertNotIn("movielens20m", profile["matrix"]["datasets"])
         self.assertEqual(profile["matrix"]["presets"], ["ucagnn"])
         self.assertNotIn("scoring_weight_modes", profile["matrix"])
         self.assertNotIn("batch_size", profile["config_overrides"])
@@ -402,6 +969,10 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertNotIn("hard_negative_ratio", profile["config_overrides"])
         self.assertNotIn("loss_schedule", profile["config_overrides"])
         self.assertFalse(benchmark_args["use_early_stopping"])
+        self.assertEqual(
+            benchmark_args["datasets"],
+            ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+        )
         self.assertEqual(benchmark_args["presets"], ["ucagnn"])
         self.assertNotIn("scoring_weight_modes", benchmark_args)
         self.assertEqual(benchmark_args["batch_size"], 4096)
@@ -526,11 +1097,15 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertEqual(
             profile["matrix"]["presets"],
-            ["ucagnn", "lightgcn", "dice_like"],
+            ["ucagnn", "lightgcn_paper", "dice_paper"],
+        )
+        self.assertEqual(
+            profile["matrix"]["datasets"],
+            ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
         )
         self.assertEqual(
             profile["id"],
-            "dev-matched-comparison-i1-c2-nn8-4-ep200-lr0-01",
+            "core-paper-architecture-comparison",
         )
         self.assertNotIn("scoring_weight_modes", profile["matrix"])
         self.assertEqual(profile["config_overrides"]["single_branch_gnn_layers"], 2)
@@ -540,6 +1115,10 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(profile["config_overrides"]["conformity_gnn_layers"], 2)
         self.assertEqual(profile["config_overrides"]["num_neighbors"], [8, 4])
         self.assertNotIn("scoring_weight_modes", benchmark_args)
+        self.assertEqual(
+            benchmark_args["datasets"],
+            ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+        )
         self.assertTrue(benchmark_args["auto_batch_size"])
         self.assertEqual(benchmark_args["single_branch_gnn_layers"], 2)
         self.assertEqual(benchmark_args["interest_gnn_layers"], 1)
@@ -1287,6 +1866,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 torch.tensor([0], dtype=torch.long),
                 torch.tensor([0], dtype=torch.long),
                 random_seed=13,
+                epoch=3,
             )
 
         self.assertIs(actual_batch, expected_batch)
@@ -1294,7 +1874,140 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(trainer.sampler_device, torch.device("cpu"))
         trainer._build_subgraph_sampler.assert_called_once_with(trainer.data)
         self.assertEqual(trainer._prepare_batch_on_sampler_device.call_count, 2)
+        self.assertEqual(
+            trainer._prepare_batch_on_sampler_device.call_args_list[-1].args[-1],
+            3,
+        )
         empty_cache.assert_called()
+
+    def test_prepare_batch_falls_back_after_runtime_cuda_oom(self) -> None:
+        """CUDA OOM RuntimeError messages should use the same CPU sampler fallback."""
+        trainer = MiniBatchTrainer.__new__(MiniBatchTrainer)
+        trainer.sampler_device = torch.device("cuda")
+        trainer.device = torch.device("cuda")
+        trainer.data = object()
+        trainer._force_cpu_sampler = False
+        trainer._build_subgraph_sampler = Mock(
+            return_value=(Mock(), torch.device("cpu")),
+        )
+        expected_batch = Mock()
+        trainer._prepare_batch_on_sampler_device = Mock(
+            side_effect=[
+                RuntimeError("CUDA out of memory. Tried to allocate 4.49 GiB."),
+                expected_batch,
+            ],
+        )
+
+        with patch("torch.cuda.empty_cache"):
+            actual_batch = trainer._prepare_batch(
+                torch.tensor([0], dtype=torch.long),
+                torch.tensor([0], dtype=torch.long),
+                random_seed=13,
+                epoch=3,
+            )
+
+        self.assertIs(actual_batch, expected_batch)
+        self.assertTrue(trainer._force_cpu_sampler)
+        self.assertEqual(trainer.sampler_device, torch.device("cpu"))
+
+    def test_sampled_batch_preparation_passes_epoch_to_negative_sampler(self) -> None:
+        """Sampled U-CaGNN should apply epoch-aware DICE sampling like full-graph DICE."""
+
+        class RecordingSampler:
+            def __init__(self) -> None:
+                self.epoch: int | None = None
+
+            def sample_with_metadata(
+                self,
+                batch_size: int,
+                positive_items: torch.Tensor,
+                *,
+                user_ids: torch.Tensor,
+                device: torch.device,
+                generator: torch.Generator,
+                epoch: int,
+            ) -> tuple[torch.Tensor, None]:
+                del positive_items, user_ids, device, generator
+                self.epoch = epoch
+                return torch.ones((batch_size, 1), dtype=torch.long), None
+
+        class RecordingSubgraphSampler:
+            def __init__(self) -> None:
+                self.neg_items: torch.Tensor | None = None
+
+            def sample(
+                self,
+                batch_users: torch.Tensor,
+                batch_pos_items: torch.Tensor,
+                batch_neg_items: torch.Tensor,
+                *,
+                generator: torch.Generator,
+                dice_negative_mask: torch.Tensor | None = None,
+            ) -> object:
+                del batch_users, batch_pos_items, generator, dice_negative_mask
+                self.neg_items = batch_neg_items
+                return object()
+
+        trainer = MiniBatchTrainer.__new__(MiniBatchTrainer)
+        trainer.config = UCaGNNConfig(device="cpu", n_negatives=1)
+        trainer.sampler_device = torch.device("cpu")
+        trainer.device = torch.device("cpu")
+        trainer.sampler = RecordingSampler()
+        trainer.subgraph_sampler = RecordingSubgraphSampler()
+
+        actual_batch = trainer._prepare_batch_on_sampler_device(
+            torch.tensor([0, 1], dtype=torch.long),
+            torch.tensor([2, 3], dtype=torch.long),
+            random_seed=13,
+            epoch=7,
+        )
+
+        self.assertIsNotNone(actual_batch)
+        self.assertEqual(trainer.sampler.epoch, 7)
+        self.assertTrue(torch.equal(trainer.subgraph_sampler.neg_items, torch.ones(2).long()))
+
+    def test_full_graph_training_tensors_are_cached_per_device(self) -> None:
+        """Full-graph paper baselines should not restage graph tensors every batch."""
+        trainer = MiniBatchTrainer.__new__(MiniBatchTrainer)
+        trainer.data = object()
+        trainer.device = torch.device("cpu")
+        trainer._full_graph_tensors = None
+        trainer._full_graph_tensor_device = None
+        staged = (
+            torch.tensor([[0, 1], [1, 2]], dtype=torch.long),
+            torch.ones(2),
+            torch.ones(2),
+        )
+
+        with patch(
+            "src.training.mini_batch_trainer.stage_graph_tensors_for_device",
+            return_value=staged,
+        ) as stage:
+            first = trainer._get_full_graph_training_tensors()
+            second = trainer._get_full_graph_training_tensors()
+
+        self.assertIs(first, staged)
+        self.assertIs(second, staged)
+        stage.assert_called_once_with(trainer.data, torch.device("cpu"))
+
+    def test_full_graph_cuda_cache_is_released_before_eval(self) -> None:
+        """Full-graph CUDA training cache should not duplicate evaluator graph memory."""
+        trainer = MiniBatchTrainer.__new__(MiniBatchTrainer)
+        trainer.device = torch.device("cuda")
+        trainer._full_graph_tensor_device = torch.device("cuda")
+        trainer._full_graph_tensors = (
+            torch.tensor([[0], [1]], dtype=torch.long),
+            None,
+            None,
+        )
+
+        with patch("src.training.mini_batch_trainer.empty_cuda_cache") as empty_cache:
+            released = trainer._release_full_graph_cache_for_eval()
+
+        self.assertTrue(released)
+        self.assertIsNone(trainer._full_graph_tensors)
+        self.assertIsNone(trainer._full_graph_tensor_device)
+        empty_cache.assert_called_once_with(torch.device("cuda"))
 
 
 class BenchmarkPlanTests(unittest.TestCase):
@@ -1318,7 +2031,7 @@ class BenchmarkPlanTests(unittest.TestCase):
         """Benchmark defaults should not duplicate the removed full alias."""
         args = build_benchmark_parser().parse_args([])
 
-        self.assertEqual(args.presets, ["ucagnn", "lightgcn", "dice_like"])
+        self.assertEqual(args.presets, ["ucagnn", "lightgcn_paper", "dice_paper"])
         self.assertFalse(hasattr(args, "scoring_weight_modes"))
 
     def test_benchmark_plan_relies_on_preset_owned_score_mix_defaults(self) -> None:
@@ -1326,7 +2039,7 @@ class BenchmarkPlanTests(unittest.TestCase):
         args = formal_main._normalize_benchmark_args(
             SimpleNamespace(
                 datasets=["movielens1m"],
-                presets=["ucagnn", "lightgcn", "dice_like"],
+                presets=["ucagnn", "lightgcn_paper", "dice_paper"],
                 num_neighbors=[10, 5],
             ),
         )
@@ -1336,8 +2049,8 @@ class BenchmarkPlanTests(unittest.TestCase):
             build_benchmark_plan(args),
             [
                 ("movielens1m", "ucagnn", "plateau", None, "observed", (10, 5)),
-                ("movielens1m", "lightgcn", "plateau", None, "observed", (10, 5)),
-                ("movielens1m", "dice_like", "plateau", None, "observed", (10, 5)),
+                ("movielens1m", "lightgcn_paper", "plateau", None, "observed", (10, 5)),
+                ("movielens1m", "dice_paper", "plateau", None, "observed", (10, 5)),
             ],
         )
 
