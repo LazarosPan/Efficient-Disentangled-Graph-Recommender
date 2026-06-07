@@ -10,4 +10,4 @@ This skill is pointer to causal inference resources:
 - [dml_causal-forest.md](dml_causal-forest.md): Double Machine Learning (DML) Causal Forest implementation mechanics, including data requirements, model architecture, training procedure, and evaluation protocol.
 - [iv_rdd.md](iv_rdd.md): Instrumental Variables (IV) and Regression Discontinuity Designs (RDD) are powerful techniques for tackling unobserved confounding.
 - [temporal_causal_analysis.md](temporal_causal_analysis.md): temporal causal analysis techniques, including time series models, dynamic treatment regimes, and methods for handling time-varying confounding.
-- [causally-informed_pipeline.md](causally-informed_pipeline.md): integrating causal inference techniques into the recommendation pipeline, covering data preprocessing, model training, and evaluation strategies.
+- [causally-informed_pipeline.md](causally-informed_pipeline.md): MOST IMPORTANT - MUST READ: integrating causal inference techniques into the recommendation pipeline, covering data preprocessing, model training, and evaluation strategies.
