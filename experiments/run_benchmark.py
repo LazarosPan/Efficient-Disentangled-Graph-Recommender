@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import time
 import traceback
 from collections.abc import Mapping
@@ -27,7 +28,12 @@ from src.utils.cli_parsers import (
     normalize_benchmark_datasets_arg,
     resolve_benchmark_datasets,
 )
-from src.utils.config import DEFAULT_SEED, SUPPORTED_LR_SCHEDULERS, UCaGNNConfig
+from src.utils.config import (
+    DEFAULT_SEED,
+    PAPER_BASELINE_PRESETS,
+    SUPPORTED_LR_SCHEDULERS,
+    UCaGNNConfig,
+)
 from src.utils.experiment_logger import ExperimentLogger
 from src.utils.project_paths import FORMAL_RUN_STATE_PATH, THESIS_DB_PATH
 
@@ -69,6 +75,7 @@ BENCHMARK_MATRIX_FIELDS = (
     "presets",
     "profile_name",
     "profile_slug",
+    "runtime_probe_target_epochs",
 )
 RUNTIME_ONLY_BENCHMARK_FIELDS = (
     "device",
@@ -274,6 +281,11 @@ def _build_new_run_args(
             "presets": list(matrix["presets"]),
             "profile_name": str(profile_bundle["id"]),
             "profile_slug": str(profile_bundle["name"]),
+            "runtime_probe_target_epochs": (
+                profile_bundle["runtime_probe"]["target_epochs"]
+                if profile_bundle.get("runtime_probe") is not None
+                else None
+            ),
             "change_note": None,
             "device": "cuda",
             "data_dir": "data",
@@ -289,6 +301,100 @@ def _build_new_run_args(
         },
     )
     return benchmark_args
+
+
+def _parse_formal_profile_sequence(raw_profile: str | None) -> list[str]:
+    """Return one or more resolved formal profile identifiers from CLI input."""
+    if raw_profile is None:
+        return [DEFAULT_PROFILE_NAME]
+
+    profile_names = [part.strip() for part in raw_profile.split(",") if part.strip()]
+    if not profile_names:
+        raise ValueError("--profile must name at least one formal profile.")
+    return [str(get_formal_profile(profile_name)["id"]) for profile_name in profile_names]
+
+
+def _build_runtime_probe_estimate(
+    *,
+    target_epochs: int,
+    observed_training_time_s: float,
+    observed_epochs: int,
+    train_batches_per_epoch: int,
+) -> dict[str, float]:
+    """Scale one runtime probe to the target epoch budget."""
+    if target_epochs < 1:
+        raise ValueError("target_epochs must be >= 1.")
+    if observed_epochs < 1:
+        raise ValueError("observed_epochs must be >= 1.")
+    if train_batches_per_epoch < 1:
+        raise ValueError("train_batches_per_epoch must be >= 1.")
+    if observed_training_time_s <= 0 or not math.isfinite(observed_training_time_s):
+        raise ValueError("observed_training_time_s must be finite and > 0.")
+
+    observed_batches = float(observed_epochs * train_batches_per_epoch)
+    observed_batches_per_second = observed_batches / float(observed_training_time_s)
+    seconds_per_epoch = float(observed_training_time_s) / float(observed_epochs)
+    estimated_train_time_s = seconds_per_epoch * float(target_epochs)
+    return {
+        "runtime_probe_target_epochs": float(target_epochs),
+        "runtime_probe_observed_epochs": float(observed_epochs),
+        "runtime_probe_train_batches_per_epoch": float(train_batches_per_epoch),
+        "runtime_probe_observed_batches_per_second": observed_batches_per_second,
+        "runtime_probe_seconds_per_epoch": seconds_per_epoch,
+        "runtime_probe_estimated_train_time_s": estimated_train_time_s,
+        "runtime_probe_estimated_remaining_train_time_s": max(
+            0.0,
+            estimated_train_time_s - float(observed_training_time_s),
+        ),
+    }
+
+
+def _runtime_probe_estimate_from_result(
+    benchmark_args: Mapping[str, object],
+    result: Mapping[str, object],
+) -> dict[str, float] | None:
+    """Build a runtime-probe estimate for a completed benchmark result when configured."""
+    target_epochs = benchmark_args.get("runtime_probe_target_epochs")
+    if target_epochs is None:
+        return None
+
+    observed_training_time_s = result.get("training_time_s")
+    observed_epochs = result.get("epochs_stopped_at")
+    train_batches_per_epoch = result.get("train_batches_per_epoch")
+    if (
+        observed_training_time_s is None
+        or observed_epochs is None
+        or train_batches_per_epoch is None
+    ):
+        return None
+
+    try:
+        return _build_runtime_probe_estimate(
+            target_epochs=int(target_epochs),
+            observed_training_time_s=float(observed_training_time_s),
+            observed_epochs=int(observed_epochs),
+            train_batches_per_epoch=int(train_batches_per_epoch),
+        )
+    except ValueError:
+        logger.warning(
+            "Skipping runtime-probe estimate because observed timing data is incomplete.",
+        )
+        return None
+
+
+def _log_runtime_probe_estimate(
+    tracker: ExperimentLogger,
+    exp_id: int,
+    estimate: Mapping[str, float],
+) -> None:
+    """Persist runtime-probe approximation metrics under an explicit split label."""
+    for metric_name, estimate_value in sorted(estimate.items()):
+        tracker.log_metric(
+            exp_id,
+            metric_name,
+            estimate_value,
+            split="approximation",
+        )
 
 
 def _override_resumed_args(
@@ -329,27 +435,41 @@ def _resolve_benchmark_args(
     cli_args: argparse.Namespace,
 ) -> tuple[dict[str, object], str, bool]:
     """Resolve whether to create a new formal run or resume the saved one."""
-    try:
-        saved_state = _load_saved_formal_state()
-    except ValueError as exc:
-        if "no longer defined" in str(exc):
-            raise
-        logger.warning(
-            "Deleting legacy or incompatible formal-run state file because: %s. Starting fresh.",
-            exc,
-        )
-        try:
-            STATE_PATH.unlink(missing_ok=True)
-        except Exception as unlink_exc:
-            logger.debug("Failed to delete legacy state file: %s", unlink_exc)
-        saved_state = None
     current_profile_bundle = None
-    saved_benchmark_args: dict[str, object] | None = None
-
     requested_profile = None
     if cli_args.profile is not None:
         current_profile_bundle = get_formal_profile(cli_args.profile)
         requested_profile = str(current_profile_bundle["id"])
+
+    try:
+        saved_state = _load_saved_formal_state()
+    except ValueError as exc:
+        if "no longer defined" in str(exc):
+            if requested_profile is None:
+                raise
+            logger.warning(
+                (
+                    "Ignoring stale formal-run state because it references a profile "
+                    "that is no longer defined; starting requested profile '%s' fresh."
+                ),
+                requested_profile,
+            )
+            saved_state = None
+        else:
+            logger.warning(
+                (
+                    "Deleting legacy or incompatible formal-run state file because: "
+                    "%s. Starting fresh."
+                ),
+                exc,
+            )
+            try:
+                STATE_PATH.unlink(missing_ok=True)
+            except Exception as unlink_exc:
+                logger.debug("Failed to delete legacy state file: %s", unlink_exc)
+            saved_state = None
+    saved_benchmark_args: dict[str, object] | None = None
+
     saved_profile = None
     if saved_state is not None:
         saved_profile = str(saved_state["profile_name"])
@@ -467,6 +587,10 @@ def build_benchmark_plan(
         lr_scheduler_values = [lr_scheduler_values]
     if lr_scheduler_values == ["all"]:
         lr_scheduler_values = list(SUPPORTED_LR_SCHEDULERS)
+    lr_scheduler_values_by_preset = {
+        preset: ["none"] if preset in PAPER_BASELINE_PRESETS else lr_scheduler_values
+        for preset in presets
+    }
     graph_policy_values = _benchmark_graph_policy_values(benchmark_args)
     preprocessing_preset_values = benchmark_args.get("preprocessing_preset_options") or [
         benchmark_args.get("preprocessing_preset")
@@ -482,7 +606,7 @@ def build_benchmark_plan(
         )
         for preset in presets
         for dataset in datasets
-        for lr_scheduler in lr_scheduler_values
+        for lr_scheduler in lr_scheduler_values_by_preset[preset]
         for preprocessing_preset in preprocessing_preset_values
         for graph_policy in graph_policy_values
         for num_neighbors in num_neighbor_values
@@ -701,6 +825,26 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                 change_note=benchmark_args.get("change_note"),
             )
             elapsed = time.time() - t0
+            runtime_probe_estimate = _runtime_probe_estimate_from_result(
+                benchmark_args,
+                result,
+            )
+            if runtime_probe_estimate is not None:
+                _log_runtime_probe_estimate(
+                    tracker,
+                    int(result["exp_id"]),
+                    runtime_probe_estimate,
+                )
+                logger.info(
+                    (
+                        "Runtime probe approximation: %.1fs/epoch, %.2f batch/s, "
+                        "estimated %.1fs for %.0f epochs"
+                    ),
+                    runtime_probe_estimate["runtime_probe_seconds_per_epoch"],
+                    runtime_probe_estimate["runtime_probe_observed_batches_per_second"],
+                    runtime_probe_estimate["runtime_probe_estimated_train_time_s"],
+                    runtime_probe_estimate["runtime_probe_target_epochs"],
+                )
 
             results.append(
                 {
@@ -716,6 +860,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                     "peak_vram_mb": result.get("peak_vram_mb"),
                     "epochs_stopped_at": result.get("epochs_stopped_at"),
                     "checkpoint_path": result.get("checkpoint_path"),
+                    "runtime_probe_estimate": runtime_probe_estimate,
                 },
             )
             completed += 1
@@ -824,25 +969,21 @@ def main() -> int:
     return run_benchmark(args)
 
 
-def formal_main() -> int:
-    """Run the formal experiment workflow through one simple entry point."""
-    parser = build_formal_run_parser()
-    cli_args = parser.parse_args()
-
-    if cli_args.list_profiles:
-        print("Available formal profiles:")
-        for profile_name in formal_profile_names():
-            profile = get_formal_profile(profile_name)
-            print(f"  {profile['id']}: {profile['description']} [{profile['name']}]")
-        return 0
-
+def _run_single_formal_profile(
+    profile_name: str | None,
+    cli_args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> int:
+    """Run one formal profile using the existing saved-state resolution rules."""
+    profile_args = argparse.Namespace(**vars(cli_args))
+    profile_args.profile = profile_name
     try:
-        benchmark_args, profile_name, resumed = _resolve_benchmark_args(cli_args)
+        benchmark_args, resolved_profile_name, resumed = _resolve_benchmark_args(profile_args)
     except (KeyError, ValueError) as exc:
         parser.error(str(exc.args[0] if exc.args else exc))
 
     state = {
-        "profile_name": profile_name,
+        "profile_name": resolved_profile_name,
         "profile_slug": benchmark_args.get("profile_slug"),
         "batch_id": benchmark_args["batch_id"],
         "resumed": resumed,
@@ -856,9 +997,9 @@ def formal_main() -> int:
     print("=" * 70)
     print("FORMAL RUN")
     if benchmark_args.get("profile_slug"):
-        print(f"  Profile: {profile_name} ({benchmark_args['profile_slug']})")
+        print(f"  Profile: {resolved_profile_name} ({benchmark_args['profile_slug']})")
     else:
-        print(f"  Profile: {profile_name}")
+        print(f"  Profile: {resolved_profile_name}")
     if benchmark_args.get("change_note"):
         print(f"  Change note: {benchmark_args['change_note']}")
     print(f"  Batch ID: {benchmark_args['batch_id']}")
@@ -872,6 +1013,40 @@ def formal_main() -> int:
     state["last_exit_code"] = exit_code
     _write_state(state)
     return exit_code
+
+
+def formal_main() -> int:
+    """Run the formal experiment workflow through one simple entry point."""
+    parser = build_formal_run_parser()
+    cli_args = parser.parse_args()
+
+    if cli_args.list_profiles:
+        print("Available formal profiles:")
+        for profile_name in formal_profile_names():
+            profile = get_formal_profile(profile_name)
+            print(f"  {profile['id']}: {profile['description']} [{profile['name']}]")
+        return 0
+
+    try:
+        profile_names = _parse_formal_profile_sequence(cli_args.profile)
+    except (KeyError, ValueError) as exc:
+        parser.error(str(exc.args[0] if exc.args else exc))
+
+    if cli_args.profile is None:
+        return _run_single_formal_profile(None, cli_args, parser)
+
+    if len(profile_names) > 1:
+        print("=" * 70)
+        print("FORMAL RUN PROFILE QUEUE")
+        for index, profile_name in enumerate(profile_names, 1):
+            print(f"  {index}. {profile_name}")
+        print("=" * 70)
+
+    exit_codes: list[int] = []
+    for profile_name in profile_names:
+        exit_codes.append(_run_single_formal_profile(profile_name, cli_args, parser))
+
+    return 0 if all(exit_code == 0 for exit_code in exit_codes) else 1
 
 
 if __name__ == "__main__":

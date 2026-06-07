@@ -135,6 +135,19 @@ def _resolved_profile_overrides(profile: dict[str, Any]) -> dict[str, Any]:
     return overrides
 
 
+def _resolved_runtime_probe(profile: dict[str, Any]) -> dict[str, int] | None:
+    """Return optional runtime-probe metadata for a formal profile."""
+    raw_probe = profile.get("runtime_probe")
+    if raw_probe is None:
+        return None
+    if not isinstance(raw_probe, Mapping):
+        raise ValueError("runtime_probe must be an object when provided.")
+    target_epochs = int(raw_probe.get("target_epochs", 0))
+    if target_epochs < 1:
+        raise ValueError("runtime_probe.target_epochs must be >= 1.")
+    return {"target_epochs": target_epochs}
+
+
 def _formal_profile_name(profile: dict[str, Any]) -> str:
     """Build a deterministic semantic profile name from the profile payload."""
     matrix = _resolved_profile_matrix(profile)
@@ -192,6 +205,7 @@ def _resolved_formal_profiles() -> list[dict[str, Any]]:
                 "description": profile.get("description", ""),
                 "matrix": _resolved_profile_matrix(profile),
                 "config_overrides": _resolved_profile_overrides(profile),
+                "runtime_probe": _resolved_runtime_probe(profile),
                 "aliases": aliases,
             },
         )
@@ -232,6 +246,7 @@ def get_formal_profile(profile_name: str) -> dict[str, Any]:
             "description": resolved_profile["description"],
             "matrix": resolved_profile["matrix"],
             "config_overrides": resolved_profile["config_overrides"],
+            "runtime_probe": resolved_profile["runtime_probe"],
         }
 
     available = ", ".join(formal_profile_names())

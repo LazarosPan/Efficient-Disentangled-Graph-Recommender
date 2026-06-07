@@ -80,7 +80,6 @@ PRESETS = {
     "dice_paper": "preset_dice_paper",
     "dice_like": "preset_dice_like",
     "dice_like_ablation": "preset_dice_like",
-    "lgndice_paper": "preset_lgndice_paper",
 }
 CONFIG_OVERRIDE_FIELDS = (
     "epochs",
@@ -1779,6 +1778,7 @@ def run_experiment(
     checkpoint_every: int = 1,
     auto_resume: bool = True,
     overwrite_checkpoint: bool = False,
+    include_refined_diagnostics: bool = True,
 ) -> dict:
     """Run a single experiment end-to-end.
 
@@ -1808,6 +1808,10 @@ def run_experiment(
             from where it left off.
         overwrite_checkpoint: If True, delete any existing checkpoint at the
             resolved path and force a fresh run.
+        include_refined_diagnostics: If True, compute optional refined scorer
+            diagnostics during final test evaluation. Quick smoke validation can
+            disable this so undefined tiny-slice diagnostics do not mask runtime
+            coverage.
 
     Returns:
         Dict with keys:
@@ -1910,6 +1914,8 @@ def run_experiment(
             "resumed": True,
             "peak_vram_mb": None,
             "epochs_stopped_at": len(history.get("train_loss", [])),
+            "training_time_s": None,
+            "train_batches_per_epoch": None,
         }
 
     experiment_logger = ExperimentLogger(db_path=str(DB_PATH))
@@ -2154,7 +2160,14 @@ def run_experiment(
                 "Checkpoint already reached configured epoch budget; skipping training.",
             )
         total_training_time_s = time.perf_counter() - train_start_
-        peak_vram_mb = torch.cuda.max_memory_allocated() / 1024**2 if cuda_ else 0.0
+        peak_vram_mb = 0.0
+        if cuda_:
+            training_peak_vram_mb = trainer.training_peak_vram_mb if trainer is not None else None
+            peak_vram_mb = (
+                training_peak_vram_mb
+                if training_peak_vram_mb is not None
+                else torch.cuda.max_memory_allocated() / 1024**2
+            )
         experiment_logger.log_metric(
             exp_id, "training_time_s", total_training_time_s, split="train"
         )
@@ -2167,11 +2180,18 @@ def run_experiment(
             total_training_time_s,
             peak_vram_mb,
         )
+        train_batches_per_epoch = None
+        if trainer is not None and hasattr(trainer, "train_users"):
+            n_train_interactions = int(trainer.train_users.size(0))
+            train_batches_per_epoch = max(
+                1,
+                (n_train_interactions + int(config.batch_size) - 1) // int(config.batch_size),
+            )
 
         logger.info("Running test evaluation...")
         test_metrics = trainer._evaluate_split_metrics(
             data.test_mask,
-            include_refined_diagnostics=True,
+            include_refined_diagnostics=include_refined_diagnostics,
         )
         for metric, value in sorted(test_metrics.items()):
             logger.info(f"  {metric}: {value:.4f}")
@@ -2227,6 +2247,8 @@ def run_experiment(
             "resumed": checkpoint_state is not None,
             "peak_vram_mb": peak_vram_mb,
             "epochs_stopped_at": len(history["train_loss"]) if history is not None else 0,
+            "training_time_s": total_training_time_s,
+            "train_batches_per_epoch": train_batches_per_epoch,
         }
     except Exception as exc:
         is_oom = _iscuda__oom(exc)
