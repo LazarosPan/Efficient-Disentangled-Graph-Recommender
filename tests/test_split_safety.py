@@ -174,6 +174,14 @@ class _GatherBeforeFloatGuard:
         """Gather directly from the native-dtype score matrix."""
         return self._scores.gather(dim, index)
 
+    def size(self, dim: int) -> int:
+        """Return one dimension without exposing full-matrix casting."""
+        return self._scores.size(dim)
+
+    def topk(self, k: int, dim: int):
+        """Run top-k on the native-dtype score matrix."""
+        return self._scores.topk(k, dim=dim)
+
     def float(self) -> torch.Tensor:
         """Reject full-matrix float casts so tests catch the regression."""
         msg = "full score matrix cast to float before top-k gather"
@@ -800,7 +808,13 @@ class SplitSafetyTests(unittest.TestCase):
             user_conformity_emb=torch.tensor([[0.0, 1.0], [1.0, 1.0]], dtype=torch.float32),
         )
 
-        metrics = evaluator.evaluate(model, data, data.test_mask, batch_size=2)
+        metrics = evaluator.evaluate(
+            model,
+            data,
+            data.test_mask,
+            batch_size=2,
+            include_refined_diagnostics=True,
+        )
 
         self.assertAlmostEqual(metrics["score_mix_interest_mean"], 0.5, places=6)
         self.assertAlmostEqual(metrics["score_mix_interest_std"], 0.25, places=6)
@@ -985,6 +999,32 @@ class SplitSafetyTests(unittest.TestCase):
 
         self.assertIn("interest_popularity_spearman@4", diagnostics)
         self.assertAlmostEqual(diagnostics["interest_popularity_spearman@4"], 0.0, places=6)
+
+    def test_evaluator_diagnostics_report_only_current_popularity_diagnostics(self) -> None:
+        """Component diagnostics should stay limited to the current popularity correlation."""
+        accumulator = _EvaluatorDiagnosticsAccumulator((2,))
+        accumulator.update(
+            {
+                "interest_score": torch.tensor([[4.0, 3.0, 2.0, 1.0]]),
+                "conformity_score": torch.tensor([[1.0, 2.0, 3.0, 4.0]]),
+                "final_score": torch.tensor([[4.0, 3.0, 2.0, 1.0]]),
+            },
+            torch.tensor([[0, 1]], dtype=torch.long),
+            torch.tensor([1.0, 0.8, 0.2, 0.0], dtype=torch.float32),
+        )
+
+        diagnostics = accumulator.compute()
+
+        self.assertEqual(
+            set(diagnostics),
+            {
+                "conformity_contribution@2",
+                "conformity_popularity_spearman@2",
+                "final_popularity_spearman@2",
+                "interest_contribution@2",
+                "interest_popularity_spearman@2",
+            },
+        )
 
     def test_stage_graph_tensors_for_device_keeps_optional_edge_fields(self) -> None:
         """Shared graph staging should preserve optional edge tensors."""
@@ -1627,6 +1667,32 @@ class CausalTrainingContractTests(unittest.TestCase):
         self.assertGreaterEqual(scores["score_mix_weights"][0, 2], expected_floor)
         self.assertAlmostEqual(scores["score_mix_weights"].sum().item(), 1.0, places=6)
 
+    def test_ucagnn_score_mix_is_not_overridden_by_raw_conformity_scale(self) -> None:
+        """Small conformity weight should not beat interest via raw embedding norm."""
+        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_full()
+        config.use_learned_score_mix = False
+        config.use_popularity_head = False
+        config.score_mix_min_weight = 0.0
+        config.score_weight_interest = 0.95
+        config.score_weight_conformity = 0.05
+        config.score_weight_popularity = 0.0
+        model = UCaGNN(n_users=1, n_items=2, config=config)
+
+        scores = model.scoring.score_all_items(
+            propagated={
+                "user_interest": torch.tensor([[1.0, 0.0]]),
+                "item_interest": torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+                "user_conformity": torch.tensor([[100.0, 0.0]]),
+                "item_conformity": torch.tensor([[0.0, 1.0], [1.0, 0.0]]),
+            },
+            user_ids=torch.tensor([0], dtype=torch.long),
+        )
+
+        self.assertGreater(
+            scores["final_score"][0, 0].item(),
+            scores["final_score"][0, 1].item(),
+        )
+
     def test_embedding_feature_projection_accepts_cpu_fallback_inputs(self) -> None:
         """CPU fallback paths should project bf16 feature buffers without dtype errors."""
         config = UCaGNNConfig(device="cpu", embed_dim=4).preset_full()
@@ -1964,6 +2030,62 @@ class CausalTrainingContractTests(unittest.TestCase):
             expected_interest + expected_conformity,
             places=6,
         )
+
+    def test_loss_suite_popularity_head_prefers_raw_context_for_supervision(
+        self,
+    ) -> None:
+        """Context regression should not train against the calibrated fusion score."""
+        config = UCaGNNConfig(device="cpu", embed_dim=2)
+        config.use_dual_branch = True
+        config.use_popularity_head = True
+        config.loss_weight_recommendation = 0.0
+        config.loss_weight_interest_bpr = 0.0
+        config.loss_weight_conformity_bpr = 0.0
+        config.loss_weight_independence = 0.0
+        config.loss_weight_contrastive = 0.0
+        config.loss_weight_align = 0.0
+        config.loss_weight_uniform = 0.0
+        config.loss_weight_popularity = 1.0
+        config.auxiliary_loss_schedule = "phased"
+        config.popularity_supervision_start_epoch = 0
+        loss_suite = LossSuite(config)
+
+        pos_item_ids = torch.tensor([0, 1])
+        pop_target = torch.tensor([0.2, 0.8])
+        score_zeros = torch.zeros(2)
+        model_output = {
+            "pos_scores": {
+                "final_score": score_zeros,
+                "interest_score": score_zeros,
+                "conformity_score": score_zeros,
+                "context_score": torch.zeros(2),
+                "raw_context_score": pop_target.clone(),
+            },
+            "neg_scores": {
+                "final_score": score_zeros,
+                "interest_score": score_zeros,
+                "conformity_score": score_zeros,
+                "context_score": score_zeros,
+            },
+            "propagated": {
+                "user_interest": torch.eye(2),
+                "item_interest": torch.eye(2),
+                "user_conformity": torch.eye(2),
+                "item_conformity": torch.eye(2),
+            },
+            "ipw_weights": torch.ones(2),
+            "loss_user_ids": torch.tensor([0, 1]),
+        }
+
+        losses = loss_suite(
+            model_output,
+            item_popularity=pop_target,
+            pos_item_ids=pos_item_ids,
+            epoch=0,
+        )
+
+        self.assertAlmostEqual(losses["pop"].item(), 0.0, places=7)
+        self.assertAlmostEqual(losses["total"].item(), 0.0, places=7)
 
     def test_loss_suite_caps_dice_discrepancy_pairwise_entities(self) -> None:
         """DICE discrepancy should not allocate quadratic matrices over huge batches."""

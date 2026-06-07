@@ -48,7 +48,11 @@ from src.data.graph_builder import build_graph
 from src.losses.loss_suite import LossSuite
 from src.models.baselines.dice import PaperGCNDICE
 from src.models.baselines.lightgcn import PaperLightGCN
-from src.profiling.gpu_profiler import GPUProfiler
+from src.profiling.gpu_profiler import (
+    GPUProfiler,
+    TrainingResourceStats,
+    sample_gpu_resource_snapshot,
+)
 from src.training.mini_batch_trainer import MiniBatchTrainer
 from src.utils.config import UCaGNNConfig
 from src.utils.reproducibility import build_torch_generator
@@ -325,6 +329,52 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             ("cuda_memory=allocated=1MB reserved=2MB peak_allocated=3MB peak_reserved=4MB"),
         )
 
+    def test_gpu_resource_snapshot_parses_utilization_and_memory_used(self) -> None:
+        """Training telemetry should capture nvidia-smi utilization and memory used."""
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.current_device", return_value=0),
+            patch("subprocess.check_output", return_value="42, 1536\n"),
+        ):
+            snapshot = sample_gpu_resource_snapshot(torch.device("cuda"))
+
+        assert snapshot is not None
+        self.assertEqual(snapshot.utilization_pct, 42.0)
+        self.assertEqual(snapshot.memory_used_mb, 1536.0)
+
+    def test_log_epoch_to_sqlite_uses_training_resource_stats(self) -> None:
+        """Epoch resource rows should come from training-window samples."""
+        runtime = TrainerRuntime.__new__(TrainerRuntime)
+        runtime.device = torch.device("cuda")
+        runtime.experiment_logger = Mock()
+        runtime.exp_id = 9
+        runtime.mlflow_module = None
+        runtime.model = Mock()
+        resource_stats = TrainingResourceStats(
+            pytorch_peak_allocated_mb=1024.0,
+            pytorch_peak_reserved_mb=2048.0,
+            nvidia_peak_memory_used_mb=3072.0,
+            avg_gpu_utilization_pct=33.0,
+            max_gpu_utilization_pct=66.0,
+        )
+
+        runtime._log_epoch_to_sqlite(
+            epoch=3,
+            avg_loss=0.25,
+            epoch_time_s=12.0,
+            val_metrics={"NDCG@40": 0.7},
+            resource_stats=resource_stats,
+        )
+
+        metric_calls = runtime.experiment_logger.log_metric.call_args_list
+        logged = {(call.args[1], call.args[2]) for call in metric_calls}
+        self.assertIn(("train_peak_vram_allocated_mb", 1024.0), logged)
+        self.assertIn(("train_peak_vram_reserved_mb", 2048.0), logged)
+        self.assertIn(("train_peak_gpu_memory_used_mb", 3072.0), logged)
+        self.assertIn(("gpu_utilization_pct", 33.0), logged)
+        self.assertIn(("max_gpu_utilization_pct", 66.0), logged)
+        self.assertIn(("peak_vram_mb", 3072.0), logged)
+
     def test_ucagnn_preset_applies_fused_scoring_defaults(self) -> None:
         """The ucagnn preset should target the fused-score contract."""
         config = build_config(_experiment_args(preset="ucagnn"))
@@ -421,6 +471,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.single_branch_gnn_layers, 3)
         self.assertEqual(config.dropout, 0.0)
         self.assertEqual(config.lr, 0.001)
+        self.assertEqual(config.lr_scheduler, "none")
         self.assertEqual(config.weight_decay, 1e-4)
         self.assertEqual(config.batch_size, 2048)
         self.assertFalse(config.auto_batch_size)
@@ -433,6 +484,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 dropout=0.25,
                 graph_policy="cagra_augmented",
                 lr=0.01,
+                lr_scheduler="cosine",
                 weight_decay=1e-2,
                 batch_size=8192,
                 auto_batch_size=True,
@@ -442,6 +494,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.dropout, 0.0)
         self.assertEqual(config.graph_policy, "observed")
         self.assertEqual(config.lr, 0.001)
+        self.assertEqual(config.lr_scheduler, "none")
         self.assertEqual(config.weight_decay, 1e-4)
         self.assertEqual(config.batch_size, 2048)
         self.assertFalse(config.auto_batch_size)
@@ -483,6 +536,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.dice_branch_margin, config.dice_sampler_margin)
         self.assertEqual(config.graph_policy, "observed")
         self.assertEqual(config.lr, 0.001)
+        self.assertEqual(config.lr_scheduler, "none")
         self.assertEqual(config.batch_size, 128)
 
     def test_dice_paper_ignores_shared_runtime_overrides(self) -> None:
@@ -493,6 +547,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 dropout=0.05,
                 graph_policy="cagra_augmented",
                 lr=0.01,
+                lr_scheduler="cosine",
                 batch_size=8192,
                 auto_batch_size=True,
             ),
@@ -501,19 +556,12 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.dropout, 0.2)
         self.assertEqual(config.graph_policy, "observed")
         self.assertEqual(config.lr, 0.001)
+        self.assertEqual(config.lr_scheduler, "none")
         self.assertEqual(config.weight_decay, 5e-8)
         self.assertEqual(config.batch_size, 128)
         self.assertFalse(config.auto_batch_size)
         self.assertEqual(config.negative_sampling_strategy, "dice")
         self.assertEqual(config.n_negatives, 4)
-
-    def test_legacy_lgndice_paper_preset_aliases_to_dice_paper_contract(self) -> None:
-        """Old lgndice_paper commands should resolve to the canonical DICE paper baseline."""
-        config = build_config(_experiment_args(preset="lgndice_paper"))
-
-        self.assertEqual(config.baseline_family, "dice_paper")
-        self.assertEqual(config.branch_loss_mode, "dice")
-        self.assertEqual(config.negative_sampling_strategy, "dice")
 
     def test_build_runtime_model_uses_explicit_paper_baseline_classes(self) -> None:
         """Paper baselines should not be hidden as UCaGNN config variants."""
@@ -1137,8 +1185,8 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertIn("abauto", default_profile["name"])
         self.assertEqual(get_formal_profile("dev-ucagnn")["id"], "dev-ucagnn")
 
-    def test_second_formal_profile_is_reserved_for_final_comparison(self) -> None:
-        """The non-default profile should keep baselines out of day-to-day runs."""
+    def test_second_formal_profile_is_ucagnn_mainline_only(self) -> None:
+        """The main thesis profile should not rerun fixed paper baselines."""
         profile_name = formal_profile_names()[1]
         profile = get_formal_profile(profile_name)
         benchmark_args = formal_main._build_new_run_args(
@@ -1148,7 +1196,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertEqual(
             profile["matrix"]["presets"],
-            ["ucagnn", "lightgcn_paper", "dice_paper"],
+            ["ucagnn"],
         )
         self.assertEqual(
             profile["matrix"]["datasets"],
@@ -1156,7 +1204,19 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             profile["id"],
-            "core-paper-architecture-comparison",
+            "core-ucagnn-mainline",
+        )
+        self.assertEqual(
+            get_formal_profile("core-paper-architecture-comparison")["id"],
+            "core-ucagnn-mainline",
+        )
+        self.assertEqual(
+            get_formal_profile("paper-lightgcn-small-baselines")["matrix"]["presets"],
+            ["lightgcn_paper"],
+        )
+        self.assertEqual(
+            get_formal_profile("paper-dice-small-baselines")["matrix"]["presets"],
+            ["dice_paper"],
         )
         self.assertNotIn("scoring_weight_modes", profile["matrix"])
         self.assertEqual(profile["config_overrides"]["single_branch_gnn_layers"], 2)
@@ -1194,6 +1254,37 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             self.assertRaisesRegex(ValueError, "no longer defined"),
         ):
             formal_main._resolve_benchmark_args(cli_args)
+
+    def test_requested_profile_ignores_removed_saved_profile_state(self) -> None:
+        """Explicit profiles should start fresh when old saved state references a removed id."""
+        requested_profile_name = "paper-dice-all-runtime-probes"
+        cli_args = SimpleNamespace(profile=requested_profile_name, overwrite_checkpoint=True)
+
+        with (
+            patch.object(
+                formal_main,
+                "_load_saved_formal_state",
+                side_effect=ValueError(
+                    "The saved formal-run state references a profile that is no longer defined.",
+                ),
+            ),
+            patch.object(
+                formal_main,
+                "_build_new_run_args",
+                return_value={"profile_name": requested_profile_name, "fresh": True},
+            ) as build_new_run_args,
+        ):
+            benchmark_args, profile_name, resumed = formal_main._resolve_benchmark_args(
+                cli_args,
+            )
+
+        build_new_run_args.assert_called_once_with(cli_args, requested_profile_name)
+        self.assertFalse(resumed)
+        self.assertEqual(profile_name, requested_profile_name)
+        self.assertEqual(
+            benchmark_args,
+            {"profile_name": requested_profile_name, "fresh": True},
+        )
 
     def test_resolve_benchmark_args_builds_fresh_run_when_state_is_missing(self) -> None:
         """Missing saved state should force a fresh formal benchmark plan."""
@@ -1813,6 +1904,26 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             runtime.evaluator.evaluate.call_args.kwargs["include_refined_diagnostics"],
         )
 
+    def test_split_eval_defaults_to_primary_metrics_only(self) -> None:
+        """Refined diagnostics should be opt-in so only final test evaluation pays for them."""
+        runtime = TrainerRuntime.__new__(TrainerRuntime)
+        runtime.device = torch.device("cpu")
+        runtime.config = SimpleNamespace(use_amp=False)
+        runtime.use_amp = False
+        runtime.amp_dtype = torch.float16
+        runtime.ema_model = None
+        runtime.model = object()
+        runtime.data = object()
+        runtime.evaluator = Mock()
+        runtime.evaluator.evaluate.return_value = {"NDCG@40": 0.5}
+
+        metrics = runtime._evaluate_split_metrics("test-mask")
+
+        self.assertEqual(metrics, {"NDCG@40": 0.5})
+        self.assertFalse(
+            runtime.evaluator.evaluate.call_args.kwargs["include_refined_diagnostics"],
+        )
+
     def test_validation_eval_retries_after_cuda_oom_with_optimizer_offload(self) -> None:
         """Validation should retry once after offloading optimizer state on CUDA OOM."""
         runtime = TrainerRuntime.__new__(TrainerRuntime)
@@ -2085,6 +2196,23 @@ class BenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(args.presets, ["ucagnn", "lightgcn_paper", "dice_paper"])
         self.assertFalse(hasattr(args, "scoring_weight_modes"))
 
+    def test_benchmark_parser_exposes_only_canonical_preset_names(self) -> None:
+        """Benchmark CLI choices should match the canonical preset list."""
+        parser = build_benchmark_parser()
+        preset_action = next(action for action in parser._actions if action.dest == "presets")
+
+        self.assertEqual(
+            list(preset_action.choices),
+            [
+                "ucagnn",
+                "lightgcn",
+                "lightgcn_paper",
+                "dice_paper",
+                "dice_like",
+                "dice_like_ablation",
+            ],
+        )
+
     def test_benchmark_plan_relies_on_preset_owned_score_mix_defaults(self) -> None:
         """Formal sweeps should no longer expose score-mix modes as a matrix axis."""
         args = formal_main._normalize_benchmark_args(
@@ -2100,8 +2228,25 @@ class BenchmarkPlanTests(unittest.TestCase):
             build_benchmark_plan(args),
             [
                 ("movielens1m", "ucagnn", "plateau", None, "observed", (10, 5)),
-                ("movielens1m", "lightgcn_paper", "plateau", None, "observed", (10, 5)),
-                ("movielens1m", "dice_paper", "plateau", None, "observed", (10, 5)),
+                ("movielens1m", "lightgcn_paper", "none", None, "observed", (10, 5)),
+                ("movielens1m", "dice_paper", "none", None, "observed", (10, 5)),
+            ],
+        )
+
+    def test_build_benchmark_plan_keeps_paper_baselines_on_constant_lr(self) -> None:
+        """Paper baselines should not expand LR-scheduler sweeps into duplicate runs."""
+        args = SimpleNamespace(
+            datasets=["movielens1m"],
+            presets=["lightgcn_paper", "dice_paper"],
+            num_neighbors=[10, 5],
+            lr_scheduler="all",
+        )
+
+        self.assertEqual(
+            build_benchmark_plan(args),
+            [
+                ("movielens1m", "lightgcn_paper", "none", None, "observed", (10, 5)),
+                ("movielens1m", "dice_paper", "none", None, "observed", (10, 5)),
             ],
         )
 
@@ -2261,6 +2406,82 @@ class BenchmarkPlanTests(unittest.TestCase):
             exit_code = formal_main.run_benchmark(normalized_args)
 
         self.assertEqual(exit_code, 0)
+
+    def test_parse_formal_profile_sequence_accepts_comma_separated_names(self) -> None:
+        """formal-run should accept a comma-separated profile queue."""
+        profile_names = formal_main._parse_formal_profile_sequence(
+            "paper-lightgcn-small-baselines, paper-dice-all-runtime-probes",
+        )
+
+        self.assertEqual(
+            profile_names,
+            ["paper-lightgcn-small-baselines", "paper-dice-all-runtime-probes"],
+        )
+
+    def test_formal_main_runs_comma_separated_profiles_in_order(self) -> None:
+        """Multiple formal profiles should execute sequentially and report aggregate failure."""
+        cli_args = SimpleNamespace(
+            profile="paper-lightgcn-small-baselines,paper-dice-all-runtime-probes",
+            list_profiles=False,
+            overwrite_checkpoint=False,
+        )
+
+        with (
+            patch.object(formal_main, "build_formal_run_parser") as build_parser,
+            patch.object(
+                formal_main,
+                "_run_single_formal_profile",
+                side_effect=[0, 1],
+            ) as run_single_profile,
+        ):
+            build_parser.return_value.parse_args.return_value = cli_args
+            exit_code = formal_main.formal_main()
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(
+            [call.args[0] for call in run_single_profile.call_args_list],
+            ["paper-lightgcn-small-baselines", "paper-dice-all-runtime-probes"],
+        )
+
+    def test_runtime_probe_estimate_scales_observed_epoch_to_target_epochs(self) -> None:
+        """Probe estimates should scale measured training throughput to the target run."""
+        estimate = formal_main._build_runtime_probe_estimate(
+            target_epochs=200,
+            observed_training_time_s=610.0,
+            observed_epochs=1,
+            train_batches_per_epoch=1745,
+        )
+
+        self.assertAlmostEqual(estimate["runtime_probe_seconds_per_epoch"], 610.0)
+        self.assertAlmostEqual(
+            estimate["runtime_probe_observed_batches_per_second"],
+            1745.0 / 610.0,
+        )
+        self.assertAlmostEqual(estimate["runtime_probe_estimated_train_time_s"], 122000.0)
+        self.assertAlmostEqual(
+            estimate["runtime_probe_estimated_remaining_train_time_s"],
+            121390.0,
+        )
+
+    def test_runtime_probe_metadata_belongs_only_to_one_epoch_probe_profiles(self) -> None:
+        """Run-once small baselines should not be labeled as runtime approximations."""
+        probe_profile_ids = {
+            profile_name
+            for profile_name in formal_profile_names()
+            if get_formal_profile(profile_name).get("runtime_probe") is not None
+        }
+
+        self.assertEqual(
+            probe_profile_ids,
+            {
+                "paper-lightgcn-large-runtime-probes",
+                "paper-dice-all-runtime-probes",
+            },
+        )
+        for profile_name in probe_profile_ids:
+            profile = get_formal_profile(profile_name)
+            self.assertEqual(profile["config_overrides"]["epochs"], 1)
+            self.assertEqual(profile["runtime_probe"]["target_epochs"], 200)
 
 
 if __name__ == "__main__":

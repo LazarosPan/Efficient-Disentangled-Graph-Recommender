@@ -295,6 +295,49 @@ class UtilityParserTests(unittest.TestCase):
         self.assertEqual(config.patience, 1)
         self.assertFalse(config.use_torch_compile)
 
+    def test_quick_validate_run_single_case_disables_refined_diagnostics(self) -> None:
+        """Quick validation should exercise execution without optional refined metrics."""
+        config = SimpleNamespace()
+
+        with mock.patch.object(
+            quick_validate,
+            "run_experiment",
+            return_value={"exp_id": 1, "test_metrics": {}},
+        ) as run_experiment:
+            quick_validate._run_single_case(
+                category="recipes",
+                dataset="movielens1m",
+                label="recipe:ucagnn",
+                config=config,
+                preset="ucagnn",
+                intervention="quick_recipe_ucagnn",
+            )
+
+        self.assertFalse(run_experiment.call_args.kwargs["include_refined_diagnostics"])
+
+    def test_quick_validate_resume_probe_disables_refined_diagnostics(self) -> None:
+        """The direct resume probe should share the quick validation metric contract."""
+        args = SimpleNamespace(
+            datasets=["movielens1m"],
+            data_dir="data",
+            fail_fast=False,
+            mlflow=False,
+        )
+        results: list[dict] = []
+
+        with (
+            mock.patch.object(quick_validate, "_run_single_case", return_value=({}, 0.0)),
+            mock.patch.object(
+                quick_validate,
+                "run_experiment",
+                return_value={"resumed": True},
+            ) as run_experiment,
+        ):
+            quick_validate._run_observability_category(args, results)
+
+        self.assertTrue(run_experiment.called)
+        self.assertFalse(run_experiment.call_args.kwargs["include_refined_diagnostics"])
+
 
 if __name__ == "__main__":
     unittest.main()
