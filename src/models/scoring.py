@@ -312,6 +312,22 @@ class ScoringModule(nn.Module):
             value = value[item_ids]
         return self._cast_like(value, ref)
 
+    def _get_item_propensity_context_feature(
+        self,
+        propagated: dict[str, torch.Tensor],
+        item_ids: torch.Tensor | None,
+        ref: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return exposure-proxy context input only for calibrated IPW runs."""
+        if not (self.config.use_ipw and self.config.loss_weight_propensity_calibration > 0):
+            return torch.zeros(ref.size(0), device=ref.device, dtype=ref.dtype)
+        return self._get_item_scalar_feature(
+            propagated,
+            "item_propensity_targets",
+            item_ids,
+            ref,
+        )
+
     def _context_scores(
         self,
         propagated: dict[str, torch.Tensor],
@@ -342,9 +358,8 @@ class ScoringModule(nn.Module):
                 item_ids,
                 item_ref,
             ).unsqueeze(-1),
-            self._get_item_scalar_feature(
+            self._get_item_propensity_context_feature(
                 propagated,
-                "item_propensity_targets",
                 item_ids,
                 item_ref,
             ).unsqueeze(-1),
@@ -367,19 +382,22 @@ class ScoringModule(nn.Module):
         propagated: dict[str, torch.Tensor],
     ) -> bool:
         """Return whether the context head has configured item metadata to score."""
+        metadata_keys = (
+            "item_popularity",
+            "item_recency",
+            "item_age",
+            "item_safe_features",
+        )
+        has_metadata = any(key in propagated for key in metadata_keys)
+        has_calibrated_propensity = (
+            self.config.use_ipw
+            and self.config.loss_weight_propensity_calibration > 0
+            and "item_propensity_targets" in propagated
+        )
         return (
             self.config.use_popularity_head
             and self.context_head is not None
-            and any(
-                key in propagated
-                for key in (
-                    "item_popularity",
-                    "item_recency",
-                    "item_propensity_targets",
-                    "item_age",
-                    "item_safe_features",
-                )
-            )
+            and (has_metadata or has_calibrated_propensity)
         )
 
     def _active_score_components(

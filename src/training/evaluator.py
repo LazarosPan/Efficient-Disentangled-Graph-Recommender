@@ -46,6 +46,10 @@ LOWER_IS_BETTER_METRICS: Final[frozenset[str]] = frozenset(
 )
 THESIS_EVAL_KS: Final[tuple[int, ...]] = (20, 40)
 _SCORE_MIX_COMPONENTS: Final[tuple[str, ...]] = ("interest", "conformity", "context")
+_BRANCH_RANKING_SCORE_KEYS: Final[dict[str, tuple[str, str]]] = {
+    "interest_branch": ("branch_interest_score", "interest_score"),
+    "conformity_branch": ("branch_conformity_score", "conformity_score"),
+}
 
 
 class _SafeLinkPredPersonalization(LinkPredPersonalization):
@@ -492,6 +496,16 @@ class Evaluator:
             include_refined_diagnostics
             and getattr(model, "get_score_components_from_propagated", None) is not None
         )
+        branch_ranking_metrics = (
+            {
+                branch_name: self._build_metrics(n_items=n_items, popularity=popularity).to(
+                    device,
+                )
+                for branch_name in _BRANCH_RANKING_SCORE_KEYS
+            }
+            if export_score_components and self.config.use_dual_branch
+            else {}
+        )
 
         effective_batch = self._effective_eval_batch_size(
             requested_batch_size=batch_size,
@@ -641,9 +655,37 @@ class Evaluator:
                 gt_user_index,
                 gt_item_index,
             )
+            if score_components is not None and branch_ranking_metrics:
+                for branch_name, score_keys in _BRANCH_RANKING_SCORE_KEYS.items():
+                    branch_scores = next(
+                        (
+                            score_components[score_key]
+                            for score_key in score_keys
+                            if score_key in score_components
+                        ),
+                        None,
+                    )
+                    if branch_scores is None:
+                        continue
+                    _, branch_pred_index_mat = torch.topk(
+                        branch_scores.float(),
+                        max_k,
+                        dim=-1,
+                    )
+                    branch_ranking_metrics[branch_name].update(
+                        branch_pred_index_mat,
+                        edge_label_index,
+                    )
             metrics.update(pred_index_mat, edge_label_index)
 
         results = {name: value.item() for name, value in metrics.compute().items()}
+        for branch_name, metric_collection in branch_ranking_metrics.items():
+            results.update(
+                {
+                    f"{branch_name}_{name}": value.item()
+                    for name, value in metric_collection.compute().items()
+                }
+            )
         if diagnostics is not None:
             results.update(diagnostics.compute())
         return results
