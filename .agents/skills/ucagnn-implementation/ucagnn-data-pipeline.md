@@ -109,7 +109,7 @@ Only KuaiRand-1K currently populates `item_propensity_targets`, using log1p-norm
 
 - `NegativeSampler` is vectorized and mixes uniform and popularity-weighted draws via `hard_negative_ratio`.
 - It receives train-positive `(user, item)` pairs from `TrainerRuntime` and filters sampled negatives against every known positive training item for the same user, not only the current positive item.
-- With `negative_sampling_strategy="dice"`, `sample_with_metadata()` also returns the DICE high-popularity mask aligned to each sampled negative. It filters known train positives before applying DICE's high/low pool-size routing, mirrors the external sampler's `mask_type`, and is consumed directly by `LossSuite`; threshold reconstruction is only a fallback for older/manual payloads.
+- With `negative_sampling_strategy="dice"`, `sample_with_metadata()` also returns the DICE high-popularity mask aligned to each sampled negative. For large-batch U-CaGNN it applies DICE high/low pool routing first, then uses vectorized collision filtering to reject known train positives; `dice_paper` keeps the exact per-user positive-count correction because its paper-owned batch size is small. The mask is consumed directly by `LossSuite`; threshold reconstruction is only a fallback for older/manual payloads.
 - `SubgraphSampler` extracts sampled k-hop subgraphs with per-hop fan-out limits from `num_neighbors`.
 - `SubgraphBatch` carries:
   - `sub_edge_index`, `sub_edge_sign`, `sub_edge_norm`,

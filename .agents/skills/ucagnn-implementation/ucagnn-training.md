@@ -66,11 +66,13 @@ The public CLIs are intentionally selection-focused. Recipes, presets, ablation 
 
 Important runtime details:
 
+- the experiment runner sets `PYTORCH_ALLOC_CONF=expandable_segments:True` before importing `torch` unless the user already configured a CUDA allocator policy, and it accepts the legacy `PYTORCH_CUDA_ALLOC_CONF` alias as the source value when present,
 - sign-aware scalars (`alpha_pos`, `alpha_neg`) live in a zero-weight-decay optimizer group,
 - `use_torch_compile` is opt-in because sampled subgraphs are too dynamic for a default compile win,
 - best validation state is tracked even when `use_early_stopping=False`,
 - validation retries once on CUDA after optimizer-state offload, then falls back to CPU if evaluation still OOMs,
 - a late auto-batch training OOM releases the failed trainer and resumes the next smaller candidate from the latest completed-epoch checkpoint when one exists,
+- auto-batch probe, verification, and training-fallback OOM logs include the original exception summary plus PyTorch CUDA allocated, reserved, peak-allocated, and peak-reserved memory; probe OOMs also annotate the failing stage and sampled-subgraph dimensions when a subgraph had already been prepared,
 - scheduler stepping and early-stopping patience both wait until `max(auxiliary_losses_start_epoch, popularity_supervision_start_epoch)`.
 - training interaction tensors use `data.train_positive_mask` when present, falling back to `train_mask & labels > 0`.
 
@@ -80,11 +82,13 @@ Important runtime details:
 
 - In sampled mode, on CUDA it first tries to stage the full graph into a CUDA-resident `SubgraphSampler`.
 - If sampled graph staging or later batch preparation reports a CUDA OOM, including plain RuntimeError messages from CUDA kernels, it falls back to the CPU sampler path.
+- Sampled BFS uses bounded CSR offset gathers for each hop, so expansion memory scales with `frontier_size * num_neighbors[hop]` instead of the frontier's total incident degree.
+- U-CaGNN sampled-subgraph propagation builds uncoalesced CUDA sparse COO tensors, with CPU chunked edge-list fallback, instead of coalescing a sparse COO tensor every batch; this avoids large temporary sort/workspace allocations while keeping GPU propagation kernelized.
 - In full-graph mode, it bypasses subgraph extraction and calls the model with the full train graph for every optimizer step. This mode is used by `lightgcn_paper` and `dice_paper`.
 - Full-graph mode stages `edge_index`, `edge_sign`, and `edge_norm` once per trainer/device instead of copying graph tensors every batch, then releases the CUDA graph cache before validation to avoid duplicating evaluator graph memory.
 - `lightgcn_paper` is backed by `PaperLightGCN`: no dropout, no side features, no learned score mixer, observed graph only, Adam optimizer, and explicit ego-embedding L2 regularization.
 - `dice_paper` is backed by `PaperGCNDICE`: separate interest/conformity embedding tables, DICE self-looped LightGCN backbone propagation, DICE dropout, and summed interest+conformity final scores.
-- `negative_sampling_strategy="dice"` uses DICE popularity-conditioned negative pools with raw train-only item counts, `dice_sampler_margin`, and `dice_sampler_pool`. `dice_paper` keeps the external-code `n_negatives=4`; `ucagnn` uses `n_negatives=1` to keep sampled-subgraph cost close to standard BPR while still training on DICE-conditioned negatives.
+- `negative_sampling_strategy="dice"` uses DICE popularity-conditioned negative pools with raw train-only item counts, `dice_sampler_margin`, and `dice_sampler_pool`. `dice_paper` keeps the external-code `n_negatives=4` and exact per-user pool-count correction; `ucagnn` uses `n_negatives=1` plus vectorized known-positive collision filtering to keep sampled-subgraph cost close to standard BPR while still training on DICE-conditioned negatives.
 - Sampled and full-graph training both pass the current epoch into the negative sampler. The DICE sampler margin decays only when `dice_adaptive_decay=True`.
 - CPU-prepared `SubgraphBatch` objects are pinned and copied with `non_blocking=True`.
 - Batch-local auxiliary losses operate on the batch users and selected positive items, not the full sampled frontier.

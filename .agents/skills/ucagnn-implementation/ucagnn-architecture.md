@@ -30,7 +30,7 @@ The diagram shows the runtime path: the embedding layer prepares tables and meta
 | Layer | Owner | Current contract |
 | --- | --- | --- |
 | Embedding layer | `EmbeddingModule` | Builds user and item embeddings, optional popularity embeddings, train-split metadata buffers, optional item-feature fusion inputs, and recent-history item-interest lookups for subgraph training. |
-| Propagation layer | `DualBranchGCN` | Runs sparse LightGCN propagation with explicit branch depths and optional sign-aware edge weights. |
+| Propagation layer | `DualBranchGCN` | Runs LightGCN propagation with explicit branch depths and optional sign-aware edge weights; U-CaGNN uses uncoalesced CUDA sparse COO matmul or CPU chunked edge-list aggregation while paper baselines may still use prebuilt sparse adjacency helpers. |
 | Scoring layer | `ScoringModule` | Produces pairwise and full-catalog interest, conformity, context, `score_mix_weights`, and fused final scores. |
 | Propensity layer | `PropensityEstimator` | Optional two-layer MLP over propagated item embeddings, clipped to `[propensity_clip_min, propensity_clip_max]`. |
 | Orchestrator | `UCaGNN` | Wires the embedding, propagation, scoring, and optional propensity layers together for subgraph training and full-graph evaluation. |
@@ -43,8 +43,8 @@ The diagram shows the runtime path: the embedding layer prepares tables and meta
   - `item_interest = item_embed + gate * projected_features`
   - `item_conformity = item_embed + gate * (projected_features * popularity_gate)`
 - `item_popularity` and `item_recency` are registered once in the embedding layer and reused by both training and evaluation.
-- `LightGCNBranch` uses repeated sparse adjacency matmuls and alpha-averaged layer outputs. Degree normalization comes from precomputed `edge_norm` for U-CaGNN and LightGCN; `PaperGCNDICE` recomputes the self-looped DICE GCN normalization internally.
-- Sign-aware weighting only changes mixed-sign graphs. Positive and neutral edges keep weight `1.0`; negative edges receive weight `alpha_neg / alpha_pos`, which downweights their propagation effect.
+- `LightGCNBranch` uses repeated alpha-averaged layer outputs. U-CaGNN builds uncoalesced CUDA sparse COO adjacency from `edge_index`/`edge_weight` to avoid per-batch sparse COO coalescing workspaces, and falls back to chunked `forward_edges()` aggregation on CPU; paper baselines can still call the coalesced sparse-adjacency `forward()` path. Degree normalization comes from precomputed `edge_norm` for U-CaGNN and LightGCN; `PaperGCNDICE` recomputes the self-looped DICE GCN normalization internally.
+- Sign-aware weighting only changes mixed-sign graphs. On all-positive or positive+neutral graphs, weights are constant and do not request sparse edge-value gradients; when negative edges exist, they receive weight `alpha_neg / alpha_pos`, which downweights their propagation effect.
 
 ## Score fusion
 

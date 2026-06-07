@@ -51,7 +51,7 @@ For paper baselines, `build_config()` re-applies the paper-owned contract after 
 | Eval prefilter | `cagra_candidate_k` | Optional evaluation-only ANN candidate filter; `0` means full-catalog scoring. |
 | Model depth | `single_branch_gnn_layers`, `interest_gnn_layers`, `conformity_gnn_layers`, `num_neighbors` | Couples propagation depth to sampled fan-out. |
 | Score fusion | `score_weight_interest`, `score_weight_conformity`, `score_weight_popularity`, `score_mix_min_weight`, `use_popularity_head` | Sets preset-owned default priors; baselines keep fixed mixing while `preset_full()` keeps learned `score_mix_weights`, and `score_mix_min_weight` applies only to learned components available by the model/data contract. |
-| Loss and schedule | `loss_weight_*`, `branch_loss_mode`, `recommendation_loss_mode`, `auxiliary_loss_schedule`, `auxiliary_ramp_rate`, `independence_ramp_rate`, `loss_weight_propensity_calibration` | Enables auxiliaries, selects symmetric-vs-DICE branch supervision, and controls how weights activate over time. |
+| Loss and schedule | `loss_weight_*`, `branch_loss_mode`, `recommendation_loss_mode`, `auxiliary_loss_schedule`, `auxiliary_ramp_rate`, `independence_ramp_rate`, `distance_correlation_max_pairs`, `uniformity_max_pairs`, `loss_weight_propensity_calibration` | Enables auxiliaries, selects symmetric-vs-DICE branch supervision, caps quadratic auxiliary estimators, and controls how weights activate over time. |
 | Training mode | `training_graph_mode`, `negative_sampling_strategy`, `n_negatives`, `dice_sampler_margin`, `dice_sampler_pool`, `dice_branch_margin`, `dice_loss_decay`, `dice_margin_decay`, `dice_adaptive_decay` | Selects sampled-subgraph vs full-graph training and standard vs DICE popularity-conditioned negative sampling. |
 | Propensity | `use_ipw`, `propensity_hidden`, `propensity_clip_min`, `propensity_clip_max` | Controls the item-side propensity estimator; `use_ipw=True` requires positive `loss_weight_propensity_calibration`. |
 | Runtime | `batch_size`, `auto_batch_size`, `batch_size_candidates`, `epochs`, `patience`, `use_early_stopping`, `use_amp`, `use_torch_compile`, `use_ema`, `lr_scheduler`, `eval_ks` | Controls optimization and execution behavior. CUDA runs default to `bfloat16` AMP; the experiment CLIs do not expose a separate public AMP mode. |
@@ -69,6 +69,7 @@ For paper baselines, `build_config()` re-applies the paper-owned contract after 
 - `negative_sampling_strategy="standard"` is the dataclass default; `preset_full()` switches to DICE popularity-conditioned negatives with `n_negatives=1` and a stable `dice_branch_margin == dice_sampler_margin`.
 - `use_amp=True` is the default runtime path, and `amp_dtype` is fixed to `bfloat16`.
 - `loss_weight_propensity_calibration=0.0` is opt-in and stays inactive unless model outputs, dataset targets, and explicit IPW/calibration config exist.
+- `distance_correlation_max_pairs=1024` and `uniformity_max_pairs=2048` cap quadratic auxiliary estimators while preserving deterministic hash-sampled coverage across epochs.
 
 ## Experiment-facing contract
 

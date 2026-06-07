@@ -63,7 +63,8 @@ When `branch_loss_mode="dice"`, the branch terms follow DICE semantics:
 - for `dice_paper` and `ucagnn`, the sampler and fallback branch margin are locked to `dice_sampler_margin`, and the margin decays with `dice_margin_decay` only when `dice_adaptive_decay=True`,
 - `L_interest_bpr` is applied only on those popularity-dominated negatives,
 - `L_conformity_bpr` ranks the more popular negative above the positive for popularity-dominated pairs and ranks the positive above less-popular negatives otherwise,
-- `L_independence` uses distance correlation over the unique active users and unique positive/negative items from the batch, matching external DICE's `torch.unique(user)` / `torch.unique(item_p,item_n)` discrepancy scope instead of overweighting repeated negative-expanded rows,
+- `L_independence` uses distance correlation over the unique active users and unique positive/negative items from the batch, matching external DICE's `torch.unique(user)` / `torch.unique(item_p,item_n)` discrepancy scope instead of overweighting repeated negative-expanded rows; this quadratic auxiliary uses a deterministic hash sample capped by `distance_correlation_max_pairs` for users and items so large mini-batches do not allocate full `batch_size^2` distance matrices,
+- `L_uniform` applies DirectAU's `torch.pdist` estimator to deterministic hash-sampled user and item rows capped by `uniformity_max_pairs`, while `L_align` still uses all aligned positive pairs because it is linear in batch size,
 - `dice_paper` uses `recommendation_loss_mode="dice_sum"` so the recommendation BPR is computed on `interest_score + conformity_score`, matching the DICE total score.
 
 ## Schedule semantics
