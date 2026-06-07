@@ -1036,8 +1036,8 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertNotEqual(base_hash, changed_hash)
 
-    def test_formal_profile_defaults_disable_early_stopping(self) -> None:
-        """The default formal profile should own the formal support-parameter bundle."""
+    def test_default_formal_profile_is_core_ucagnn_mainline(self) -> None:
+        """The default formal profile should target the thesis mainline."""
         profile_name = default_formal_profile_name()
         profile = get_formal_profile(profile_name)
         benchmark_args = formal_main._build_new_run_args(
@@ -1045,8 +1045,9 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             profile_name,
         )
 
-        self.assertFalse(profile["config_overrides"]["use_early_stopping"])
-        self.assertEqual(profile["id"], "dev-ucagnn")
+        self.assertTrue(profile["config_overrides"]["use_early_stopping"])
+        self.assertEqual(profile["config_overrides"]["patience"], 10)
+        self.assertEqual(profile["id"], "core-ucagnn-mainline")
         self.assertEqual(
             profile["matrix"]["datasets"],
             ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
@@ -1059,15 +1060,17 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertNotIn("auto_batch_size", profile["config_overrides"])
         self.assertEqual(
             profile["config_overrides"]["batch_size_candidates"],
-            [16384, 8192, 4096, 2048, 1024, 512, 256],
+            [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
         )
+        self.assertEqual(profile["config_overrides"]["single_branch_gnn_layers"], 2)
         self.assertEqual(profile["config_overrides"]["interest_gnn_layers"], 1)
         self.assertEqual(profile["config_overrides"]["conformity_gnn_layers"], 2)
         self.assertEqual(profile["config_overrides"]["dropout"], 0.1)
-        self.assertEqual(profile["config_overrides"]["num_neighbors"], [10, 5])
+        self.assertEqual(profile["config_overrides"]["num_neighbors"], [8, 4])
         self.assertNotIn("hard_negative_ratio", profile["config_overrides"])
         self.assertNotIn("loss_schedule", profile["config_overrides"])
-        self.assertFalse(benchmark_args["use_early_stopping"])
+        self.assertTrue(benchmark_args["use_early_stopping"])
+        self.assertEqual(benchmark_args["patience"], 10)
         self.assertEqual(
             benchmark_args["datasets"],
             ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
@@ -1078,13 +1081,13 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertTrue(benchmark_args["auto_batch_size"])
         self.assertEqual(
             benchmark_args["batch_size_candidates"],
-            [16384, 8192, 4096, 2048, 1024, 512, 256],
+            [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
         )
-        self.assertIsNone(benchmark_args["single_branch_gnn_layers"])
+        self.assertEqual(benchmark_args["single_branch_gnn_layers"], 2)
         self.assertEqual(benchmark_args["interest_gnn_layers"], 1)
         self.assertEqual(benchmark_args["conformity_gnn_layers"], 2)
         self.assertEqual(benchmark_args["dropout"], 0.1)
-        self.assertEqual(benchmark_args["num_neighbors"], [10, 5])
+        self.assertEqual(benchmark_args["num_neighbors"], [8, 4])
         self.assertEqual(benchmark_args["graph_policy"], "observed")
         self.assertIsNone(benchmark_args["graph_policy_options"])
         self.assertEqual(benchmark_args["hard_negative_ratio"], 0.0)
@@ -1122,9 +1125,41 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.dataset, "movielens1m")
         self.assertEqual(config.lr_scheduler, "plateau")
         self.assertTrue(config.auto_batch_size)
-        self.assertFalse(config.use_early_stopping)
+        self.assertTrue(config.use_early_stopping)
+        self.assertEqual(config.patience, 10)
         self.assertEqual(config.graph_policy, "cagra_augmented")
         self.assertEqual(config.num_neighbors, [10, 5])
+
+    def test_benchmark_config_inputs_preserve_auxiliary_loss_overrides(self) -> None:
+        """Formal profiles should be able to run causal auxiliary-loss ablations."""
+        benchmark_args = normalize_benchmark_config_overrides(
+            {
+                "loss_weight_contrastive": 0.03,
+                "loss_weight_propensity_calibration": 0.04,
+                "use_ipw": True,
+                "auxiliary_loss_schedule": "linear_ramp",
+                "auxiliary_ramp_rate": 0.002,
+                "contrastive_max_pairs": 64,
+                "contrastive_temperature": 0.15,
+            },
+        )
+        config_inputs = build_benchmark_config_inputs(
+            benchmark_args,
+            dataset="kuairand1k",
+            preset="ucagnn",
+            lr_scheduler="cosine",
+            num_neighbors=[10, 5],
+        )
+
+        config = build_config(config_inputs)
+
+        self.assertEqual(config.loss_weight_contrastive, 0.03)
+        self.assertEqual(config.loss_weight_propensity_calibration, 0.04)
+        self.assertTrue(config.use_ipw)
+        self.assertEqual(config.auxiliary_loss_schedule, "linear_ramp")
+        self.assertEqual(config.auxiliary_ramp_rate, 0.002)
+        self.assertEqual(config.contrastive_max_pairs, 64)
+        self.assertEqual(config.contrastive_temperature, 0.15)
 
     def test_runtime_config_inputs_bridge_into_build_config(self) -> None:
         """Quick/runtime config mappings should reuse the shared config-input builder."""
@@ -1182,7 +1217,10 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         default_profile = get_formal_profile("DEFAULT")
 
         self.assertEqual(default_profile["id"], default_formal_profile_name())
+        self.assertEqual(default_profile["id"], "core-ucagnn-mainline")
         self.assertIn("abauto", default_profile["name"])
+        self.assertEqual(get_formal_profile("latest")["id"], "core-ucagnn-mainline")
+        self.assertEqual(get_formal_profile("development")["id"], "dev-ucagnn")
         self.assertEqual(get_formal_profile("dev-ucagnn")["id"], "dev-ucagnn")
 
     def test_second_formal_profile_is_ucagnn_mainline_only(self) -> None:
@@ -1215,7 +1253,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             ["lightgcn_paper"],
         )
         self.assertEqual(
-            get_formal_profile("paper-dice-small-baselines")["matrix"]["presets"],
+            get_formal_profile("paper-dice-all-runtime-probes")["matrix"]["presets"],
             ["dice_paper"],
         )
         self.assertNotIn("scoring_weight_modes", profile["matrix"])
@@ -1292,6 +1330,37 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         with (
             patch.object(formal_main, "_load_saved_formal_state", return_value=None),
+            patch.object(
+                formal_main,
+                "_build_new_run_args",
+                return_value={"profile_name": default_formal_profile_name(), "fresh": True},
+            ) as build_new_run_args,
+        ):
+            benchmark_args, profile_name, resumed = formal_main._resolve_benchmark_args(
+                cli_args,
+            )
+
+        build_new_run_args.assert_called_once_with(cli_args, default_formal_profile_name())
+        self.assertFalse(resumed)
+        self.assertEqual(profile_name, default_formal_profile_name())
+        self.assertEqual(
+            benchmark_args,
+            {"profile_name": default_formal_profile_name(), "fresh": True},
+        )
+
+    def test_resolve_benchmark_args_requires_profile_to_resume_non_default_state(
+        self,
+    ) -> None:
+        """Unspecified profiles should not silently resume non-default saved runs."""
+        cli_args = SimpleNamespace(profile=None, overwrite_checkpoint=False)
+        saved_state = {
+            "profile_name": "paper-dice-all-runtime-probes",
+            "profile_slug": "runtime-probe",
+            "benchmark_args": {"datasets": ["kuairec_v2"], "presets": ["dice_paper"]},
+        }
+
+        with (
+            patch.object(formal_main, "_load_saved_formal_state", return_value=saved_state),
             patch.object(
                 formal_main,
                 "_build_new_run_args",

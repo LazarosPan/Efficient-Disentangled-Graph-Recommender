@@ -778,39 +778,103 @@ class ExperimentLoggerTests(unittest.TestCase):
             0.14,
             split="test",
         )
-        self.logger.log_metric(formal_exp, "training_time_s", 7.9, split="train")
-        self.logger.log_metric(formal_exp, "peak_vram_mb", 1234.0, split="train")
+        self.logger.log_metric(formal_exp, "interest_branch_NDCG@20", 0.31, split="test")
+        self.logger.log_metric(formal_exp, "interest_branch_Recall@20", 0.32, split="test")
         self.logger.log_metric(
             formal_exp,
+            "interest_branch_AveragePopularity@20",
+            0.33,
+            split="test",
+        )
+        self.logger.log_metric(formal_exp, "interest_branch_NDCG@40", 0.34, split="test")
+        self.logger.log_metric(formal_exp, "interest_branch_Recall@40", 0.35, split="test")
+        self.logger.log_metric(
+            formal_exp,
+            "interest_branch_AveragePopularity@40",
+            0.36,
+            split="test",
+        )
+        self.logger.log_metric(formal_exp, "conformity_branch_NDCG@20", 0.41, split="test")
+        self.logger.log_metric(formal_exp, "conformity_branch_Recall@20", 0.42, split="test")
+        self.logger.log_metric(
+            formal_exp,
+            "conformity_branch_AveragePopularity@20",
+            0.43,
+            split="test",
+        )
+        self.logger.log_metric(formal_exp, "conformity_branch_NDCG@40", 0.44, split="test")
+        self.logger.log_metric(formal_exp, "conformity_branch_Recall@40", 0.45, split="test")
+        self.logger.log_metric(
+            formal_exp,
+            "conformity_branch_AveragePopularity@40",
+            0.46,
+            split="test",
+        )
+        self.logger.log_metric(formal_exp, "training_time_s", 7.9, split="train")
+        self.logger.log_metric(formal_exp, "peak_vram_mb", 1234.0, split="train")
+        self.logger.update_experiment_status(formal_exp, status="completed")
+
+        runtime_probe_exp = self.logger.log_experiment(
+            dataset="amazonbook",
+            config={
+                "dataset": "amazonbook",
+                "epochs": 200,
+                "batch_size": 8192,
+                "embed_dim": 64,
+                "use_dual_branch": False,
+                "single_branch_gnn_layers": 2,
+                "num_neighbors": [10, 5],
+                "lr_scheduler": "plateau",
+                "seed": 14,
+            },
+            preset="lightgcn",
+            batch_id="formal-runtime-probe-20260515T000000Z",
+            profile_name="runtime-probe-profile",
+            training_hash="probehash",
+        )
+        self.logger.log_metric(runtime_probe_exp, "NDCG@20", 0.99, split="test")
+        self.logger.log_metric(runtime_probe_exp, "Recall@20", 0.99, split="test")
+        self.logger.log_metric(runtime_probe_exp, "HitRatio@20", 0.99, split="test")
+        self.logger.log_metric(runtime_probe_exp, "Personalization@20", 0.99, split="test")
+        self.logger.log_metric(runtime_probe_exp, "AveragePopularity@20", 0.01, split="test")
+        self.logger.log_metric(runtime_probe_exp, "NDCG@40", 0.99, split="test")
+        self.logger.log_metric(runtime_probe_exp, "Recall@40", 0.99, split="test")
+        self.logger.log_metric(runtime_probe_exp, "HitRatio@40", 0.99, split="test")
+        self.logger.log_metric(runtime_probe_exp, "Personalization@40", 0.99, split="test")
+        self.logger.log_metric(runtime_probe_exp, "AveragePopularity@40", 0.01, split="test")
+        self.logger.log_metric(runtime_probe_exp, "training_time_s", 7.9, split="train")
+        self.logger.log_metric(runtime_probe_exp, "peak_vram_mb", 1234.0, split="train")
+        self.logger.log_metric(
+            runtime_probe_exp,
             "runtime_probe_target_epochs",
             200.0,
             split="approximation",
         )
         self.logger.log_metric(
-            formal_exp,
+            runtime_probe_exp,
             "runtime_probe_observed_epochs",
             1.0,
             split="approximation",
         )
         self.logger.log_metric(
-            formal_exp,
+            runtime_probe_exp,
             "runtime_probe_train_batches_per_epoch",
             1745.0,
             split="approximation",
         )
         self.logger.log_metric(
-            formal_exp,
+            runtime_probe_exp,
             "runtime_probe_observed_batches_per_second",
             2.86,
             split="approximation",
         )
         self.logger.log_metric(
-            formal_exp,
+            runtime_probe_exp,
             "runtime_probe_estimated_train_time_s",
             122000.0,
             split="approximation",
         )
-        self.logger.update_experiment_status(formal_exp, status="completed")
+        self.logger.update_experiment_status(runtime_probe_exp, status="completed")
 
         ablation_exp = self.logger.log_experiment(
             dataset="amazonbook",
@@ -933,11 +997,14 @@ class ExperimentLoggerTests(unittest.TestCase):
             query_results.list_top_completed(self.logger.conn, n=20)
 
         output = buffer.getvalue()
-        self.assertIn("FORMAL FULL-DATA TEST RUNS", output)
+        self.assertIn("FINAL FORMAL FULL-DATA TEST RUNS", output)
+        self.assertIn("SUPPORTING FORMAL FULL-DATA RUNS", output)
         self.assertIn("ABLATION FULL-DATA TEST RUNS", output)
         self.assertIn("currently supported variants", output)
         self.assertIn("Composite Resource-aware Recommendation Utility at K", output)
         self.assertIn("CRRU is not a causal-effect estimator", output)
+        self.assertIn("section-row min-max", output)
+        self.assertNotIn("report-row min-max", output)
         self.assertIn("CRRU@20", output)
         self.assertIn("CRRU@40", output)
         self.assertIn("(1-log(1+time/epoch)_n)^0.50", output)
@@ -947,9 +1014,18 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertIn("Pers@40", output)
         self.assertIn("context_contrib={20: 0.1100, 40: 0.1200}", output)
         self.assertIn("Final={20: 0.1300, 40: 0.1400}", output)
-        self.assertIn("Approximation: full_train=122000.0s", output)
-        self.assertIn("target_epochs=200", output)
-        self.assertIn("throughput=2.86 batch/s", output)
+        self.assertIn(
+            "Branch Rank: Interest NDCG={20: 0.3100, 40: 0.3400}",
+            output,
+        )
+        self.assertIn(
+            "Conformity NDCG={20: 0.4100, 40: 0.4400}",
+            output,
+        )
+        self.assertNotIn("runtime-probe-profile", output)
+        self.assertNotIn("Approximation: full_train=122000.0s", output)
+        self.assertNotIn("target_epochs=200", output)
+        self.assertNotIn("throughput=2.86 batch/s", output)
         self.assertIn(
             "Resources:  time=7.9s | epochs=1 | time/epoch=0.4s | peak_vram=1234MB",
             output,
@@ -958,7 +1034,7 @@ class ExperimentLoggerTests(unittest.TestCase):
             "Resources:  time=12.3s | epochs=1 | time/epoch=0.6s | peak_vram=2345MB",
             output,
         )
-        self.assertIn("|   0.0034 |   0.0034\n  Resources:  time=12.3s", output)
+        self.assertIn("Resources:  time=12.3s", output)
         self.assertIn(
             "amazonbook_lightgcn_ep200_bs8192_dim64_layers2_nbr10-5_lr-plateau_seed13",
             output,

@@ -28,6 +28,7 @@ from src.utils.cli_parsers import (
 
 EXPECTED_ABLATION_VARIANTS = [
     "mainline",
+    "with_contrastive",
     "no_popularity_head",
     "no_independence",
     "no_features",
@@ -94,6 +95,15 @@ class AblationConfigTests(unittest.TestCase):
         self.assertFalse(config.use_popularity_head)
         self.assertEqual(config.score_weight_popularity, 0.0)
         self.assertEqual(config.loss_weight_popularity, 0.0)
+
+    def test_with_contrastive_ablation_enables_bounded_contrastive_loss(self) -> None:
+        """Contrastive ablation should enable the literature-backed causal auxiliary."""
+        config = make_ablation_config("with_contrastive")
+
+        self.assertGreater(config.loss_weight_contrastive, 0.0)
+        self.assertEqual(config.contrastive_max_pairs, 256)
+        self.assertEqual(config.contrastive_temperature, 0.2)
+        self.assertEqual(config.auxiliary_loss_schedule, "linear_ramp")
 
     def test_no_features_ablation_disables_side_features(self) -> None:
         """Feature ablation should switch off item/user side features entirely."""
