@@ -6,6 +6,7 @@ import random
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import numpy as np
 import torch
@@ -266,6 +267,40 @@ class DataContractTests(unittest.TestCase):
             ),
         )
 
+    def test_subgraph_sampler_samples_high_degree_nodes_without_degree_sized_workspaces(
+        self,
+    ) -> None:
+        """Fanout sampling should allocate by fanout, not by total incident degree."""
+        degree = 20
+        item_nodes = torch.arange(1, degree + 1, dtype=torch.long)
+        edge_index = torch.stack(
+            [
+                torch.cat([torch.zeros(degree, dtype=torch.long), item_nodes]),
+                torch.cat([item_nodes, torch.zeros(degree, dtype=torch.long)]),
+            ],
+        )
+        sampler = SubgraphSampler(
+            edge_index=edge_index,
+            edge_sign=None,
+            edge_norm=None,
+            n_users=1,
+            n_items=degree,
+            num_hops=1,
+            max_neighbors_per_hop=[4],
+        )
+
+        with patch("src.data.subgraph_sampler.torch.arange", wraps=torch.arange) as arange:
+            edge_ids, neighbors = sampler._sample_one_hop(
+                torch.tensor([0], dtype=torch.long),
+                max_nb=4,
+                generator=torch.Generator().manual_seed(13),
+            )
+
+        arange_lengths = [int(call.args[0]) for call in arange.call_args_list]
+        self.assertEqual(arange_lengths, [4])
+        self.assertLessEqual(edge_ids.numel(), 4)
+        self.assertLessEqual(neighbors.numel(), 4)
+
     def test_negative_sampler_avoids_user_positive_train_items(self) -> None:
         """BPR negatives should not include any positive training item for that user."""
         sampler = NegativeSampler(
@@ -352,6 +387,7 @@ class DataContractTests(unittest.TestCase):
             dice_margin=2.0,
             dice_pool=2,
             max_resample_attempts=8,
+            exact_dice_pool_counts=True,
         )
 
         negatives, dice_mask = sampler.sample_with_metadata(
@@ -366,6 +402,37 @@ class DataContractTests(unittest.TestCase):
         assert dice_mask is not None
         self.assertTrue(torch.equal(negatives, torch.zeros_like(negatives)))
         self.assertFalse(dice_mask.any())
+
+    def test_dice_negative_sampler_fast_pool_routing_still_filters_known_positives(
+        self,
+    ) -> None:
+        """Fast U-CaGNN DICE routing should rely on vectorized positive filtering."""
+        popularity = torch.tensor([1.0, 2.0, 3.0, 4.0, 10.0, 11.0, 12.0, 13.0])
+        sampler = NegativeSampler(
+            n_items=8,
+            popularity=popularity,
+            n_negatives=1,
+            positive_user_ids=torch.tensor([0, 0, 0, 0], dtype=torch.long),
+            positive_item_ids=torch.tensor([3, 4, 5, 6], dtype=torch.long),
+            strategy="dice",
+            dice_margin=2.0,
+            dice_pool=2,
+            max_resample_attempts=8,
+        )
+
+        negatives, dice_mask = sampler.sample_with_metadata(
+            batch_size=64,
+            positive_items=torch.full((64,), 3, dtype=torch.long),
+            user_ids=torch.zeros(64, dtype=torch.long),
+            device=torch.device("cpu"),
+            generator=build_torch_generator(1, torch.device("cpu")),
+        )
+
+        self.assertIsNotNone(dice_mask)
+        assert dice_mask is not None
+        self.assertFalse(torch.isin(negatives.reshape(-1), torch.tensor([3, 4, 5, 6])).any())
+        expected_mask = popularity[negatives] > popularity[3] + 2.0
+        self.assertTrue(torch.equal(dice_mask, expected_mask))
 
     def test_dice_negative_sampler_keeps_valid_high_items_after_filtered_positives(self) -> None:
         """User-positive count adjustment must not shrink the raw high candidate range."""

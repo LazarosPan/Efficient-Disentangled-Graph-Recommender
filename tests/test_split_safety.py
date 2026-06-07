@@ -1726,6 +1726,18 @@ class CausalTrainingContractTests(unittest.TestCase):
         self.assertGreaterEqual(weights[0].item(), weights[1].item())
         self.assertLess(weights[2].item(), weights[1].item())
 
+    def test_sign_aware_weighting_is_constant_without_negative_edges(self) -> None:
+        """All-positive observed graphs should not request sparse edge-value gradients."""
+        config = UCaGNNConfig(device="cuda", use_dual_branch=False, use_sign_aware=True)
+        model = DualBranchGCN(config)
+
+        weights = model._compute_edge_weights_impl(torch.tensor([1.0, 1.0, 0.0]))
+
+        self.assertIsNotNone(weights)
+        assert weights is not None
+        self.assertTrue(torch.equal(weights, torch.ones(3)))
+        self.assertFalse(weights.requires_grad)
+
     def test_lightgcn_branch_matches_sparse_adjacency_matmul(self) -> None:
         """LightGCNBranch should equal repeated sparse adjacency matmuls."""
         branch = LightGCNBranch(n_layers=2)
@@ -1753,8 +1765,37 @@ class CausalTrainingContractTests(unittest.TestCase):
 
         self.assertTrue(torch.allclose(actual, expected))
 
-    def test_sparse_propagation_backprops_through_sign_weights(self) -> None:
-        """Sparse LightGCN propagation should preserve gradients for sign-aware weights."""
+    def test_lightgcn_edge_propagation_matches_sparse_adjacency_matmul(self) -> None:
+        """Chunked edge-list propagation should preserve LightGCN math."""
+        branch = LightGCNBranch(n_layers=2)
+        x = torch.tensor(
+            [[1.0, 0.0], [0.5, 1.0], [0.0, 2.0]],
+            dtype=torch.float32,
+        )
+        edge_index = torch.tensor(
+            [[0, 1, 1, 2], [1, 0, 2, 1]],
+            dtype=torch.long,
+        )
+        edge_weight = torch.tensor([0.5, 0.5, 1.0, 1.0], dtype=torch.float32)
+        adj = DualBranchGCN._build_sparse_adjacency(
+            edge_index,
+            edge_weight,
+            num_nodes=3,
+            dtype=x.dtype,
+        )
+
+        expected = branch(x, adj)
+        actual = branch.forward_edges(
+            x,
+            edge_index,
+            edge_weight,
+            num_nodes=3,
+        )
+
+        self.assertTrue(torch.allclose(actual, expected))
+
+    def test_edge_propagation_backprops_through_sign_weights(self) -> None:
+        """Chunked LightGCN propagation should preserve gradients for sign-aware weights."""
         config = UCaGNNConfig(device="cuda", use_dual_branch=False, use_sign_aware=True)
         model = DualBranchGCN(config)
         embeddings = {
@@ -1923,6 +1964,133 @@ class CausalTrainingContractTests(unittest.TestCase):
             expected_interest + expected_conformity,
             places=6,
         )
+
+    def test_loss_suite_caps_dice_discrepancy_pairwise_entities(self) -> None:
+        """DICE discrepancy should not allocate quadratic matrices over huge batches."""
+        config = UCaGNNConfig(device="cpu", embed_dim=2)
+        config.use_dual_branch = True
+        config.branch_loss_mode = "dice"
+        config.loss_weight_recommendation = 0.0
+        config.loss_weight_interest_bpr = 0.0
+        config.loss_weight_conformity_bpr = 0.0
+        config.loss_weight_independence = 1.0
+        config.loss_weight_contrastive = 0.0
+        config.loss_weight_align = 0.0
+        config.loss_weight_uniform = 0.0
+        config.loss_weight_popularity = 0.0
+        config.auxiliary_losses_start_epoch = 0
+        config.contrastive_max_pairs = 3
+        config.distance_correlation_max_pairs = 4
+        loss_suite = LossSuite(config)
+
+        batch_size = 12
+        n_items = 14
+        score_zeros = torch.zeros(batch_size)
+        loss_user_ids = torch.arange(batch_size, dtype=torch.long)
+        pos_item_ids = torch.arange(batch_size, dtype=torch.long)
+        neg_item_ids = torch.arange(1, batch_size + 1, dtype=torch.long)
+        model_output = {
+            "pos_scores": {
+                "final_score": score_zeros,
+                "interest_score": score_zeros,
+                "conformity_score": score_zeros,
+                "context_score": score_zeros,
+            },
+            "neg_scores": {
+                "final_score": score_zeros,
+                "interest_score": score_zeros,
+                "conformity_score": score_zeros,
+                "context_score": score_zeros,
+            },
+            "propagated": {
+                "user_interest": torch.randn(batch_size, 2),
+                "item_interest": torch.randn(n_items, 2),
+                "user_conformity": torch.randn(batch_size, 2),
+                "item_conformity": torch.randn(n_items, 2),
+            },
+            "ipw_weights": torch.ones(batch_size),
+            "loss_user_ids": loss_user_ids,
+            "loss_neg_item_ids": neg_item_ids,
+            "dice_negative_mask": torch.zeros(batch_size, dtype=torch.bool),
+        }
+        seen_sizes: list[tuple[int, int]] = []
+
+        def fake_distance_correlation(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+            seen_sizes.append((x.size(0), y.size(0)))
+            return x.sum() * 0.0 + y.sum() * 0.0
+
+        with patch(
+            "src.losses.loss_suite._distance_correlation_loss",
+            side_effect=fake_distance_correlation,
+        ):
+            losses = loss_suite(
+                model_output,
+                item_popularity=torch.ones(n_items),
+                branch_item_popularity=torch.ones(n_items),
+                pos_item_ids=pos_item_ids,
+                epoch=0,
+            )
+
+        self.assertEqual(seen_sizes, [(4, 4), (4, 4)])
+        self.assertTrue(torch.isfinite(losses["independence"]))
+
+    def test_loss_suite_caps_directau_uniformity_pairwise_rows(self) -> None:
+        """DirectAU uniformity should not run pdist over the full training batch."""
+        config = UCaGNNConfig(device="cpu", embed_dim=2)
+        config.use_dual_branch = True
+        config.loss_weight_recommendation = 0.0
+        config.loss_weight_interest_bpr = 0.0
+        config.loss_weight_conformity_bpr = 0.0
+        config.loss_weight_independence = 0.0
+        config.loss_weight_contrastive = 0.0
+        config.loss_weight_align = 0.0
+        config.loss_weight_uniform = 1.0
+        config.loss_weight_popularity = 0.0
+        config.auxiliary_losses_start_epoch = 0
+        config.uniformity_max_pairs = 5
+        loss_suite = LossSuite(config)
+
+        batch_size = 12
+        score_zeros = torch.zeros(batch_size)
+        model_output = {
+            "pos_scores": {
+                "final_score": score_zeros,
+                "interest_score": score_zeros,
+                "conformity_score": score_zeros,
+                "context_score": score_zeros,
+            },
+            "neg_scores": {
+                "final_score": score_zeros,
+                "interest_score": score_zeros,
+                "conformity_score": score_zeros,
+                "context_score": score_zeros,
+            },
+            "propagated": {
+                "user_interest": torch.randn(batch_size, 2),
+                "item_interest": torch.randn(batch_size, 2),
+                "user_conformity": torch.randn(batch_size, 2),
+                "item_conformity": torch.randn(batch_size, 2),
+            },
+            "ipw_weights": torch.ones(batch_size),
+            "loss_user_ids": torch.arange(batch_size, dtype=torch.long),
+        }
+        seen_rows: list[int] = []
+        original_pdist = torch.pdist
+
+        def recording_pdist(x: torch.Tensor, p: float = 2) -> torch.Tensor:
+            seen_rows.append(int(x.size(0)))
+            return original_pdist(x, p=p)
+
+        with patch("src.losses.loss_suite.torch.pdist", side_effect=recording_pdist):
+            losses = loss_suite(
+                model_output,
+                item_popularity=torch.ones(batch_size),
+                pos_item_ids=torch.arange(batch_size, dtype=torch.long),
+                epoch=0,
+            )
+
+        self.assertEqual(seen_rows, [5, 5])
+        self.assertTrue(torch.isfinite(losses["uniform"]))
 
     def test_loss_suite_dice_discrepancy_has_finite_tiny_batch_gradients(self) -> None:
         """DICE distance-correlation discrepancy should stay finite on smoke batches."""

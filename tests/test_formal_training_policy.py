@@ -31,6 +31,8 @@ from experiments.run_experiment import (
     _build_canonical_name,
     _build_evaluation_identity,
     _build_training_identity,
+    _cuda_memory_snapshot,
+    _exception_summary,
     _release_cuda_probe_memory,
     _resume_auto_batch_fallback,
     _train_mask_numpy_from_data,
@@ -299,6 +301,29 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         synchronize.assert_called_once_with()
         empty_cache.assert_called_once_with()
+
+    def test_exception_summary_keeps_type_and_first_line(self) -> None:
+        """OOM diagnostics should keep the useful exception identity."""
+        summary = _exception_summary(RuntimeError("CUDA out of memory.\nsecond line"))
+
+        self.assertEqual(summary, "RuntimeError: CUDA out of memory.")
+
+    def test_cuda_memory_snapshot_reports_allocated_and_reserved_memory(self) -> None:
+        """OOM diagnostics should reconcile allocator and resource-monitor views."""
+        mib = 1024**2
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.memory_allocated", return_value=1 * mib),
+            patch("torch.cuda.memory_reserved", return_value=2 * mib),
+            patch("torch.cuda.max_memory_allocated", return_value=3 * mib),
+            patch("torch.cuda.max_memory_reserved", return_value=4 * mib),
+        ):
+            snapshot = _cuda_memory_snapshot()
+
+        self.assertEqual(
+            snapshot,
+            ("cuda_memory=allocated=1MB reserved=2MB peak_allocated=3MB peak_reserved=4MB"),
+        )
 
     def test_ucagnn_preset_applies_fused_scoring_defaults(self) -> None:
         """The ucagnn preset should target the fused-score contract."""
@@ -936,6 +961,32 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertFalse(fixed_mix.use_learned_score_mix)
         self.assertNotEqual(learned_hash, fixed_hash)
         self.assertNotEqual(learned_identity["config"], fixed_identity["config"])
+
+    def test_training_identity_changes_when_distance_correlation_cap_changes(self) -> None:
+        """Resume compatibility should track DICE discrepancy estimator changes."""
+        base = build_config(_experiment_args(preset="ucagnn"))
+        changed = dataclasses.replace(
+            base,
+            distance_correlation_max_pairs=base.distance_correlation_max_pairs * 2,
+        )
+
+        _, base_hash = _build_training_identity(base, "ucagnn", None)
+        _, changed_hash = _build_training_identity(changed, "ucagnn", None)
+
+        self.assertNotEqual(base_hash, changed_hash)
+
+    def test_training_identity_changes_when_uniformity_cap_changes(self) -> None:
+        """Resume compatibility should track DirectAU uniformity estimator changes."""
+        base = build_config(_experiment_args(preset="ucagnn"))
+        changed = dataclasses.replace(
+            base,
+            uniformity_max_pairs=base.uniformity_max_pairs * 2,
+        )
+
+        _, base_hash = _build_training_identity(base, "ucagnn", None)
+        _, changed_hash = _build_training_identity(changed, "ucagnn", None)
+
+        self.assertNotEqual(base_hash, changed_hash)
 
     def test_formal_profile_defaults_disable_early_stopping(self) -> None:
         """The default formal profile should own the formal support-parameter bundle."""
