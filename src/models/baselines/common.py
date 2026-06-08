@@ -99,7 +99,7 @@ def score_dict(
     interest_weight: float,
     conformity_weight: float,
 ) -> dict[str, torch.Tensor]:
-    """Build the shared score dictionary consumed by ``LossSuite``."""
+    """Build the shared baseline score dictionary."""
     if conformity_score is None:
         conformity_score = torch.zeros_like(interest_score)
     return {
@@ -124,10 +124,6 @@ class CanonicalBaselineRecommender(nn.Module):
         self.n_items = n_items
         self.config = config
 
-    @staticmethod
-    def _ones_like_users(user_ids: torch.Tensor) -> torch.Tensor:
-        return torch.ones(user_ids.size(0), device=user_ids.device)
-
     def _training_output(
         self,
         *,
@@ -145,10 +141,22 @@ class CanonicalBaselineRecommender(nn.Module):
             "neg_scores": neg_scores,
             "embeddings": embeddings,
             "propagated": propagated,
-            "ipw_weights": self._ones_like_users(user_ids),
+            "ipw_weights": torch.ones(user_ids.size(0), device=user_ids.device),
             "loss_user_ids": user_ids,
             "loss_neg_item_ids": neg_item_ids,
         }
         if dice_negative_mask is not None:
             output["dice_negative_mask"] = dice_negative_mask
         return output
+
+    @torch.no_grad()
+    def get_all_score_components(
+        self,
+        edge_index: torch.Tensor,
+        user_ids: torch.Tensor,
+        edge_sign: torch.Tensor | None = None,
+        edge_norm: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Return full-catalog score components for diagnostics."""
+        propagated = self.get_propagated_for_eval(edge_index, edge_sign, edge_norm)
+        return self.get_score_components_from_propagated(propagated, user_ids)
