@@ -18,7 +18,7 @@ flowchart LR
     B[Branch BPR terms] --> T
     C[Independence] --> T
     D[Contrastive and DirectAU] --> T
-    E[Popularity and prop calib] --> T
+    E[Context regression and prop calib] --> T
 ```
 
 The diagram shows the weighted-sum structure only. Whether a term contributes in a given run depends on the preset, the corresponding config weight, and the schedule rules below.
@@ -27,13 +27,13 @@ The diagram shows the weighted-sum structure only. Whether a term contributes in
 
 | Term | Source tensors | Base weight | Enabled when |
 | --- | --- | --- | --- |
-| `L_rec` | `final_score(pos)` vs `final_score(neg)` | `loss_weight_recommendation = 1.0` | Always on; IPW-reweighted when `use_ipw=True` |
+| `L_rec` | `final_score(pos)` vs `final_score(neg)` | `loss_weight_recommendation = 1.0` | Always on; IPW-reweighted with self-normalized detached weights when `use_ipw=True` |
 | `L_interest_bpr` | `interest_score(pos)` vs `interest_score(neg)` | `0.02` | Dual-branch only |
 | `L_conformity_bpr` | `conformity_score(pos)` vs `conformity_score(neg)` | `0.02` | Dual-branch only |
 | `L_independence` | `user_interest` vs `user_conformity` | `0.005` | Dual-branch only |
-| `L_contrastive` | Branch-local positive-pair contrastive terms | `0.02` | Dual-branch only and weight > 0 |
+| `L_contrastive` | Branch-local positive-pair contrastive terms | `0.02` | Dual-branch only and weight > 0; weights are applied outside the log-probability |
 | `L_align` / `L_uniform` | DirectAU-style branch geometry | `0.02` | Dual-branch only and weight > 0 |
-| `L_pop` | `popularity_score(pos)` vs train-split item popularity target | `0.02` | Dual branch + popularity head + weight > 0 |
+| `L_pop` | `context_score(pos)` vs train-split item popularity target | `0.02` | Dual branch + context head + weight > 0 |
 | `L_prop_calib` | `propensity_scores(pos)` vs `propensity_targets(pos)` | `0.0` | Weight > 0 and batch propensity targets available |
 
 ## Total objective
@@ -52,6 +52,8 @@ L_total =
 ```
 
 `LossSuite` resolves the effective auxiliary weights first, then applies this weighted sum.
+
+`L_rec`, `L_pop`, and `L_prop_calib` are computed in fp32 so AMP does not change the loss scale. Contrastive branches normalize embeddings before their dot products and apply detached row weights after the log-probability.
 
 ## Schedule semantics
 

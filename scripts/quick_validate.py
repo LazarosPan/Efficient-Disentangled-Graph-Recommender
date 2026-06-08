@@ -28,7 +28,6 @@ from experiments.run_experiment import (
 from src.data.feature_policy import supports_feature_utility
 from src.training import THESIS_PRIMARY_METRICS
 from src.utils.cli_parsers import (
-    DEFAULT_EVALUATE_SCORING_MODES,
     build_quick_validate_parser,
 )
 from src.utils.config import DEFAULT_SEED, UCaGNNConfig
@@ -42,8 +41,10 @@ _TINY_DATASET_LIMITS = {
     "movielens1m": 100,
     "movielens20m": 100,
     "kuairec_v2": 100,
-    "taobao": 100,
-    "kuairand1k": 100,
+    # Sparse-positive implicit datasets need a slightly larger smoke slice so
+    # label-aware temporal validation/test splits contain positive targets.
+    "taobao": 1000,
+    "kuairand1k": 1000,
 }
 
 
@@ -101,8 +102,6 @@ def _build_runtime_config(
     *,
     recipe: str | None = None,
     preset: str | None = None,
-    eval_scoring_mode: str | None = None,
-    scoring_weight_mode: str | None = None,
     use_features: bool | None = None,
     feature_policy: str | None = None,
     num_neighbors: list[int] | None = None,
@@ -118,8 +117,6 @@ def _build_runtime_config(
         dataset: Dataset name for the run.
         recipe: Optional named recipe.
         preset: Optional preset override.
-        eval_scoring_mode: Optional evaluation-time scoring mode.
-        scoring_weight_mode: Optional score-mixture mode.
         use_features: Optional feature toggle override.
         feature_policy: Optional feature policy override.
         num_neighbors: Optional fan-out override.
@@ -142,8 +139,6 @@ def _build_runtime_config(
         epochs=epochs,
         batch_size=batch_size,
         auto_batch_size=False,
-        eval_scoring_mode=eval_scoring_mode,
-        scoring_weight_mode=scoring_weight_mode,
         use_features=use_features,
         feature_policy=feature_policy,
         num_neighbors=num_neighbors,
@@ -159,7 +154,6 @@ def _build_tiny_recipe_config(
     dataset: str,
     *,
     recipe: str,
-    eval_scoring_mode: str | None = None,
     use_features: bool | None = None,
 ) -> UCaGNNConfig:
     """Build a tiny validation config for a catalog recipe on one dataset."""
@@ -168,7 +162,6 @@ def _build_tiny_recipe_config(
         args,
         dataset,
         recipe=recipe,
-        eval_scoring_mode=eval_scoring_mode,
         use_features=use_features,
         epochs=int(tiny_overrides["epochs"]),
         batch_size=int(tiny_overrides["batch_size"]),
@@ -199,31 +192,6 @@ def _build_tiny_ablation_config(
         ),
     )
     return _apply_tiny_runtime_overrides(config, tiny_overrides)
-
-
-def _build_tiny_ablation_config(
-    args: argparse.Namespace,
-    dataset: str,
-    *,
-    variant: str,
-) -> UCaGNNConfig:
-    """Build a tiny validation config for an ablation variant on one dataset."""
-    tiny_overrides = _build_tiny_runtime_overrides(dataset)
-    config = make_ablation_config(
-        variant,
-        **build_ablation_base_kwargs(
-            dataset=dataset,
-            data_dir=args.data_dir,
-            device=RUNTIME_DEVICE,
-            epochs=tiny_overrides["epochs"],
-            batch_size=tiny_overrides["batch_size"],
-            sample_interactions=tiny_overrides["sample_interactions"],
-            loader_max_rows=tiny_overrides["loader_max_rows"],
-        ),
-    )
-    config.use_torch_compile = False
-    config.patience = tiny_overrides["patience"]
-    return config
 
 
 def _select_values(
@@ -316,6 +284,7 @@ def _run_single_case(
         checkpoint_path=checkpoint_path,
         checkpoint_every=1,
         auto_resume=auto_resume,
+        include_refined_diagnostics=False,
     )
     elapsed = time.perf_counter() - started
 
@@ -534,6 +503,7 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
                 checkpoint_path=str(checkpoint_path),
                 checkpoint_every=1,
                 auto_resume=True,
+                include_refined_diagnostics=False,
             )
             second_elapsed = time.perf_counter() - second_started
             if not resumed_result.get("resumed"):
@@ -575,49 +545,43 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
 def _run_evaluation_category(args: argparse.Namespace, results: list[dict]) -> None:
     preferred = ["movielens1m", "kuairec_v2", "taobao"]
     eval_dataset = next((c for c in preferred if c in args.datasets), args.datasets[0])
-    for mode in DEFAULT_EVALUATE_SCORING_MODES:
-        config = _build_tiny_recipe_config(
-            args,
-            eval_dataset,
-            recipe="ucagnn",
-            eval_scoring_mode=mode,
+    config = _build_tiny_recipe_config(args, eval_dataset, recipe="ucagnn")
+    label = "eval:primary"
+    try:
+        _, elapsed = _run_single_case(
+            category="evaluation",
+            dataset=eval_dataset,
+            label=label,
+            config=config,
+            preset="ucagnn",
+            intervention="quick_eval_refined",
+            recipe_name="ucagnn",
+            expect_metrics=True,
         )
-        label = f"eval:{mode}"
-        try:
-            _, elapsed = _run_single_case(
-                category="evaluation",
-                dataset=eval_dataset,
-                label=label,
-                config=config,
-                preset="ucagnn",
-                intervention=f"quick_eval_{mode}",
-                recipe_name="ucagnn",
-                expect_metrics=True,
-            )
-            results.append(
-                {
-                    "status": "pass",
-                    "category": "evaluation",
-                    "dataset": eval_dataset,
-                    "label": label,
-                    "elapsed": elapsed,
-                },
-            )
-            _print_case("OK", "evaluation", eval_dataset, label, elapsed)
-        except Exception as exc:
-            results.append(
-                {
-                    "status": "fail",
-                    "category": "evaluation",
-                    "dataset": eval_dataset,
-                    "label": label,
-                    "elapsed": 0.0,
-                    "detail": str(exc),
-                },
-            )
-            _print_case("FAIL", "evaluation", eval_dataset, label, 0.0, str(exc))
-            if args.fail_fast:
-                return
+        results.append(
+            {
+                "status": "pass",
+                "category": "evaluation",
+                "dataset": eval_dataset,
+                "label": label,
+                "elapsed": elapsed,
+            },
+        )
+        _print_case("OK", "evaluation", eval_dataset, label, elapsed)
+    except Exception as exc:
+        results.append(
+            {
+                "status": "fail",
+                "category": "evaluation",
+                "dataset": eval_dataset,
+                "label": label,
+                "elapsed": 0.0,
+                "detail": str(exc),
+            },
+        )
+        _print_case("FAIL", "evaluation", eval_dataset, label, 0.0, str(exc))
+        if args.fail_fast:
+            return
 
 
 def _print_summary(results: list[dict], total_elapsed: float) -> None:

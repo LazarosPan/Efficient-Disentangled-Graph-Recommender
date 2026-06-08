@@ -16,9 +16,34 @@ def _bpr_loss(
     neg_scores: torch.Tensor,
     weights: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Compute the ranking loss, optionally reweighted by IPW."""
+    """Compute the ranking loss, optionally reweighted by IPW.
+
+    The score difference is promoted to fp32 so the loss remains stable under
+    AMP. When IPW weights are provided, the result uses a self-normalized
+    weighted mean so the objective scale does not depend on the absolute
+    weight magnitude.
+    """
+    pos_scores = pos_scores.float()
+    neg_scores = neg_scores.float()
     loss = -functional.logsigmoid(pos_scores - neg_scores)
-    return (loss * weights).mean() if weights is not None else loss.mean()
+    if weights is None:
+        return loss.mean()
+    weights = weights.detach().float()
+    weights = torch.nan_to_num(weights, nan=1.0, posinf=10.0, neginf=1.0)
+    weights = weights.clamp(0.1, 10.0)
+    return (loss * weights).sum() / weights.sum().clamp_min(1e-8)
+
+
+def _masked_bpr_loss(
+    pos_scores: torch.Tensor,
+    neg_scores: torch.Tensor,
+    mask: torch.Tensor,
+) -> torch.Tensor:
+    """Compute DICE's mask-weighted BPR, averaging over the full batch."""
+    pos_scores = pos_scores.float()
+    neg_scores = neg_scores.float()
+    mask = mask.to(device=pos_scores.device, dtype=pos_scores.dtype)
+    return -(mask * functional.logsigmoid(pos_scores - neg_scores)).mean()
 
 
 def _independence_loss(
@@ -28,6 +53,78 @@ def _independence_loss(
     """Penalize correlation between interest and conformity embeddings."""
     cos_sim = functional.cosine_similarity(interest, conformity, dim=-1)
     return (cos_sim**2).mean()
+
+
+def _distance_correlation_loss(
+    x: torch.Tensor,
+    y: torch.Tensor,
+) -> torch.Tensor:
+    """Return positive distance correlation for DICE-style discrepancy."""
+    if x.size(0) <= 1:
+        return x.new_zeros(())
+    x = x.float()
+    y = y.float()
+    a = torch.cdist(x, x, p=2)
+    b = torch.cdist(y, y, p=2)
+    a_centered = a - a.mean(dim=0, keepdim=True) - a.mean(dim=1, keepdim=True) + a.mean()
+    b_centered = b - b.mean(dim=0, keepdim=True) - b.mean(dim=1, keepdim=True) + b.mean()
+    n = float(x.size(0) * x.size(0))
+    dcov_xy = (a_centered * b_centered).sum() / n
+    dcov_xx = (a_centered * a_centered).sum() / n
+    dcov_yy = (b_centered * b_centered).sum() / n
+    denom = torch.sqrt(dcov_xx.clamp_min(1e-12).sqrt() * dcov_yy.clamp_min(1e-12).sqrt())
+    return torch.sqrt(dcov_xy.clamp_min(1e-12)) / denom.clamp_min(1e-12)
+
+
+def _sample_quadratic_auxiliary_embeddings(
+    x: torch.Tensor,
+    y: torch.Tensor,
+    entity_ids: torch.Tensor,
+    max_pairs: int,
+    salt: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return a bounded hash sample for quadratic auxiliary losses.
+
+    Args:
+        x: First embedding tensor with shape ``(N, D)``.
+        y: Second embedding tensor aligned with ``x``.
+        entity_ids: Stable IDs aligned with ``x`` and ``y``.
+        max_pairs: Maximum number of rows to keep.
+        salt: Epoch-dependent salt for deterministic variation across training.
+
+    Returns:
+        Pair of tensors sampled to at most ``max_pairs`` rows.
+
+    """
+    if x.size(0) <= max_pairs:
+        return x, y
+    modulus = 2_147_483_647
+    salted_ids = (
+        entity_ids.to(dtype=torch.long).remainder(modulus) + ((max(int(salt), 0) + 1) * 1_000_003)
+    ).remainder(modulus)
+    hash_keys = (salted_ids * 1_103_515_245 + 12_345).remainder(modulus)
+    indices = torch.topk(hash_keys, k=max_pairs, largest=False, sorted=False).indices
+    indices = indices.sort().values
+    return x[indices], y[indices]
+
+
+def _sample_quadratic_rows(
+    embeddings: torch.Tensor,
+    max_pairs: int,
+    salt: int,
+) -> torch.Tensor:
+    """Return a bounded deterministic row sample for quadratic single-tensor losses."""
+    if embeddings.size(0) <= max_pairs:
+        return embeddings
+    row_ids = torch.arange(embeddings.size(0), device=embeddings.device, dtype=torch.long)
+    modulus = 2_147_483_647
+    salted_ids = (row_ids.remainder(modulus) + ((max(int(salt), 0) + 1) * 1_000_003)).remainder(
+        modulus
+    )
+    hash_keys = (salted_ids * 1_103_515_245 + 12_345).remainder(modulus)
+    indices = torch.topk(hash_keys, k=max_pairs, largest=False, sorted=False).indices
+    indices = indices.sort().values
+    return embeddings[indices]
 
 
 def _prepare_contrastive_pairs(
@@ -87,13 +184,19 @@ def _branch_contrastive_loss(
     if not valid_rows.any():
         return user_embeddings.new_zeros(())
 
+    user_embeddings = functional.normalize(user_embeddings.float(), dim=-1)
+    item_embeddings = functional.normalize(item_embeddings.float(), dim=-1)
+    temperature = max(float(temperature), 0.05)
     logits = (user_embeddings @ item_embeddings.t()) / temperature
     positive_logits = logits.diag()
     negative_logits = logits.masked_fill(~negative_mask, float("-inf"))
     negative_logsumexp = torch.logsumexp(negative_logits[valid_rows], dim=1)
     log_denom = torch.logaddexp(positive_logits[valid_rows], negative_logsumexp)
-    log_positive_weights = torch.log(positive_weights[valid_rows].clamp_min(1e-8))
-    return -(log_positive_weights + positive_logits[valid_rows] - log_denom).mean()
+    loss = -(positive_logits[valid_rows] - log_denom)
+    row_weights = positive_weights[valid_rows].detach().float()
+    row_weights = torch.nan_to_num(row_weights, nan=1.0, posinf=1.0, neginf=0.0)
+    row_weights = row_weights.clamp_min(1e-4)
+    return (loss * row_weights).sum() / row_weights.sum().clamp_min(1e-8)
 
 
 def _interest_contrastive_loss(
@@ -192,10 +295,13 @@ def _directau_alignment_loss(
 def _directau_uniformity_loss(
     embeddings: torch.Tensor,
     temperature: float,
+    max_pairs: int,
+    salt: int,
 ) -> torch.Tensor:
     """DirectAU-style uniformity loss on normalized embeddings."""
     if embeddings.size(0) <= 1:
         return embeddings.new_zeros(())
+    embeddings = _sample_quadratic_rows(embeddings, max_pairs, salt)
     normalized = functional.normalize(embeddings, dim=-1)
     pairwise_dist = torch.pdist(normalized, p=2)
     if pairwise_dist.numel() == 0:
@@ -207,14 +313,16 @@ def _popularity_loss(
     pop_pred: torch.Tensor,
     pop_target: torch.Tensor,
 ) -> torch.Tensor:
-    """Compute MSE between predicted and observed popularity."""
-    return functional.mse_loss(pop_pred, pop_target)
+    """Compute MSE between predicted and observed popularity in fp32."""
+    return functional.mse_loss(pop_pred.float(), pop_target.float())
 
 
 def _au_branch_contrib(
     users: torch.Tensor,
     items: torch.Tensor,
     temperature: float,
+    max_pairs: int,
+    epoch: int,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Compute DirectAU alignment and uniformity for one branch.
 
@@ -229,8 +337,18 @@ def _au_branch_contrib(
     """
     align = _directau_alignment_loss(users, items)
     uniform = 0.5 * (
-        _directau_uniformity_loss(users, temperature=temperature)
-        + _directau_uniformity_loss(items, temperature=temperature)
+        _directau_uniformity_loss(
+            users,
+            temperature=temperature,
+            max_pairs=max_pairs,
+            salt=epoch,
+        )
+        + _directau_uniformity_loss(
+            items,
+            temperature=temperature,
+            max_pairs=max_pairs,
+            salt=epoch + 10_000,
+        )
     )
     return align, uniform
 
@@ -277,6 +395,7 @@ class LossSuite(nn.Module):
         pos_item_ids: torch.Tensor,
         epoch: int = 0,
         propensity_targets: torch.Tensor | None = None,
+        branch_item_popularity: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """Compute all active losses.
 
@@ -300,10 +419,25 @@ class LossSuite(nn.Module):
         propagated = cast("dict[str, torch.Tensor]", model_output["propagated"])
         ipw_weights = cast("torch.Tensor", model_output["ipw_weights"])
         loss_user_ids = cast("torch.Tensor", model_output["loss_user_ids"])
+        neg_item_ids = cast("torch.Tensor | None", model_output.get("loss_neg_item_ids"))
+        dice_negative_mask = cast(
+            "torch.Tensor | None",
+            model_output.get("dice_negative_mask"),
+        )
 
         losses: dict[str, torch.Tensor] = {}
         reference_score = pos_scores["final_score"]
         zero = reference_score.new_zeros(())
+        pos_interest_branch = pos_scores.get("branch_interest_score", pos_scores["interest_score"])
+        neg_interest_branch = neg_scores.get("branch_interest_score", neg_scores["interest_score"])
+        pos_conformity_branch = pos_scores.get(
+            "branch_conformity_score",
+            pos_scores["conformity_score"],
+        )
+        neg_conformity_branch = neg_scores.get(
+            "branch_conformity_score",
+            neg_scores["conformity_score"],
+        )
 
         # Curriculum: check phase thresholds.
         auxiliary_losses_active = epoch >= cfg.auxiliary_losses_start_epoch
@@ -312,18 +446,46 @@ class LossSuite(nn.Module):
 
         # Fused BPR is always active from epoch 0; only auxiliary losses phase in.
         # L_rec: fused BPR on the final score
-        weights = ipw_weights if cfg.use_ipw else None
-        losses["rec"] = _bpr_loss(
-            pos_scores["final_score"],
-            neg_scores["final_score"],
-            weights,
+        use_calibrated_ipw = (
+            cfg.use_ipw
+            and cfg.loss_weight_propensity_calibration > 0
+            and propensity_targets is not None
+            and model_output.get("propensity_scores") is not None
         )
+        weights = ipw_weights if use_calibrated_ipw else None
+        if cfg.recommendation_loss_mode == "dice_sum" and use_dual_branch:
+            rec_pos = pos_interest_branch + pos_conformity_branch
+            rec_neg = neg_interest_branch + neg_conformity_branch
+        else:
+            rec_pos = pos_scores["final_score"]
+            rec_neg = neg_scores["final_score"]
+        losses["rec"] = _bpr_loss(rec_pos, rec_neg, weights)
 
-        # Resolve all auxiliary weights from a single spec table.
+        if (
+            cfg.baseline_family == "lightgcn_paper"
+            and cfg.weight_decay > 0
+            and neg_item_ids is not None
+        ):
+            embeddings = cast("dict[str, torch.Tensor]", model_output["embeddings"])
+            user_ego = embeddings["user"][loss_user_ids].float()
+            pos_ego = embeddings["item"][pos_item_ids].float()
+            neg_ego = embeddings["item"][neg_item_ids].float()
+            losses["embedding_reg"] = (
+                0.5
+                * (user_ego.norm(2).pow(2) + pos_ego.norm(2).pow(2) + neg_ego.norm(2).pow(2))
+                / max(1, int(loss_user_ids.numel()))
+            )
+        else:
+            losses["embedding_reg"] = zero
+
+        interest_weight = max(float(cfg.loss_weight_interest_bpr), 0.0)
+        conformity_weight = max(float(cfg.loss_weight_conformity_bpr), 0.0)
+
+        # Resolve schedule-controlled auxiliary weights from a single spec table.
+        # Branch BPR is intentionally excluded: it is primary causal branch
+        # supervision, so it must be active from epoch 0.
         # Each entry: (max_weight, ramp_rate, active_in_phased_schedule)
         aux_specs_ = [
-            (cfg.loss_weight_interest_bpr, cfg.auxiliary_ramp_rate, True),
-            (cfg.loss_weight_conformity_bpr, cfg.auxiliary_ramp_rate, True),
             (
                 cfg.loss_weight_independence,
                 cfg.independence_ramp_rate,
@@ -344,8 +506,6 @@ class LossSuite(nn.Module):
             ),
         ]
         (
-            interest_weight,
-            conformity_weight,
             independence_weight,
             contrastive_weight,
             align_weight,
@@ -362,29 +522,98 @@ class LossSuite(nn.Module):
             for max_weight, ramp_rate, is_active in aux_specs_
         ]
 
-        # Branch-local BPR auxiliaries keep each branch predictive on its own.
-        if use_dual_branch and interest_weight > 0:
-            losses["interest_bpr"] = _bpr_loss(
-                pos_scores["interest_score"],
-                neg_scores["interest_score"],
-            )
-        else:
-            losses["interest_bpr"] = zero
+        if cfg.dice_adaptive_decay:
+            decay = cfg.dice_loss_decay ** max(epoch, 0)
+            interest_weight *= decay
+            conformity_weight *= decay
 
-        if use_dual_branch and conformity_weight > 0:
-            losses["conformity_bpr"] = _bpr_loss(
-                pos_scores["conformity_score"],
-                neg_scores["conformity_score"],
+        # Branch-local BPR auxiliaries keep each branch predictive on its own.
+        if (
+            use_dual_branch
+            and cfg.branch_loss_mode == "dice"
+            and neg_item_ids is not None
+            and (interest_weight > 0 or conformity_weight > 0)
+        ):
+            if dice_negative_mask is not None:
+                popular_negative_mask = dice_negative_mask.to(
+                    device=reference_score.device,
+                    dtype=torch.bool,
+                )
+            else:
+                branch_popularity = branch_item_popularity
+                if branch_popularity is None:
+                    branch_popularity = item_popularity
+                pos_popularity = branch_popularity[pos_item_ids].to(device=reference_score.device)
+                neg_popularity = branch_popularity[neg_item_ids].to(device=reference_score.device)
+                branch_margin = cfg.dice_branch_margin * (
+                    cfg.dice_margin_decay ** max(epoch, 0) if cfg.dice_adaptive_decay else 1.0
+                )
+                popular_negative_mask = neg_popularity > (pos_popularity + branch_margin)
+            losses["interest_bpr"] = _masked_bpr_loss(
+                pos_interest_branch,
+                neg_interest_branch,
+                popular_negative_mask,
+            )
+            losses["conformity_bpr"] = _masked_bpr_loss(
+                neg_conformity_branch,
+                pos_conformity_branch,
+                popular_negative_mask,
+            ) + _masked_bpr_loss(
+                pos_conformity_branch,
+                neg_conformity_branch,
+                ~popular_negative_mask,
             )
         else:
-            losses["conformity_bpr"] = zero
+            if use_dual_branch and interest_weight > 0:
+                losses["interest_bpr"] = _bpr_loss(
+                    pos_interest_branch,
+                    neg_interest_branch,
+                )
+            else:
+                losses["interest_bpr"] = zero
+
+            if use_dual_branch and conformity_weight > 0:
+                losses["conformity_bpr"] = _bpr_loss(
+                    pos_conformity_branch,
+                    neg_conformity_branch,
+                )
+            else:
+                losses["conformity_bpr"] = zero
 
         # Branch independence via cosine-squared decorrelation.
         if use_dual_branch and independence_weight > 0:
-            losses["independence"] = _independence_loss(
-                propagated["user_interest"][loss_user_ids],
-                propagated["user_conformity"][loss_user_ids],
-            )
+            if cfg.branch_loss_mode == "dice" and neg_item_ids is not None:
+                branch_user_ids = torch.unique(loss_user_ids)
+                user_interest = propagated["user_interest"][branch_user_ids]
+                user_conformity = propagated["user_conformity"][branch_user_ids]
+                user_interest, user_conformity = _sample_quadratic_auxiliary_embeddings(
+                    user_interest,
+                    user_conformity,
+                    branch_user_ids,
+                    cfg.distance_correlation_max_pairs,
+                    epoch,
+                )
+                branch_item_ids = torch.unique(torch.cat([pos_item_ids, neg_item_ids]))
+                item_interest = propagated["item_interest"][branch_item_ids]
+                item_conformity = propagated["item_conformity"][branch_item_ids]
+                item_interest, item_conformity = _sample_quadratic_auxiliary_embeddings(
+                    item_interest,
+                    item_conformity,
+                    branch_item_ids,
+                    cfg.distance_correlation_max_pairs,
+                    epoch,
+                )
+                losses["independence"] = _distance_correlation_loss(
+                    user_interest,
+                    user_conformity,
+                ) + _distance_correlation_loss(item_interest, item_conformity)
+            else:
+                user_interest = propagated["user_interest"][loss_user_ids]
+                user_conformity = propagated["user_conformity"][loss_user_ids]
+                losses["independence"] = _independence_loss(
+                    user_interest,
+                    user_conformity,
+                )
         else:
             losses["independence"] = zero
 
@@ -422,6 +651,8 @@ class LossSuite(nn.Module):
                 interest_users,
                 interest_items,
                 cfg.uniformity_temperature,
+                cfg.uniformity_max_pairs,
+                epoch,
             )
             branch_align_losses: list[torch.Tensor] = [i_align]
             branch_uniform_losses: list[torch.Tensor] = [i_uniform]
@@ -433,6 +664,8 @@ class LossSuite(nn.Module):
                     conformity_users,
                     conformity_items,
                     cfg.uniformity_temperature,
+                    cfg.uniformity_max_pairs,
+                    epoch + 20_000,
                 )
                 branch_align_losses.append(c_align)
                 branch_uniform_losses.append(c_uniform)
@@ -443,14 +676,18 @@ class LossSuite(nn.Module):
             losses["align"] = zero
             losses["uniform"] = zero
 
-        # Popularity regression now supervises the scorer-owned popularity head.
+        # Context regression now supervises the scorer-owned item-only context head.
         if use_dual_branch and cfg.use_popularity_head and popularity_weight > 0:
             pop_target = item_popularity[pos_item_ids].to(
                 device=reference_score.device,
                 dtype=reference_score.dtype,
             )
+            context_for_supervision = pos_scores.get(
+                "raw_context_score",
+                pos_scores["context_score"],
+            )
             losses["pop"] = _popularity_loss(
-                pos_scores["popularity_score"],
+                context_for_supervision,
                 pop_target,
             )
         else:
@@ -482,6 +719,7 @@ class LossSuite(nn.Module):
             + uniform_weight * losses["uniform"]
             + popularity_weight * losses["pop"]
             + prop_calib_weight * losses["prop_calib"]
+            + cfg.weight_decay * losses["embedding_reg"]
         )
         losses["total"] = total
 

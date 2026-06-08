@@ -27,9 +27,9 @@ The diagram shows the runtime path: the embedding layer prepares tables and meta
 
 | Layer | Owner | Current contract |
 | --- | --- | --- |
-| Embedding layer | `EmbeddingModule` | Builds user and item embeddings, optional popularity embeddings, train-split metadata buffers, and optional item-feature fusion inputs. |
+| Embedding layer | `EmbeddingModule` | Builds user and item embeddings, optional popularity embeddings, train-split metadata buffers, optional item-feature fusion inputs, and recent-history item-interest lookups for subgraph training. |
 | Propagation layer | `DualBranchGCN` | Runs sparse LightGCN propagation with explicit branch depths and optional sign-aware edge weights. |
-| Scoring layer | `ScoringModule` | Produces pairwise and full-catalog component scores plus the fused final score for the active score view. |
+| Scoring layer | `ScoringModule` | Produces pairwise and full-catalog interest, conformity, context, `score_mix_weights`, and fused final scores. |
 | Propensity layer | `PropensityEstimator` | Optional two-layer MLP over propagated item embeddings, clipped to `[propensity_clip_min, propensity_clip_max]`. |
 | Orchestrator | `UCaGNN` | Wires the embedding, propagation, scoring, and optional propensity layers together for subgraph training and full-graph evaluation. |
 
@@ -43,16 +43,15 @@ The diagram shows the runtime path: the embedding layer prepares tables and meta
 - `LightGCNBranch` uses repeated sparse adjacency matmuls and alpha-averaged layer outputs. Degree normalization comes from precomputed `edge_norm`, so train and eval use the same normalization.
 - Sign-aware weighting only changes mixed-sign graphs. Positive and neutral edges keep weight `1.0`; negative edges receive weight `alpha_neg / alpha_pos`, which downweights their propagation effect.
 
-## Score views
+## Score fusion
 
-| Score view | Meaning |
-| --- | --- |
-| `default` | Interest + conformity + popularity, masked and weighted by the active scoring mode. |
-| `interest_only` | Interest branch only. |
-| `conformity_only` | Conformity branch only. |
-| `conformity_suppressed` | Interest + popularity, with conformity removed. |
-
-`train_scoring_mode` and `eval_scoring_mode` both default to `default`. The evaluator may reuse the same checkpoint with a different eval-only score view.
+- `ScoringModule` always emits the diagnostic components `interest_score`, `conformity_score`, `context_score`, `score_mix_weights`, and `final_score`.
+- `preset_full()` keeps the learned structured mixer active.
+- `preset_lightgcn()` fixes the mixer to interest-only weights.
+- `preset_dice_like()` fixes the mixer to interest+conformity weights.
+- The `no_popularity_head` ablation removes only the context head; learned per-user mixing still applies over the active interest and conformity branches.
+- The context head remains item-only. Popularity is now just one context field alongside recency, propensity targets, item age, and safe item features, with zero fill for any missing field.
+- `forward_subgraph()` resolves recent-train item histories by global item id before scoring so the short-term branch never indexes user history against a subgraph-local item table.
 
 ## Public `UCaGNN` surfaces
 
@@ -61,5 +60,6 @@ The diagram shows the runtime path: the embedding layer prepares tables and meta
 | `forward_subgraph(batch)` | `MiniBatchTrainer` | One training payload for a sampled subgraph batch. |
 | `get_propagated_for_eval(edge_index, edge_sign, edge_norm, ...)` | `Evaluator` | One reusable full-graph propagated state. |
 | `score_users_from_propagated(propagated, user_ids, ...)` | `Evaluator` | Final `(batch_users, n_items)` score matrix. |
+| `get_score_components_from_propagated(propagated, user_ids)` | `Evaluator` diagnostics path | Batched refined scorer outputs from the same propagated evaluation state. |
 | `get_all_score_components(...)` | diagnostics and same-checkpoint evaluation tooling | Full-catalog component scores plus branch embeddings when dual-branch is active. |
 | `build_training_output(...)` | internal training path | Shared payload containing scores, propagated tensors, IPW weights, and optional `propensity_scores`. |

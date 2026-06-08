@@ -56,6 +56,47 @@ class ExperimentLoggerTests(unittest.TestCase):
             {"seed": 7},
         )
 
+    def test_existing_database_logger_open_does_not_require_schema_write_lock(self) -> None:
+        """Opening a current WAL database should not need DDL while another writer exists."""
+        db_path = Path(self.temp_dir.name) / "parallel.sqlite"
+        bootstrap_logger = ExperimentLogger(db_path=str(db_path))
+        bootstrap_logger.close()
+
+        writer = sqlite3.connect(db_path)
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("BEGIN IMMEDIATE")
+        try:
+            parallel_logger = ExperimentLogger(db_path=str(db_path))
+            parallel_logger.close()
+        finally:
+            writer.rollback()
+            writer.close()
+
+    def test_experiment_logger_has_no_unsupported_metric_compatibility_lists(self) -> None:
+        """Logger schema checks should use current required columns, not stale metric lists."""
+        unsupported_class_vars = [
+            name for name in vars(ExperimentLogger) if name.startswith("_UNSUPPORTED_")
+        ]
+
+        self.assertEqual(unsupported_class_vars, [])
+
+    def test_query_results_connect_is_read_only_without_logger_migration(self) -> None:
+        """Reporting should read existing views without taking logger write locks."""
+        db_path = Path(self.temp_dir.name) / "query-readonly.sqlite"
+        bootstrap_logger = ExperimentLogger(db_path=str(db_path))
+        bootstrap_logger.close()
+
+        with (
+            patch.object(query_results, "DB_PATH", db_path),
+            patch.object(query_results, "ExperimentLogger") as logger_cls,
+        ):
+            conn = query_results.connect()
+            self.addCleanup(conn.close)
+
+        logger_cls.assert_not_called()
+        with self.assertRaises(sqlite3.OperationalError):
+            conn.execute("CREATE TABLE query_results_should_be_read_only(id INTEGER)")
+
     def test_log_epoch_aggregates_profiler_stages_by_name(self) -> None:
         """log_epoch should combine repeated profiler stages into one row per stage."""
         exp_id = self.logger.log_experiment(
@@ -262,6 +303,82 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertAlmostEqual(row["avg_gpu_utilization_pct"], 60.0)
         self.assertAlmostEqual(row["max_gpu_utilization_pct"], 65.0)
 
+    def test_experiment_summary_uses_training_max_gpu_utilization(self) -> None:
+        """The summary view should separate train-average and train-peak utilization."""
+        exp_id = self.logger.log_experiment(
+            dataset="movielens1m",
+            config=_DummyConfig(seed=22),
+        )
+        self.logger.log_metric(exp_id, "gpu_utilization_pct", 33.0, epoch=0, split="train")
+        self.logger.log_metric(
+            exp_id,
+            "max_gpu_utilization_pct",
+            66.0,
+            epoch=0,
+            split="train",
+        )
+        self.logger.update_experiment_status(exp_id, status="completed")
+
+        row = self.logger.conn.execute(
+            (
+                "SELECT avg_gpu_utilization_pct, max_gpu_utilization_pct "
+                "FROM experiment_summary WHERE id = ?"
+            ),
+            (exp_id,),
+        ).fetchone()
+        assert row is not None
+
+        self.assertAlmostEqual(row["avg_gpu_utilization_pct"], 33.0)
+        self.assertAlmostEqual(row["max_gpu_utilization_pct"], 66.0)
+
+    def test_get_metrics_for_split_retains_evaluation_diagnostics(self) -> None:
+        """Arbitrary evaluator diagnostics should round-trip through the SQLite metric store."""
+        exp_id = self.logger.log_experiment(
+            dataset="movielens1m",
+            config=_DummyConfig(seed=33),
+        )
+        val_metrics = {
+            "NDCG@20": 0.3,
+            "score_mix_interest_mean": 0.4,
+            "score_mix_interest_std": 0.1,
+            "interest_contribution@20": -1.25,
+            "context_popularity_spearman@20": 0.8,
+        }
+
+        self.logger.log_epoch(
+            exp_id=exp_id,
+            epoch=0,
+            train_loss=1.0,
+            epoch_time_s=0.2,
+            val_metrics=val_metrics,
+            profiler_stages=[],
+            model=None,
+        )
+        self.logger.log_metric(
+            exp_id,
+            "interest_conformity_cosine_mean",
+            0.5,
+            split="test",
+        )
+        self.logger.log_metric(
+            exp_id,
+            "conformity_contribution@40",
+            1.1,
+            split="test",
+        )
+
+        self.assertEqual(
+            self.logger.get_metrics_for_split(exp_id, split="val"),
+            val_metrics,
+        )
+        self.assertEqual(
+            self.logger.get_metrics_for_split(exp_id, split="test"),
+            {
+                "conformity_contribution@40": 1.1,
+                "interest_conformity_cosine_mean": 0.5,
+            },
+        )
+
     def test_comparison_view_exposes_metric_deltas_for_same_semantic_run(self) -> None:
         """Comparison view should show deltas across repeated same-config runs."""
         first_exp = self.logger.log_experiment(
@@ -425,6 +542,48 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertAlmostEqual(all_scores[1][40], amazon_scores[1][40])
         self.assertAlmostEqual(all_scores[2][20], amazon_scores[2][20])
         self.assertAlmostEqual(all_scores[2][40], amazon_scores[2][40])
+
+    def test_compute_efficiency_scores_prefers_epoch_time_over_total_time(self) -> None:
+        """CRRU efficiency should compare throughput per epoch, not early-stop wall time."""
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            """
+            CREATE TABLE report_rows (
+                id INTEGER PRIMARY KEY,
+                dataset TEXT NOT NULL,
+                peak_vram_mb REAL,
+                training_time_s REAL,
+                completed_train_epochs REAL,
+                avg_epoch_time_s REAL
+            )
+            """
+        )
+        conn.executemany(
+            """
+            INSERT INTO report_rows (
+                id, dataset, peak_vram_mb, training_time_s,
+                completed_train_epochs, avg_epoch_time_s
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (1, "amazonbook", 1000.0, 100.0, 100.0, 1.0),
+                (2, "amazonbook", 1000.0, 10.0, 1.0, 10.0),
+            ],
+        )
+        rows = conn.execute("SELECT * FROM report_rows ORDER BY id").fetchall()
+
+        efficiency_scores = query_results._compute_efficiency_scores(rows)
+
+        self.assertGreater(efficiency_scores[0], efficiency_scores[1])
+
+    def test_query_results_duration_formatter_always_uses_seconds(self) -> None:
+        """Runtime report durations should stay in seconds for direct comparison."""
+        self.assertEqual(query_results._format_duration(None), "-")
+        self.assertEqual(query_results._format_duration(12.34), "12.3s")
+        self.assertEqual(query_results._format_duration(138.0), "138.0s")
+        self.assertEqual(query_results._format_duration(122000.0), "122000.0s")
 
     def test_query_results_orders_rows_by_crru_within_dataset(self) -> None:
         """The summary tables should sort each dataset by CRRU@20 then CRRU@40."""
@@ -605,9 +764,117 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.logger.log_metric(formal_exp, "HitRatio@40", 0.51, split="test")
         self.logger.log_metric(formal_exp, "Personalization@40", 0.52, split="test")
         self.logger.log_metric(formal_exp, "AveragePopularity@40", 0.6, split="test")
+        self.logger.log_metric(formal_exp, "context_contribution@20", 0.11, split="test")
+        self.logger.log_metric(formal_exp, "context_contribution@40", 0.12, split="test")
+        self.logger.log_metric(
+            formal_exp,
+            "final_popularity_spearman@20",
+            0.13,
+            split="test",
+        )
+        self.logger.log_metric(
+            formal_exp,
+            "final_popularity_spearman@40",
+            0.14,
+            split="test",
+        )
+        self.logger.log_metric(formal_exp, "interest_branch_NDCG@20", 0.31, split="test")
+        self.logger.log_metric(formal_exp, "interest_branch_Recall@20", 0.32, split="test")
+        self.logger.log_metric(
+            formal_exp,
+            "interest_branch_AveragePopularity@20",
+            0.33,
+            split="test",
+        )
+        self.logger.log_metric(formal_exp, "interest_branch_NDCG@40", 0.34, split="test")
+        self.logger.log_metric(formal_exp, "interest_branch_Recall@40", 0.35, split="test")
+        self.logger.log_metric(
+            formal_exp,
+            "interest_branch_AveragePopularity@40",
+            0.36,
+            split="test",
+        )
+        self.logger.log_metric(formal_exp, "conformity_branch_NDCG@20", 0.41, split="test")
+        self.logger.log_metric(formal_exp, "conformity_branch_Recall@20", 0.42, split="test")
+        self.logger.log_metric(
+            formal_exp,
+            "conformity_branch_AveragePopularity@20",
+            0.43,
+            split="test",
+        )
+        self.logger.log_metric(formal_exp, "conformity_branch_NDCG@40", 0.44, split="test")
+        self.logger.log_metric(formal_exp, "conformity_branch_Recall@40", 0.45, split="test")
+        self.logger.log_metric(
+            formal_exp,
+            "conformity_branch_AveragePopularity@40",
+            0.46,
+            split="test",
+        )
         self.logger.log_metric(formal_exp, "training_time_s", 7.9, split="train")
         self.logger.log_metric(formal_exp, "peak_vram_mb", 1234.0, split="train")
         self.logger.update_experiment_status(formal_exp, status="completed")
+
+        runtime_probe_exp = self.logger.log_experiment(
+            dataset="amazonbook",
+            config={
+                "dataset": "amazonbook",
+                "epochs": 200,
+                "batch_size": 8192,
+                "embed_dim": 64,
+                "use_dual_branch": False,
+                "single_branch_gnn_layers": 2,
+                "num_neighbors": [10, 5],
+                "lr_scheduler": "plateau",
+                "seed": 14,
+            },
+            preset="lightgcn",
+            batch_id="formal-runtime-probe-20260515T000000Z",
+            profile_name="runtime-probe-profile",
+            training_hash="probehash",
+        )
+        self.logger.log_metric(runtime_probe_exp, "NDCG@20", 0.99, split="test")
+        self.logger.log_metric(runtime_probe_exp, "Recall@20", 0.99, split="test")
+        self.logger.log_metric(runtime_probe_exp, "HitRatio@20", 0.99, split="test")
+        self.logger.log_metric(runtime_probe_exp, "Personalization@20", 0.99, split="test")
+        self.logger.log_metric(runtime_probe_exp, "AveragePopularity@20", 0.01, split="test")
+        self.logger.log_metric(runtime_probe_exp, "NDCG@40", 0.99, split="test")
+        self.logger.log_metric(runtime_probe_exp, "Recall@40", 0.99, split="test")
+        self.logger.log_metric(runtime_probe_exp, "HitRatio@40", 0.99, split="test")
+        self.logger.log_metric(runtime_probe_exp, "Personalization@40", 0.99, split="test")
+        self.logger.log_metric(runtime_probe_exp, "AveragePopularity@40", 0.01, split="test")
+        self.logger.log_metric(runtime_probe_exp, "training_time_s", 7.9, split="train")
+        self.logger.log_metric(runtime_probe_exp, "peak_vram_mb", 1234.0, split="train")
+        self.logger.log_metric(
+            runtime_probe_exp,
+            "runtime_probe_target_epochs",
+            200.0,
+            split="approximation",
+        )
+        self.logger.log_metric(
+            runtime_probe_exp,
+            "runtime_probe_observed_epochs",
+            1.0,
+            split="approximation",
+        )
+        self.logger.log_metric(
+            runtime_probe_exp,
+            "runtime_probe_train_batches_per_epoch",
+            1745.0,
+            split="approximation",
+        )
+        self.logger.log_metric(
+            runtime_probe_exp,
+            "runtime_probe_observed_batches_per_second",
+            2.86,
+            split="approximation",
+        )
+        self.logger.log_metric(
+            runtime_probe_exp,
+            "runtime_probe_estimated_train_time_s",
+            122000.0,
+            split="approximation",
+        )
+        self.logger.update_experiment_status(runtime_probe_exp, status="completed")
 
         ablation_exp = self.logger.log_experiment(
             dataset="amazonbook",
@@ -626,7 +893,7 @@ class ExperimentLoggerTests(unittest.TestCase):
                 "seed": 13,
             },
             preset="ucagnn",
-            intervention="no_ipw",
+            intervention="no_independence",
             batch_id="ablation-20260515T000000Z",
             training_hash="ablationhash",
         )
@@ -652,6 +919,37 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.logger.log_metric(ablation_exp, "training_time_s", 12.3, split="train")
         self.logger.log_metric(ablation_exp, "peak_vram_mb", 2345.0, split="train")
         self.logger.update_experiment_status(ablation_exp, status="completed")
+
+        legacy_ablation_exp = self.logger.log_experiment(
+            dataset="amazonbook",
+            config={
+                "dataset": "amazonbook",
+                "epochs": 300,
+                "batch_size": 4096,
+                "embed_dim": 64,
+                "use_dual_branch": True,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 2,
+                "num_neighbors": [20, 10],
+                "use_features": True,
+                "lr_scheduler": "cosine",
+                "seed": 13,
+            },
+            preset="ucagnn",
+            intervention="no_ipw",
+            batch_id="ablation-legacy-20260515T000000Z",
+        )
+        self.logger.log_metric(legacy_ablation_exp, "NDCG@20", 0.9, split="test")
+        self.logger.log_metric(legacy_ablation_exp, "Recall@20", 0.9, split="test")
+        self.logger.log_metric(legacy_ablation_exp, "HitRatio@20", 0.9, split="test")
+        self.logger.log_metric(legacy_ablation_exp, "Personalization@20", 0.9, split="test")
+        self.logger.log_metric(legacy_ablation_exp, "AveragePopularity@20", 0.1, split="test")
+        self.logger.log_metric(legacy_ablation_exp, "NDCG@40", 0.9, split="test")
+        self.logger.log_metric(legacy_ablation_exp, "Recall@40", 0.9, split="test")
+        self.logger.log_metric(legacy_ablation_exp, "HitRatio@40", 0.9, split="test")
+        self.logger.log_metric(legacy_ablation_exp, "Personalization@40", 0.9, split="test")
+        self.logger.log_metric(legacy_ablation_exp, "AveragePopularity@40", 0.1, split="test")
+        self.logger.update_experiment_status(legacy_ablation_exp, status="completed")
 
         ad_hoc_exp = self.logger.log_experiment(
             dataset="amazonbook",
@@ -699,28 +997,56 @@ class ExperimentLoggerTests(unittest.TestCase):
             query_results.list_top_completed(self.logger.conn, n=20)
 
         output = buffer.getvalue()
-        self.assertIn("FORMAL FULL-DATA TEST RUNS", output)
+        self.assertIn("FINAL FORMAL FULL-DATA TEST RUNS", output)
+        self.assertIn("SUPPORTING FORMAL FULL-DATA RUNS", output)
         self.assertIn("ABLATION FULL-DATA TEST RUNS", output)
-        self.assertIn("Causal Resource-aware Recommendation Utility at K", output)
+        self.assertIn("currently supported variants", output)
+        self.assertIn("Composite Resource-aware Recommendation Utility at K", output)
+        self.assertIn("CRRU is not a causal-effect estimator", output)
+        self.assertIn("section-row min-max", output)
+        self.assertNotIn("report-row min-max", output)
         self.assertIn("CRRU@20", output)
         self.assertIn("CRRU@40", output)
+        self.assertIn("(1-log(1+time/epoch)_n)^0.50", output)
         self.assertIn("dev-profile", output)
-        self.assertIn("no_ipw", output)
+        self.assertIn("no_independence", output)
         self.assertIn("Hit@20", output)
         self.assertIn("Pers@40", output)
-        self.assertIn("Resources:  time=7.9s | epochs=1 | peak_vram=1234MB", output)
-        self.assertIn("Resources:  time=12.3s | epochs=1 | peak_vram=2345MB", output)
+        self.assertIn("context_contrib={20: 0.1100, 40: 0.1200}", output)
+        self.assertIn("Final={20: 0.1300, 40: 0.1400}", output)
+        self.assertIn(
+            "Branch Rank: Interest NDCG={20: 0.3100, 40: 0.3400}",
+            output,
+        )
+        self.assertIn(
+            "Conformity NDCG={20: 0.4100, 40: 0.4400}",
+            output,
+        )
+        self.assertNotIn("runtime-probe-profile", output)
+        self.assertNotIn("Approximation: full_train=122000.0s", output)
+        self.assertNotIn("target_epochs=200", output)
+        self.assertNotIn("throughput=2.86 batch/s", output)
+        self.assertIn(
+            "Resources:  time=7.9s | epochs=1 | time/epoch=0.4s | peak_vram=1234MB",
+            output,
+        )
+        self.assertIn(
+            "Resources:  time=12.3s | epochs=1 | time/epoch=0.6s | peak_vram=2345MB",
+            output,
+        )
+        self.assertIn("Resources:  time=12.3s", output)
         self.assertIn(
             "amazonbook_lightgcn_ep200_bs8192_dim64_layers2_nbr10-5_lr-plateau_seed13",
             output,
         )
         self.assertIn(
-            "amazonbook_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_scoremixlearned_lr-cosine_no_ipw_seed13",
+            "amazonbook_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_no_independence_seed13",
             output,
         )
         self.assertNotIn("_train-formalhash", output)
         self.assertNotIn("_train-ablationhash", output)
         self.assertNotIn("CRRU COMPOSITE METRIC", output)
+        self.assertNotIn("no_ipw", output)
         self.assertNotIn("smoke-profile", output)
         self.assertNotIn(
             "amazonbook_ucagnn_ep100_bs1024_dim64_layers2_nbr10-5_lr-plateau_seed13",
@@ -793,7 +1119,11 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertIn("# Query Results", markdown_output)
         self.assertIn("```text", markdown_output)
         self.assertIn("THESIS TEST RESULTS", markdown_output)
-        self.assertIn("Causal Resource-aware Recommendation Utility at K", markdown_output)
+        self.assertIn(
+            "Composite Resource-aware Recommendation Utility at K",
+            markdown_output,
+        )
+        self.assertIn("CRRU is not a causal-effect estimator", markdown_output)
         self.assertIn("CRRU@20", markdown_output)
         self.assertIn("CRRU@40", markdown_output)
         self.assertIn("dev-profile", markdown_output)

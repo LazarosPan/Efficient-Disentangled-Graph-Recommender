@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import typing
 
 from src.utils.cli_parsers import (
     BENCHMARK_TIER_CHOICES,
     PRESET_CHOICES,
-    SCORING_WEIGHT_MODE_CHOICES,
     add_change_note_arg,
     add_execution_tracking_group,
     add_overwrite_checkpoint_arg,
@@ -24,7 +24,28 @@ def build_run_experiment_parser() -> argparse.ArgumentParser:
         Configured parser for ``experiments/run_experiment.py``.
 
     """
-    parser = argparse.ArgumentParser(description="Run a U-CaGNN experiment")
+
+    class ExperimentArgumentParser(argparse.ArgumentParser):
+        """Custom ArgumentParser for single-run experiments to handle profile typos."""
+
+        def error(self, message: str) -> typing.NoReturn:
+            """Override error to suggest formal-run command if a profile name is passed."""
+            if "unrecognized arguments" in message:
+                try:
+                    unrecognized_part = message.split("unrecognized arguments:")[-1].strip()
+                    unrecognized = unrecognized_part.split()
+                    profiles = formal_profile_names()
+                    for arg in unrecognized:
+                        if arg in profiles:
+                            message += (
+                                f"\n\nDid you mean to run:\n  uv run formal-run --profile {arg} ?"
+                            )
+                            break
+                except Exception:
+                    pass
+            super().error(message)
+
+    parser = ExperimentArgumentParser(description="Run a U-CaGNN experiment")
 
     sel = parser.add_argument_group("experiment selection")
     sel.add_argument("--dataset", default="movielens1m", help="Dataset name")
@@ -103,21 +124,10 @@ def build_benchmark_parser() -> argparse.ArgumentParser:
     mx.add_argument(
         "--presets",
         nargs="*",
-        default=["ucagnn", "lightgcn", "dice_like"],
+        default=["ucagnn", "lightgcn_paper", "dice_paper"],
         choices=PRESET_CHOICES,
         help="Presets to run",
     )
-    mx.add_argument(
-        "--scoring-weight-modes",
-        nargs="*",
-        default=["learned"],
-        choices=SCORING_WEIGHT_MODE_CHOICES,
-        help=(
-            "Score-mixture modes to run. LightGCN stays fixed-only because "
-            "learned weights are inapplicable without dual branches."
-        ),
-    )
-
     ex = add_execution_tracking_group(
         parser,
         experiment_name_default="ucagnn-benchmark",
@@ -170,9 +180,8 @@ def build_formal_run_parser() -> argparse.ArgumentParser:
         dest="profile",
         default=None,
         help=(
-            "Optional semantic formal profile slug. Supported profiles: "
-            + ", ".join(profiles)
-            + "."
+            "Optional semantic formal profile slug, or a comma-separated queue "
+            "of slugs to run sequentially. Supported profiles: " + ", ".join(profiles) + "."
         ),
     )
     parser.add_argument(

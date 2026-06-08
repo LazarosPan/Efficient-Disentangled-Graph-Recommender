@@ -17,6 +17,7 @@ from torch_geometric.utils import coalesce, degree
 from ..utils.config import UCaGNNConfig
 from ..utils.interaction_indexing import compute_normalized_popularity
 from .canonical import CanonicalInteractions
+from .interaction_masks import positive_interaction_mask
 
 _FLOAT_CANONICAL_FIELDS = frozenset(
     {
@@ -78,22 +79,38 @@ def _canonical_numpy_to_tensor(
 
 def _resolve_training_popularity(
     canonical: CanonicalInteractions,
-    train_mask: np.ndarray,
+    positive_train_mask: np.ndarray,
     n_items: int,
 ) -> torch.Tensor:
-    """Compute train-only item popularity and return it as a float tensor.
+    """Compute positive-train item popularity and return it as a float tensor.
 
     Args:
-        canonical: Canonical dataset whose training rows define the popularity.
-        train_mask: Boolean mask selecting the training interactions.
+        canonical: Canonical dataset whose training rows define popularity.
+        positive_train_mask: Boolean mask selecting positive training rows.
         n_items: Number of catalog items.
     Returns:
         torch.Tensor: Float tensor of shape ``(n_items,)`` with train-only
         popularity values.
 
     """
-    popularity_array = compute_normalized_popularity(canonical.item_id[train_mask], n_items)
+    popularity_array = compute_normalized_popularity(
+        canonical.item_id[positive_train_mask],
+        n_items,
+    )
     return torch.from_numpy(popularity_array).float()
+
+
+def _resolve_training_popularity_counts(
+    canonical: CanonicalInteractions,
+    positive_train_mask: np.ndarray,
+    n_items: int,
+) -> torch.Tensor:
+    """Compute raw positive-train item popularity counts."""
+    counts = np.bincount(
+        canonical.item_id[positive_train_mask],
+        minlength=n_items,
+    ).astype(np.float32)
+    return torch.from_numpy(counts).float()
 
 
 def _attach_optional_canonical_fields(
@@ -183,10 +200,17 @@ def build_graph(
     train_mask_t = torch.from_numpy(train_mask)
     val_mask_t = torch.from_numpy(val_mask)
     test_mask_t = torch.from_numpy(test_mask)
+    labels = torch.from_numpy(canonical.label).float()
+    train_positive_mask = positive_interaction_mask(train_mask, canonical.label)
+    val_positive_mask = positive_interaction_mask(val_mask, canonical.label)
+    test_positive_mask = positive_interaction_mask(test_mask, canonical.label)
+    train_positive_mask_t = torch.from_numpy(train_positive_mask)
+    val_positive_mask_t = torch.from_numpy(val_positive_mask)
+    test_positive_mask_t = torch.from_numpy(test_positive_mask)
     edge_index, edge_sign = _build_cagra(
         user_nodes,
         item_nodes,
-        train_mask_t,
+        train_positive_mask_t,
         all_signs,
         embeddings,
         config,
@@ -198,11 +222,14 @@ def build_graph(
     # and timestamp[train_mask] respectively — no val/test rows contribute.
     popularity = _resolve_training_popularity(
         canonical,
-        train_mask,
+        train_positive_mask,
         n_items,
     )
-
-    labels = torch.from_numpy(canonical.label).float()
+    popularity_count = _resolve_training_popularity_counts(
+        canonical,
+        train_positive_mask,
+        n_items,
+    )
 
     # Precompute full-graph symmetric degree normalization: 1/sqrt(deg_u * deg_v).
     # Stored on the Data object so that both training (subgraph) and evaluation
@@ -223,7 +250,11 @@ def build_graph(
     data.train_mask = train_mask_t
     data.val_mask = val_mask_t
     data.test_mask = test_mask_t
+    data.train_positive_mask = train_positive_mask_t
+    data.val_positive_mask = val_positive_mask_t
+    data.test_positive_mask = test_positive_mask_t
     data.popularity = popularity
+    data.popularity_count = popularity_count
     data.labels = labels
 
     data.user_nodes = user_nodes

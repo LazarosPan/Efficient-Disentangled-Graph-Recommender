@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from .config import CONFIG_PRESET_CHOICES
+
 BENCHMARK_DATASETS = [
     "amazonbook",
     "movielens1m",
@@ -20,19 +22,7 @@ BENCHMARK_DATASET_TIERS: dict[str, list[str]] = {
 }
 BENCHMARK_DATASET_TIERS["all"] = BENCHMARK_DATASETS
 BENCHMARK_TIER_CHOICES = list(BENCHMARK_DATASET_TIERS)
-PRESET_CHOICES = ["ucagnn", "lightgcn", "dice_like"]
-SCORING_WEIGHT_MODE_CHOICES = ["fixed", "learned"]
-EVALUATE_SCORING_MODE_CHOICES = [
-    "default",
-    "interest_only",
-    "conformity_only",
-    "conformity_suppressed",
-]
-DEFAULT_EVALUATE_SCORING_MODES = [
-    "default",
-    "interest_only",
-    "conformity_suppressed",
-]
+PRESET_CHOICES = list(CONFIG_PRESET_CHOICES)
 _VALIDATION_CATEGORIES = ["recipes", "ablations", "observability", "evaluation"]
 
 
@@ -68,6 +58,23 @@ def resolve_benchmark_datasets(tiers: list[str] | str) -> list[str]:
                 ),
             )
     return list(seen)
+
+
+def benchmark_dataset_lookup_keys(dataset: str) -> list[str]:
+    """Return dataset and tier keys that can address one resolved dataset.
+
+    The exact dataset name comes first, followed by any matching benchmark tier
+    labels and finally ``all`` as a broad fallback.
+    """
+    keys = [dataset]
+    for tier_name, tier_datasets in BENCHMARK_DATASET_TIERS.items():
+        if tier_name == "all":
+            continue
+        if dataset in tier_datasets and tier_name not in keys:
+            keys.append(tier_name)
+    if "all" not in keys:
+        keys.append("all")
+    return keys
 
 
 def add_device_and_data_dir_args(
@@ -305,53 +312,6 @@ def build_quick_validate_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def build_evaluate_scoring_modes_parser() -> argparse.ArgumentParser:
-    """Build the same-checkpoint scoring-mode evaluation CLI parser.
-
-    Returns:
-        Configured parser for ``scripts/evaluate_scoring_modes.py``.
-
-    """
-    parser = argparse.ArgumentParser(
-        description="Evaluate a single checkpoint under multiple scoring modes",
-    )
-    parser.add_argument(
-        "--checkpoint-path",
-        required=True,
-        help="Path to a completed training checkpoint produced by run_experiment.py",
-    )
-    parser.add_argument(
-        "--modes",
-        nargs="*",
-        default=DEFAULT_EVALUATE_SCORING_MODES,
-        choices=EVALUATE_SCORING_MODE_CHOICES,
-        help="Evaluation-time scoring modes to compare",
-    )
-    parser.add_argument(
-        "--split",
-        choices=["val", "test", "both"],
-        default="test",
-        help="Which split to evaluate",
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=512,
-        help="Evaluation batch size for full-catalog scoring",
-    )
-    parser.add_argument(
-        "--device",
-        default=None,
-        help="Optional device override; defaults to the checkpoint config device",
-    )
-    parser.add_argument(
-        "--output-json",
-        default=None,
-        help="Optional JSON output path for the collected metric table",
-    )
-    return parser
-
-
 def build_query_results_parser() -> argparse.ArgumentParser:
     """Build the experiment-results query CLI parser.
 
@@ -434,14 +394,12 @@ __all__ = [
     "BENCHMARK_DATASET_TIERS",
     "BENCHMARK_TIER_CHOICES",
     "PRESET_CHOICES",
-    "SCORING_WEIGHT_MODE_CHOICES",
     "add_batch_execution_args",
     "add_change_note_arg",
     "add_device_and_data_dir_args",
     "add_mlflow_destination_args",
     "add_overwrite_checkpoint_arg",
     "build_data_information_parser",
-    "build_evaluate_scoring_modes_parser",
     "build_explore_all_datasets_parser",
     "build_query_results_parser",
     "build_quick_validate_parser",

@@ -1,16 +1,16 @@
 # Causal Embeddings for Recommendations
 
-This repository implements U-CaGNN, a resource-aware causal-disentangled graph recommendation framework that separates user interest from popularity conformity.
+This repository implements U-CaGNN, a resource-aware causal-disentanglement-inspired graph recommendation framework that models user interest separately from popularity conformity.
 
 ## Overview
 
-U-CaGNN synthesizes techniques from multiple causal recommendation papers (CausE, DICE, MCLN, SIGformer) into a single framework. It uses dual-branch graph convolution to separate genuine user preferences from conformity-driven behavior, with multi-task losses and inverse propensity weighting driven by an item-side propensity proxy rather than a fully identified treatment/control model.
+U-CaGNN synthesizes techniques from multiple causal recommendation papers (CausE, DICE, MCLN, SIGformer) into a single framework. It uses dual-branch graph convolution to learn interest and conformity channels, DICE-style branch supervision, popularity-aware diagnostics, and optional propensity calibration. The current implementation supports causal-style ablations and disentanglement diagnostics, but it does not claim a fully identified treatment/control effect estimator.
 
 Key features:
-- Config-driven architecture with presets for LightGCN, DICE-like, and full U-CaGNN variants
-- Mini-batch training only, with k-hop subgraph extraction per batch
+- Config-driven architecture with explicit U-CaGNN, paper LightGCN, and paper GCN-DICE model adapters
+- Mini-batch U-CaGNN training plus full-graph training for paper baselines
 - Graph construction methods: observed train-interaction graphs by default, with optional CAGRA ANN augmentation
-- Formal experiment matrix across datasets, presets, and graph methods, with a score-mix sweep for dual-branch presets
+- Formal experiment matrix across datasets and presets, with paper baselines kept on observed interaction graphs
 - SQLite primary logging with MLflow secondary tracking
 - Automatic checkpointing and resume from crashes
 

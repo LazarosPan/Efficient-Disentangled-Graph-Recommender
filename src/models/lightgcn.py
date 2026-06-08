@@ -4,22 +4,27 @@ from __future__ import annotations
 
 import torch
 from torch import nn
+from torch.nn import functional
 
 from ..utils.config import UCaGNNConfig
+
+_EDGE_PROPAGATION_CHUNK_BYTES = 64 * 1024 * 1024
 
 
 class LightGCNBranch(nn.Module):
     """Multi-layer LightGCN with alpha-weighted layer combination (He et al., 2020).
 
-    Uses repeated sparse adjacency matmuls; degree normalization is handled
-    externally via pre-computed full-graph ``edge_weight`` so training
-    (subgraph) and evaluation (full graph) use identical normalization factors
-    without materializing edge-wise gather-scatter messages.
+    Uses repeated graph propagation with alpha-weighted layer averaging.
+    The legacy ``forward`` path accepts a prebuilt sparse adjacency for paper
+    baselines, while ``forward_edges`` propagates directly from edge lists in
+    bounded chunks to avoid per-batch sparse COO coalescing workspaces during
+    sampled U-CaGNN training.
     """
 
-    def __init__(self, n_layers: int) -> None:
+    def __init__(self, n_layers: int, dropout: float = 0.0) -> None:
         super().__init__()
         self.n_layers = n_layers
+        self.dropout = dropout
         alpha = 1.0 / (n_layers + 1)
         self.register_buffer("alpha", torch.full((n_layers + 1,), alpha))
 
@@ -56,9 +61,75 @@ class LightGCNBranch(nn.Module):
             out = x_work * self.alpha[0].to(dtype=compute_dtype)
             for i in range(self.n_layers):
                 x_work = torch.sparse.mm(adj_work, x_work)
+                if self.dropout > 0:
+                    x_work = functional.dropout(x_work, p=self.dropout, training=self.training)
                 out = out + x_work * self.alpha[i + 1].to(dtype=compute_dtype)
 
         return out.to(dtype=x.dtype) if out.dtype != x.dtype else out
+
+    def forward_edges(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_weight: torch.Tensor | None,
+        *,
+        num_nodes: int,
+    ) -> torch.Tensor:
+        """Propagate from COO edge lists without constructing sparse tensors.
+
+        Args:
+            x: Node embeddings with shape ``(num_nodes, embed_dim)``.
+            edge_index: Directed graph connectivity with shape ``(2, E)``.
+            edge_weight: Optional edge weights aligned to ``edge_index``.
+            num_nodes: Number of graph nodes.
+
+        Returns:
+            torch.Tensor: Alpha-averaged LightGCN embeddings.
+
+        """
+        compute_dtype = torch.float32 if x.dtype in {torch.float16, torch.bfloat16} else x.dtype
+        x_work = x.to(dtype=compute_dtype)
+        weight_work = edge_weight.to(dtype=compute_dtype) if edge_weight is not None else None
+
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            out = x_work * self.alpha[0].to(dtype=compute_dtype)
+            for i in range(self.n_layers):
+                x_work = self._edge_index_matmul(
+                    x_work,
+                    edge_index,
+                    weight_work,
+                    num_nodes=num_nodes,
+                )
+                if self.dropout > 0:
+                    x_work = functional.dropout(x_work, p=self.dropout, training=self.training)
+                out = out + x_work * self.alpha[i + 1].to(dtype=compute_dtype)
+
+        return out.to(dtype=x.dtype) if out.dtype != x.dtype else out
+
+    @staticmethod
+    def _edge_index_matmul(
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_weight: torch.Tensor | None,
+        *,
+        num_nodes: int,
+    ) -> torch.Tensor:
+        """Return ``adj @ x`` using bounded edge chunks and ``index_add_``."""
+        out = x.new_zeros((num_nodes, x.size(-1)))
+        num_edges = edge_index.size(1)
+        if num_edges == 0:
+            return out
+
+        element_size = max(1, x.element_size())
+        chunk_size = max(1, _EDGE_PROPAGATION_CHUNK_BYTES // (x.size(-1) * element_size))
+        row, col = edge_index
+        for start in range(0, num_edges, chunk_size):
+            end = min(start + chunk_size, num_edges)
+            src_emb = x[col[start:end]]
+            if edge_weight is not None:
+                src_emb = src_emb * edge_weight[start:end].unsqueeze(-1)
+            out.index_add_(0, row[start:end], src_emb)
+        return out
 
     @staticmethod
     def _cast_sparse_values(
@@ -77,13 +148,17 @@ class LightGCNBranch(nn.Module):
         """
         if adj.dtype == dtype:
             return adj
-        return torch.sparse_coo_tensor(
-            adj.indices(),
-            adj.values().to(dtype=dtype),
+        is_coalesced = adj.is_coalesced()
+        indices = adj.indices() if is_coalesced else adj._indices()
+        values = adj.values() if is_coalesced else adj._values()
+        cast_adj = torch.sparse_coo_tensor(
+            indices,
+            values.to(dtype=dtype),
             size=adj.size(),
             device=adj.device,
             dtype=dtype,
-        ).coalesce()
+        )
+        return cast_adj.coalesce() if is_coalesced else cast_adj
 
 
 class DualBranchGCN(nn.Module):
@@ -98,10 +173,10 @@ class DualBranchGCN(nn.Module):
         self.config = config
 
         if config.use_dual_branch:
-            self.interest_branch = LightGCNBranch(config.interest_gnn_layers)
-            self.conformity_branch = LightGCNBranch(config.conformity_gnn_layers)
+            self.interest_branch = LightGCNBranch(config.interest_gnn_layers, config.dropout)
+            self.conformity_branch = LightGCNBranch(config.conformity_gnn_layers, config.dropout)
         else:
-            self.single_branch = LightGCNBranch(config.single_branch_gnn_layers)
+            self.single_branch = LightGCNBranch(config.single_branch_gnn_layers, config.dropout)
 
         if config.use_sign_aware:
             self.alpha_pos = nn.Parameter(torch.tensor(0.7))
@@ -152,11 +227,17 @@ class DualBranchGCN(nn.Module):
         # All branches use the same dtype since all embedding tables share initialization.
         x_dtype = next(iter(embeddings.values())).dtype
         ew = edge_weight.to(dtype=x_dtype) if edge_weight is not None else None
-        adj = self._build_sparse_adjacency(
-            edge_index,
-            ew,
-            num_nodes=n_users + n_items,
-            dtype=x_dtype,
+        num_nodes = n_users + n_items
+        adj = (
+            self._build_sparse_adjacency(
+                edge_index,
+                ew,
+                num_nodes=num_nodes,
+                dtype=x_dtype,
+                coalesce=False,
+            )
+            if edge_index.device.type == "cuda"
+            else None
         )
 
         out: dict[str, torch.Tensor] = {}
@@ -165,17 +246,44 @@ class DualBranchGCN(nn.Module):
             item_interest = embeddings.get("item_interest", embeddings["item"])
             item_conformity = embeddings.get("item_conformity", embeddings["item"])
             x_int = torch.cat([embeddings["user_interest"], item_interest], dim=0)
-            h_int = self.interest_branch(x_int, adj)
+            h_int = (
+                self.interest_branch(x_int, adj)
+                if adj is not None
+                else self.interest_branch.forward_edges(
+                    x_int,
+                    edge_index,
+                    ew,
+                    num_nodes=num_nodes,
+                )
+            )
             out["user_interest"] = h_int[:n_users]
             out["item_interest"] = h_int[n_users:]
 
             x_conf = torch.cat([embeddings["user_conformity"], item_conformity], dim=0)
-            h_conf = self.conformity_branch(x_conf, adj)
+            h_conf = (
+                self.conformity_branch(x_conf, adj)
+                if adj is not None
+                else self.conformity_branch.forward_edges(
+                    x_conf,
+                    edge_index,
+                    ew,
+                    num_nodes=num_nodes,
+                )
+            )
             out["user_conformity"] = h_conf[:n_users]
             out["item_conformity"] = h_conf[n_users:]
         else:
             x = torch.cat([embeddings["user"], embeddings["item"]], dim=0)
-            h = self.single_branch(x, adj)
+            h = (
+                self.single_branch(x, adj)
+                if adj is not None
+                else self.single_branch.forward_edges(
+                    x,
+                    edge_index,
+                    ew,
+                    num_nodes=num_nodes,
+                )
+            )
             out["user"] = h[:n_users]
             out["item"] = h[n_users:]
 
@@ -188,6 +296,7 @@ class DualBranchGCN(nn.Module):
         *,
         num_nodes: int,
         dtype: torch.dtype,
+        coalesce: bool = True,
     ) -> torch.Tensor:
         """Build a sparse adjacency tensor for LightGCN propagation.
 
@@ -197,9 +306,12 @@ class DualBranchGCN(nn.Module):
                 ``edge_index``.
             num_nodes: Total number of nodes in the bipartite graph.
             dtype: Propagation dtype for adjacency values.
+            coalesce: Whether to coalesce the sparse COO tensor. U-CaGNN's
+                CUDA sampled-subgraph path leaves this False to avoid a large
+                per-batch COO coalescing workspace.
 
         Returns:
-            torch.Tensor: Coalesced COO sparse adjacency matrix.
+            torch.Tensor: COO sparse adjacency matrix.
 
         """
         values = (
@@ -207,13 +319,14 @@ class DualBranchGCN(nn.Module):
             if edge_weight is not None
             else torch.ones(edge_index.size(1), device=edge_index.device, dtype=dtype)
         )
-        return torch.sparse_coo_tensor(
+        adj = torch.sparse_coo_tensor(
             edge_index,
             values,
             size=(num_nodes, num_nodes),
             device=edge_index.device,
             dtype=dtype,
-        ).coalesce()
+        )
+        return adj.coalesce() if coalesce else adj
 
     @staticmethod
     def _combine_weights(
@@ -245,9 +358,8 @@ class DualBranchGCN(nn.Module):
         pos_mask = edge_sign > 0
         neg_mask = edge_sign < 0
         neutral_mask = ~(pos_mask | neg_mask)
-
-        if not bool(pos_mask.any() and neg_mask.any()):
-            return torch.ones_like(edge_sign)
+        if not bool(neg_mask.any().item()):
+            return (pos_mask | neutral_mask).to(edge_sign.dtype)
 
         pos_weight = pos_mask.to(edge_sign.dtype)
         neutral_weight = neutral_mask.to(edge_sign.dtype)

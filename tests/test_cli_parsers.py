@@ -21,7 +21,6 @@ from experiments.cli_parsers import (
 )
 from src.utils.cli_parsers import (
     build_data_information_parser,
-    build_evaluate_scoring_modes_parser,
     build_explore_all_datasets_parser,
     build_query_results_parser,
     build_quick_validate_parser,
@@ -29,6 +28,7 @@ from src.utils.cli_parsers import (
 
 EXPECTED_ABLATION_VARIANTS = [
     "mainline",
+    "with_contrastive",
     "no_popularity_head",
     "no_independence",
     "no_features",
@@ -96,6 +96,15 @@ class AblationConfigTests(unittest.TestCase):
         self.assertEqual(config.score_weight_popularity, 0.0)
         self.assertEqual(config.loss_weight_popularity, 0.0)
 
+    def test_with_contrastive_ablation_enables_bounded_contrastive_loss(self) -> None:
+        """Contrastive ablation should enable the literature-backed causal auxiliary."""
+        config = make_ablation_config("with_contrastive")
+
+        self.assertGreater(config.loss_weight_contrastive, 0.0)
+        self.assertEqual(config.contrastive_max_pairs, 256)
+        self.assertEqual(config.contrastive_temperature, 0.2)
+        self.assertEqual(config.auxiliary_loss_schedule, "linear_ramp")
+
     def test_no_features_ablation_disables_side_features(self) -> None:
         """Feature ablation should switch off item/user side features entirely."""
         config = make_ablation_config("no_features")
@@ -160,7 +169,7 @@ class BenchmarkParserTests(unittest.TestCase):
         args = build_benchmark_parser().parse_args([])
 
         self.assertEqual(args.datasets, "small,medium")
-        self.assertEqual(args.scoring_weight_modes, ["learned"])
+        self.assertFalse(hasattr(args, "scoring_weight_modes"))
         self.assertEqual(args.device, "cuda")
         self.assertEqual(args.data_dir, "data")
         self.assertFalse(args.no_mlflow)
@@ -205,21 +214,6 @@ class UtilityParserTests(unittest.TestCase):
         self.assertFalse(args.fail_fast)
         self.assertFalse(hasattr(args, "epochs"))
         self.assertFalse(hasattr(args, "graph_policy"))
-
-    def test_evaluate_scoring_modes_defaults(self) -> None:
-        """Scoring-mode evaluation should preserve its public defaults."""
-        args = build_evaluate_scoring_modes_parser().parse_args(
-            ["--checkpoint-path", "checkpoint.pt"],
-        )
-
-        self.assertEqual(args.checkpoint_path, "checkpoint.pt")
-        self.assertEqual(
-            args.modes,
-            ["default", "interest_only", "conformity_suppressed"],
-        )
-        self.assertEqual(args.split, "test")
-        self.assertEqual(args.batch_size, 512)
-        self.assertIsNone(args.device)
 
     def test_query_results_defaults(self) -> None:
         """Query-results should default to the thesis summary view."""
@@ -310,6 +304,49 @@ class UtilityParserTests(unittest.TestCase):
         self.assertEqual(config.loader_max_rows, 100)
         self.assertEqual(config.patience, 1)
         self.assertFalse(config.use_torch_compile)
+
+    def test_quick_validate_run_single_case_disables_refined_diagnostics(self) -> None:
+        """Quick validation should exercise execution without optional refined metrics."""
+        config = SimpleNamespace()
+
+        with mock.patch.object(
+            quick_validate,
+            "run_experiment",
+            return_value={"exp_id": 1, "test_metrics": {}},
+        ) as run_experiment:
+            quick_validate._run_single_case(
+                category="recipes",
+                dataset="movielens1m",
+                label="recipe:ucagnn",
+                config=config,
+                preset="ucagnn",
+                intervention="quick_recipe_ucagnn",
+            )
+
+        self.assertFalse(run_experiment.call_args.kwargs["include_refined_diagnostics"])
+
+    def test_quick_validate_resume_probe_disables_refined_diagnostics(self) -> None:
+        """The direct resume probe should share the quick validation metric contract."""
+        args = SimpleNamespace(
+            datasets=["movielens1m"],
+            data_dir="data",
+            fail_fast=False,
+            mlflow=False,
+        )
+        results: list[dict] = []
+
+        with (
+            mock.patch.object(quick_validate, "_run_single_case", return_value=({}, 0.0)),
+            mock.patch.object(
+                quick_validate,
+                "run_experiment",
+                return_value={"resumed": True},
+            ) as run_experiment,
+        ):
+            quick_validate._run_observability_category(args, results)
+
+        self.assertTrue(run_experiment.called)
+        self.assertFalse(run_experiment.call_args.kwargs["include_refined_diagnostics"])
 
 
 if __name__ == "__main__":

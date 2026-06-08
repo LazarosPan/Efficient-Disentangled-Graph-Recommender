@@ -545,7 +545,19 @@ def summarize_pairwise_max_priority_collapse(
         latest_order = np.lexsort(
             (row_index, timestamp_values, raw_item_ids, raw_user_ids),
         )
-        latest_priority = priority_values[latest_order[grouping.pair_ends - 1]].astype(
+        latest_pair_starts, latest_pair_ends = _pairwise_group_boundaries(
+            raw_user_ids,
+            raw_item_ids,
+            latest_order,
+        )
+        grouping_pair_order = grouping.order[grouping.pair_starts]
+        latest_pair_order = latest_order[latest_pair_starts]
+        if not (
+            np.array_equal(raw_user_ids[grouping_pair_order], raw_user_ids[latest_pair_order])
+            and np.array_equal(raw_item_ids[grouping_pair_order], raw_item_ids[latest_pair_order])
+        ):
+            raise RuntimeError("Pairwise collapse grouping orders are inconsistent.")
+        latest_priority = priority_values[latest_order[latest_pair_ends - 1]].astype(
             np.float32,
             copy=False,
         )

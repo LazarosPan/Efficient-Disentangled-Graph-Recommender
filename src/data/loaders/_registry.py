@@ -56,15 +56,12 @@ _PREPROCESSING_PRESETS: dict[str, dict[str, dict[str, object]]] = {
     "kuairec_v2": {
         "kuairec_watchratio": {
             "preprocessing_preset": "kuairec_watchratio",
-            "matrix_variant": "big_matrix",
         },
         "kuairec_watchratio_raw": {
             "preprocessing_preset": "kuairec_watchratio_raw",
-            "matrix_variant": "big_matrix",
         },
         "kuairec_fullobs": {
             "preprocessing_preset": "kuairec_fullobs",
-            "matrix_variant": "small_matrix",
         },
     },
     "amazonbook": {
@@ -77,8 +74,6 @@ _PREPROCESSING_PRESETS: dict[str, dict[str, dict[str, object]]] = {
 }
 
 
-# TODO: use directly _DEFAULT_PREPROCESSING_PRESETS.get(name) in load_dataset
-# when preprocessing_preset is None, and remove this helper function.
 def default_preprocessing_preset(name: str) -> str | None:
     """Return the repository default preprocessing preset for one dataset.
 
@@ -133,7 +128,7 @@ def _load_dataset(
     preprocessing_preset: str | None,
 ) -> CanonicalInteractions:
     """Load a dataset once after resolving preset-specific loader kwargs."""
-    effective_preprocessing_preset = preprocessing_preset or default_preprocessing_preset(
+    effective_preprocessing_preset = preprocessing_preset or _DEFAULT_PREPROCESSING_PRESETS.get(
         name,
     )
     loader_kwargs = resolve_preprocessing_preset(
@@ -141,11 +136,12 @@ def _load_dataset(
         effective_preprocessing_preset,
     )
     loader_kwargs.setdefault("preprocessing_preset", effective_preprocessing_preset)
+    effective_feature_policy = loader_kwargs.pop("feature_policy", feature_policy)
     return LOADERS[name](
         data_dir,
         max_rows=max_rows,
         include_optional_features=include_optional_features,
-        feature_policy=feature_policy,
+        feature_policy=effective_feature_policy,
         **loader_kwargs,
     )
 

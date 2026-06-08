@@ -34,11 +34,18 @@ class UCaGNN(nn.Module):
         item_features: torch.Tensor | None = None,
         item_popularity: torch.Tensor | None = None,
         item_recency: torch.Tensor | None = None,
+        item_propensity_targets: torch.Tensor | None = None,
+        item_age: torch.Tensor | None = None,
+        recent_train_items: torch.Tensor | None = None,
+        recent_train_mask: torch.Tensor | None = None,
     ) -> None:
         super().__init__()
         self.config = config
         self.n_users = n_users
         self.n_items = n_items
+        context_feature_dim = 4
+        if config.use_features and item_features is not None and item_features.numel() > 0:
+            context_feature_dim += int(item_features.size(-1))
 
         # Embedding layer
         self.embedding = EmbeddingModule(
@@ -48,13 +55,17 @@ class UCaGNN(nn.Module):
             item_features=item_features,
             item_popularity=item_popularity,
             item_recency=item_recency,
+            item_propensity_targets=item_propensity_targets,
+            item_age=item_age,
+            recent_train_items=recent_train_items,
+            recent_train_mask=recent_train_mask,
         )
 
         # Propagation layer
         self.gcn = DualBranchGCN(config)
 
         # Scoring layer
-        self.scoring = ScoringModule(config)
+        self.scoring = ScoringModule(config, context_feature_dim=context_feature_dim)
 
         # Optional propensity layer
         if config.use_ipw:
@@ -83,10 +94,37 @@ class UCaGNN(nn.Module):
             n_items=n_items,
             edge_norm=edge_norm,
         )
-        for key in ("item_pop", "item_popularity", "item_recency"):
+        for key in (
+            "item_pop",
+            "item_popularity",
+            "item_recency",
+            "item_propensity_targets",
+            "item_age",
+            "item_safe_features",
+            "recent_train_items",
+            "recent_train_mask",
+        ):
             if key in embeddings:
                 propagated[key] = embeddings[key]
         return propagated
+
+    def _with_static_metadata(
+        self,
+        propagated: dict[str, torch.Tensor],
+    ) -> dict[str, torch.Tensor]:
+        """Merge embedding-owned static metadata into a propagated bundle.
+
+        Args:
+            propagated: Propagated embedding dictionary.
+
+        Returns:
+            Propagated dictionary with missing static metadata filled in.
+        """
+        if "recent_train_items" in propagated and "recent_train_mask" in propagated:
+            return propagated
+        merged = dict(self.embedding.get_embeddings())
+        merged.update(propagated)
+        return merged
 
     def build_training_output(
         self,
@@ -95,27 +133,23 @@ class UCaGNN(nn.Module):
         user_ids: torch.Tensor,
         pos_item_ids: torch.Tensor,
         neg_item_ids: torch.Tensor,
+        dice_negative_mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
-        """Build the shared training payload from propagated embeddings.
-
-        The ranking loss always consumes scores built from
-        ``config.train_scoring_mode`` so training semantics stay explicit even
-        when evaluation later probes alternate score views on the same
-        checkpoint.
-
-        """
-        train_scoring_mode = self.config.train_scoring_mode
+        """Build the shared training payload from propagated embeddings."""
+        scoring_inputs = propagated
+        recent_train_item_interest = embeddings.get("recent_train_item_interest")
+        if recent_train_item_interest is not None:
+            scoring_inputs = dict(propagated)
+            scoring_inputs["recent_train_item_interest"] = recent_train_item_interest
         pos_scores = self.scoring(
-            propagated,
+            scoring_inputs,
             user_ids,
             pos_item_ids,
-            scoring_mode=train_scoring_mode,
         )
         neg_scores = self.scoring(
-            propagated,
+            scoring_inputs,
             user_ids,
             neg_item_ids,
-            scoring_mode=train_scoring_mode,
         )
 
         if self.config.use_ipw:
@@ -133,7 +167,10 @@ class UCaGNN(nn.Module):
             "propagated": propagated,
             "ipw_weights": ipw_weights,
             "loss_user_ids": user_ids,
+            "loss_neg_item_ids": neg_item_ids,
         }
+        if dice_negative_mask is not None:
+            output["dice_negative_mask"] = dice_negative_mask
         if propensity is not None:
             output["propensity_scores"] = propensity
         return output
@@ -145,6 +182,8 @@ class UCaGNN(nn.Module):
         pos_item_ids: torch.Tensor,
         neg_item_ids: torch.Tensor,
         edge_sign: torch.Tensor | None = None,
+        edge_norm: torch.Tensor | None = None,
+        dice_negative_mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
         """Full forward pass.
 
@@ -175,6 +214,7 @@ class UCaGNN(nn.Module):
             edge_sign,
             n_users=self.n_users,
             n_items=self.n_items,
+            edge_norm=edge_norm,
         )
 
         return self.build_training_output(
@@ -183,6 +223,7 @@ class UCaGNN(nn.Module):
             user_ids,
             pos_item_ids,
             neg_item_ids,
+            dice_negative_mask=dice_negative_mask,
         )
 
     def forward_subgraph(
@@ -206,6 +247,9 @@ class UCaGNN(nn.Module):
             batch.user_global_ids,
             batch.item_global_ids,
         )
+        sub_embs["recent_train_item_interest"] = self.embedding.get_recent_train_item_interest(
+            batch.user_global_ids,
+        )
 
         # GCN on subgraph
         propagated = self.propagate_embeddings(
@@ -223,21 +267,9 @@ class UCaGNN(nn.Module):
             batch.batch_user_local,
             batch.batch_pos_local,
             batch.batch_neg_local,
+            dice_negative_mask=batch.dice_negative_mask,
         )
 
-    def _resolve_eval_scoring_mode(self, scoring_mode: str | None) -> str:
-        """Resolve the evaluation scoring mode.
-
-        Args:
-            scoring_mode: Optional evaluation-time score override.
-
-        Returns:
-            str: Explicit scoring mode used for evaluation-time helpers.
-
-        """
-        return scoring_mode or self.config.eval_scoring_mode
-
-    @torch.no_grad()
     def get_propagated_for_eval(
         self,
         edge_index: torch.Tensor,
@@ -264,26 +296,47 @@ class UCaGNN(nn.Module):
         self,
         propagated: dict[str, torch.Tensor],
         user_ids: torch.Tensor,
-        scoring_mode: str | None = None,
     ) -> torch.Tensor:
         """Score all items for given users using pre-propagated embeddings.
 
         Args:
             propagated: Output of ``get_propagated_for_eval``.
             user_ids: (B,) user indices.
-            scoring_mode: Optional evaluation-time score override. Passing a
-                different mode here reuses the same checkpoint and propagated
-                embeddings while changing only the score view.
 
         Returns:
             (B, n_items) score matrix.
 
         """
         return self.scoring.score_all_items(
-            propagated,
+            self._with_static_metadata(propagated),
             user_ids,
-            scoring_mode=self._resolve_eval_scoring_mode(scoring_mode),
         )["final_score"]
+
+    @torch.no_grad()
+    def get_score_components_from_propagated(
+        self,
+        propagated: dict[str, torch.Tensor],
+        user_ids: torch.Tensor,
+    ) -> dict[str, torch.Tensor]:
+        """Return full-catalog score components from reused propagated embeddings.
+
+        Args:
+            propagated: Output of ``get_propagated_for_eval``.
+            user_ids: (B,) user indices.
+
+        Returns:
+            Refined scorer outputs aligned with ``score_all_items``.
+
+        """
+        propagated_with_metadata = self._with_static_metadata(propagated)
+        scores = self.scoring.score_all_items(
+            propagated_with_metadata,
+            user_ids,
+        )
+        if self.config.use_dual_branch:
+            scores["user_interest_emb"] = propagated_with_metadata["user_interest"][user_ids]
+            scores["user_conformity_emb"] = propagated_with_metadata["user_conformity"][user_ids]
+        return scores
 
     @torch.no_grad()
     def get_all_score_components(
@@ -291,17 +344,8 @@ class UCaGNN(nn.Module):
         edge_index: torch.Tensor,
         user_ids: torch.Tensor,
         edge_sign: torch.Tensor | None = None,
-        scoring_mode: str | None = None,
         edge_norm: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         """Return full-catalog score components for evaluation and diagnostics."""
         propagated = self.get_propagated_for_eval(edge_index, edge_sign, edge_norm)
-        scores = self.scoring.score_all_items(
-            propagated,
-            user_ids,
-            scoring_mode=self._resolve_eval_scoring_mode(scoring_mode),
-        )
-        if self.config.use_dual_branch:
-            scores["user_interest_emb"] = propagated["user_interest"][user_ids]
-            scores["user_conformity_emb"] = propagated["user_conformity"][user_ids]
-        return scores
+        return self.get_score_components_from_propagated(propagated, user_ids)

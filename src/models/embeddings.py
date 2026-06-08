@@ -29,6 +29,45 @@ def _register_bf16_buffer(
     module.register_buffer(name, resolved, persistent=False)
 
 
+def _scale_feature_matrix_to_unit(features: torch.Tensor) -> torch.Tensor:
+    """Scale each feature column to ``[0, 1]`` and map non-finite values to zero.
+
+    Args:
+        features: Item feature matrix with shape ``(n_items, n_features)``.
+
+    Returns:
+        Float32 feature matrix with the same shape and bounded values.
+
+    """
+    values = features.float()
+    finite_mask = torch.isfinite(values)
+    safe_values = torch.where(finite_mask, values, torch.zeros_like(values))
+    has_valid = finite_mask.any(dim=0)
+
+    inf = torch.full_like(safe_values, float("inf"))
+    neg_inf = torch.full_like(safe_values, float("-inf"))
+    min_values = torch.where(finite_mask, safe_values, inf).amin(dim=0)
+    max_values = torch.where(finite_mask, safe_values, neg_inf).amax(dim=0)
+    min_values = torch.where(has_valid, min_values, torch.zeros_like(min_values))
+    max_values = torch.where(has_valid, max_values, torch.zeros_like(max_values))
+
+    ranges = max_values - min_values
+    varying = ranges > 0
+    scaled = torch.where(
+        varying.unsqueeze(0),
+        (safe_values - min_values.unsqueeze(0)) / ranges.clamp_min(1e-12).unsqueeze(0),
+        torch.zeros_like(safe_values),
+    )
+    constant_nonzero = (~varying) & has_valid & (max_values != 0)
+    scaled = torch.where(
+        constant_nonzero.unsqueeze(0) & finite_mask,
+        torch.ones_like(scaled),
+        scaled,
+    )
+    scaled = torch.where(finite_mask, scaled, torch.zeros_like(scaled))
+    return scaled.clamp(0.0, 1.0)
+
+
 class EmbeddingModule(nn.Module):
     """Embedding tables for users and items.
 
@@ -44,6 +83,10 @@ class EmbeddingModule(nn.Module):
         item_features: torch.Tensor | None = None,
         item_popularity: torch.Tensor | None = None,
         item_recency: torch.Tensor | None = None,
+        item_propensity_targets: torch.Tensor | None = None,
+        item_age: torch.Tensor | None = None,
+        recent_train_items: torch.Tensor | None = None,
+        recent_train_mask: torch.Tensor | None = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -52,6 +95,31 @@ class EmbeddingModule(nn.Module):
         d = config.embed_dim
         _register_bf16_buffer(self, "item_popularity", item_popularity, n_items)
         _register_bf16_buffer(self, "item_recency", item_recency, n_items)
+        _register_bf16_buffer(
+            self,
+            "item_propensity_targets",
+            item_propensity_targets,
+            n_items,
+        )
+        _register_bf16_buffer(self, "item_age", item_age, n_items)
+        self.register_buffer(
+            "recent_train_items",
+            (
+                recent_train_items.to(dtype=torch.long)
+                if recent_train_items is not None
+                else torch.zeros((n_users, 10), dtype=torch.long)
+            ),
+            persistent=False,
+        )
+        self.register_buffer(
+            "recent_train_mask",
+            (
+                recent_train_mask.to(dtype=torch.bool)
+                if recent_train_mask is not None
+                else torch.zeros((n_users, 10), dtype=torch.bool)
+            ),
+            persistent=False,
+        )
         self.has_item_features = bool(
             config.use_features and item_features is not None and item_features.numel() > 0,
         )
@@ -79,7 +147,7 @@ class EmbeddingModule(nn.Module):
             assert item_features is not None
             self.register_buffer(
                 "item_feature_matrix",
-                item_features.to(torch.bfloat16),
+                _scale_feature_matrix_to_unit(item_features).to(torch.bfloat16),
                 persistent=False,
             )
             self.item_feature_proj = nn.Linear(item_features.size(-1), d)
@@ -154,9 +222,39 @@ class EmbeddingModule(nn.Module):
         """Return non-trainable item metadata needed by scoring/loss layers."""
         popularity = self.item_popularity if item_ids is None else self.item_popularity[item_ids]
         recency = self.item_recency if item_ids is None else self.item_recency[item_ids]
-        return {
+        exposure = (
+            self.item_propensity_targets
+            if item_ids is None
+            else self.item_propensity_targets[item_ids]
+        )
+        age = self.item_age if item_ids is None else self.item_age[item_ids]
+        metadata = {
             "item_popularity": popularity,
             "item_recency": recency,
+            "item_propensity_targets": exposure,
+            "item_age": age,
+        }
+        if self.has_item_features:
+            feature_matrix = (
+                self.item_feature_matrix if item_ids is None else self.item_feature_matrix[item_ids]
+            )
+            metadata["item_safe_features"] = feature_matrix
+        return metadata
+
+    def _build_user_metadata(
+        self,
+        user_ids: torch.Tensor | None = None,
+    ) -> dict[str, torch.Tensor]:
+        """Return non-trainable user metadata needed by scoring layers."""
+        recent_items = (
+            self.recent_train_items if user_ids is None else self.recent_train_items[user_ids]
+        )
+        recent_mask = (
+            self.recent_train_mask if user_ids is None else self.recent_train_mask[user_ids]
+        )
+        return {
+            "recent_train_items": recent_items,
+            "recent_train_mask": recent_mask,
         }
 
     def _ensure_feature_cache(self) -> None:
@@ -259,10 +357,40 @@ class EmbeddingModule(nn.Module):
 
         """
         out = self._build_user_embeddings(user_ids)
+        out.update(self._build_user_metadata(user_ids))
         out.update(self._build_item_embeddings(item_ids))
         out.update(self._build_item_metadata(item_ids))
         out.update(self._build_popularity_embeddings(item_ids))
         return self._cast_floating_tensors(out, dtype)
+
+    def get_recent_train_item_interest(
+        self,
+        user_ids: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Return item-interest embeddings for each user's recent-train history.
+
+        Args:
+            user_ids: Optional user ids whose history embeddings should be returned.
+
+        Returns:
+            Tensor with shape ``(n_users_or_batch, history_size, embed_dim)``.
+
+        """
+        recent_items = (
+            self.recent_train_items if user_ids is None else self.recent_train_items[user_ids]
+        )
+        flat_recent_items = recent_items.reshape(-1)
+        if flat_recent_items.numel() == 0:
+            return torch.zeros(
+                (*recent_items.shape, self.config.embed_dim),
+                device=recent_items.device,
+                dtype=self.item_embed.weight.dtype,
+            )
+
+        unique_items, inverse = flat_recent_items.unique(sorted=False, return_inverse=True)
+        item_embeddings = self._build_item_embeddings(unique_items)
+        interest_embeddings = item_embeddings.get("item_interest", item_embeddings["item"])
+        return interest_embeddings[inverse].reshape(*recent_items.shape, -1)
 
     def get_stacked_embeddings(self) -> torch.Tensor:
         """Return (n_users + n_items, D) combined node embeddings for graph building.

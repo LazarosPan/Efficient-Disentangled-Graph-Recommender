@@ -382,6 +382,53 @@ class CanonicalInteractions:
         recency[observed] = (observed_timestamps - min_timestamp) / scale
         return recency
 
+    def build_recent_train_history(
+        self,
+        interaction_mask: np.ndarray,
+        *,
+        history_size: int = 10,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Return split-safe recent-train item histories for each user.
+
+        Args:
+            interaction_mask: Boolean mask selecting the interactions that are
+                allowed to contribute to the history summary.
+            history_size: Maximum number of recent items to retain per user.
+
+        Returns:
+            Tuple ``(recent_items, recent_mask)`` with shape
+            ``(n_users, history_size)`` for both arrays.
+        """
+        if interaction_mask.shape[0] != len(self):
+            raise ValueError("interaction_mask must have one entry per interaction")
+        if history_size <= 0:
+            raise ValueError("history_size must be positive")
+
+        recent_items = np.zeros((self.n_users, history_size), dtype=np.int64)
+        recent_mask = np.zeros((self.n_users, history_size), dtype=bool)
+        if not np.any(interaction_mask):
+            return recent_items, recent_mask
+
+        interaction_indices = np.flatnonzero(interaction_mask)
+        order = np.lexsort(
+            (
+                interaction_indices,
+                self.timestamp[interaction_mask],
+                self.user_id[interaction_mask],
+            ),
+        )
+        ordered_users = self.user_id[interaction_mask][order]
+        ordered_items = self.item_id[interaction_mask][order]
+
+        for user_id in range(self.n_users):
+            user_items = ordered_items[ordered_users == user_id]
+            if user_items.size == 0:
+                continue
+            user_items = user_items[-history_size:]
+            recent_items[user_id, : user_items.size] = user_items
+            recent_mask[user_id, : user_items.size] = True
+        return recent_items, recent_mask
+
 
 def build_indexed_canonical_interactions(
     indexed: InteractionIndex,
