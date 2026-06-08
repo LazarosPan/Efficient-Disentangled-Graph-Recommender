@@ -141,15 +141,3 @@ class PaperLightGCN(CanonicalBaselineRecommender):
             interest_weight=1.0,
             conformity_weight=0.0,
         )
-
-    @torch.no_grad()
-    def get_all_score_components(
-        self,
-        edge_index: torch.Tensor,
-        user_ids: torch.Tensor,
-        edge_sign: torch.Tensor | None = None,
-        edge_norm: torch.Tensor | None = None,
-    ) -> dict[str, torch.Tensor]:
-        """Return full-catalog score components for diagnostics."""
-        propagated = self.get_propagated_for_eval(edge_index, edge_sign, edge_norm)
-        return self.get_score_components_from_propagated(propagated, user_ids)

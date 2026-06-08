@@ -3,8 +3,8 @@
     {
       "id": "dev-ucagnn",
       "aliases": [
-        "default",
-        "latest"
+        "dev",
+        "development"
       ],
       "description": "Development-focused formal profile: UCaGNN over the practical core thesis datasets with explicit 1/2 branch depth and the default observed train-interaction graph.",
       "matrix": {
@@ -20,7 +20,8 @@
       },
       "config_overrides": {
         "epochs": 60,
-        "use_early_stopping": false,
+        "use_early_stopping": true,
+        "patience": 10,
         "lr": 0.001,
         "lr_scheduler": "cosine",
         "batch_size_candidates": [
@@ -45,8 +46,13 @@
       }
     },
     {
-      "id": "core-paper-architecture-comparison",
-      "description": "Core thesis comparison across practical datasets using U-CaGNN against paper-faithful LightGCN and GCN-DICE architectures; Taobao and MovieLens20M remain explicit stress profiles.",
+      "id": "core-ucagnn-mainline",
+      "aliases": [
+        "default",
+        "latest",
+        "core-paper-architecture-comparison"
+      ],
+      "description": "Core U-CaGNN thesis mainline across practical datasets. Paper baselines are split into separate run-once profiles so U-CaGNN tuning can iterate without rerunning fixed paper defaults.",
       "matrix": {
         "datasets": [
           "amazonbook",
@@ -55,13 +61,267 @@
           "kuairand1k"
         ],
         "presets": [
-          "ucagnn",
-          "lightgcn_paper",
-          "dice_paper"
+          "ucagnn"
         ]
       },
       "config_overrides": {
         "epochs": 200,
+        "use_early_stopping": true,
+        "patience": 10,
+        "lr": 0.01,
+        "lr_scheduler": "cosine",
+        "batch_size_candidates": [
+          32768,
+          16384,
+          8192,
+          4096,
+          2048,
+          1024,
+          512,
+          256
+        ],
+        "single_branch_gnn_layers": 2,
+        "interest_gnn_layers": 1,
+        "conformity_gnn_layers": 2,
+        "dropout": 0.1,
+        "graph_policy": "observed",
+        "num_neighbors": {
+          "small": [
+            [
+              6,
+              3
+            ],
+            [
+              4,
+              2
+            ]
+          ],
+          "medium": [
+            [
+              10,
+              5
+            ],
+            [
+              16,
+              8
+            ]
+          ]
+        },
+        "auxiliary_losses_start_epoch": 15,
+        "popularity_supervision_start_epoch": 30
+      }
+    },
+    {
+      "id": "core-ucagnn-mainline-opposite-fanout-smaller-lr",
+      "aliases": [
+        "default-opposite-fanout-smaller-lr",
+        "latest-opposite-fanout-smaller-lr",
+        "core-paper-architecture-comparison-opposite-fanout-smaller-lr"
+      ],
+      "description": "Core U-CaGNN thesis mainline across practical datasets. Paper baselines are split into separate run-once profiles so U-CaGNN tuning can iterate without rerunning fixed paper defaults. Opposite fan-out from the default (smaller for small datasets, larger for medium datasets) and smaller learning rate to check whether the default settings are actually optimal before committing to long runs.",
+      "matrix": {
+        "datasets": [
+          "small",
+          "medium"
+        ],
+        "presets": [
+          "ucagnn"
+        ]
+      },
+      "config_overrides": {
+        "epochs": 200,
+        "use_early_stopping": true,
+        "patience": 10,
+        "lr": 0.001,
+        "lr_scheduler": "cosine",
+        "batch_size_candidates": [
+          32768,
+          16384,
+          8192,
+          4096,
+          2048,
+          1024,
+          512,
+          256
+        ],
+        "single_branch_gnn_layers": 2,
+        "interest_gnn_layers": 1,
+        "conformity_gnn_layers": 2,
+        "dropout": 0.1,
+        "graph_policy": "observed",
+        "num_neighbors": {
+          "medium": [
+            [
+              6,
+              3
+            ],
+            [
+              4,
+              2
+            ]
+          ],
+          "small": [
+            [
+              10,
+              5
+            ],
+            [
+              16,
+              8
+            ]
+          ]
+        },
+        "auxiliary_losses_start_epoch": 15,
+        "popularity_supervision_start_epoch": 30
+      }
+    },
+    {
+      "id": "paper-lightgcn-small-baselines",
+      "description": "Run-once paper-faithful LightGCN baselines for the smaller practical datasets so finished baseline metrics are available before committing to large video runs.",
+      "matrix": {
+        "datasets": [
+          "movielens1m",
+          "amazonbook"
+        ],
+        "presets": [
+          "lightgcn_paper"
+        ]
+      },
+      "config_overrides": {
+        "epochs": 200,
+        "use_early_stopping": true,
+        "patience": 10,
+        "lr": 0.001,
+        "lr_scheduler": "none",
+        "batch_size": 2048,
+        "auto_batch_size": false,
+        "single_branch_gnn_layers": 3,
+        "dropout": 0.0,
+        "graph_policy": "observed",
+        "num_neighbors": [
+          10,
+          5,
+          5
+        ]
+      }
+    },
+    {
+      "id": "paper-lightgcn-baselines",
+      "description": "Run-once paper-faithful LightGCN baselines on all practical core datasets after the small runs and large-dataset timing probes justify the resource cost.",
+      "matrix": {
+        "datasets": [
+          "amazonbook",
+          "movielens1m",
+          "kuairec_v2",
+          "kuairand1k"
+        ],
+        "presets": [
+          "lightgcn_paper"
+        ]
+      },
+      "config_overrides": {
+        "epochs": 200,
+        "use_early_stopping": true,
+        "patience": 10,
+        "lr": 0.001,
+        "lr_scheduler": "none",
+        "batch_size": 2048,
+        "auto_batch_size": false,
+        "single_branch_gnn_layers": 3,
+        "dropout": 0.0,
+        "graph_policy": "observed",
+        "num_neighbors": [
+          10,
+          5,
+          5
+        ]
+      }
+    },
+    {
+      "id": "paper-lightgcn-large-runtime-probes",
+      "description": "One-epoch full-data timing probes for paper LightGCN on the large video datasets. These rows are for runtime estimation, not final thesis metrics.",
+      "matrix": {
+        "datasets": [
+          "kuairec_v2",
+          "kuairand1k"
+        ],
+        "presets": [
+          "lightgcn_paper"
+        ]
+      },
+      "config_overrides": {
+        "epochs": 1,
+        "use_early_stopping": true,
+        "patience": 10,
+        "lr": 0.001,
+        "lr_scheduler": "none",
+        "batch_size": 2048,
+        "auto_batch_size": false,
+        "single_branch_gnn_layers": 3,
+        "dropout": 0.0,
+        "graph_policy": "observed",
+        "num_neighbors": [
+          10,
+          5,
+          5
+        ]
+      },
+      "runtime_probe": {
+        "target_epochs": 200
+      }
+    },
+    {
+      "id": "paper-dice-all-runtime-probes",
+      "description": "One-epoch full-data timing probes for paper GCN-DICE on Movielens1M, AmazonBook, KuaiRec, and KuaiRand. These rows document feasibility and should not be interpreted as final ranking metrics.",
+      "matrix": {
+        "datasets": [
+          "movielens1m",
+          "amazonbook",
+          "kuairec_v2",
+          "kuairand1k"
+        ],
+        "presets": [
+          "dice_paper"
+        ]
+      },
+      "config_overrides": {
+        "epochs": 1,
+        "use_early_stopping": true,
+        "patience": 10,
+        "lr": 0.001,
+        "lr_scheduler": "none",
+        "batch_size": 128,
+        "auto_batch_size": false,
+        "interest_gnn_layers": 2,
+        "conformity_gnn_layers": 2,
+        "dropout": 0.2,
+        "graph_policy": "observed",
+        "num_neighbors": [
+          10,
+          5
+        ]
+      },
+      "runtime_probe": {
+        "target_epochs": 200
+      }
+    },
+    {
+      "id": "fast-baseline-tuning",
+      "description": "Fallback profile for faster sampled LightGCN and legacy DICE-like baselines if paper-faithful full-graph baselines are infeasible. Report these separately from paper-default baselines.",
+      "matrix": {
+        "datasets": [
+          "amazonbook",
+          "movielens1m",
+          "kuairec_v2",
+          "kuairand1k"
+        ],
+        "presets": [
+          "lightgcn",
+          "dice_like"
+        ]
+      },
+      "config_overrides": {
+        "epochs": 120,
         "use_early_stopping": true,
         "patience": 10,
         "lr": 0.01,
@@ -91,16 +351,14 @@
     },
     {
       "id": "core-deeper-comparison-i2-c3",
-      "description": "Core deeper-branch matched comparison for checking whether interest=2 and conformity=3 help before spending full stress-run time.",
+      "description": "U-CaGNN-only deeper-branch comparison for checking whether interest=2 and conformity=3 help before spending full stress-run time.",
       "matrix": {
         "datasets": [
           "small",
           "medium"
         ],
         "presets": [
-          "ucagnn",
-          "lightgcn_paper",
-          "dice_paper"
+          "ucagnn"
         ]
       },
       "config_overrides": {
@@ -142,15 +400,13 @@
     },
     {
       "id": "movielens1m-all-lr-schedules",
-      "description": "Movielens1M end-stage profile comparing all three presets across all learning rate schedules.",
+      "description": "Movielens1M U-CaGNN learning-rate schedule sweep. Paper baselines keep their own fixed defaults and are not rerun here.",
       "matrix": {
         "datasets": [
           "movielens1m"
         ],
         "presets": [
-          "ucagnn",
-          "lightgcn_paper",
-          "dice_paper"
+          "ucagnn"
         ]
       },
       "config_overrides": {

@@ -26,26 +26,19 @@ from tqdm.auto import tqdm
 from ..data.subgraph_sampler import SubgraphBatch, SubgraphSampler
 from ..losses.loss_suite import LossSuite
 from ..models.ucagnn import UCaGNN
-from ..profiling.gpu_profiler import GPUProfiler
+from ..profiling.gpu_profiler import GPUProfiler, TrainingResourceMonitor
 from ..utils.config import UCaGNNConfig
 from ..utils.reproducibility import build_torch_generator
 from ..utils.trainer_runtime import (
     TrainerRuntime,
     autocast_context,
     empty_cuda_cache,
+    is_cuda_oom_error,
     move_tensor_to_device,
     stage_graph_tensors_for_device,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _is_cuda_oom_error(exc: BaseException) -> bool:
-    """Return whether an exception represents CUDA out-of-memory."""
-    if isinstance(exc, torch.OutOfMemoryError):
-        return True
-    message = str(exc).lower()
-    return "cuda" in message and "out of memory" in message
 
 
 class MiniBatchTrainer(TrainerRuntime):
@@ -124,7 +117,7 @@ class MiniBatchTrainer(TrainerRuntime):
         try:
             sampler = _sampler_for(target_device)
         except Exception as exc:
-            if not _is_cuda_oom_error(exc):
+            if not is_cuda_oom_error(exc):
                 raise
             empty_cuda_cache(target_device)
             logger.warning(
@@ -218,17 +211,15 @@ class MiniBatchTrainer(TrainerRuntime):
             generator=generator,
             epoch=epoch,
         )
-        if self.config.n_negatives > 1:
-            batch_neg_matrix = batch_neg_items.reshape(batch_size, self.config.n_negatives)
-            batch_users = batch_users.repeat_interleave(self.config.n_negatives)
-            batch_pos_items = batch_pos_items.repeat_interleave(self.config.n_negatives)
-            batch_neg_items = batch_neg_matrix.reshape(-1)
-            if dice_negative_mask is not None:
-                dice_negative_mask = dice_negative_mask.reshape(-1)
-        else:
-            batch_neg_items = batch_neg_items.squeeze(-1)
-            if dice_negative_mask is not None:
-                dice_negative_mask = dice_negative_mask.squeeze(-1)
+        batch_users, batch_pos_items, batch_neg_items, dice_negative_mask = (
+            self._expand_sampled_negatives(
+                batch_users,
+                batch_pos_items,
+                batch_neg_items,
+                dice_negative_mask,
+                batch_size,
+            )
+        )
         prepared = self.subgraph_sampler.sample(
             batch_users,
             batch_pos_items,
@@ -256,7 +247,7 @@ class MiniBatchTrainer(TrainerRuntime):
                 epoch,
             )
         except Exception as exc:
-            if not _is_cuda_oom_error(exc):
+            if not is_cuda_oom_error(exc):
                 raise
             self._fallback_subgraph_sampler_to_cpu(exc)
             return self._prepare_batch_on_sampler_device(
@@ -330,6 +321,29 @@ class MiniBatchTrainer(TrainerRuntime):
 
         return losses["total"].detach(), losses
 
+    def _expand_sampled_negatives(
+        self,
+        batch_users: torch.Tensor,
+        batch_pos_items: torch.Tensor,
+        batch_neg_items: torch.Tensor,
+        dice_negative_mask: torch.Tensor | None,
+        batch_size: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
+        """Flatten sampled negatives and align users, positives, and DICE masks."""
+        if self.config.n_negatives > 1:
+            batch_neg_matrix = batch_neg_items.reshape(batch_size, self.config.n_negatives)
+            batch_users = batch_users.repeat_interleave(self.config.n_negatives)
+            batch_pos_items = batch_pos_items.repeat_interleave(self.config.n_negatives)
+            batch_neg_items = batch_neg_matrix.reshape(-1)
+            if dice_negative_mask is not None:
+                dice_negative_mask = dice_negative_mask.reshape(-1)
+            return batch_users, batch_pos_items, batch_neg_items, dice_negative_mask
+
+        batch_neg_items = batch_neg_items.squeeze(-1)
+        if dice_negative_mask is not None:
+            dice_negative_mask = dice_negative_mask.squeeze(-1)
+        return batch_users, batch_pos_items, batch_neg_items, dice_negative_mask
+
     def _run_full_graph_training_batch(
         self,
         batch_users: torch.Tensor,
@@ -351,16 +365,15 @@ class MiniBatchTrainer(TrainerRuntime):
             generator=generator,
             epoch=epoch,
         )
-        if self.config.n_negatives > 1:
-            batch_users = batch_users.repeat_interleave(self.config.n_negatives)
-            batch_pos_items = batch_pos_items.repeat_interleave(self.config.n_negatives)
-            batch_neg_items = batch_neg_items.reshape(-1)
-            if dice_negative_mask is not None:
-                dice_negative_mask = dice_negative_mask.reshape(-1)
-        else:
-            batch_neg_items = batch_neg_items.squeeze(-1)
-            if dice_negative_mask is not None:
-                dice_negative_mask = dice_negative_mask.squeeze(-1)
+        batch_users, batch_pos_items, batch_neg_items, dice_negative_mask = (
+            self._expand_sampled_negatives(
+                batch_users,
+                batch_pos_items,
+                batch_neg_items,
+                dice_negative_mask,
+                batch_size,
+            )
+        )
 
         edge_index, edge_sign, edge_norm = self._get_full_graph_training_tensors()
         with autocast_context(use_amp=self.use_amp, amp_dtype=self.amp_dtype):
@@ -595,6 +608,8 @@ class MiniBatchTrainer(TrainerRuntime):
 
             sub_batch: SubgraphBatch | None = None
             total_loss: torch.Tensor | None = None
+            resource_monitor = TrainingResourceMonitor(self.device).start()
+            resource_stats = None
             try:
                 if self.config.training_graph_mode == "full":
                     for batch_idx, start in enumerate(starts):
@@ -640,6 +655,7 @@ class MiniBatchTrainer(TrainerRuntime):
                         epoch_loss_total = epoch_loss_total + total_loss.to(torch.bfloat16)
                         completed_batches += 1
             finally:
+                resource_stats = resource_monitor.stop()
                 if progress_bar is not None:
                     progress_bar.close()
 
@@ -679,12 +695,14 @@ class MiniBatchTrainer(TrainerRuntime):
                 current_ndcg,
                 primary_metric,
                 skipped_batches=skipped_batches,
+                resource_stats=resource_stats,
             )
             self._log_epoch_to_sqlite(
                 epoch,
                 avg_loss,
                 epoch_time_s,
                 val_metrics,
+                resource_stats=resource_stats,
             )
             self.completed_epoch = epoch
             self.resume_history = history

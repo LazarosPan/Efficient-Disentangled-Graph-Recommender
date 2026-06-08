@@ -180,9 +180,8 @@ def build_formal_run_parser() -> argparse.ArgumentParser:
         dest="profile",
         default=None,
         help=(
-            "Optional semantic formal profile slug. Supported profiles: "
-            + ", ".join(profiles)
-            + "."
+            "Optional semantic formal profile slug, or a comma-separated queue "
+            "of slugs to run sequentially. Supported profiles: " + ", ".join(profiles) + "."
         ),
     )
     parser.add_argument(

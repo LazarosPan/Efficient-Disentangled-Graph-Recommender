@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import tempfile
 import unittest
 import warnings
 from pathlib import Path
@@ -28,10 +29,11 @@ from experiments.run_experiment import (
     _auto_batch_probe_candidates,
     _auto_batch_probe_interactions,
     _bootstrap_cagra_embeddings,
-    _build_canonical_name,
     _build_evaluation_identity,
     _build_training_identity,
+    _checkpoint_ready_for_evaluation,
     _cuda_memory_snapshot,
+    _default_checkpoint_path,
     _exception_summary,
     _release_cuda_probe_memory,
     _resume_auto_batch_fallback,
@@ -41,16 +43,23 @@ from experiments.run_experiment import (
     build_runtime_config_inputs,
     build_runtime_model,
     normalize_benchmark_config_overrides,
+    recoverable_checkpoint_for_config,
+    recoverable_checkpoint_path,
 )
-from scripts.query_results import _build_canonical_name_from_config, _format_scoremix
+from scripts.query_results import _format_scoremix
 from src.data.canonical import CanonicalInteractions
 from src.data.graph_builder import build_graph
 from src.losses.loss_suite import LossSuite
 from src.models.baselines.dice import PaperGCNDICE
 from src.models.baselines.lightgcn import PaperLightGCN
-from src.profiling.gpu_profiler import GPUProfiler
+from src.profiling.gpu_profiler import (
+    GPUProfiler,
+    TrainingResourceStats,
+    sample_gpu_resource_snapshot,
+)
 from src.training.mini_batch_trainer import MiniBatchTrainer
 from src.utils.config import UCaGNNConfig
+from src.utils.experiment_naming import build_canonical_experiment_name
 from src.utils.reproducibility import build_torch_generator
 from src.utils.trainer_runtime import TrainerRuntime
 from torch.nn import functional
@@ -195,7 +204,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.preprocessing_preset, "kuairec_watchratio")
         self.assertIn(
             "ppresetkuairec_watchratio",
-            _build_canonical_name(config, None, None),
+            build_canonical_experiment_name(config, None, None),
         )
 
     def test_build_config_accepts_lr_scheduler_override(self) -> None:
@@ -221,7 +230,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 lr_scheduler="cosine",
             ),
         )
-        canonical = _build_canonical_name(config, "ucagnn", None)
+        canonical = build_canonical_experiment_name(config, "ucagnn", None)
 
         self.assertIn("lr-cosine", canonical)
 
@@ -238,8 +247,8 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         stored_config = dataclasses.asdict(config)
 
         self.assertEqual(
-            _build_canonical_name_from_config(stored_config, "ucagnn", None),
-            _build_canonical_name(config, "ucagnn", None),
+            build_canonical_experiment_name(stored_config, "ucagnn", None),
+            build_canonical_experiment_name(config, "ucagnn", None),
         )
 
     def test_query_results_scoremix_uses_current_config_field(self) -> None:
@@ -324,6 +333,52 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             snapshot,
             ("cuda_memory=allocated=1MB reserved=2MB peak_allocated=3MB peak_reserved=4MB"),
         )
+
+    def test_gpu_resource_snapshot_parses_utilization_and_memory_used(self) -> None:
+        """Training telemetry should capture nvidia-smi utilization and memory used."""
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.current_device", return_value=0),
+            patch("subprocess.check_output", return_value="42, 1536\n"),
+        ):
+            snapshot = sample_gpu_resource_snapshot(torch.device("cuda"))
+
+        assert snapshot is not None
+        self.assertEqual(snapshot.utilization_pct, 42.0)
+        self.assertEqual(snapshot.memory_used_mb, 1536.0)
+
+    def test_log_epoch_to_sqlite_uses_training_resource_stats(self) -> None:
+        """Epoch resource rows should come from training-window samples."""
+        runtime = TrainerRuntime.__new__(TrainerRuntime)
+        runtime.device = torch.device("cuda")
+        runtime.experiment_logger = Mock()
+        runtime.exp_id = 9
+        runtime.mlflow_module = None
+        runtime.model = Mock()
+        resource_stats = TrainingResourceStats(
+            pytorch_peak_allocated_mb=1024.0,
+            pytorch_peak_reserved_mb=2048.0,
+            nvidia_peak_memory_used_mb=3072.0,
+            avg_gpu_utilization_pct=33.0,
+            max_gpu_utilization_pct=66.0,
+        )
+
+        runtime._log_epoch_to_sqlite(
+            epoch=3,
+            avg_loss=0.25,
+            epoch_time_s=12.0,
+            val_metrics={"NDCG@40": 0.7},
+            resource_stats=resource_stats,
+        )
+
+        metric_calls = runtime.experiment_logger.log_metric.call_args_list
+        logged = {(call.args[1], call.args[2]) for call in metric_calls}
+        self.assertIn(("train_peak_vram_allocated_mb", 1024.0), logged)
+        self.assertIn(("train_peak_vram_reserved_mb", 2048.0), logged)
+        self.assertIn(("train_peak_gpu_memory_used_mb", 3072.0), logged)
+        self.assertIn(("gpu_utilization_pct", 33.0), logged)
+        self.assertIn(("max_gpu_utilization_pct", 66.0), logged)
+        self.assertIn(("peak_vram_mb", 3072.0), logged)
 
     def test_ucagnn_preset_applies_fused_scoring_defaults(self) -> None:
         """The ucagnn preset should target the fused-score contract."""
@@ -421,6 +476,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.single_branch_gnn_layers, 3)
         self.assertEqual(config.dropout, 0.0)
         self.assertEqual(config.lr, 0.001)
+        self.assertEqual(config.lr_scheduler, "none")
         self.assertEqual(config.weight_decay, 1e-4)
         self.assertEqual(config.batch_size, 2048)
         self.assertFalse(config.auto_batch_size)
@@ -433,6 +489,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 dropout=0.25,
                 graph_policy="cagra_augmented",
                 lr=0.01,
+                lr_scheduler="cosine",
                 weight_decay=1e-2,
                 batch_size=8192,
                 auto_batch_size=True,
@@ -442,6 +499,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.dropout, 0.0)
         self.assertEqual(config.graph_policy, "observed")
         self.assertEqual(config.lr, 0.001)
+        self.assertEqual(config.lr_scheduler, "none")
         self.assertEqual(config.weight_decay, 1e-4)
         self.assertEqual(config.batch_size, 2048)
         self.assertFalse(config.auto_batch_size)
@@ -483,6 +541,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.dice_branch_margin, config.dice_sampler_margin)
         self.assertEqual(config.graph_policy, "observed")
         self.assertEqual(config.lr, 0.001)
+        self.assertEqual(config.lr_scheduler, "none")
         self.assertEqual(config.batch_size, 128)
 
     def test_dice_paper_ignores_shared_runtime_overrides(self) -> None:
@@ -493,6 +552,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 dropout=0.05,
                 graph_policy="cagra_augmented",
                 lr=0.01,
+                lr_scheduler="cosine",
                 batch_size=8192,
                 auto_batch_size=True,
             ),
@@ -501,19 +561,12 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.dropout, 0.2)
         self.assertEqual(config.graph_policy, "observed")
         self.assertEqual(config.lr, 0.001)
+        self.assertEqual(config.lr_scheduler, "none")
         self.assertEqual(config.weight_decay, 5e-8)
         self.assertEqual(config.batch_size, 128)
         self.assertFalse(config.auto_batch_size)
         self.assertEqual(config.negative_sampling_strategy, "dice")
         self.assertEqual(config.n_negatives, 4)
-
-    def test_legacy_lgndice_paper_preset_aliases_to_dice_paper_contract(self) -> None:
-        """Old lgndice_paper commands should resolve to the canonical DICE paper baseline."""
-        config = build_config(_experiment_args(preset="lgndice_paper"))
-
-        self.assertEqual(config.baseline_family, "dice_paper")
-        self.assertEqual(config.branch_loss_mode, "dice")
-        self.assertEqual(config.negative_sampling_strategy, "dice")
 
     def test_build_runtime_model_uses_explicit_paper_baseline_classes(self) -> None:
         """Paper baselines should not be hidden as UCaGNN config variants."""
@@ -988,8 +1041,8 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertNotEqual(base_hash, changed_hash)
 
-    def test_formal_profile_defaults_disable_early_stopping(self) -> None:
-        """The default formal profile should own the formal support-parameter bundle."""
+    def test_default_formal_profile_is_core_ucagnn_mainline(self) -> None:
+        """The default formal profile should target the thesis mainline."""
         profile_name = default_formal_profile_name()
         profile = get_formal_profile(profile_name)
         benchmark_args = formal_main._build_new_run_args(
@@ -997,8 +1050,9 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             profile_name,
         )
 
-        self.assertFalse(profile["config_overrides"]["use_early_stopping"])
-        self.assertEqual(profile["id"], "dev-ucagnn")
+        self.assertTrue(profile["config_overrides"]["use_early_stopping"])
+        self.assertEqual(profile["config_overrides"]["patience"], 10)
+        self.assertEqual(profile["id"], "core-ucagnn-mainline")
         self.assertEqual(
             profile["matrix"]["datasets"],
             ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
@@ -1011,15 +1065,23 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertNotIn("auto_batch_size", profile["config_overrides"])
         self.assertEqual(
             profile["config_overrides"]["batch_size_candidates"],
-            [16384, 8192, 4096, 2048, 1024, 512, 256],
+            [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
         )
+        self.assertEqual(profile["config_overrides"]["single_branch_gnn_layers"], 2)
         self.assertEqual(profile["config_overrides"]["interest_gnn_layers"], 1)
         self.assertEqual(profile["config_overrides"]["conformity_gnn_layers"], 2)
         self.assertEqual(profile["config_overrides"]["dropout"], 0.1)
-        self.assertEqual(profile["config_overrides"]["num_neighbors"], [10, 5])
+        self.assertEqual(
+            profile["config_overrides"]["num_neighbors"],
+            {
+                "small": [[6, 3], [4, 2]],
+                "medium": [[10, 5], [16, 8]],
+            },
+        )
         self.assertNotIn("hard_negative_ratio", profile["config_overrides"])
         self.assertNotIn("loss_schedule", profile["config_overrides"])
-        self.assertFalse(benchmark_args["use_early_stopping"])
+        self.assertTrue(benchmark_args["use_early_stopping"])
+        self.assertEqual(benchmark_args["patience"], 10)
         self.assertEqual(
             benchmark_args["datasets"],
             ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
@@ -1030,19 +1092,37 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertTrue(benchmark_args["auto_batch_size"])
         self.assertEqual(
             benchmark_args["batch_size_candidates"],
-            [16384, 8192, 4096, 2048, 1024, 512, 256],
+            [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
         )
-        self.assertIsNone(benchmark_args["single_branch_gnn_layers"])
+        self.assertEqual(benchmark_args["single_branch_gnn_layers"], 2)
         self.assertEqual(benchmark_args["interest_gnn_layers"], 1)
         self.assertEqual(benchmark_args["conformity_gnn_layers"], 2)
         self.assertEqual(benchmark_args["dropout"], 0.1)
-        self.assertEqual(benchmark_args["num_neighbors"], [10, 5])
+        self.assertEqual(
+            benchmark_args["num_neighbors"],
+            {
+                "small": [[6, 3], [4, 2]],
+                "medium": [[10, 5], [16, 8]],
+            },
+        )
         self.assertEqual(benchmark_args["graph_policy"], "observed")
         self.assertIsNone(benchmark_args["graph_policy_options"])
         self.assertEqual(benchmark_args["hard_negative_ratio"], 0.0)
         self.assertIsNone(benchmark_args["loss_schedule"])
         self.assertEqual(benchmark_args["auxiliary_losses_start_epoch"], 15)
         self.assertEqual(benchmark_args["popularity_supervision_start_epoch"], 30)
+
+    def test_deeper_comparison_profile_keeps_original_num_neighbors_sweep(self) -> None:
+        """The deeper comparison profile should stay on its original fan-out sweep."""
+        profile = get_formal_profile("core-deeper-comparison-i2-c3")
+        benchmark_args = formal_main._build_new_run_args(
+            SimpleNamespace(overwrite_checkpoint=False),
+            "core-deeper-comparison-i2-c3",
+        )
+
+        expected_neighbors = [[10, 5, 3], [5, 3, 2]]
+        self.assertEqual(profile["config_overrides"]["num_neighbors"], expected_neighbors)
+        self.assertEqual(benchmark_args["num_neighbors"], expected_neighbors)
 
     def test_benchmark_config_inputs_bridge_into_build_config(self) -> None:
         """Formal benchmark args should rebuild one run through the shared config contract."""
@@ -1074,9 +1154,41 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.dataset, "movielens1m")
         self.assertEqual(config.lr_scheduler, "plateau")
         self.assertTrue(config.auto_batch_size)
-        self.assertFalse(config.use_early_stopping)
+        self.assertTrue(config.use_early_stopping)
+        self.assertEqual(config.patience, 10)
         self.assertEqual(config.graph_policy, "cagra_augmented")
         self.assertEqual(config.num_neighbors, [10, 5])
+
+    def test_benchmark_config_inputs_preserve_auxiliary_loss_overrides(self) -> None:
+        """Formal profiles should be able to run causal auxiliary-loss ablations."""
+        benchmark_args = normalize_benchmark_config_overrides(
+            {
+                "loss_weight_contrastive": 0.03,
+                "loss_weight_propensity_calibration": 0.04,
+                "use_ipw": True,
+                "auxiliary_loss_schedule": "linear_ramp",
+                "auxiliary_ramp_rate": 0.002,
+                "contrastive_max_pairs": 64,
+                "contrastive_temperature": 0.15,
+            },
+        )
+        config_inputs = build_benchmark_config_inputs(
+            benchmark_args,
+            dataset="kuairand1k",
+            preset="ucagnn",
+            lr_scheduler="cosine",
+            num_neighbors=[10, 5],
+        )
+
+        config = build_config(config_inputs)
+
+        self.assertEqual(config.loss_weight_contrastive, 0.03)
+        self.assertEqual(config.loss_weight_propensity_calibration, 0.04)
+        self.assertTrue(config.use_ipw)
+        self.assertEqual(config.auxiliary_loss_schedule, "linear_ramp")
+        self.assertEqual(config.auxiliary_ramp_rate, 0.002)
+        self.assertEqual(config.contrastive_max_pairs, 64)
+        self.assertEqual(config.contrastive_temperature, 0.15)
 
     def test_runtime_config_inputs_bridge_into_build_config(self) -> None:
         """Quick/runtime config mappings should reuse the shared config-input builder."""
@@ -1134,11 +1246,14 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         default_profile = get_formal_profile("DEFAULT")
 
         self.assertEqual(default_profile["id"], default_formal_profile_name())
+        self.assertEqual(default_profile["id"], "core-ucagnn-mainline")
         self.assertIn("abauto", default_profile["name"])
+        self.assertEqual(get_formal_profile("latest")["id"], "core-ucagnn-mainline")
+        self.assertEqual(get_formal_profile("development")["id"], "dev-ucagnn")
         self.assertEqual(get_formal_profile("dev-ucagnn")["id"], "dev-ucagnn")
 
-    def test_second_formal_profile_is_reserved_for_final_comparison(self) -> None:
-        """The non-default profile should keep baselines out of day-to-day runs."""
+    def test_second_formal_profile_is_ucagnn_mainline_only(self) -> None:
+        """The main thesis profile should not rerun fixed paper baselines."""
         profile_name = formal_profile_names()[1]
         profile = get_formal_profile(profile_name)
         benchmark_args = formal_main._build_new_run_args(
@@ -1148,7 +1263,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertEqual(
             profile["matrix"]["presets"],
-            ["ucagnn", "lightgcn_paper", "dice_paper"],
+            ["ucagnn"],
         )
         self.assertEqual(
             profile["matrix"]["datasets"],
@@ -1156,7 +1271,19 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             profile["id"],
-            "core-paper-architecture-comparison",
+            "core-ucagnn-mainline",
+        )
+        self.assertEqual(
+            get_formal_profile("core-paper-architecture-comparison")["id"],
+            "core-ucagnn-mainline",
+        )
+        self.assertEqual(
+            get_formal_profile("paper-lightgcn-small-baselines")["matrix"]["presets"],
+            ["lightgcn_paper"],
+        )
+        self.assertEqual(
+            get_formal_profile("paper-dice-all-runtime-probes")["matrix"]["presets"],
+            ["dice_paper"],
         )
         self.assertNotIn("scoring_weight_modes", profile["matrix"])
         self.assertEqual(profile["config_overrides"]["single_branch_gnn_layers"], 2)
@@ -1164,7 +1291,13 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertNotIn("auto_batch_size", profile["config_overrides"])
         self.assertEqual(profile["config_overrides"]["interest_gnn_layers"], 1)
         self.assertEqual(profile["config_overrides"]["conformity_gnn_layers"], 2)
-        self.assertEqual(profile["config_overrides"]["num_neighbors"], [8, 4])
+        self.assertEqual(
+            profile["config_overrides"]["num_neighbors"],
+            {
+                "small": [[6, 3], [4, 2]],
+                "medium": [[10, 5], [16, 8]],
+            },
+        )
         self.assertNotIn("scoring_weight_modes", benchmark_args)
         self.assertEqual(
             benchmark_args["datasets"],
@@ -1174,7 +1307,13 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(benchmark_args["single_branch_gnn_layers"], 2)
         self.assertEqual(benchmark_args["interest_gnn_layers"], 1)
         self.assertEqual(benchmark_args["conformity_gnn_layers"], 2)
-        self.assertEqual(benchmark_args["num_neighbors"], [8, 4])
+        self.assertEqual(
+            benchmark_args["num_neighbors"],
+            {
+                "small": [[6, 3], [4, 2]],
+                "medium": [[10, 5], [16, 8]],
+            },
+        )
         self.assertIsNone(benchmark_args["sample_interactions"])
         self.assertIsNone(benchmark_args["loader_max_rows"])
 
@@ -1195,12 +1334,74 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         ):
             formal_main._resolve_benchmark_args(cli_args)
 
+    def test_requested_profile_ignores_removed_saved_profile_state(self) -> None:
+        """Explicit profiles should start fresh when old saved state references a removed id."""
+        requested_profile_name = "paper-dice-all-runtime-probes"
+        cli_args = SimpleNamespace(profile=requested_profile_name, overwrite_checkpoint=True)
+
+        with (
+            patch.object(
+                formal_main,
+                "_load_saved_formal_state",
+                side_effect=ValueError(
+                    "The saved formal-run state references a profile that is no longer defined.",
+                ),
+            ),
+            patch.object(
+                formal_main,
+                "_build_new_run_args",
+                return_value={"profile_name": requested_profile_name, "fresh": True},
+            ) as build_new_run_args,
+        ):
+            benchmark_args, profile_name, resumed = formal_main._resolve_benchmark_args(
+                cli_args,
+            )
+
+        build_new_run_args.assert_called_once_with(cli_args, requested_profile_name)
+        self.assertFalse(resumed)
+        self.assertEqual(profile_name, requested_profile_name)
+        self.assertEqual(
+            benchmark_args,
+            {"profile_name": requested_profile_name, "fresh": True},
+        )
+
     def test_resolve_benchmark_args_builds_fresh_run_when_state_is_missing(self) -> None:
         """Missing saved state should force a fresh formal benchmark plan."""
         cli_args = SimpleNamespace(profile=None, overwrite_checkpoint=False)
 
         with (
             patch.object(formal_main, "_load_saved_formal_state", return_value=None),
+            patch.object(
+                formal_main,
+                "_build_new_run_args",
+                return_value={"profile_name": default_formal_profile_name(), "fresh": True},
+            ) as build_new_run_args,
+        ):
+            benchmark_args, profile_name, resumed = formal_main._resolve_benchmark_args(
+                cli_args,
+            )
+
+        build_new_run_args.assert_called_once_with(cli_args, default_formal_profile_name())
+        self.assertFalse(resumed)
+        self.assertEqual(profile_name, default_formal_profile_name())
+        self.assertEqual(
+            benchmark_args,
+            {"profile_name": default_formal_profile_name(), "fresh": True},
+        )
+
+    def test_resolve_benchmark_args_requires_profile_to_resume_non_default_state(
+        self,
+    ) -> None:
+        """Unspecified profiles should not silently resume non-default saved runs."""
+        cli_args = SimpleNamespace(profile=None, overwrite_checkpoint=False)
+        saved_state = {
+            "profile_name": "paper-dice-all-runtime-probes",
+            "profile_slug": "runtime-probe",
+            "benchmark_args": {"datasets": ["kuairec_v2"], "presets": ["dice_paper"]},
+        }
+
+        with (
+            patch.object(formal_main, "_load_saved_formal_state", return_value=saved_state),
             patch.object(
                 formal_main,
                 "_build_new_run_args",
@@ -1709,9 +1910,32 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(normalized["num_neighbors"], [[10, 5], [5, 3]])
         self.assertEqual(normalized["batch_size"], UCaGNNConfig().batch_size)
         self.assertTrue(normalized["auto_batch_size"])
+        self.assertEqual(normalized["use_early_stopping"], UCaGNNConfig().use_early_stopping)
+        self.assertEqual(normalized["patience"], UCaGNNConfig().patience)
         self.assertIsNone(normalized["graph_policy"])
         self.assertIsNone(normalized["graph_policy_options"])
         self.assertEqual(normalized["hard_negative_ratio"], 0.25)
+
+    def test_normalize_benchmark_config_overrides_supports_dataset_keyed_neighbor_sweeps(
+        self,
+    ) -> None:
+        """Benchmark payload normalization should preserve dataset-keyed neighbor sweeps."""
+        normalized = normalize_benchmark_config_overrides(
+            {
+                "num_neighbors": {
+                    "small": [[6, 3], [4, 2]],
+                    "medium": [[10, 5], [16, 8]],
+                },
+            },
+        )
+
+        self.assertEqual(
+            normalized["num_neighbors"],
+            {
+                "small": [[6, 3], [4, 2]],
+                "medium": [[10, 5], [16, 8]],
+            },
+        )
 
     def test_normalize_benchmark_config_overrides_supports_graph_policy_sweeps(self) -> None:
         """Benchmark payload normalization should expand graph-policy sweep lists safely."""
@@ -1770,6 +1994,302 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertFalse(should_stop)
         self.assertEqual(runtime.patience_counter, 0)
 
+    def test_checkpoint_eval_loads_best_state_not_latest_state(self) -> None:
+        """Recovery evaluation should use the best validation model state."""
+        config = UCaGNNConfig(device="cpu")
+        training_identity, training_hash = _build_training_identity(
+            config,
+            "ucagnn",
+            None,
+        )
+        model = torch.nn.Linear(1, 1, bias=False)
+        with torch.no_grad():
+            model.weight.fill_(1.0)
+        runtime = TrainerRuntime.__new__(TrainerRuntime)
+        runtime.model = model
+        runtime.loss_suite = Mock()
+        runtime.loss_suite.state_dict.return_value = {"loss": "state"}
+        runtime.optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        runtime.scheduler = None
+        runtime.ema_model = None
+        runtime.config = config
+        runtime.best_ndcg = 0.5
+        runtime.patience_counter = 10
+        runtime.best_state = {"weight": torch.full_like(model.weight.detach(), 2.0)}
+        runtime.completed_epoch = 39
+        runtime.resume_history = {
+            "train_loss": [1.0],
+            "val_metrics": [{"NDCG@40": 0.5}],
+        }
+        runtime.exp_id = 123
+        runtime.training_identity = training_identity
+        runtime.training_hash = training_hash
+        runtime.evaluation_identity = None
+        runtime.evaluation_hash = None
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            checkpoint_path = Path(tmp_dir) / "best.pt"
+            runtime.save_checkpoint(
+                checkpoint_path,
+                history=runtime.resume_history,
+                training_finished=True,
+            )
+            payload = torch.load(
+                checkpoint_path,
+                map_location="cpu",
+                weights_only=False,
+            )
+
+            self.assertTrue(payload["training_finished"])
+            self.assertFalse(payload["is_complete"])
+            self.assertEqual(float(payload["model_state"]["weight"].item()), 1.0)
+            self.assertEqual(float(payload["best_state"]["weight"].item()), 2.0)
+
+            recovered_model = torch.nn.Linear(1, 1, bias=False)
+            recovered_runtime = TrainerRuntime.__new__(TrainerRuntime)
+            recovered_runtime.model = recovered_model
+            recovered_runtime.loss_suite = Mock()
+            recovered_runtime.optimizer = torch.optim.SGD(
+                recovered_model.parameters(),
+                lr=0.1,
+            )
+            recovered_runtime.scheduler = None
+            recovered_runtime.ema_model = None
+            recovered_runtime.device = torch.device("cpu")
+
+            recovered_runtime.load_checkpoint(
+                checkpoint_path,
+                load_best_model=True,
+            )
+
+        self.assertEqual(float(recovered_model.weight.item()), 2.0)
+
+    def test_checkpoint_ready_for_evaluation_accepts_legacy_early_stop_state(
+        self,
+    ) -> None:
+        """Older failed checkpoints should recover when patience already fired."""
+        config = UCaGNNConfig(device="cpu")
+        config.epochs = 200
+        config.use_early_stopping = True
+        config.patience = 10
+        checkpoint_state = {
+            "completed_epoch": 39,
+            "patience_counter": 10,
+            "best_state": {"embedding.weight": torch.ones(1)},
+        }
+
+        self.assertTrue(_checkpoint_ready_for_evaluation(checkpoint_state, config))
+
+    def test_recoverable_checkpoint_path_requires_finished_training_state(self) -> None:
+        """Formal recovery should only re-enter rows with finished checkpoints."""
+        config = UCaGNNConfig(device="cpu")
+        training_identity, training_hash = _build_training_identity(
+            config,
+            "ucagnn",
+            None,
+        )
+        model = torch.nn.Linear(1, 1, bias=False)
+        runtime = TrainerRuntime.__new__(TrainerRuntime)
+        runtime.model = model
+        runtime.loss_suite = Mock()
+        runtime.loss_suite.state_dict.return_value = {"loss": "state"}
+        runtime.optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        runtime.scheduler = None
+        runtime.ema_model = None
+        runtime.config = config
+        runtime.best_ndcg = 0.1
+        runtime.patience_counter = 0
+        runtime.best_state = {"weight": torch.full_like(model.weight.detach(), 2.0)}
+        runtime.completed_epoch = 0
+        runtime.resume_history = {"train_loss": [1.0], "val_metrics": [{"NDCG@40": 0.1}]}
+        runtime.exp_id = 123
+        runtime.training_identity = training_identity
+        runtime.training_hash = training_hash
+        runtime.evaluation_identity = None
+        runtime.evaluation_hash = None
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            checkpoint_path = Path(tmp_dir) / "recoverable.pt"
+            runtime.save_checkpoint(checkpoint_path, history=runtime.resume_history)
+            self.assertIsNone(
+                recoverable_checkpoint_path(
+                    config,
+                    preset="ucagnn",
+                    checkpoint_path=checkpoint_path,
+                ),
+            )
+
+            runtime.save_checkpoint(
+                checkpoint_path,
+                history=runtime.resume_history,
+                training_finished=True,
+            )
+
+            self.assertEqual(
+                recoverable_checkpoint_path(
+                    config,
+                    preset="ucagnn",
+                    checkpoint_path=checkpoint_path,
+                ),
+                checkpoint_path,
+            )
+
+    def test_recoverable_checkpoint_searches_auto_batch_candidates(self) -> None:
+        """Recovery lookup should find saved auto-selected batch-size checkpoints."""
+        config = UCaGNNConfig(device="cpu")
+        config.batch_size = 4096
+        config.auto_batch_size = True
+        config.batch_size_candidates = [32768, 8192, 4096]
+        checkpoint_config = dataclasses.replace(config, batch_size=8192)
+        training_identity, training_hash = _build_training_identity(
+            checkpoint_config,
+            "ucagnn",
+            None,
+        )
+        model = torch.nn.Linear(1, 1, bias=False)
+        runtime = TrainerRuntime.__new__(TrainerRuntime)
+        runtime.model = model
+        runtime.loss_suite = Mock()
+        runtime.loss_suite.state_dict.return_value = {"loss": "state"}
+        runtime.optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        runtime.scheduler = None
+        runtime.ema_model = None
+        runtime.config = checkpoint_config
+        runtime.best_ndcg = 0.1
+        runtime.patience_counter = 10
+        runtime.best_state = {"weight": torch.full_like(model.weight.detach(), 2.0)}
+        runtime.completed_epoch = 39
+        runtime.resume_history = {
+            "train_loss": [1.0],
+            "val_metrics": [{"NDCG@40": 0.1}],
+        }
+        runtime.exp_id = 123
+        runtime.training_identity = training_identity
+        runtime.training_hash = training_hash
+        runtime.evaluation_identity = None
+        runtime.evaluation_hash = None
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch("experiments.run_experiment.CHECKPOINT_DIR", Path(tmp_dir)),
+        ):
+            checkpoint_path = _default_checkpoint_path(
+                checkpoint_config,
+                "ucagnn",
+                None,
+                training_hash,
+            )
+            runtime.save_checkpoint(
+                checkpoint_path,
+                history=runtime.resume_history,
+                training_finished=True,
+            )
+
+            recovered = recoverable_checkpoint_for_config(
+                config,
+                preset="ucagnn",
+            )
+
+            self.assertIsNotNone(recovered)
+            recovered_config, recovered_path = recovered
+            self.assertEqual(recovered_config.batch_size, 8192)
+            self.assertEqual(recovered_path, checkpoint_path)
+            self.assertEqual(
+                recoverable_checkpoint_path(config, preset="ucagnn"),
+                checkpoint_path,
+            )
+
+    def test_run_experiment_skips_auto_batch_probe_for_recoverable_checkpoint(
+        self,
+    ) -> None:
+        """A finished checkpoint should be loaded before auto-batch probing starts."""
+        config = UCaGNNConfig(device="cpu")
+        config.batch_size = 4096
+        config.auto_batch_size = True
+        config.batch_size_candidates = [32768, 8192, 4096]
+        checkpoint_config = dataclasses.replace(config, batch_size=8192)
+        training_identity, training_hash = _build_training_identity(
+            checkpoint_config,
+            "ucagnn",
+            None,
+        )
+        model = torch.nn.Linear(1, 1, bias=False)
+        runtime = TrainerRuntime.__new__(TrainerRuntime)
+        runtime.model = model
+        runtime.loss_suite = Mock()
+        runtime.loss_suite.state_dict.return_value = {"loss": "state"}
+        runtime.optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        runtime.scheduler = None
+        runtime.ema_model = None
+        runtime.config = checkpoint_config
+        runtime.best_ndcg = 0.1
+        runtime.patience_counter = 10
+        runtime.best_state = {"weight": torch.full_like(model.weight.detach(), 2.0)}
+        runtime.completed_epoch = 39
+        runtime.resume_history = {
+            "train_loss": [1.0],
+            "val_metrics": [{"NDCG@40": 0.1}],
+        }
+        runtime.exp_id = 321
+        runtime.training_identity = training_identity
+        runtime.training_hash = training_hash
+        runtime.evaluation_identity = None
+        runtime.evaluation_hash = None
+        canonical = SimpleNamespace(item_propensity_targets=None)
+        data = SimpleNamespace(
+            num_nodes=0,
+            edge_index=torch.empty((2, 0), dtype=torch.long),
+            train_mask=torch.zeros(0, dtype=torch.bool),
+            val_mask=torch.zeros(0, dtype=torch.bool),
+            test_mask=torch.zeros(0, dtype=torch.bool),
+        )
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch("experiments.run_experiment.CHECKPOINT_DIR", Path(tmp_dir)),
+        ):
+            checkpoint_path = _default_checkpoint_path(
+                checkpoint_config,
+                "ucagnn",
+                None,
+                training_hash,
+            )
+            runtime.save_checkpoint(
+                checkpoint_path,
+                history=runtime.resume_history,
+                is_complete=True,
+                test_metrics={"NDCG@20": 0.1},
+                exp_id=321,
+            )
+
+            with (
+                patch(
+                    "experiments.run_experiment.load_runtime_data",
+                    return_value=(canonical, data),
+                ),
+                patch(
+                    "experiments.run_experiment._resolve_auto_batch_size",
+                    side_effect=AssertionError("auto batch probe should not run"),
+                ),
+                patch(
+                    "experiments.run_experiment._verify_selected_auto_batch_size",
+                    side_effect=AssertionError("auto batch verify should not run"),
+                ),
+                patch(
+                    "experiments.run_experiment.build_runtime_model",
+                    return_value=torch.nn.Linear(1, 1, bias=False),
+                ),
+            ):
+                result = formal_main.run_experiment(
+                    config,
+                    preset="ucagnn",
+                    enable_mlflow=False,
+                )
+
+        self.assertEqual(result["exp_id"], 321)
+        self.assertEqual(result["checkpoint_path"], str(checkpoint_path))
+        self.assertEqual(result["test_metrics"], {"NDCG@20": 0.1})
+
     def test_step_scheduler_uses_metric_only_for_plateau(self) -> None:
         """ReduceLROnPlateau should consume the validation metric; others should not."""
         runtime = TrainerRuntime.__new__(TrainerRuntime)
@@ -1809,6 +2329,26 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertEqual(metrics, {"NDCG@40": 0.5})
         runtime.evaluator.evaluate.assert_called_once()
+        self.assertFalse(
+            runtime.evaluator.evaluate.call_args.kwargs["include_refined_diagnostics"],
+        )
+
+    def test_split_eval_defaults_to_primary_metrics_only(self) -> None:
+        """Refined diagnostics should be opt-in so only final test evaluation pays for them."""
+        runtime = TrainerRuntime.__new__(TrainerRuntime)
+        runtime.device = torch.device("cpu")
+        runtime.config = SimpleNamespace(use_amp=False)
+        runtime.use_amp = False
+        runtime.amp_dtype = torch.float16
+        runtime.ema_model = None
+        runtime.model = object()
+        runtime.data = object()
+        runtime.evaluator = Mock()
+        runtime.evaluator.evaluate.return_value = {"NDCG@40": 0.5}
+
+        metrics = runtime._evaluate_split_metrics("test-mask")
+
+        self.assertEqual(metrics, {"NDCG@40": 0.5})
         self.assertFalse(
             runtime.evaluator.evaluate.call_args.kwargs["include_refined_diagnostics"],
         )
@@ -2085,6 +2625,23 @@ class BenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(args.presets, ["ucagnn", "lightgcn_paper", "dice_paper"])
         self.assertFalse(hasattr(args, "scoring_weight_modes"))
 
+    def test_benchmark_parser_exposes_only_canonical_preset_names(self) -> None:
+        """Benchmark CLI choices should match the canonical preset list."""
+        parser = build_benchmark_parser()
+        preset_action = next(action for action in parser._actions if action.dest == "presets")
+
+        self.assertEqual(
+            list(preset_action.choices),
+            [
+                "ucagnn",
+                "lightgcn",
+                "lightgcn_paper",
+                "dice_paper",
+                "dice_like",
+                "dice_like_ablation",
+            ],
+        )
+
     def test_benchmark_plan_relies_on_preset_owned_score_mix_defaults(self) -> None:
         """Formal sweeps should no longer expose score-mix modes as a matrix axis."""
         args = formal_main._normalize_benchmark_args(
@@ -2100,8 +2657,25 @@ class BenchmarkPlanTests(unittest.TestCase):
             build_benchmark_plan(args),
             [
                 ("movielens1m", "ucagnn", "plateau", None, "observed", (10, 5)),
-                ("movielens1m", "lightgcn_paper", "plateau", None, "observed", (10, 5)),
-                ("movielens1m", "dice_paper", "plateau", None, "observed", (10, 5)),
+                ("movielens1m", "lightgcn_paper", "none", None, "observed", (10, 5)),
+                ("movielens1m", "dice_paper", "none", None, "observed", (10, 5)),
+            ],
+        )
+
+    def test_build_benchmark_plan_keeps_paper_baselines_on_constant_lr(self) -> None:
+        """Paper baselines should not expand LR-scheduler sweeps into duplicate runs."""
+        args = SimpleNamespace(
+            datasets=["movielens1m"],
+            presets=["lightgcn_paper", "dice_paper"],
+            num_neighbors=[10, 5],
+            lr_scheduler="all",
+        )
+
+        self.assertEqual(
+            build_benchmark_plan(args),
+            [
+                ("movielens1m", "lightgcn_paper", "none", None, "observed", (10, 5)),
+                ("movielens1m", "dice_paper", "none", None, "observed", (10, 5)),
             ],
         )
 
@@ -2228,6 +2802,39 @@ class BenchmarkPlanTests(unittest.TestCase):
             plan,
         )
 
+    def test_build_benchmark_plan_resolves_dataset_keyed_num_neighbors(self) -> None:
+        """Benchmark planning should resolve per-tier neighbor sweeps before expansion."""
+        args = SimpleNamespace(
+            datasets=["small", "medium"],
+            presets=["ucagnn"],
+            num_neighbors={
+                "small": [[6, 3], [4, 2]],
+                "medium": [[10, 5], [16, 8]],
+            },
+            lr_scheduler="plateau",
+        )
+
+        plan = build_benchmark_plan(args)
+
+        self.assertEqual(
+            plan[:4],
+            [
+                ("amazonbook", "ucagnn", "plateau", None, "observed", (6, 3)),
+                ("amazonbook", "ucagnn", "plateau", None, "observed", (4, 2)),
+                ("movielens1m", "ucagnn", "plateau", None, "observed", (6, 3)),
+                ("movielens1m", "ucagnn", "plateau", None, "observed", (4, 2)),
+            ],
+        )
+        self.assertIn(
+            ("kuairec_v2", "ucagnn", "plateau", None, "observed", (10, 5)),
+            plan,
+        )
+        self.assertIn(
+            ("kuairand1k", "ucagnn", "plateau", None, "observed", (16, 8)),
+            plan,
+        )
+        self.assertEqual(len(plan), 8)
+
     def test_build_benchmark_plan_resolves_all_lr_schedulers(self) -> None:
         """The lr_scheduler='all' shorthand should expand to all supported schedulers."""
         args = SimpleNamespace(
@@ -2261,6 +2868,195 @@ class BenchmarkPlanTests(unittest.TestCase):
             exit_code = formal_main.run_benchmark(normalized_args)
 
         self.assertEqual(exit_code, 0)
+
+    def test_run_benchmark_retries_failed_row_when_checkpoint_is_recoverable(self) -> None:
+        """Failed terminal rows should re-enter only for checkpoint re-evaluation."""
+        normalized_args = formal_main._normalize_benchmark_args(
+            SimpleNamespace(
+                datasets=["movielens1m"],
+                presets=["ucagnn"],
+                num_neighbors=[10, 5],
+                lr_scheduler="plateau",
+                batch_id="batch-a",
+                resume_batch=True,
+                dry_run=False,
+                no_mlflow=True,
+                mlflow_tracking_uri=None,
+                mlflow_experiment_name="ucagnn-formal",
+                profile_name="test-profile",
+                profile_slug="test-profile",
+                overwrite_checkpoint=False,
+            ),
+        )
+        tracker = Mock()
+        tracker.find_latest_batch_experiment.return_value = {"id": 17, "status": "failed"}
+
+        class FakeExperimentLogger:
+            TERMINAL_STATUSES = ("completed", "failed", "oom")
+
+            def __init__(self, db_path: str) -> None:
+                self.db_path = db_path
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(tracker, name)
+
+        with (
+            patch.object(formal_main, "ExperimentLogger", FakeExperimentLogger),
+            patch.object(
+                formal_main,
+                "recoverable_checkpoint_for_config",
+                return_value=(UCaGNNConfig(), Path("/tmp/recoverable.pt")),
+            ) as recoverable_checkpoint,
+            patch.object(
+                formal_main,
+                "run_experiment",
+                return_value={
+                    "exp_id": 17,
+                    "test_metrics": {"NDCG@20": 0.1, "NDCG@40": 0.2},
+                    "resumed": True,
+                    "peak_vram_mb": None,
+                    "epochs_stopped_at": 40,
+                    "checkpoint_path": "/tmp/recoverable.pt",
+                    "training_time_s": 0.0,
+                    "train_batches_per_epoch": None,
+                },
+            ) as run_experiment,
+        ):
+            exit_code = formal_main.run_benchmark(normalized_args)
+
+        self.assertEqual(exit_code, 0)
+        recoverable_checkpoint.assert_called_once()
+        run_experiment.assert_called_once()
+        self.assertEqual(
+            run_experiment.call_args.kwargs["checkpoint_path"],
+            "/tmp/recoverable.pt",
+        )
+        tracker.close.assert_called_once()
+
+    def test_run_benchmark_keeps_failed_row_skipped_without_recoverable_checkpoint(
+        self,
+    ) -> None:
+        """Failed terminal rows without usable checkpoints should not retrain under resume."""
+        normalized_args = formal_main._normalize_benchmark_args(
+            SimpleNamespace(
+                datasets=["movielens1m"],
+                presets=["ucagnn"],
+                num_neighbors=[10, 5],
+                lr_scheduler="plateau",
+                batch_id="batch-a",
+                resume_batch=True,
+                dry_run=False,
+                no_mlflow=True,
+                mlflow_tracking_uri=None,
+                mlflow_experiment_name="ucagnn-formal",
+                profile_name="test-profile",
+                profile_slug="test-profile",
+                overwrite_checkpoint=False,
+            ),
+        )
+        tracker = Mock()
+        tracker.find_latest_batch_experiment.return_value = {"id": 17, "status": "failed"}
+
+        class FakeExperimentLogger:
+            TERMINAL_STATUSES = ("completed", "failed", "oom")
+
+            def __init__(self, db_path: str) -> None:
+                self.db_path = db_path
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(tracker, name)
+
+        with (
+            patch.object(formal_main, "ExperimentLogger", FakeExperimentLogger),
+            patch.object(
+                formal_main,
+                "recoverable_checkpoint_for_config",
+                return_value=None,
+            ) as recoverable_checkpoint,
+            patch.object(formal_main, "run_experiment") as run_experiment,
+        ):
+            exit_code = formal_main.run_benchmark(normalized_args)
+
+        self.assertEqual(exit_code, 0)
+        recoverable_checkpoint.assert_called_once()
+        run_experiment.assert_not_called()
+        tracker.close.assert_called_once()
+
+    def test_parse_formal_profile_sequence_accepts_comma_separated_names(self) -> None:
+        """formal-run should accept a comma-separated profile queue."""
+        profile_names = formal_main._parse_formal_profile_sequence(
+            "paper-lightgcn-small-baselines, paper-dice-all-runtime-probes",
+        )
+
+        self.assertEqual(
+            profile_names,
+            ["paper-lightgcn-small-baselines", "paper-dice-all-runtime-probes"],
+        )
+
+    def test_formal_main_runs_comma_separated_profiles_in_order(self) -> None:
+        """Multiple formal profiles should execute sequentially and report aggregate failure."""
+        cli_args = SimpleNamespace(
+            profile="paper-lightgcn-small-baselines,paper-dice-all-runtime-probes",
+            list_profiles=False,
+            overwrite_checkpoint=False,
+        )
+
+        with (
+            patch.object(formal_main, "build_formal_run_parser") as build_parser,
+            patch.object(
+                formal_main,
+                "_run_single_formal_profile",
+                side_effect=[0, 1],
+            ) as run_single_profile,
+        ):
+            build_parser.return_value.parse_args.return_value = cli_args
+            exit_code = formal_main.formal_main()
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(
+            [call.args[0] for call in run_single_profile.call_args_list],
+            ["paper-lightgcn-small-baselines", "paper-dice-all-runtime-probes"],
+        )
+
+    def test_runtime_probe_estimate_scales_observed_epoch_to_target_epochs(self) -> None:
+        """Probe estimates should scale measured training throughput to the target run."""
+        estimate = formal_main._build_runtime_probe_estimate(
+            target_epochs=200,
+            observed_training_time_s=610.0,
+            observed_epochs=1,
+            train_batches_per_epoch=1745,
+        )
+
+        self.assertAlmostEqual(estimate["runtime_probe_seconds_per_epoch"], 610.0)
+        self.assertAlmostEqual(
+            estimate["runtime_probe_observed_batches_per_second"],
+            1745.0 / 610.0,
+        )
+        self.assertAlmostEqual(estimate["runtime_probe_estimated_train_time_s"], 122000.0)
+        self.assertAlmostEqual(
+            estimate["runtime_probe_estimated_remaining_train_time_s"],
+            121390.0,
+        )
+
+    def test_runtime_probe_metadata_belongs_only_to_one_epoch_probe_profiles(self) -> None:
+        """Run-once small baselines should not be labeled as runtime approximations."""
+        probe_profile_ids = {
+            profile_name
+            for profile_name in formal_profile_names()
+            if get_formal_profile(profile_name).get("runtime_probe") is not None
+        }
+
+        self.assertEqual(
+            probe_profile_ids,
+            {
+                "paper-lightgcn-large-runtime-probes",
+                "paper-dice-all-runtime-probes",
+            },
+        )
+        for profile_name in probe_profile_ids:
+            profile = get_formal_profile(profile_name)
+            self.assertEqual(profile["config_overrides"]["epochs"], 1)
+            self.assertEqual(profile["runtime_probe"]["target_epochs"], 200)
 
 
 if __name__ == "__main__":

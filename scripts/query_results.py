@@ -37,6 +37,23 @@ ABLATION_VARIANT_ORDER = {
     variant_name: index for index, variant_name in enumerate(ABLATION_VARIANTS)
 }
 CRRU_EPSILON = 1e-8
+FINAL_FORMAL_PROFILE_NAMES = frozenset(
+    {
+        "core-ucagnn-mainline",
+        "core-paper-architecture-comparison",
+        "paper-lightgcn-small-baselines",
+        "paper-lightgcn-baselines",
+    }
+)
+RUNTIME_PROBE_COLUMNS = (
+    "runtime_probe_target_epochs",
+    "runtime_probe_observed_epochs",
+    "runtime_probe_train_batches_per_epoch",
+    "runtime_probe_observed_batches_per_second",
+    "runtime_probe_seconds_per_epoch",
+    "runtime_probe_estimated_train_time_s",
+    "runtime_probe_estimated_remaining_train_time_s",
+)
 
 
 def connect() -> sqlite3.Connection:
@@ -52,20 +69,9 @@ def connect() -> sqlite3.Connection:
         )
         sys.exit(1)
 
-    try:
-        migrator = ExperimentLogger(db_path=str(DB_PATH))
-        migrator.close()
-    except sqlite3.OperationalError as e:
-        if "locked" in str(e).lower():
-            print(
-                "Note: Database is locked by another process. "
-                "Querying existing views without schema migrations."
-            )
-        else:
-            raise
-
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(f"{DB_PATH.resolve().as_uri()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only=ON")
     return conn
 
 
@@ -142,18 +148,26 @@ def _load_config_json(config_json: str | None) -> dict[str, object]:
         return {}
 
 
-def _build_canonical_name_from_config(
-    config: dict[str, object],
-    preset: str | None,
-    intervention: str | None,
-) -> str:
-    """Reconstruct the canonical experiment name from stored config."""
-    return build_canonical_experiment_name(config, preset, intervention)
-
-
 def _format_metric_value(value: float | None) -> str:
     """Return a consistent display string for a metric cell."""
     return f"{value:.4f}" if value is not None else "-"
+
+
+def _format_duration(value_s: float | None) -> str:
+    """Return measured or estimated runtime in seconds."""
+    if value_s is None:
+        return "-"
+    return f"{value_s:.1f}s"
+
+
+def _format_count(value: float | None) -> str:
+    """Return a whole-number display string for count-like metrics."""
+    return "-" if value is None else f"{value:.0f}"
+
+
+def _format_rate(value: float | None) -> str:
+    """Return a compact batch/s display string."""
+    return "-" if value is None else f"{value:.2f}"
 
 
 def _format_crru_value(value: float | None) -> str:
@@ -194,17 +208,47 @@ def _truncate_label(value: str | None, width: int) -> str:
 
 def _query_report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Return completed full-data formal and ablation rows with test metrics."""
+    summary_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(experiment_completed_summary)")
+    }
+
+    def summary_column(column_name: str) -> str:
+        if column_name in summary_columns:
+            return f"s.{column_name}"
+        return f"NULL AS {column_name}"
+
     try:
         return conn.execute(
-            """
+            f"""
             SELECT s.id, s.dataset, s.preset, s.updated_at,
-                   s.training_time_s, s.completed_train_epochs, s.peak_vram_mb,
+                   s.training_time_s, s.completed_train_epochs,
+                   {summary_column("avg_epoch_time_s")},
+                   s.peak_vram_mb,
                    s.avg_gpu_utilization_pct,
+                   {summary_column("runtime_probe_target_epochs")},
+                   {summary_column("runtime_probe_observed_epochs")},
+                   {summary_column("runtime_probe_train_batches_per_epoch")},
+                   {summary_column("runtime_probe_observed_batches_per_second")},
+                   {summary_column("runtime_probe_seconds_per_epoch")},
+                   {summary_column("runtime_probe_estimated_train_time_s")},
+                   {summary_column("runtime_probe_estimated_remaining_train_time_s")},
                    s.test_ndcg_20, s.test_ndcg_40,
                    s.test_recall_20, s.test_recall_40,
                    s.test_hit_ratio_20, s.test_hit_ratio_40,
                    s.test_personalization_20, s.test_personalization_40,
                    s.test_average_popularity_20, s.test_average_popularity_40,
+                   {summary_column("test_interest_branch_ndcg_20")},
+                   {summary_column("test_interest_branch_ndcg_40")},
+                   {summary_column("test_interest_branch_recall_20")},
+                   {summary_column("test_interest_branch_recall_40")},
+                   {summary_column("test_interest_branch_average_popularity_20")},
+                   {summary_column("test_interest_branch_average_popularity_40")},
+                   {summary_column("test_conformity_branch_ndcg_20")},
+                   {summary_column("test_conformity_branch_ndcg_40")},
+                   {summary_column("test_conformity_branch_recall_20")},
+                   {summary_column("test_conformity_branch_recall_40")},
+                   {summary_column("test_conformity_branch_average_popularity_20")},
+                   {summary_column("test_conformity_branch_average_popularity_40")},
                    s.test_conformity_contribution_20,
                    s.test_conformity_contribution_40,
                    s.test_conformity_popularity_spearman_20,
@@ -246,8 +290,17 @@ def _query_report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             return conn.execute(
                 """
                 SELECT s.id, s.dataset, s.preset, s.updated_at,
-                       s.training_time_s, s.completed_train_epochs, s.peak_vram_mb,
+                       s.training_time_s, s.completed_train_epochs,
+                       NULL AS avg_epoch_time_s,
+                       s.peak_vram_mb,
                        s.avg_gpu_utilization_pct,
+                       NULL AS runtime_probe_target_epochs,
+                       NULL AS runtime_probe_observed_epochs,
+                       NULL AS runtime_probe_train_batches_per_epoch,
+                       NULL AS runtime_probe_observed_batches_per_second,
+                       NULL AS runtime_probe_seconds_per_epoch,
+                       NULL AS runtime_probe_estimated_train_time_s,
+                       NULL AS runtime_probe_estimated_remaining_train_time_s,
                        s.test_ndcg_20, s.test_ndcg_40,
                        s.test_recall_20, s.test_recall_40,
                        s.test_hit_ratio_20, s.test_hit_ratio_40,
@@ -275,10 +328,53 @@ def _is_formal_row(row: sqlite3.Row) -> bool:
     return isinstance(batch_id, str) and batch_id.startswith(FORMAL_BATCH_PREFIX)
 
 
+def _is_runtime_probe_row(row: sqlite3.Row) -> bool:
+    """Return whether a report row is a timing probe rather than a final run."""
+    for column_name in RUNTIME_PROBE_COLUMNS:
+        try:
+            if row[column_name] is not None:
+                return True
+        except (IndexError, KeyError):
+            continue
+    return False
+
+
+def _is_reportable_formal_row(row: sqlite3.Row) -> bool:
+    """Return whether a formal row is a full-run row rather than a timing probe."""
+    return _is_formal_row(row) and not _is_runtime_probe_row(row)
+
+
+def _is_final_formal_row(row: sqlite3.Row) -> bool:
+    """Return whether a formal row belongs in final thesis metric rankings."""
+    profile_name = row["profile_name"]
+    return (
+        _is_reportable_formal_row(row)
+        and isinstance(profile_name, str)
+        and profile_name in FINAL_FORMAL_PROFILE_NAMES
+    )
+
+
+def _is_supporting_formal_row(row: sqlite3.Row) -> bool:
+    """Return whether a formal row is supporting historical or diagnostic evidence."""
+    return _is_reportable_formal_row(row) and not _is_final_formal_row(row)
+
+
 def _is_ablation_row(row: sqlite3.Row) -> bool:
     """Return whether a report row came from the ablation workflow."""
     batch_id = row["batch_id"]
     return isinstance(batch_id, str) and batch_id.startswith(ABLATION_BATCH_PREFIX)
+
+
+def _is_supported_ablation_row(row: sqlite3.Row) -> bool:
+    """Return whether an ablation row belongs to the current public variant matrix."""
+    return _is_ablation_row(row) and row["intervention"] in ABLATION_VARIANTS
+
+
+def _is_default_report_row(row: sqlite3.Row) -> bool:
+    """Return whether a row participates in the default thesis report."""
+    return _is_reportable_formal_row(row) or (
+        _is_supported_ablation_row(row) and not _is_runtime_probe_row(row)
+    )
 
 
 def _crru_sort_key(
@@ -301,10 +397,12 @@ def _select_top_formal_rows(
     *,
     n: int,
     crru_scores: dict[int, dict[int, float]],
+    supporting: bool = False,
 ) -> list[sqlite3.Row]:
     """Return the top completed formal rows per dataset ranked by CRRU."""
+    row_filter = _is_supporting_formal_row if supporting else _is_final_formal_row
     ranked_rows = sorted(
-        (row for row in rows if _is_formal_row(row)),
+        (row for row in rows if row_filter(row)),
         key=lambda row: (row["dataset"] or "-", *_crru_sort_key(row, crru_scores)),
     )
 
@@ -327,7 +425,7 @@ def _select_best_ablation_rows(
     """Return one completed full-data ablation row per dataset and variant."""
     best_by_variant: dict[tuple[str, str], sqlite3.Row] = {}
     ranked_rows = sorted(
-        (row for row in rows if _is_ablation_row(row)),
+        (row for row in rows if _is_supported_ablation_row(row)),
         key=lambda row: (row["dataset"] or "-", *_crru_sort_key(row, crru_scores)),
     )
     for row in ranked_rows:
@@ -351,7 +449,11 @@ def _print_causal_diagnostics(row: sqlite3.Row) -> None:
         has_causal = (
             row["test_conformity_contribution_20"] is not None
             or row["test_interest_contribution_20"] is not None
+            or row["test_context_contribution_20"] is not None
+            or row["test_final_popularity_spearman_20"] is not None
             or row["test_score_mix_interest_mean"] is not None
+            or _row_value(row, "test_interest_branch_ndcg_20") is not None
+            or _row_value(row, "test_conformity_branch_ndcg_20") is not None
         )
     except (IndexError, KeyError):
         return
@@ -429,6 +531,74 @@ def _print_causal_diagnostics(row: sqlite3.Row) -> None:
         f"Cosine={cosine_sim}"
     )
 
+    interest_branch_ndcg = fmt_pair(
+        _row_value(row, "test_interest_branch_ndcg_20"),
+        _row_value(row, "test_interest_branch_ndcg_40"),
+    )
+    interest_branch_recall = fmt_pair(
+        _row_value(row, "test_interest_branch_recall_20"),
+        _row_value(row, "test_interest_branch_recall_40"),
+    )
+    interest_branch_pop = fmt_pair(
+        _row_value(row, "test_interest_branch_average_popularity_20"),
+        _row_value(row, "test_interest_branch_average_popularity_40"),
+    )
+    conformity_branch_ndcg = fmt_pair(
+        _row_value(row, "test_conformity_branch_ndcg_20"),
+        _row_value(row, "test_conformity_branch_ndcg_40"),
+    )
+    conformity_branch_recall = fmt_pair(
+        _row_value(row, "test_conformity_branch_recall_20"),
+        _row_value(row, "test_conformity_branch_recall_40"),
+    )
+    conformity_branch_pop = fmt_pair(
+        _row_value(row, "test_conformity_branch_average_popularity_20"),
+        _row_value(row, "test_conformity_branch_average_popularity_40"),
+    )
+    if interest_branch_ndcg == "{20: -, 40: -}" and conformity_branch_ndcg == "{20: -, 40: -}":
+        return
+
+    print(
+        f"  Branch Rank: Interest NDCG={interest_branch_ndcg} | "
+        f"Recall={interest_branch_recall} | AvgPop={interest_branch_pop} || "
+        f"Conformity NDCG={conformity_branch_ndcg} | "
+        f"Recall={conformity_branch_recall} | AvgPop={conformity_branch_pop}"
+    )
+
+
+def _row_value(row: sqlite3.Row, key: str) -> float | None:
+    """Return a row value when present, else ``None`` for older DB views."""
+    try:
+        value = row[key]
+    except (IndexError, KeyError):
+        return None
+    return None if value is None else float(value)
+
+
+def _print_runtime_approximation(row: sqlite3.Row) -> None:
+    """Print runtime-probe estimates under an experiment when available."""
+    estimated_train_time_s = _row_value(row, "runtime_probe_estimated_train_time_s")
+    if estimated_train_time_s is None:
+        return
+
+    target_epochs = _row_value(row, "runtime_probe_target_epochs")
+    observed_epochs = _row_value(row, "runtime_probe_observed_epochs")
+    batches_per_epoch = _row_value(row, "runtime_probe_train_batches_per_epoch")
+    throughput = _row_value(row, "runtime_probe_observed_batches_per_second")
+    seconds_per_epoch = _row_value(row, "runtime_probe_seconds_per_epoch")
+    remaining_time_s = _row_value(row, "runtime_probe_estimated_remaining_train_time_s")
+
+    print(
+        "  Approximation: "
+        f"full_train={_format_duration(estimated_train_time_s)} | "
+        f"remaining={_format_duration(remaining_time_s)} | "
+        f"target_epochs={_format_count(target_epochs)} | "
+        f"observed_epochs={_format_count(observed_epochs)} | "
+        f"batches/epoch={_format_count(batches_per_epoch)} | "
+        f"throughput={_format_rate(throughput)} batch/s | "
+        f"epoch_time={_format_duration(seconds_per_epoch)}",
+    )
+
 
 def _print_result_row_experiment(
     *,
@@ -436,6 +606,7 @@ def _print_result_row_experiment(
     canonical_name: str,
     training_time_s: float | None = None,
     completed_train_epochs: float | None = None,
+    avg_epoch_time_s: float | None = None,
     peak_vram_mb: float | None = None,
     avg_gpu_utilization_pct: float | None = None,
     row: sqlite3.Row | None = None,
@@ -445,17 +616,21 @@ def _print_result_row_experiment(
         print(f"  Profile:    {profile_name}")
     training_time = f"{training_time_s:.1f}s" if training_time_s is not None else "-"
     epochs = str(int(completed_train_epochs)) if completed_train_epochs is not None else "-"
+    if avg_epoch_time_s is None and training_time_s is not None and completed_train_epochs:
+        avg_epoch_time_s = training_time_s / completed_train_epochs
+    epoch_time = _format_duration(avg_epoch_time_s)
     peak_vram = f"{peak_vram_mb:.0f}MB" if peak_vram_mb is not None else "-"
     gpu_utilization = (
         f"{avg_gpu_utilization_pct:.0f}%" if avg_gpu_utilization_pct is not None else "-"
     )
     print(
         "  Resources:  "
-        f"time={training_time} | epochs={epochs} | peak_vram={peak_vram} | "
-        f"gpu_util={gpu_utilization}",
+        f"time={training_time} | epochs={epochs} | time/epoch={epoch_time} | "
+        f"peak_vram={peak_vram} | gpu_util={gpu_utilization}",
     )
     if row is not None:
         _print_causal_diagnostics(row)
+        _print_runtime_approximation(row)
     print(f"  Experiment: {canonical_name}")
 
 
@@ -463,13 +638,15 @@ def _print_formal_rows(
     rows: list[sqlite3.Row],
     *,
     crru_scores: dict[int, dict[int, float]],
+    title: str,
+    empty_message: str,
 ) -> None:
     """Print the formal-run ranking table."""
     print("=" * 80)
-    print("FORMAL FULL-DATA TEST RUNS — top runs per dataset ranked by CRRU@20 then CRRU@40")
+    print(title)
     print("=" * 80)
     if not rows:
-        print("No completed formal full-data runs with test metrics found.")
+        print(empty_message)
         print()
         return
 
@@ -490,7 +667,7 @@ def _print_formal_rows(
         previous_dataset = dataset
         row_crru_scores = crru_scores.get(int(row["id"]), {})
         config = _load_config_json(row["config_json"])
-        canonical_name = _build_canonical_name_from_config(config, row["preset"], None)
+        canonical_name = build_canonical_experiment_name(config, row["preset"], None)
         print(
             (
                 f"{dataset:<14} | {row['preset'] or '-':<12} | "
@@ -515,6 +692,7 @@ def _print_formal_rows(
             canonical_name=canonical_name,
             training_time_s=row["training_time_s"],
             completed_train_epochs=row["completed_train_epochs"],
+            avg_epoch_time_s=row["avg_epoch_time_s"],
             peak_vram_mb=row["peak_vram_mb"],
             avg_gpu_utilization_pct=row["avg_gpu_utilization_pct"],
             row=row,
@@ -530,8 +708,8 @@ def _print_ablation_rows(
     """Print the best full-data ablation rows per dataset and variant."""
     print("=" * 80)
     print(
-        "ABLATION FULL-DATA TEST RUNS — best run per dataset and variant "
-        "ranked by CRRU@20 then CRRU@40"
+        "ABLATION FULL-DATA TEST RUNS — currently supported variants, "
+        "best run per dataset ranked by CRRU@20 then CRRU@40"
     )
     print("=" * 80)
     if not rows:
@@ -557,7 +735,7 @@ def _print_ablation_rows(
         row_crru_scores = crru_scores.get(int(row["id"]), {})
         config = _load_config_json(row["config_json"])
         intervention = row["intervention"]
-        canonical_name = _build_canonical_name_from_config(config, row["preset"], intervention)
+        canonical_name = build_canonical_experiment_name(config, row["preset"], intervention)
         print(
             (
                 f"{dataset:<14} | {intervention or '-':<20} | "
@@ -581,6 +759,7 @@ def _print_ablation_rows(
             canonical_name=canonical_name,
             training_time_s=row["training_time_s"],
             completed_train_epochs=row["completed_train_epochs"],
+            avg_epoch_time_s=row["avg_epoch_time_s"],
             peak_vram_mb=row["peak_vram_mb"],
             avg_gpu_utilization_pct=row["avg_gpu_utilization_pct"],
             row=row,
@@ -641,7 +820,7 @@ def show_metrics(conn: sqlite3.Connection, exp_id: int) -> None:
     print("=" * 80)
 
     # Group by split
-    for split in ["train", "val", "test"]:
+    for split in ["train", "val", "test", "approximation"]:
         rows = conn.execute(
             """
             SELECT epoch, metric_name, metric_value, timestamp
@@ -825,11 +1004,35 @@ def _compute_efficiency_scores(rows: list[sqlite3.Row]) -> list[float]:
         [math.log1p(r["peak_vram_mb"]) if r["peak_vram_mb"] else None for r in rows],
         lower_is_better=True,
     )
+    epoch_times_s = [_crru_epoch_time_s(r) for r in rows]
     time_n = _minmax_normalize(
-        [math.log1p(r["training_time_s"]) if r["training_time_s"] else None for r in rows],
+        [math.log1p(epoch_time_s) if epoch_time_s else None for epoch_time_s in epoch_times_s],
         lower_is_better=True,
     )
     return [(vram**0.50) * (time**0.50) for vram, time in zip(vram_n, time_n, strict=True)]
+
+
+def _crru_epoch_time_s(row: sqlite3.Row) -> float | None:
+    """Return the per-epoch runtime used by CRRU's efficiency term."""
+    avg_epoch_time_s = _row_value(row, "avg_epoch_time_s")
+    if avg_epoch_time_s is not None and avg_epoch_time_s > 0:
+        return avg_epoch_time_s
+
+    runtime_probe_seconds_per_epoch = _row_value(row, "runtime_probe_seconds_per_epoch")
+    if runtime_probe_seconds_per_epoch is not None and runtime_probe_seconds_per_epoch > 0:
+        return runtime_probe_seconds_per_epoch
+
+    training_time_s = _row_value(row, "training_time_s")
+    completed_train_epochs = _row_value(row, "completed_train_epochs")
+    if (
+        training_time_s is not None
+        and training_time_s > 0
+        and completed_train_epochs is not None
+        and completed_train_epochs > 0
+    ):
+        return training_time_s / completed_train_epochs
+
+    return training_time_s if training_time_s is not None and training_time_s > 0 else None
 
 
 def _compute_crru_for_k(
@@ -888,12 +1091,13 @@ def _compute_dataset_crru_scores(rows: list[sqlite3.Row]) -> dict[int, dict[int,
 
 def _print_crru_summary() -> None:
     """Print the CRRU framing used by the default thesis summary."""
-    print("CRRU@K — Causal Resource-aware Recommendation Utility at K")
+    print("CRRU@K — Composite Resource-aware Recommendation Utility at K")
     print("  Accuracy@K = NDCG@K^0.50 * Recall@K^0.35 * Hit@K^0.15")
     print("  Bias@K     = Pers@K^0.40 * (1-AvgPop@K_n)^0.60")
-    print("  Efficiency = (1-log(1+VRAM)_n)^0.50 * (1-log(1+time)_n)^0.50")
+    print("  Efficiency = (1-log(1+VRAM)_n)^0.50 * (1-log(1+time/epoch)_n)^0.50")
     print("  CRRU@K     = Accuracy@K^0.55 * Bias@K^0.30 * Efficiency^0.15")
-    print(f"  Normalization: dataset-local min-max with epsilon={CRRU_EPSILON:g}")
+    print(f"  Normalization: dataset-local section-row min-max with epsilon={CRRU_EPSILON:g}")
+    print("  Note: CRRU is not a causal-effect estimator.")
     print()
 
 
@@ -905,20 +1109,41 @@ def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
     print(f"Database: {THESIS_DB_PATH.resolve()}")
     print()
 
-    rows = _query_report_rows(conn)
-    if not rows:
+    rows = [row for row in _query_report_rows(conn) if _is_default_report_row(row)]
+    final_formal_rows = [row for row in rows if _is_final_formal_row(row)]
+    supporting_formal_rows = [row for row in rows if _is_supporting_formal_row(row)]
+    ablation_rows = [row for row in rows if _is_supported_ablation_row(row)]
+    if not (final_formal_rows or supporting_formal_rows or ablation_rows):
         print("No completed formal or ablation full-data runs with test metrics found.")
         print("Use --view all to inspect every logged experiment row.")
         return
 
-    crru_scores = _compute_dataset_crru_scores(rows)
+    crru_scores: dict[int, dict[int, float]] = {}
+    for section_rows in (final_formal_rows, supporting_formal_rows, ablation_rows):
+        crru_scores.update(_compute_dataset_crru_scores(section_rows))
     _print_crru_summary()
     _print_formal_rows(
-        _select_top_formal_rows(rows, n=n, crru_scores=crru_scores),
+        _select_top_formal_rows(final_formal_rows, n=n, crru_scores=crru_scores),
         crru_scores=crru_scores,
+        title=("FINAL FORMAL FULL-DATA TEST RUNS — thesis profiles ranked by CRRU@20 then CRRU@40"),
+        empty_message="No completed final formal full-data runs with test metrics found.",
+    )
+    _print_formal_rows(
+        _select_top_formal_rows(
+            supporting_formal_rows,
+            n=n,
+            crru_scores=crru_scores,
+            supporting=True,
+        ),
+        crru_scores=crru_scores,
+        title=(
+            "SUPPORTING FORMAL FULL-DATA RUNS — historical, diagnostic, and "
+            "preprocessing-sweep rows"
+        ),
+        empty_message="No supporting formal full-data runs with test metrics found.",
     )
     _print_ablation_rows(
-        _select_best_ablation_rows(rows, crru_scores=crru_scores),
+        _select_best_ablation_rows(ablation_rows, crru_scores=crru_scores),
         crru_scores=crru_scores,
     )
 

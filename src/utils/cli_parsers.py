@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from .config import CONFIG_PRESET_CHOICES
+
 BENCHMARK_DATASETS = [
     "amazonbook",
     "movielens1m",
@@ -20,15 +22,7 @@ BENCHMARK_DATASET_TIERS: dict[str, list[str]] = {
 }
 BENCHMARK_DATASET_TIERS["all"] = BENCHMARK_DATASETS
 BENCHMARK_TIER_CHOICES = list(BENCHMARK_DATASET_TIERS)
-PRESET_CHOICES = [
-    "ucagnn",
-    "lightgcn",
-    "lightgcn_paper",
-    "dice_paper",
-    "dice_like",
-    "dice_like_ablation",
-    "lgndice_paper",
-]
+PRESET_CHOICES = list(CONFIG_PRESET_CHOICES)
 _VALIDATION_CATEGORIES = ["recipes", "ablations", "observability", "evaluation"]
 
 
@@ -64,6 +58,23 @@ def resolve_benchmark_datasets(tiers: list[str] | str) -> list[str]:
                 ),
             )
     return list(seen)
+
+
+def benchmark_dataset_lookup_keys(dataset: str) -> list[str]:
+    """Return dataset and tier keys that can address one resolved dataset.
+
+    The exact dataset name comes first, followed by any matching benchmark tier
+    labels and finally ``all`` as a broad fallback.
+    """
+    keys = [dataset]
+    for tier_name, tier_datasets in BENCHMARK_DATASET_TIERS.items():
+        if tier_name == "all":
+            continue
+        if dataset in tier_datasets and tier_name not in keys:
+            keys.append(tier_name)
+    if "all" not in keys:
+        keys.append("all")
+    return keys
 
 
 def add_device_and_data_dir_args(

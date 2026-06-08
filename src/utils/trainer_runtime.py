@@ -24,7 +24,7 @@ from ..data.interaction_masks import positive_interaction_mask
 from ..data.negative_sampler import NegativeSampler
 from ..losses.loss_suite import LossSuite
 from ..models.ucagnn import UCaGNN
-from ..profiling.gpu_profiler import GPUProfiler, sample_gpu_utilization_percent
+from ..profiling.gpu_profiler import GPUProfiler, TrainingResourceStats
 from .config import UCaGNNConfig
 from .reproducibility import configure_torch_runtime
 
@@ -34,6 +34,14 @@ logger = logging.getLogger(__name__)
 _STATE_KEY_MIGRATIONS: dict[str, str] = {
     "propensity.mlp": "_propensity_mlp",
 }
+REQUIRED_CHECKPOINT_KEYS = frozenset(
+    {
+        "model_state",
+        "optimizer_state",
+        "loss_suite_state",
+        "config",
+    },
+)
 
 
 def autocast_context(
@@ -153,6 +161,14 @@ def empty_cuda_cache(device: torch.device) -> None:
         torch.cuda.empty_cache()
 
 
+def is_cuda_oom_error(exc: BaseException) -> bool:
+    """Return whether an exception represents a CUDA out-of-memory failure."""
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    message = str(exc).lower()
+    return "cuda" in message and "out of memory" in message
+
+
 def _migrate_model_state(state: dict[str, Any]) -> dict[str, Any]:
     """Rewrite legacy parameter-name prefixes so old checkpoints load cleanly."""
     migrated: dict[str, Any] = {}
@@ -258,6 +274,7 @@ class TrainerRuntime:
         self.best_ndcg = 0.0
         self.patience_counter = 0
         self.best_state = None
+        self.training_peak_vram_mb: float | None = None
         self.completed_epoch = -1
         self.training_identity: dict[str, Any] | None = None
         self.training_hash: str | None = None
@@ -406,7 +423,7 @@ class TrainerRuntime:
         self,
         eval_model: Any,
         mask: torch.Tensor,
-        include_refined_diagnostics: bool = True,
+        include_refined_diagnostics: bool = False,
     ) -> dict[str, float]:
         """Evaluate one split on CPU, restoring the model device afterward.
 
@@ -439,7 +456,7 @@ class TrainerRuntime:
         mask: torch.Tensor,
         *,
         use_amp: bool,
-        include_refined_diagnostics: bool = True,
+        include_refined_diagnostics: bool = False,
     ) -> dict[str, float]:
         """Run evaluator metrics for one model/split pair under a chosen AMP policy.
 
@@ -501,7 +518,7 @@ class TrainerRuntime:
         self,
         eval_model: Any,
         mask: torch.Tensor,
-        include_refined_diagnostics: bool = True,
+        include_refined_diagnostics: bool = False,
     ) -> dict[str, float]:
         """Retry evaluation after optimizer offload, then fall back to CPU.
 
@@ -537,7 +554,7 @@ class TrainerRuntime:
         self,
         eval_model: Any,
         mask: torch.Tensor,
-        include_refined_diagnostics: bool = True,
+        include_refined_diagnostics: bool = False,
     ) -> dict[str, float]:
         """Handle the shared CUDA-OOM evaluation retry policy.
 
@@ -564,14 +581,15 @@ class TrainerRuntime:
         self,
         mask: torch.Tensor,
         *,
-        include_refined_diagnostics: bool = True,
+        include_refined_diagnostics: bool = False,
     ) -> dict[str, float]:
         """Evaluate one split with progressive CUDA-OOM fallbacks.
 
         Args:
             mask: Split mask to evaluate.
             include_refined_diagnostics: Whether to append refined scorer
-                diagnostics.
+                diagnostics. This is intentionally opt-in because validation
+                runs every epoch; final test evaluation enables it explicitly.
 
         Returns:
             dict[str, float]: Evaluation metrics.
@@ -613,9 +631,14 @@ class TrainerRuntime:
         current_ndcg: float,
         primary_metric: str,
         skipped_batches: int = 0,
+        resource_stats: TrainingResourceStats | None = None,
     ) -> None:
         """Emit the per-epoch training summary."""
-        peak_vram_mb = GPUProfiler.peak_vram_mb()
+        peak_vram_mb = (
+            resource_stats.peak_vram_mb
+            if resource_stats is not None
+            else GPUProfiler.peak_vram_mb()
+        )
         vram_str = f" | VRAM: {peak_vram_mb:.0f} MB" if peak_vram_mb is not None else ""
         logger.info(
             "Epoch %3d/%d | Loss: %.4f | %s: %.4f%s",
@@ -672,10 +695,19 @@ class TrainerRuntime:
         avg_loss: float,
         epoch_time_s: float,
         val_metrics: dict[str, float],
+        resource_stats: TrainingResourceStats | None = None,
     ) -> None:
         """Persist epoch metrics, GPU utilization, and peak VRAM through the experiment logger."""
-        gpu_utilization_pct = sample_gpu_utilization_percent(self.device)
-        peak_vram_mb = GPUProfiler.peak_vram_mb()
+        resource_stats = resource_stats or TrainingResourceStats.from_current_cuda_peaks(
+            self.device,
+        )
+        peak_vram_mb = resource_stats.peak_vram_mb
+        if peak_vram_mb is not None:
+            current_training_peak = getattr(self, "training_peak_vram_mb", None)
+            if current_training_peak is None:
+                self.training_peak_vram_mb = peak_vram_mb
+            else:
+                self.training_peak_vram_mb = max(current_training_peak, peak_vram_mb)
         if self.experiment_logger and self.exp_id is not None:
             self.experiment_logger.log_epoch(
                 self.exp_id,
@@ -686,11 +718,57 @@ class TrainerRuntime:
                 [],
                 self.model,
             )
-            if gpu_utilization_pct is not None:
+            if resource_stats.avg_gpu_utilization_pct is not None:
                 self.experiment_logger.log_metric(
                     self.exp_id,
                     "gpu_utilization_pct",
-                    gpu_utilization_pct,
+                    resource_stats.avg_gpu_utilization_pct,
+                    epoch=epoch,
+                    split="train",
+                )
+                self.experiment_logger.log_metric(
+                    self.exp_id,
+                    "train_avg_gpu_utilization_pct",
+                    resource_stats.avg_gpu_utilization_pct,
+                    epoch=epoch,
+                    split="train",
+                )
+            if resource_stats.max_gpu_utilization_pct is not None:
+                self.experiment_logger.log_metric(
+                    self.exp_id,
+                    "max_gpu_utilization_pct",
+                    resource_stats.max_gpu_utilization_pct,
+                    epoch=epoch,
+                    split="train",
+                )
+                self.experiment_logger.log_metric(
+                    self.exp_id,
+                    "train_max_gpu_utilization_pct",
+                    resource_stats.max_gpu_utilization_pct,
+                    epoch=epoch,
+                    split="train",
+                )
+            if resource_stats.pytorch_peak_allocated_mb is not None:
+                self.experiment_logger.log_metric(
+                    self.exp_id,
+                    "train_peak_vram_allocated_mb",
+                    resource_stats.pytorch_peak_allocated_mb,
+                    epoch=epoch,
+                    split="train",
+                )
+            if resource_stats.pytorch_peak_reserved_mb is not None:
+                self.experiment_logger.log_metric(
+                    self.exp_id,
+                    "train_peak_vram_reserved_mb",
+                    resource_stats.pytorch_peak_reserved_mb,
+                    epoch=epoch,
+                    split="train",
+                )
+            if resource_stats.nvidia_peak_memory_used_mb is not None:
+                self.experiment_logger.log_metric(
+                    self.exp_id,
+                    "train_peak_gpu_memory_used_mb",
+                    resource_stats.nvidia_peak_memory_used_mb,
                     epoch=epoch,
                     split="train",
                 )
@@ -707,8 +785,27 @@ class TrainerRuntime:
                 f"val_{m}".replace("@", "_at_"): float(v) for m, v in val_metrics.items()
             }
             mlflow_metrics["train_loss"] = avg_loss
-            if gpu_utilization_pct is not None:
-                mlflow_metrics["gpu_utilization_pct"] = gpu_utilization_pct
+            if resource_stats.avg_gpu_utilization_pct is not None:
+                mlflow_metrics["gpu_utilization_pct"] = resource_stats.avg_gpu_utilization_pct
+                mlflow_metrics["train_avg_gpu_utilization_pct"] = (
+                    resource_stats.avg_gpu_utilization_pct
+                )
+            if resource_stats.max_gpu_utilization_pct is not None:
+                mlflow_metrics["train_max_gpu_utilization_pct"] = (
+                    resource_stats.max_gpu_utilization_pct
+                )
+            if resource_stats.pytorch_peak_allocated_mb is not None:
+                mlflow_metrics["train_peak_vram_allocated_mb"] = (
+                    resource_stats.pytorch_peak_allocated_mb
+                )
+            if resource_stats.pytorch_peak_reserved_mb is not None:
+                mlflow_metrics["train_peak_vram_reserved_mb"] = (
+                    resource_stats.pytorch_peak_reserved_mb
+                )
+            if resource_stats.nvidia_peak_memory_used_mb is not None:
+                mlflow_metrics["train_peak_gpu_memory_used_mb"] = (
+                    resource_stats.nvidia_peak_memory_used_mb
+                )
             if peak_vram_mb is not None:
                 mlflow_metrics["peak_vram_mb"] = peak_vram_mb
             self.mlflow_module.log_metrics(mlflow_metrics, step=epoch)
@@ -765,7 +862,11 @@ class TrainerRuntime:
             self.best_ndcg,
         )
         if checkpoint_path is not None and checkpoint_every is not None and checkpoint_every > 0:
-            self.save_checkpoint(checkpoint_path, history=history)
+            self.save_checkpoint(
+                checkpoint_path,
+                history=history,
+                training_finished=True,
+            )
         return True
 
     def _maybe_save_checkpoint(
@@ -789,6 +890,7 @@ class TrainerRuntime:
         path: str | Path,
         history: dict[str, list] | None = None,
         is_complete: bool = False,
+        training_finished: bool = False,
         test_metrics: dict[str, float] | None = None,
         exp_id: int | None = None,
         canonical_name: str | None = None,
@@ -796,6 +898,7 @@ class TrainerRuntime:
         """Save training state in the shared checkpoint schema."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        training_finished = training_finished or is_complete
         checkpoint: dict[str, Any] = {
             "model_state": self.model.state_dict(),
             "loss_suite_state": self.loss_suite.state_dict(),
@@ -817,6 +920,7 @@ class TrainerRuntime:
             "training_hash": self.training_hash,
             "evaluation_identity": self.evaluation_identity,
             "evaluation_hash": self.evaluation_hash,
+            "training_finished": training_finished,
             "is_complete": is_complete,
             "test_metrics": test_metrics,
         }
@@ -825,10 +929,20 @@ class TrainerRuntime:
         torch.save(checkpoint, path)
         logger.info("Checkpoint saved to %s", path)
 
-    def load_checkpoint(self, path: str | Path) -> dict[str, Any]:
+    def load_checkpoint(
+        self,
+        path: str | Path,
+        *,
+        load_best_model: bool = False,
+    ) -> dict[str, Any]:
         """Load training state from the shared checkpoint schema."""
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
-        model_state = _migrate_model_state(ckpt["model_state"])
+        raw_model_state = (
+            ckpt.get("best_state")
+            if load_best_model and ckpt.get("best_state") is not None
+            else ckpt["model_state"]
+        )
+        model_state = _migrate_model_state(raw_model_state)
         self.model.load_state_dict(model_state)
         self.loss_suite.load_state_dict(ckpt["loss_suite_state"])
         self.optimizer.load_state_dict(ckpt["optimizer_state"])
@@ -858,5 +972,6 @@ class TrainerRuntime:
                     "Failed to restore CUDA RNG state from checkpoint %s",
                     path,
                 )
-        logger.info("Checkpoint loaded from %s", path)
+        state_label = "best model" if raw_model_state is ckpt.get("best_state") else "latest model"
+        logger.info("Checkpoint loaded from %s (%s)", path, state_label)
         return ckpt

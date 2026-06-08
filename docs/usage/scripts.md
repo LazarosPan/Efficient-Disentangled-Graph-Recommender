@@ -47,7 +47,7 @@ uv run python src/data_exploration/explore_all_datasets.py
 uv run python src/data_exploration/explore_all_datasets.py --output-dir results/dataset_visualizations
 ```
 
-- `query-results`: inspect the thesis SQLite database. The base command renders the default thesis summary for full-data formal and ablation runs, ordered by dataset and then by `CRRU@20` / `CRRU@40`, with the full test metric suite, inline `CRRU@20` and `CRRU@40` columns framed as Causal Resource-aware Recommendation Utility at K, dataset-local min-max normalization for those CRRU columns, a per-run `Resources:` line (`training_time_s`, `completed_train_epochs`, `peak_vram_mb`, `avg_gpu_utilization_pct`), and full canonical experiment names, then writes that report to `results/query_results.md`.
+- `query-results`: inspect the thesis SQLite database. The base command renders the default thesis summary for full-data formal runs and currently supported public ablation variants, ordered by dataset and then by `CRRU@20` / `CRRU@40`, with the full test metric suite, inline `CRRU@20` and `CRRU@40` columns framed as Composite Resource-aware Recommendation Utility at K, dataset-local report-row min-max normalization for those CRRU columns, a note that CRRU is not a causal-effect estimator, a per-run `Resources:` line (`training_time_s`, `completed_train_epochs`, training-window `peak_vram_mb`, training-window `avg_gpu_utilization_pct`), and full canonical experiment names, then writes that report to `results/query_results.md`.
 - `query-results --view completed`: show only finished runs via the SQLite completed-run view.
 - `query-results --view attention`: show anything not yet cleanly completed, including running, unknown, OOM, and failed rows.
 - `query-results --view errors`: show only the failed and OOM rows.
@@ -55,6 +55,8 @@ uv run python src/data_exploration/explore_all_datasets.py --output-dir results/
 - `python src/data_exploration/explore_all_datasets.py`: load the six benchmark datasets through the canonical loader path, always use the full selected datasets, and rewrite the fixed benchmark/profile PNGs in `results/dataset_visualizations/`.
 
 ## Data
+
+Dataset loaders read repository-local raw files under `data/<Dataset>/raw` and do not trigger PyG downloads. Use `data/datasets_information.md` for the current file and column contract.
 
 ```bash
 uv run download-datasets

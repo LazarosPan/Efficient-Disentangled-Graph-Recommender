@@ -40,6 +40,8 @@ dependencies = [
     "cupy>=14.0.1",
     "numba-cuda>=0.30.1",
     "numba>=0.65.1",
+    "optuna>=4.9.0",
+    "optuna-dashboard>=0.20.0",
 ]
 
 [[tool.uv.index]]

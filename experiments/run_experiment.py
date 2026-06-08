@@ -39,7 +39,14 @@ from src.losses.loss_suite import LossSuite
 from src.models.baselines import PaperGCNDICE, PaperLightGCN
 from src.models.ucagnn import UCaGNN
 from src.training.mini_batch_trainer import MiniBatchTrainer
-from src.utils.config import DEFAULT_SEED, GRAPH_POLICY_CHOICES, UCaGNNConfig
+from src.utils.config import (
+    BENCHMARK_CONFIG_FIELDS,
+    CONFIG_OVERRIDE_FIELDS,
+    CONFIG_PRESET_METHODS,
+    DEFAULT_SEED,
+    GRAPH_POLICY_CHOICES,
+    UCaGNNConfig,
+)
 from src.utils.experiment_logger import ExperimentLogger
 from src.utils.experiment_naming import build_canonical_experiment_name
 from src.utils.interaction_indexing import compute_normalized_popularity
@@ -53,6 +60,7 @@ from src.utils.reproducibility import (
     configure_torch_runtime,
     seed_everything,
 )
+from src.utils.trainer_runtime import REQUIRED_CHECKPOINT_KEYS, is_cuda_oom_error
 
 from experiments.cli_parsers import build_run_experiment_parser
 from experiments.recipes import (
@@ -64,117 +72,6 @@ from experiments.recipes import (
 logger = logging.getLogger("ucagnn")
 
 DB_PATH = THESIS_DB_PATH
-REQUIRED_CHECKPOINT_KEYS = frozenset(
-    {
-        "model_state",
-        "optimizer_state",
-        "loss_suite_state",
-        "config",
-    },
-)
-
-PRESETS = {
-    "ucagnn": "preset_full",
-    "lightgcn": "preset_lightgcn",
-    "lightgcn_paper": "preset_lightgcn_paper",
-    "dice_paper": "preset_dice_paper",
-    "dice_like": "preset_dice_like",
-    "dice_like_ablation": "preset_dice_like",
-    "lgndice_paper": "preset_lgndice_paper",
-}
-CONFIG_OVERRIDE_FIELDS = (
-    "epochs",
-    "batch_size",
-    "auto_batch_size",
-    "batch_size_candidates",
-    "embed_dim",
-    "single_branch_gnn_layers",
-    "interest_gnn_layers",
-    "conformity_gnn_layers",
-    "dropout",
-    "lr",
-    "lr_scheduler",
-    "lr_scheduler_factor",
-    "lr_scheduler_patience",
-    "use_early_stopping",
-    "use_features",
-    "feature_policy",
-    "graph_policy",
-    "training_graph_mode",
-    "branch_loss_mode",
-    "recommendation_loss_mode",
-    "negative_sampling_strategy",
-    "preprocessing_preset",
-    "derived_split_mode",
-    "num_neighbors",
-    "hard_negative_ratio",
-    "score_mix_min_weight",
-    "dice_sampler_margin",
-    "dice_sampler_pool",
-    "dice_branch_margin",
-    "dice_loss_decay",
-    "dice_margin_decay",
-    "dice_adaptive_decay",
-    "distance_correlation_max_pairs",
-    "uniformity_max_pairs",
-    "auxiliary_losses_start_epoch",
-    "popularity_supervision_start_epoch",
-    "loss_schedule",
-    "sample_interactions",
-    "loader_max_rows",
-)
-_BENCHMARK_SHARED_CONFIG_FIELD_SET = frozenset(
-    {
-        "epochs",
-        "use_early_stopping",
-        "batch_size",
-        "auto_batch_size",
-        "batch_size_candidates",
-        "lr",
-        "lr_scheduler",
-        "lr_scheduler_factor",
-        "lr_scheduler_patience",
-        "single_branch_gnn_layers",
-        "interest_gnn_layers",
-        "conformity_gnn_layers",
-        "dropout",
-        "num_neighbors",
-        "hard_negative_ratio",
-        "score_mix_min_weight",
-        "training_graph_mode",
-        "branch_loss_mode",
-        "recommendation_loss_mode",
-        "negative_sampling_strategy",
-        "dice_sampler_margin",
-        "dice_sampler_pool",
-        "dice_branch_margin",
-        "dice_loss_decay",
-        "dice_margin_decay",
-        "dice_adaptive_decay",
-        "distance_correlation_max_pairs",
-        "uniformity_max_pairs",
-        "auxiliary_losses_start_epoch",
-        "popularity_supervision_start_epoch",
-        "loss_schedule",
-        "loader_max_rows",
-        "sample_interactions",
-        "use_features",
-        "feature_policy",
-        "graph_policy",
-        "preprocessing_preset",
-        "derived_split_mode",
-    },
-)
-BENCHMARK_CONFIG_FIELDS = (
-    *(
-        field_name
-        for field_name in CONFIG_OVERRIDE_FIELDS
-        if field_name in _BENCHMARK_SHARED_CONFIG_FIELD_SET
-    ),
-    "device",
-    "data_dir",
-)
-BENCHMARK_CONFIG_INPUT_FIELDS = BENCHMARK_CONFIG_FIELDS
 _CHECKPOINT_IDENTITY_VERSION = 1
 _CHECKPOINT_HASH_LEN = 16
 _TRAINING_IDENTITY_FIELDS = (
@@ -267,15 +164,6 @@ _TRAINING_IDENTITY_FIELDS = (
 _EVALUATION_IDENTITY_FIELDS = ("eval_ks",)
 
 
-def _build_canonical_name(
-    config: UCaGNNConfig,
-    preset: str | None,
-    intervention: str | None,
-) -> str:
-    """Build a descriptive canonical experiment name from the effective config."""
-    return build_canonical_experiment_name(config, preset, intervention)
-
-
 def _stable_identity_hash(payload: dict[str, Any]) -> str:
     """Return a short deterministic hash for checkpoint identity payloads."""
     encoded = json.dumps(
@@ -331,7 +219,7 @@ def _default_checkpoint_path(
     training_hash: str,
 ) -> Path:
     """Return the default checkpoint path for a semantic training identity."""
-    canonical_name = _build_canonical_name(config, preset, intervention)
+    canonical_name = build_canonical_experiment_name(config, preset, intervention)
     return CHECKPOINT_DIR / f"{canonical_name}_train-{training_hash}.pt"
 
 
@@ -607,24 +495,20 @@ def _train_mask_numpy_from_data(data: Any) -> np.ndarray:
 
 
 def build_runtime_model(
-    config: UCaGNNConfig | Any,
+    config: UCaGNNConfig,
     canonical: Any,
     data: Any,
 ) -> torch.nn.Module:
     """Instantiate the runtime model for a loaded canonical dataset and graph.
 
     Args:
-        config: Runtime config or, for backward-compatible call sites, the
-            canonical dataset.
-        canonical: Canonical dataset or graph data for backward-compatible calls.
-        data: Graph data or runtime config for backward-compatible calls.
+        config: Runtime configuration.
+        canonical: Canonical dataset.
+        data: Runtime graph data.
 
     Returns:
         Instantiated model.
     """
-    if not isinstance(config, UCaGNNConfig):
-        config, canonical, data = data, config, canonical
-    assert isinstance(config, UCaGNNConfig)
     if config.baseline_family == "lightgcn_paper":
         return PaperLightGCN(
             canonical.n_users,
@@ -716,6 +600,110 @@ def _validate_resume_identity(
     return checkpoint_state
 
 
+def _checkpoint_ready_for_evaluation(
+    checkpoint_state: dict[str, Any],
+    config: UCaGNNConfig,
+) -> bool:
+    """Return whether a checkpoint can be evaluated without more training."""
+    if bool(checkpoint_state.get("training_finished")):
+        return True
+
+    completed_epoch = checkpoint_state.get("completed_epoch", -1)
+    if isinstance(completed_epoch, int) and completed_epoch + 1 >= int(config.epochs):
+        return True
+
+    if not bool(config.use_early_stopping):
+        return False
+
+    patience_counter = checkpoint_state.get("patience_counter", 0)
+    return (
+        isinstance(patience_counter, int)
+        and patience_counter >= int(config.patience)
+        and checkpoint_state.get("best_state") is not None
+    )
+
+
+def _checkpoint_lookup_configs(
+    config: UCaGNNConfig,
+    *,
+    checkpoint_path: str | Path | None = None,
+) -> list[UCaGNNConfig]:
+    """Return config variants whose checkpoint identities are worth checking."""
+    if checkpoint_path is not None or not bool(config.auto_batch_size):
+        return [config]
+
+    configs: list[UCaGNNConfig] = []
+    seen_batch_sizes: set[int] = set()
+    for candidate_batch_size in _auto_batch_probe_candidates(config):
+        batch_size = int(candidate_batch_size)
+        if batch_size in seen_batch_sizes:
+            continue
+        seen_batch_sizes.add(batch_size)
+        configs.append(dataclasses.replace(config, batch_size=batch_size))
+    return configs
+
+
+def recoverable_checkpoint_for_config(
+    config: UCaGNNConfig,
+    *,
+    preset: str | None = None,
+    intervention: str | None = None,
+    checkpoint_path: str | Path | None = None,
+) -> tuple[UCaGNNConfig, Path] | None:
+    """Return the compatible config/path pair for an evaluation-ready checkpoint."""
+    for checkpoint_config in _checkpoint_lookup_configs(
+        config,
+        checkpoint_path=checkpoint_path,
+    ):
+        training_identity, training_hash = _build_training_identity(
+            checkpoint_config,
+            preset,
+            intervention,
+        )
+        resolved_checkpoint_path = (
+            Path(checkpoint_path)
+            if checkpoint_path is not None
+            else _default_checkpoint_path(
+                checkpoint_config,
+                preset,
+                intervention,
+                training_hash,
+            )
+        )
+        checkpoint_state = _validate_resume_identity(
+            _load_checkpoint_metadata(resolved_checkpoint_path, "cpu"),
+            checkpoint_path=resolved_checkpoint_path,
+            explicit_checkpoint_path=checkpoint_path is not None,
+            training_identity=training_identity,
+            training_hash=training_hash,
+        )
+        if checkpoint_state is None:
+            continue
+        if not _checkpoint_ready_for_evaluation(checkpoint_state, checkpoint_config):
+            continue
+        return checkpoint_config, resolved_checkpoint_path
+    return None
+
+
+def recoverable_checkpoint_path(
+    config: UCaGNNConfig,
+    *,
+    preset: str | None = None,
+    intervention: str | None = None,
+    checkpoint_path: str | Path | None = None,
+) -> Path | None:
+    """Return a compatible checkpoint path that is ready for test re-evaluation."""
+    recovered = recoverable_checkpoint_for_config(
+        config,
+        preset=preset,
+        intervention=intervention,
+        checkpoint_path=checkpoint_path,
+    )
+    if recovered is None:
+        return None
+    return recovered[1]
+
+
 def _log_mlflow_resume_tags(mlflow_module, checkpoint_state: dict | None) -> None:
     """Annotate MLflow runs with resume state when applicable."""
     if mlflow_module is None or checkpoint_state is None:
@@ -800,15 +788,6 @@ def _gpu_hardware_metadata(device: str) -> tuple[str | None, float | None]:
 
     props = torch.cuda.get_device_properties(torch.cuda.current_device())
     return props.name, props.total_memory / float(1024**3)
-
-
-def _iscuda__oom(exc: BaseException) -> bool:
-    """Return whether an exception represents a CUDA out-of-memory failure."""
-    if isinstance(exc, torch.OutOfMemoryError):
-        return True
-
-    message = str(exc).lower()
-    return "out of memory" in message and "cuda" in message
 
 
 def _exception_summary(exc: BaseException, *, max_chars: int = 500) -> str:
@@ -998,7 +977,7 @@ def _probe_batch_size_candidate(
         stage = "backward_step"
         probe_trainer._apply_optimization_step(losses["total"])
     except Exception as exc:
-        if _iscuda__oom(exc):
+        if is_cuda_oom_error(exc):
             raise _AutoBatchProbeOOMError(
                 stage,
                 candidate_batch_size,
@@ -1070,7 +1049,7 @@ def _resolve_auto_batch_size(
                     random_seed=config.seed + probe_index,
                 )
         except Exception as exc:
-            if not _iscuda__oom(exc):
+            if not is_cuda_oom_error(exc):
                 raise
             failures.append(candidate)
             logger.info(
@@ -1147,7 +1126,7 @@ def _verify_selected_auto_batch_size(
                     random_seed=config.seed + probe_index,
                 )
         except Exception as exc:
-            if not _iscuda__oom(exc):
+            if not is_cuda_oom_error(exc):
                 raise
             logger.warning(
                 (
@@ -1238,7 +1217,7 @@ def _build_mlflow_params(
         "use_dual_branch": config.use_dual_branch,
         "use_sign_aware": config.use_sign_aware,
         "use_ipw": config.use_ipw,
-        "canonical_name": _build_canonical_name(config, preset, intervention),
+        "canonical_name": build_canonical_experiment_name(config, preset, intervention),
         "run_started_at_utc": run_started_at_utc,
         **provenance,
     }
@@ -1298,7 +1277,7 @@ def _start_mlflow_run(
             logger.info("MLflow system metrics logging unavailable: %s", exc)
         mlflow.set_experiment(experiment_name)
         mlflow.start_run(
-            run_name=run_name or _build_canonical_name(config, preset, intervention),
+            run_name=run_name or build_canonical_experiment_name(config, preset, intervention),
         )
         mlflow.set_tags(
             _build_mlflow_tags(
@@ -1452,7 +1431,7 @@ def build_benchmark_config_inputs(
         seed=DEFAULT_SEED,
         copied_fields=_present_field_mapping(
             benchmark_args,
-            BENCHMARK_CONFIG_INPUT_FIELDS,
+            BENCHMARK_CONFIG_FIELDS,
         ),
         extra_overrides={
             "lr_scheduler": lr_scheduler,
@@ -1528,6 +1507,35 @@ def _normalize_benchmark_preprocessing_override(
     return deduped[0], deduped if len(deduped) > 1 else None
 
 
+def _normalize_benchmark_num_neighbors_override(
+    raw_value: object,
+) -> list[list[int]] | dict[str, list[list[int]]] | None:
+    """Normalize benchmark ``num_neighbors`` overrides for one profile payload."""
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, Mapping):
+        normalized: dict[str, list[list[int]]] = {}
+        for key, value in raw_value.items():
+            if isinstance(value, Mapping):
+                raise ValueError(
+                    f"num_neighbors[{key}] must be a vector or a list of vectors, "
+                    "not a nested mapping.",
+                )
+            resolved = resolve_profile_num_neighbors({"num_neighbors": value})
+            if resolved is None:
+                raise ValueError(
+                    f"num_neighbors[{key}] must be a non-empty fan-out vector "
+                    "or a non-empty list of vectors.",
+                )
+            normalized[str(key)] = resolved
+        return normalized
+
+    resolved = resolve_profile_num_neighbors({"num_neighbors": raw_value})
+    if resolved is None:
+        return None
+    return resolved[0] if len(resolved) == 1 else resolved
+
+
 def normalize_benchmark_config_overrides(
     raw_config: Mapping[str, object],
 ) -> dict[str, object]:
@@ -1546,7 +1554,13 @@ def normalize_benchmark_config_overrides(
     normalized: dict[str, object] = {
         field_name: raw_config.get(field_name) for field_name in BENCHMARK_CONFIG_FIELDS
     }
-    normalized["use_early_stopping"] = raw_config.get("use_early_stopping", True)
+    # Keep the benchmark plan explicit even when the catalog omits the stop policy.
+    use_early_stopping = raw_config.get("use_early_stopping")
+    normalized["use_early_stopping"] = (
+        default_config.use_early_stopping if use_early_stopping is None else use_early_stopping
+    )
+    patience = raw_config.get("patience")
+    normalized["patience"] = int(patience) if patience is not None else default_config.patience
     use_features = raw_config.get("use_features")
     normalized["use_features"] = bool(use_features) if use_features is not None else None
     feature_policy = raw_config.get("feature_policy")
@@ -1615,23 +1629,47 @@ def normalize_benchmark_config_overrides(
     )
     dropout = raw_config.get("dropout")
     normalized["dropout"] = float(dropout) if dropout is not None else None
-    neighbor_sweep = resolve_profile_num_neighbors(
-        {"num_neighbors": raw_config.get("num_neighbors")},
-    )
-    normalized["num_neighbors"] = (
-        None
-        if neighbor_sweep is None
-        else neighbor_sweep[0]
-        if len(neighbor_sweep) == 1
-        else neighbor_sweep
+    normalized["num_neighbors"] = _normalize_benchmark_num_neighbors_override(
+        raw_config.get("num_neighbors"),
     )
     normalized["hard_negative_ratio"] = float(
         raw_config.get("hard_negative_ratio", default_config.hard_negative_ratio),
     )
-    score_mix_min_weight = raw_config.get("score_mix_min_weight")
-    normalized["score_mix_min_weight"] = (
-        float(score_mix_min_weight) if score_mix_min_weight is not None else None
+    optional_float_fields = (
+        "score_mix_min_weight",
+        "score_weight_interest",
+        "score_weight_conformity",
+        "score_weight_popularity",
+        "loss_weight_recommendation",
+        "loss_weight_interest_bpr",
+        "loss_weight_conformity_bpr",
+        "loss_weight_independence",
+        "loss_weight_contrastive",
+        "loss_weight_align",
+        "loss_weight_uniform",
+        "loss_weight_popularity",
+        "loss_weight_propensity_calibration",
+        "auxiliary_ramp_rate",
+        "independence_ramp_rate",
+        "contrastive_temperature",
+        "uniformity_temperature",
     )
+    for field_name in optional_float_fields:
+        field_value = raw_config.get(field_name)
+        normalized[field_name] = float(field_value) if field_value is not None else None
+
+    optional_bool_fields = ("use_ipw", "use_conformity_au")
+    for field_name in optional_bool_fields:
+        field_value = raw_config.get(field_name)
+        normalized[field_name] = bool(field_value) if field_value is not None else None
+
+    auxiliary_loss_schedule = raw_config.get("auxiliary_loss_schedule")
+    normalized["auxiliary_loss_schedule"] = (
+        str(auxiliary_loss_schedule) if auxiliary_loss_schedule is not None else None
+    )
+
+    n_negatives = raw_config.get("n_negatives")
+    normalized["n_negatives"] = int(n_negatives) if n_negatives is not None else None
     dice_sampler_margin = raw_config.get("dice_sampler_margin")
     normalized["dice_sampler_margin"] = (
         float(dice_sampler_margin) if dice_sampler_margin is not None else None
@@ -1657,6 +1695,10 @@ def normalize_benchmark_config_overrides(
     distance_correlation_max_pairs = raw_config.get("distance_correlation_max_pairs")
     normalized["distance_correlation_max_pairs"] = (
         int(distance_correlation_max_pairs) if distance_correlation_max_pairs is not None else None
+    )
+    contrastive_max_pairs = raw_config.get("contrastive_max_pairs")
+    normalized["contrastive_max_pairs"] = (
+        int(contrastive_max_pairs) if contrastive_max_pairs is not None else None
     )
     uniformity_max_pairs = raw_config.get("uniformity_max_pairs")
     normalized["uniformity_max_pairs"] = (
@@ -1712,8 +1754,8 @@ def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfi
         if effective_preset is None:
             effective_preset = recipe.get("preset")
 
-    if effective_preset is not None and effective_preset not in PRESETS:
-        available = ", ".join(sorted(PRESETS))
+    if effective_preset is not None and effective_preset not in CONFIG_PRESET_METHODS:
+        available = ", ".join(sorted(CONFIG_PRESET_METHODS))
         raise ValueError(
             f"Unknown preset '{effective_preset}'. Available presets: {available}",
         )
@@ -1745,8 +1787,8 @@ def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfi
     config = UCaGNNConfig()
 
     # Apply preset
-    if effective_preset in PRESETS:
-        getattr(config, PRESETS[effective_preset])()
+    if effective_preset in CONFIG_PRESET_METHODS:
+        getattr(config, CONFIG_PRESET_METHODS[effective_preset])()
 
     for override_group in (recipe_overrides, explicit_overrides):
         for key, val in override_group.items():
@@ -1779,6 +1821,7 @@ def run_experiment(
     checkpoint_every: int = 1,
     auto_resume: bool = True,
     overwrite_checkpoint: bool = False,
+    include_refined_diagnostics: bool = True,
 ) -> dict:
     """Run a single experiment end-to-end.
 
@@ -1808,6 +1851,10 @@ def run_experiment(
             from where it left off.
         overwrite_checkpoint: If True, delete any existing checkpoint at the
             resolved path and force a fresh run.
+        include_refined_diagnostics: If True, compute optional refined scorer
+            diagnostics during final test evaluation. Quick smoke validation can
+            disable this so undefined tiny-slice diagnostics do not mask runtime
+            coverage.
 
     Returns:
         Dict with keys:
@@ -1823,14 +1870,43 @@ def run_experiment(
     configure_torch_runtime()
 
     config.device = config.device if torch.cuda.is_available() else "cpu"
+    effective_auto_resume = auto_resume and not overwrite_checkpoint
+    explicit_checkpoint_path = checkpoint_path is not None
+    pre_resolved_checkpoint_path: Path | None = None
+    if effective_auto_resume:
+        recovered_checkpoint = recoverable_checkpoint_for_config(
+            config,
+            preset=preset,
+            intervention=intervention,
+            checkpoint_path=checkpoint_path,
+        )
+        if recovered_checkpoint is not None:
+            recovered_config, pre_resolved_checkpoint_path = recovered_checkpoint
+            if int(recovered_config.batch_size) != int(config.batch_size):
+                logger.info(
+                    (
+                        "Found recoverable checkpoint %s with batch_size %d before "
+                        "auto batch-size probing; using the saved batch size."
+                    ),
+                    pre_resolved_checkpoint_path,
+                    int(recovered_config.batch_size),
+                )
+            else:
+                logger.info(
+                    "Found recoverable checkpoint %s before auto batch-size probing.",
+                    pre_resolved_checkpoint_path,
+                )
+            config = recovered_config
+
     logger.info("Loading dataset and building graph...")
     canonical, data = load_runtime_data(config)
     if canonical.item_propensity_targets is not None:
         data.propensity_targets = torch.from_numpy(canonical.item_propensity_targets)
-    _resolve_auto_batch_size(config, canonical, data)
-    _verify_selected_auto_batch_size(config, canonical, data)
-    _release_cuda_probe_memory()
-    canonical_name = _build_canonical_name(config, preset, intervention)
+    if pre_resolved_checkpoint_path is None:
+        _resolve_auto_batch_size(config, canonical, data)
+        _verify_selected_auto_batch_size(config, canonical, data)
+        _release_cuda_probe_memory()
+    canonical_name = build_canonical_experiment_name(config, preset, intervention)
     training_identity, training_hash = _build_training_identity(
         config,
         preset,
@@ -1841,13 +1917,15 @@ def run_experiment(
         training_hash,
     )
     run_provenance = _build_run_provenance(training_hash, evaluation_hash)
-    explicit_checkpoint_path = checkpoint_path is not None
     resolved_checkpoint_path = (
-        Path(checkpoint_path)
-        if explicit_checkpoint_path
-        else _default_checkpoint_path(config, preset, intervention, training_hash)
+        pre_resolved_checkpoint_path
+        if pre_resolved_checkpoint_path is not None
+        else (
+            Path(checkpoint_path)
+            if explicit_checkpoint_path
+            else _default_checkpoint_path(config, preset, intervention, training_hash)
+        )
     )
-    effective_auto_resume = auto_resume and not overwrite_checkpoint
     if overwrite_checkpoint and resolved_checkpoint_path.exists():
         resolved_checkpoint_path.unlink()
         logger.info(
@@ -1866,6 +1944,11 @@ def run_experiment(
             training_identity=training_identity,
             training_hash=training_hash,
         )
+    checkpoint_ready_for_eval = (
+        _checkpoint_ready_for_evaluation(checkpoint_state, config)
+        if checkpoint_state is not None
+        else False
+    )
 
     logger.info(
         "Dataset: %s | Preset: %s | Device: %s | Canonical name: %s | training hash: %s",
@@ -1910,6 +1993,8 @@ def run_experiment(
             "resumed": True,
             "peak_vram_mb": None,
             "epochs_stopped_at": len(history.get("train_loss", [])),
+            "training_time_s": None,
+            "train_batches_per_epoch": None,
         }
 
     experiment_logger = ExperimentLogger(db_path=str(DB_PATH))
@@ -1979,17 +2064,29 @@ def run_experiment(
             trainer.training_hash = training_hash
             trainer.evaluation_identity = evaluation_identity
             trainer.evaluation_hash = evaluation_hash
-            trainer.load_checkpoint(resolved_checkpoint_path)
+            trainer.load_checkpoint(
+                resolved_checkpoint_path,
+                load_best_model=checkpoint_ready_for_eval,
+            )
             start_epoch = trainer.completed_epoch + 1
             history = trainer.resume_history
-            logger.info(
-                "Resuming from checkpoint %s at epoch %d/%d",
-                resolved_checkpoint_path,
-                start_epoch + 1,
-                config.epochs,
-            )
+            if checkpoint_ready_for_eval:
+                logger.info(
+                    (
+                        "Checkpoint %s already contains finished training state; "
+                        "re-evaluating its best validation model without retraining."
+                    ),
+                    resolved_checkpoint_path,
+                )
+            else:
+                logger.info(
+                    "Resuming from checkpoint %s at epoch %d/%d",
+                    resolved_checkpoint_path,
+                    start_epoch + 1,
+                    config.epochs,
+                )
 
-        if start_epoch < config.epochs:
+        if not checkpoint_ready_for_eval and start_epoch < config.epochs:
             logger.info(f"Training for {config.epochs} epochs...")
             if config.auto_batch_size and cuda_ and checkpoint_state is None:
                 candidates = _auto_batch_probe_candidates(config)
@@ -2056,7 +2153,7 @@ def run_experiment(
                             checkpoint_every=checkpoint_every,
                         )
                         resolved_checkpoint_path = current_checkpoint_path
-                        canonical_name = _build_canonical_name(
+                        canonical_name = build_canonical_experiment_name(
                             config,
                             preset,
                             intervention,
@@ -2090,7 +2187,7 @@ def run_experiment(
                                     pass
                         break
                     except Exception as exc:
-                        if not _iscuda__oom(exc):
+                        if not is_cuda_oom_error(exc):
                             raise
                         fallback_checkpoint_path = (
                             current_checkpoint_path
@@ -2150,11 +2247,19 @@ def run_experiment(
                 )
         else:
             history = history or {"train_loss": [], "val_metrics": []}
-            logger.info(
-                "Checkpoint already reached configured epoch budget; skipping training.",
-            )
+            if not checkpoint_ready_for_eval:
+                logger.info(
+                    "Checkpoint already reached configured epoch budget; skipping training.",
+                )
         total_training_time_s = time.perf_counter() - train_start_
-        peak_vram_mb = torch.cuda.max_memory_allocated() / 1024**2 if cuda_ else 0.0
+        peak_vram_mb = 0.0
+        if cuda_:
+            training_peak_vram_mb = trainer.training_peak_vram_mb if trainer is not None else None
+            peak_vram_mb = (
+                training_peak_vram_mb
+                if training_peak_vram_mb is not None
+                else torch.cuda.max_memory_allocated() / 1024**2
+            )
         experiment_logger.log_metric(
             exp_id, "training_time_s", total_training_time_s, split="train"
         )
@@ -2167,17 +2272,34 @@ def run_experiment(
             total_training_time_s,
             peak_vram_mb,
         )
+        train_batches_per_epoch = None
+        if trainer is not None and hasattr(trainer, "train_users"):
+            n_train_interactions = int(trainer.train_users.size(0))
+            train_batches_per_epoch = max(
+                1,
+                (n_train_interactions + int(config.batch_size) - 1) // int(config.batch_size),
+            )
+
+        final_checkpoint_path: Path | None = None
+        if save_checkpoint or effective_auto_resume:
+            final_checkpoint_path = resolved_checkpoint_path
+            trainer.save_checkpoint(
+                final_checkpoint_path,
+                history=history,
+                training_finished=True,
+                exp_id=exp_id,
+                canonical_name=canonical_name,
+            )
 
         logger.info("Running test evaluation...")
         test_metrics = trainer._evaluate_split_metrics(
             data.test_mask,
-            include_refined_diagnostics=True,
+            include_refined_diagnostics=include_refined_diagnostics,
         )
         for metric, value in sorted(test_metrics.items()):
             logger.info(f"  {metric}: {value:.4f}")
             experiment_logger.log_metric(exp_id, metric, value, split="test")
 
-        final_checkpoint_path: Path | None = None
         if save_checkpoint or effective_auto_resume:
             final_checkpoint_path = resolved_checkpoint_path
             trainer.save_checkpoint(
@@ -2227,9 +2349,11 @@ def run_experiment(
             "resumed": checkpoint_state is not None,
             "peak_vram_mb": peak_vram_mb,
             "epochs_stopped_at": len(history["train_loss"]) if history is not None else 0,
+            "training_time_s": total_training_time_s,
+            "train_batches_per_epoch": train_batches_per_epoch,
         }
     except Exception as exc:
-        is_oom = _iscuda__oom(exc)
+        is_oom = is_cuda_oom_error(exc)
         failure_reason = f"{type(exc).__name__}: {exc}"
         experiment_logger.update_experiment_status(
             exp_id,

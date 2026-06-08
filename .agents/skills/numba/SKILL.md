@@ -10,4 +10,4 @@ Read the most relevant file for the task:
 - [introduction.md](introduction.md) — Introduction to Numba, JIT compilation, and basic usage.
 - [compiling_python_code.md](compiling_python_code.md) — Techniques for compiling Python code with Numba, including JIT decorators, type annotations, and performance optimization strategies.
 - [compiling_python_classes.md](compiling_python_classes.md) — Techniques for compiling Python classes with Numba, including JIT decorators, type annotations, and performance optimization strategies.
-- [numpy_universal_functions.md](numpy_universal_functions.md) — TTechniques for creating and optimizing Numba-compiled universal functions (ufuncs) for efficient array operations.
+- [numpy_universal_functions.md](numpy_universal_functions.md) — Techniques for creating and optimizing Numba-compiled universal functions (ufuncs) for efficient array operations.

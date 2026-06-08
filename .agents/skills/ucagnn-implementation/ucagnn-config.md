@@ -4,7 +4,7 @@ Use this file for the config contract: presets, grouped knobs, and how runtime c
 
 ## Key files
 
-- `.github/skills/ucagnn-implementation/ucagnn-config.md`
+- `.agents/skills/ucagnn-implementation/ucagnn-config.md`
 - `src/utils/config.py`
 - `experiments/run_experiment.py`
 - `experiments/recipes.py`
@@ -22,16 +22,16 @@ flowchart LR
 
 The diagram shows the only supported precedence order. `build_config()` starts from `UCaGNNConfig()` defaults, applies the chosen preset, then recipe-owned overrides, then explicit overrides, and finally calls `validate()`.
 
-For paper baselines, `build_config()` re-applies the paper-owned contract after recipe and explicit overrides. This prevents shared formal-profile knobs such as `dropout`, `num_neighbors`, or `graph_policy` from silently changing the LightGCN or DICE paper architecture.
+For paper baselines, `build_config()` re-applies the paper-owned contract after recipe and explicit overrides. This prevents shared formal-profile knobs such as `dropout`, `num_neighbors`, `graph_policy`, or `lr_scheduler` from silently changing the LightGCN or DICE paper architecture and optimizer schedule.
 
 ## Preset contract
 
 | Preset | Current behavior |
 | --- | --- |
 | `lightgcn` preset (`UCaGNNConfig.preset_lightgcn()`) | Scalable sampled-neighborhood LightGCN approximation: single branch with fixed interest-only mixing, no sign-aware weighting, no IPW, no popularity head, no side features, only `L_rec` active. |
-| `lightgcn_paper` preset (`UCaGNNConfig.preset_lightgcn_paper()`) | Paper-faithful LightGCN adapter: `PaperLightGCN`, single branch, full-graph propagation during training, observed graph only, no dropout, Adam optimizer, explicit ego-embedding L2 with `weight_decay=1e-4`, `lr=0.001`, `batch_size=2048`, and no sampled-neighbor fan-out in the optimizer step. |
+| `lightgcn_paper` preset (`UCaGNNConfig.preset_lightgcn_paper()`) | Paper-faithful LightGCN adapter: `PaperLightGCN`, single branch, full-graph propagation during training, observed graph only, no dropout, Adam optimizer with constant `lr=0.001` (`lr_scheduler="none"`), explicit ego-embedding L2 with `weight_decay=1e-4`, `batch_size=2048`, and no sampled-neighbor fan-out in the optimizer step. |
 | `dice_like` preset (`UCaGNNConfig.preset_dice_like()`) | Legacy DICE-like ablation: dual branch with fixed interest+conformity mixing, no sign-aware weighting, no IPW, no popularity head, no side features, branch BPR plus independence active. It is not the official DICE paper baseline. |
-| `dice_paper` preset (`UCaGNNConfig.preset_dice_paper()`) | Paper-faithful GCN-DICE adapter: `PaperGCNDICE`, dual self-looped LightGCN backbone branches, full-graph propagation during training, observed graph only, DICE popularity-conditioned negative sampling, DICE branch losses, Adam with DICE betas `(0.5, 0.99)` and AMSGrad, `n_negatives=4`, `dropout=0.2`, `batch_size=128`, and DICE adaptive decay enabled. `lgndice_paper` remains a compatibility alias. |
+| `dice_paper` preset (`UCaGNNConfig.preset_dice_paper()`) | Paper-faithful GCN-DICE adapter: `PaperGCNDICE`, dual self-looped LightGCN backbone branches, full-graph propagation during training, observed graph only, DICE popularity-conditioned negative sampling, DICE branch losses, Adam with constant `lr=0.001` (`lr_scheduler="none"`), DICE betas `(0.5, 0.99)`, and AMSGrad, `n_negatives=4`, `dropout=0.2`, `batch_size=128`, and DICE adaptive loss/margin decay enabled. |
 | `ucagnn` preset (`UCaGNNConfig.preset_full()`) | Dual branch with learned score mixing over interest, conformity, and the item-only context head, sign-aware propagation, calibrated-IPW support disabled by default, item features used when available, DICE-conditioned popularity negatives with one negative per positive, DICE-style causal branch supervision, a small learned-mix floor to prevent branch collapse, `linear_ramp` schedule, and contrastive/DirectAU auxiliaries implemented but off by default. |
 
 ## Build rules
@@ -40,7 +40,7 @@ For paper baselines, `build_config()` re-applies the paper-owned contract after 
 2. If `preprocessing_preset` is unset, `build_config()` fills it from `src/data/loaders/_registry.py`.
 3. `num_neighbors` must match `max_gnn_layers`, which is `single_branch_gnn_layers` in single-branch mode and `max(interest_gnn_layers, conformity_gnn_layers)` in dual-branch mode.
 4. `auxiliary_loss_schedule` is the live auxiliary-schedule switch. The separate legacy field `loss_schedule` remains checkpoint-compatible, but the only supported value is `baseline`.
-5. `lightgcn_paper` and `dice_paper` lock architecture-, sampler-, optimizer-, and batch-size-owned fields after shared overrides. Use separate tuned baseline presets if you need a fair-tuned table with intentionally changed paper defaults.
+5. `lightgcn_paper` and `dice_paper` lock architecture-, sampler-, scheduler-, optimizer-, and batch-size-owned fields after shared overrides. Use separate tuned baseline presets if you need a fair-tuned table with intentionally changed paper defaults.
 6. `validate()` is the final authority for config shape and contract checks.
 
 ## Key config groups
@@ -51,7 +51,7 @@ For paper baselines, `build_config()` re-applies the paper-owned contract after 
 | Eval prefilter | `cagra_candidate_k` | Optional evaluation-only ANN candidate filter; `0` means full-catalog scoring. |
 | Model depth | `single_branch_gnn_layers`, `interest_gnn_layers`, `conformity_gnn_layers`, `num_neighbors` | Couples propagation depth to sampled fan-out. |
 | Score fusion | `score_weight_interest`, `score_weight_conformity`, `score_weight_popularity`, `score_mix_min_weight`, `use_popularity_head` | Sets preset-owned default priors; baselines keep fixed mixing while `preset_full()` keeps learned `score_mix_weights`, and `score_mix_min_weight` applies only to learned components available by the model/data contract. |
-| Loss and schedule | `loss_weight_*`, `branch_loss_mode`, `recommendation_loss_mode`, `auxiliary_loss_schedule`, `auxiliary_ramp_rate`, `independence_ramp_rate`, `distance_correlation_max_pairs`, `uniformity_max_pairs`, `loss_weight_propensity_calibration` | Enables auxiliaries, selects symmetric-vs-DICE branch supervision, caps quadratic auxiliary estimators, and controls how weights activate over time. |
+| Loss and schedule | `loss_weight_*`, `branch_loss_mode`, `recommendation_loss_mode`, `auxiliary_loss_schedule`, `auxiliary_ramp_rate`, `independence_ramp_rate`, `distance_correlation_max_pairs`, `contrastive_max_pairs`, `contrastive_temperature`, `uniformity_max_pairs`, `uniformity_temperature`, `use_conformity_au`, `loss_weight_propensity_calibration` | Enables auxiliaries, selects symmetric-vs-DICE branch supervision, caps quadratic auxiliary estimators, and controls how weights activate over time. |
 | Training mode | `training_graph_mode`, `negative_sampling_strategy`, `n_negatives`, `dice_sampler_margin`, `dice_sampler_pool`, `dice_branch_margin`, `dice_loss_decay`, `dice_margin_decay`, `dice_adaptive_decay` | Selects sampled-subgraph vs full-graph training and standard vs DICE popularity-conditioned negative sampling. |
 | Propensity | `use_ipw`, `propensity_hidden`, `propensity_clip_min`, `propensity_clip_max` | Controls the item-side propensity estimator; `use_ipw=True` requires positive `loss_weight_propensity_calibration`. |
 | Runtime | `batch_size`, `auto_batch_size`, `batch_size_candidates`, `epochs`, `patience`, `use_early_stopping`, `use_amp`, `use_torch_compile`, `use_ema`, `lr_scheduler`, `eval_ks` | Controls optimization and execution behavior. CUDA runs default to `bfloat16` AMP; the experiment CLIs do not expose a separate public AMP mode. |
@@ -74,7 +74,8 @@ For paper baselines, `build_config()` re-applies the paper-owned contract after 
 ## Experiment-facing contract
 
 - The formal experiment grid is **dataset x preset**.
-- Support parameters such as `batch_size`, `num_neighbors`, `graph_policy`, and `lr_scheduler` are profile-owned runtime choices, not thesis axes.
+- Support parameters such as `batch_size`, `num_neighbors`, `graph_policy`, and `lr_scheduler` are profile-owned runtime choices for U-CaGNN and tuned/fallback baselines, not thesis axes. Paper baselines lock their paper-owned values, including constant LR scheduling.
+- Formal profiles and runtime config mappings may override existing score-fusion, loss-weight, auxiliary-schedule, and bounded-pair estimator fields so controlled causal-loss ablations are reproducible through the same checkpoint identity surface as the mainline.
 - Formal profiles may sweep `num_neighbors`, `graph_policy`, or preprocessing presets as lists, but each resolved run still receives one concrete value in the final `UCaGNNConfig`.
-- The default formal profiles target the practical core datasets: `amazonbook`, `movielens1m`, `kuairec_v2`, and `kuairand1k`. `taobao` and `movielens20m` remain explicit stress/optional runs instead of default catalog entries.
-- Public ablation variants start from `preset_full()`: `mainline`, `no_popularity_head`, `no_independence`, and `no_features`.
+- The default formal profile is `core-ucagnn-mainline` and targets the practical core datasets: `amazonbook`, `movielens1m`, `kuairec_v2`, and `kuairand1k`. Development, preprocessing-sweep, runtime-probe, `taobao`, and `movielens20m` profiles remain explicit instead of default catalog entries.
+- Public ablation variants start from `preset_full()`: `mainline`, `with_contrastive`, `no_popularity_head`, `no_independence`, and `no_features`. `with_contrastive` is the only additive variant; it enables the bounded DCCL-style branch contrastive auxiliary that remains off in the default mainline.

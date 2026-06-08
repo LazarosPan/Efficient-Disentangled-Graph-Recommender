@@ -4,7 +4,7 @@ Use this file for the live data contract: loader registry, canonical interaction
 
 ## Key files
 
-- `.github/skills/ucagnn-implementation/ucagnn-data-pipeline.md`
+- `.agents/skills/ucagnn-implementation/ucagnn-data-pipeline.md`
 - `src/data/loaders/_registry.py`
 - `src/data/canonical.py`
 - `src/data/feature_policy.py`
@@ -103,7 +103,7 @@ Current graph rules:
 - Those buffers are per-user histories: the latest training interactions for each user, never global "recent" or popularity-only items.
 - Subgraph training reuses the same train-derived user history and does not create separate splits for interest, recency, or context.
 
-Only KuaiRand-1K currently populates `item_propensity_targets`, using log1p-normalized `show_cnt` as an exposure proxy. Every other dataset leaves that field as `None`, so the exposure slot in the context head is zero-filled and propensity calibration stays inactive unless a dataset-specific target is added. IPW is not enabled by default; it requires an explicit calibrated propensity objective.
+Only KuaiRand-1K currently populates `item_propensity_targets`, using log1p-normalized `show_cnt` as an exposure proxy. Every other dataset leaves that field as `None`. Because `show_cnt` is a post-treatment aggregate, the context scorer zero-fills the exposure-proxy slot unless calibrated IPW is explicitly enabled (`use_ipw=True` with positive propensity calibration weight). IPW is not enabled by default; it requires an explicit calibrated propensity objective.
 
 ## Sampling
 

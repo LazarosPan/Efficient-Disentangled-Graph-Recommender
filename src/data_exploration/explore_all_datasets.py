@@ -27,7 +27,7 @@ import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.ticker import PercentFormatter
-from src.utils.cli_parsers import build_explore_all_datasets_parser
+from src.utils.cli_parsers import BENCHMARK_DATASETS, build_explore_all_datasets_parser
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -53,15 +53,6 @@ def load_dataset_api() -> tuple[dict[str, Any], Any]:
 
 LOADERS, load_dataset = load_dataset_api()
 
-BENCHMARK_DATASETS = [
-    "amazonbook",
-    "movielens1m",
-    "movielens20m",
-    "kuairec_v2",
-    "taobao",
-    "kuairand1k",
-]
-
 DISPLAY_NAMES = {
     "amazonbook": "Amazon-Book",
     "movielens1m": "MovieLens 1M",
@@ -71,7 +62,6 @@ DISPLAY_NAMES = {
     "kuairand1k": "KuaiRand-1K",
 }
 
-DEFAULT_OUTPUT_DIR = Path("results") / "dataset_visualizations"
 DATASET_COLORS = {
     name: color
     for name, color in zip(BENCHMARK_DATASETS, plt.get_cmap("tab10").colors, strict=False)

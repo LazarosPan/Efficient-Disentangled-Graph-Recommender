@@ -37,11 +37,19 @@ THESIS_PRIMARY_METRICS: Final[tuple[str, ...]] = (
     "Personalization@40",
 )
 
+# Keep the thesis metric contract limited to PyG-standard metrics plus
+# diagnostics that are easy to interpret and defend. Do not reintroduce custom
+# Novelty, TrainPop Avoidance, or item-pop IoU surrogates unless a paper-faithful
+# definition is implemented and explicitly justified.
 LOWER_IS_BETTER_METRICS: Final[frozenset[str]] = frozenset(
     {"AveragePopularity@20", "AveragePopularity@40"},
 )
 THESIS_EVAL_KS: Final[tuple[int, ...]] = (20, 40)
 _SCORE_MIX_COMPONENTS: Final[tuple[str, ...]] = ("interest", "conformity", "context")
+_BRANCH_RANKING_SCORE_KEYS: Final[dict[str, tuple[str, str]]] = {
+    "interest_branch": ("branch_interest_score", "interest_score"),
+    "conformity_branch": ("branch_conformity_score", "conformity_score"),
+}
 
 
 class _SafeLinkPredPersonalization(LinkPredPersonalization):
@@ -296,6 +304,21 @@ class Evaluator:
         return LinkPredMetricCollection(metrics)
 
     @staticmethod
+    def _mask_ranking_scores(
+        score_matrix: torch.Tensor,
+        seen_rows: torch.Tensor,
+        seen_cols: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return ranking scores with already-seen user-item pairs excluded."""
+        ranking_scores = score_matrix.float()
+        if seen_rows.numel() == 0:
+            return ranking_scores
+        if 0 in ranking_scores.stride():
+            ranking_scores = ranking_scores.clone()
+        ranking_scores[seen_rows, seen_cols] = float("-inf")
+        return ranking_scores
+
+    @staticmethod
     def _matches_split_mask(target_mask: torch.Tensor, split_mask: torch.Tensor) -> bool:
         """Return whether ``target_mask`` identifies the same split as ``split_mask``."""
         if target_mask is split_mask:
@@ -435,7 +458,7 @@ class Evaluator:
         data,
         mask: torch.Tensor,
         batch_size: int = 512,
-        include_refined_diagnostics: bool = True,
+        include_refined_diagnostics: bool = False,
     ) -> dict[str, float]:
         """Evaluate model on users present in mask.
 
@@ -444,8 +467,10 @@ class Evaluator:
             data: Runtime graph data and split masks.
             mask: Split mask to evaluate.
             batch_size: Requested user batch size for ranking metrics.
-            include_refined_diagnostics: Whether to append refined scorer
-                diagnostics such as score-mix, Spearman, and cosine stats.
+            include_refined_diagnostics: Whether to append the expensive
+                refined scorer diagnostics such as score-mix, Spearman, and
+                cosine stats. Keep this opt-in so epoch validation remains
+                cheap; the training runner enables it for the final test pass.
 
         Returns:
             Dict of metric name to scalar value.
@@ -485,6 +510,16 @@ class Evaluator:
         export_score_components = (
             include_refined_diagnostics
             and getattr(model, "get_score_components_from_propagated", None) is not None
+        )
+        branch_ranking_metrics = (
+            {
+                branch_name: self._build_metrics(n_items=n_items, popularity=popularity).to(
+                    device,
+                )
+                for branch_name in _BRANCH_RANKING_SCORE_KEYS
+            }
+            if export_score_components and self.config.use_dual_branch
+            else {}
         )
 
         effective_batch = self._effective_eval_batch_size(
@@ -592,7 +627,7 @@ class Evaluator:
             if seen_row_parts:
                 seen_rows = move_tensor_to_device(torch.cat(seen_row_parts), device)
                 seen_cols = move_tensor_to_device(torch.cat(seen_col_parts), device)
-                scores[seen_rows, seen_cols] = float("-inf")
+                scores = self._mask_ranking_scores(scores, seen_rows, seen_cols)
 
             # Build batch ground truth on-the-fly (small: batch_size * n_items)
             gt_rows: list[torch.Tensor] = []
@@ -631,9 +666,64 @@ class Evaluator:
                 gt_user_index,
                 gt_item_index,
             )
+            if score_components is not None and branch_ranking_metrics:
+                branch_seen_rows: torch.Tensor | None = None
+                branch_seen_cols: torch.Tensor | None = None
+                branch_seen_row_parts: list[torch.Tensor] = []
+                branch_seen_col_parts: list[torch.Tensor] = []
+                for kept_row_index, original_row_index in enumerate(keep_rows):
+                    seen_items = user_seen_items.get(batch_user_ids[original_row_index])
+                    if seen_items is None or seen_items.numel() == 0:
+                        continue
+                    branch_seen_row_parts.append(
+                        torch.full((seen_items.numel(),), kept_row_index, dtype=torch.long),
+                    )
+                    branch_seen_col_parts.append(seen_items)
+                if branch_seen_row_parts:
+                    branch_seen_rows = move_tensor_to_device(
+                        torch.cat(branch_seen_row_parts),
+                        device,
+                    )
+                    branch_seen_cols = move_tensor_to_device(
+                        torch.cat(branch_seen_col_parts),
+                        device,
+                    )
+                for branch_name, score_keys in _BRANCH_RANKING_SCORE_KEYS.items():
+                    branch_scores = next(
+                        (
+                            score_components[score_key]
+                            for score_key in score_keys
+                            if score_key in score_components
+                        ),
+                        None,
+                    )
+                    if branch_scores is None:
+                        continue
+                    if branch_seen_rows is not None and branch_seen_cols is not None:
+                        branch_scores = self._mask_ranking_scores(
+                            branch_scores,
+                            branch_seen_rows,
+                            branch_seen_cols,
+                        )
+                    _, branch_pred_index_mat = torch.topk(
+                        branch_scores.float(),
+                        max_k,
+                        dim=-1,
+                    )
+                    branch_ranking_metrics[branch_name].update(
+                        branch_pred_index_mat,
+                        edge_label_index,
+                    )
             metrics.update(pred_index_mat, edge_label_index)
 
         results = {name: value.item() for name, value in metrics.compute().items()}
+        for branch_name, metric_collection in branch_ranking_metrics.items():
+            results.update(
+                {
+                    f"{branch_name}_{name}": value.item()
+                    for name, value in metric_collection.compute().items()
+                }
+            )
         if diagnostics is not None:
             results.update(diagnostics.compute())
         return results

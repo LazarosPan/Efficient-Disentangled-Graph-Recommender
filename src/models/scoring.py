@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 from torch import nn
+from torch.nn import functional
 
 from ..utils.config import UCaGNNConfig
 
@@ -106,6 +107,29 @@ class ScoringModule(nn.Module):
         if pairwise:
             return (user_emb * item_emb).sum(dim=-1)
         return user_emb @ item_emb.t()
+
+    @staticmethod
+    def _calibrated_dot_score(
+        user_emb: torch.Tensor,
+        item_emb: torch.Tensor,
+        *,
+        pairwise: bool,
+    ) -> torch.Tensor:
+        """Return norm-invariant component logits for final score fusion.
+
+        Args:
+            user_emb: User embedding tensor.
+            item_emb: Item embedding tensor.
+            pairwise: Whether to compute aligned pairwise scores.
+
+        Returns:
+            Cosine-style score tensor bounded to ``[-1, 1]``.
+        """
+        user_norm = functional.normalize(user_emb.float(), dim=-1)
+        item_norm = functional.normalize(item_emb.float(), dim=-1)
+        if pairwise:
+            return (user_norm * item_norm).sum(dim=-1)
+        return user_norm @ item_norm.t()
 
     def _get_user_interest(self, propagated: dict[str, torch.Tensor]) -> torch.Tensor:
         """Return the long-term user interest embeddings.
@@ -288,6 +312,22 @@ class ScoringModule(nn.Module):
             value = value[item_ids]
         return self._cast_like(value, ref)
 
+    def _get_item_propensity_context_feature(
+        self,
+        propagated: dict[str, torch.Tensor],
+        item_ids: torch.Tensor | None,
+        ref: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return exposure-proxy context input only for calibrated IPW runs."""
+        if not (self.config.use_ipw and self.config.loss_weight_propensity_calibration > 0):
+            return torch.zeros(ref.size(0), device=ref.device, dtype=ref.dtype)
+        return self._get_item_scalar_feature(
+            propagated,
+            "item_propensity_targets",
+            item_ids,
+            ref,
+        )
+
     def _context_scores(
         self,
         propagated: dict[str, torch.Tensor],
@@ -318,9 +358,8 @@ class ScoringModule(nn.Module):
                 item_ids,
                 item_ref,
             ).unsqueeze(-1),
-            self._get_item_scalar_feature(
+            self._get_item_propensity_context_feature(
                 propagated,
-                "item_propensity_targets",
                 item_ids,
                 item_ref,
             ).unsqueeze(-1),
@@ -343,19 +382,22 @@ class ScoringModule(nn.Module):
         propagated: dict[str, torch.Tensor],
     ) -> bool:
         """Return whether the context head has configured item metadata to score."""
+        metadata_keys = (
+            "item_popularity",
+            "item_recency",
+            "item_age",
+            "item_safe_features",
+        )
+        has_metadata = any(key in propagated for key in metadata_keys)
+        has_calibrated_propensity = (
+            self.config.use_ipw
+            and self.config.loss_weight_propensity_calibration > 0
+            and "item_propensity_targets" in propagated
+        )
         return (
             self.config.use_popularity_head
             and self.context_head is not None
-            and any(
-                key in propagated
-                for key in (
-                    "item_popularity",
-                    "item_recency",
-                    "item_propensity_targets",
-                    "item_age",
-                    "item_safe_features",
-                )
-            )
+            and (has_metadata or has_calibrated_propensity)
         )
 
     def _active_score_components(
@@ -463,6 +505,9 @@ class ScoringModule(nn.Module):
         interest_score: torch.Tensor,
         conformity_score: torch.Tensor,
         context_score: torch.Tensor,
+        fusion_interest_score: torch.Tensor,
+        fusion_conformity_score: torch.Tensor,
+        fusion_context_score: torch.Tensor,
         score_mix_weights: torch.Tensor,
         *,
         pairwise: bool,
@@ -470,9 +515,12 @@ class ScoringModule(nn.Module):
         """Assemble the scorer outputs.
 
         Args:
-            interest_score: Interest score tensor.
-            conformity_score: Conformity score tensor.
-            context_score: Context score tensor.
+            interest_score: Raw interest dot-product score tensor.
+            conformity_score: Raw conformity dot-product score tensor.
+            context_score: Raw context score tensor.
+            fusion_interest_score: Calibrated interest score used in final fusion.
+            fusion_conformity_score: Calibrated conformity score used in final fusion.
+            fusion_context_score: Calibrated context score used in final fusion.
             score_mix_weights: Per-user score-mix weights.
             pairwise: Whether the scores are pairwise or full-catalog.
 
@@ -481,22 +529,29 @@ class ScoringModule(nn.Module):
         """
         if pairwise:
             final_score = (
-                score_mix_weights[:, 0] * interest_score
-                + score_mix_weights[:, 1] * conformity_score
-                + score_mix_weights[:, 2] * context_score
+                score_mix_weights[:, 0] * fusion_interest_score
+                + score_mix_weights[:, 1] * fusion_conformity_score
+                + score_mix_weights[:, 2] * fusion_context_score
             )
-            context_for_dict = context_score
+            context_for_dict = fusion_context_score
+            raw_context_for_dict = context_score
         else:
             final_score = (
-                score_mix_weights[:, 0:1] * interest_score
-                + score_mix_weights[:, 1:2] * conformity_score
-                + score_mix_weights[:, 2:3] * context_score.unsqueeze(0)
+                score_mix_weights[:, 0:1] * fusion_interest_score
+                + score_mix_weights[:, 1:2] * fusion_conformity_score
+                + score_mix_weights[:, 2:3] * fusion_context_score.unsqueeze(0)
             )
-            context_for_dict = context_score.unsqueeze(0).expand_as(interest_score)
+            context_for_dict = fusion_context_score.unsqueeze(0).expand_as(
+                fusion_interest_score,
+            )
+            raw_context_for_dict = context_score.unsqueeze(0).expand_as(interest_score)
         return {
-            "interest_score": interest_score,
-            "conformity_score": conformity_score,
+            "interest_score": fusion_interest_score,
+            "conformity_score": fusion_conformity_score,
             "context_score": context_for_dict,
+            "branch_interest_score": interest_score,
+            "branch_conformity_score": conformity_score,
+            "raw_context_score": raw_context_for_dict,
             "score_mix_weights": score_mix_weights,
             "final_score": final_score,
         }
@@ -563,6 +618,11 @@ class ScoringModule(nn.Module):
             item_interest,
             pairwise=True,
         )
+        fusion_interest_score = self._calibrated_dot_score(
+            user_interest,
+            item_interest,
+            pairwise=True,
+        )
         user_conformity = self._get_user_conformity(propagated)[user_ids]
         item_conformity = self._select_items(self._get_item_conformity(propagated), item_ids)
         conformity_score = self._pairwise_or_matrix_score(
@@ -570,7 +630,13 @@ class ScoringModule(nn.Module):
             item_conformity,
             pairwise=True,
         )
+        fusion_conformity_score = self._calibrated_dot_score(
+            user_conformity,
+            item_conformity,
+            pairwise=True,
+        )
         context_score = self._context_scores(propagated, item_ids)
+        fusion_context_score = torch.tanh(context_score.float())
         active_components = self._active_score_components(
             propagated,
             device=user_interest.device,
@@ -585,6 +651,9 @@ class ScoringModule(nn.Module):
             interest_score,
             conformity_score,
             context_score,
+            fusion_interest_score,
+            fusion_conformity_score,
+            fusion_context_score,
             score_mix_weights,
             pairwise=True,
         )
@@ -610,6 +679,11 @@ class ScoringModule(nn.Module):
             item_interest,
             pairwise=False,
         )
+        fusion_interest_score = self._calibrated_dot_score(
+            user_interest,
+            item_interest,
+            pairwise=False,
+        )
         user_conformity = self._get_user_conformity(propagated)[user_ids]
         item_conformity = self._get_item_conformity(propagated)
         conformity_score = self._pairwise_or_matrix_score(
@@ -617,7 +691,13 @@ class ScoringModule(nn.Module):
             item_conformity,
             pairwise=False,
         )
+        fusion_conformity_score = self._calibrated_dot_score(
+            user_conformity,
+            item_conformity,
+            pairwise=False,
+        )
         context_score = self._context_scores(propagated, None)
+        fusion_context_score = torch.tanh(context_score.float())
         active_components = self._active_score_components(
             propagated,
             device=user_interest.device,
@@ -632,6 +712,9 @@ class ScoringModule(nn.Module):
             interest_score,
             conformity_score,
             context_score,
+            fusion_interest_score,
+            fusion_conformity_score,
+            fusion_context_score,
             score_mix_weights,
             pairwise=False,
         )
