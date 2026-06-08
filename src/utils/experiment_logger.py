@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import time
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import asdict, is_dataclass
@@ -18,6 +19,8 @@ class ExperimentLogger:
 
     BUSY_TIMEOUT_MS = 60_000
     STARTUP_MAINTENANCE_BUSY_TIMEOUT_MS = 100
+    LOCK_RETRY_ATTEMPTS = 8
+    LOCK_RETRY_BASE_DELAY_S = 0.5
     TERMINAL_STATUSES = ("completed", "failed", "oom")
     SUMMARY_VIEWS = (
         "experiment_summary",
@@ -770,7 +773,7 @@ class ExperimentLogger:
 
     def _repair_experiment_statuses(self) -> None:
         """Backfill stale status rows so exploration views reflect historical reality."""
-        self.conn.execute(
+        self._execute_with_retry(
             f"""
             UPDATE experiments
             SET status = 'completed',
@@ -779,12 +782,12 @@ class ExperimentLogger:
               AND EXISTS (
                   SELECT 1
                   FROM metrics m
-                  WHERE m.experiment_id = experiments.id
+                    WHERE m.experiment_id = experiments.id
                     AND m.split = 'test'
               )
             """,
         )
-        self.conn.execute(
+        self._execute_with_retry(
             f"""
             UPDATE experiments
             SET status = 'oom',
@@ -793,7 +796,7 @@ class ExperimentLogger:
               AND oom_flag = 1
             """,
         )
-        self.conn.execute(
+        self._execute_with_retry(
             f"""
             UPDATE experiments
             SET status = 'failed',
@@ -804,6 +807,36 @@ class ExperimentLogger:
         )
 
     # ── Public API ────────────────────────────────────────────────────────
+
+    def _is_lock_error(self, exc: sqlite3.OperationalError) -> bool:
+        """Return True when an error is a SQLite lock/busy condition."""
+        lower_msg = str(exc).lower()
+        return "locked" in lower_msg or "busy" in lower_msg
+
+    def _execute_with_retry(self, sql: str, params: tuple[object, ...] | None = None) -> sqlite3.Cursor:
+        """Execute a write SQL statement and commit, retrying on lock contention."""
+        last_error: sqlite3.OperationalError | None = None
+        for attempt in range(self.LOCK_RETRY_ATTEMPTS):
+            try:
+                cursor = (
+                    self.conn.execute(sql, params)
+                    if params is not None
+                    else self.conn.execute(sql)
+                )
+                self.conn.commit()
+                return cursor
+            except sqlite3.OperationalError as exc:
+                last_error = exc
+                if not self._is_lock_error(exc) or attempt >= self.LOCK_RETRY_ATTEMPTS - 1:
+                    self.conn.rollback()
+                    raise
+                self.conn.rollback()
+                delay_s = self.LOCK_RETRY_BASE_DELAY_S * (2**attempt)
+                time.sleep(delay_s)
+
+        if last_error is not None:
+            raise last_error
+        raise sqlite3.OperationalError("database operation failed after retries")
 
     def log_experiment(
         self,
@@ -834,7 +867,7 @@ class ExperimentLogger:
         if training_mode is None:
             training_mode = getattr(config, "training_mode", None)
         now = datetime.now(UTC).isoformat()
-        cur = self.conn.execute(
+        cur = self._execute_with_retry(
             (
                 "INSERT INTO experiments ("
                 "dataset, preset, intervention, config_json, seed, training_mode, "
@@ -866,7 +899,6 @@ class ExperimentLogger:
                 now,
             ),
         )
-        self.conn.commit()
         return cur.lastrowid  # type: ignore[return-value]
 
     def update_experiment_status(
@@ -886,7 +918,7 @@ class ExperimentLogger:
             oom_flag: Optional explicit OOM indicator.
 
         """
-        self.conn.execute(
+        self._execute_with_retry(
             (
                 "UPDATE experiments SET status = ?, failure_reason = ?, "
                 "oom_flag = COALESCE(?, oom_flag), updated_at = ? WHERE id = ?"
@@ -899,7 +931,6 @@ class ExperimentLogger:
                 exp_id,
             ),
         )
-        self.conn.commit()
 
     def find_latest_batch_experiment(
         self,
@@ -977,7 +1008,7 @@ class ExperimentLogger:
         Regular training should prefer ``log_epoch()``, which aggregates raw
         per-batch StageMetrics into one row per (epoch, stage).
         """
-        self.conn.execute(
+        self._execute_with_retry(
             (
                 "INSERT INTO profiling (experiment_id, epoch, stage, duration_ms, "
                 "vram_before_mb, vram_after_mb, vram_peak_mb, stage_call_count, "
@@ -1012,7 +1043,7 @@ class ExperimentLogger:
                     f"split={split}, epoch={epoch}, metric={metric_name}: {value!r}"
                 ),
             )
-        self.conn.execute(
+        self._execute_with_retry(
             (
                 "INSERT INTO metrics (experiment_id, epoch, split, metric_name, "
                 "metric_value, timestamp) VALUES (?, ?, ?, ?, ?, ?)"
@@ -1076,7 +1107,7 @@ class ExperimentLogger:
             vram_after_values = [
                 float(value) for value in stage_values["vram_after_mb"] if value is not None
             ]
-            self.conn.execute(
+            self._execute_with_retry(
                 (
                     "INSERT INTO profiling (experiment_id, epoch, stage, duration_ms, "
                     "vram_before_mb, vram_after_mb, vram_peak_mb, stage_call_count, "
