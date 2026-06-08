@@ -25,9 +25,9 @@ from scripts._workflow_helpers import (
     thesis_metric_values,
 )
 from src.utils.cli_parsers import (
+    benchmark_dataset_lookup_keys,
     normalize_benchmark_datasets_arg,
     resolve_benchmark_datasets,
-    benchmark_dataset_lookup_keys,
 )
 from src.utils.config import (
     BENCHMARK_CONFIG_FIELDS,
@@ -51,6 +51,7 @@ from experiments.run_experiment import (
     build_config,
     normalize_benchmark_config_overrides,
     normalize_config_inputs,
+    recoverable_checkpoint_for_config,
     run_experiment,
 )
 
@@ -579,8 +580,7 @@ def _benchmark_graph_policy_values(
 def _format_num_neighbors_sweep(num_neighbors: list[list[int]]) -> str:
     """Return one readable sweep fragment for a neighbor option set."""
     return ", ".join(
-        "[" + ", ".join(str(value) for value in neighbors) + "]"
-        for neighbors in num_neighbors
+        "[" + ", ".join(str(value) for value in neighbors) + "]" for neighbors in num_neighbors
     )
 
 
@@ -819,6 +819,31 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
         )
         print("=" * 70)
 
+        try:
+            config = build_config(
+                build_benchmark_config_inputs(
+                    benchmark_args,
+                    dataset=dataset,
+                    preset=preset,
+                    lr_scheduler=lr_scheduler,
+                    num_neighbors=effective_neighbor_list,
+                    preprocessing_preset=preprocessing_preset,
+                    graph_policy=graph_policy,
+                ),
+            )
+        except Exception as e:
+            failed += 1
+            failure_notes.append(
+                (
+                    f"{dataset} / {preset} / {lr_scheduler} "
+                    f"/ {preprocessing_preset or 'default'} / {graph_policy} "
+                    f"/ nbr{neighbor_label}: {type(e).__name__}: {e}"
+                ),
+            )
+            logger.error(f"FAILED: {e}")
+            traceback.print_exc()
+            continue
+
         existing = tracker.find_latest_batch_experiment(
             batch_id=batch_id,
             dataset=dataset,
@@ -836,11 +861,31 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                 ),
             },
         )
-        if (
+        recovered_checkpoint = None
+        if not bool(benchmark_args.get("overwrite_checkpoint")):
+            recovered_checkpoint = recoverable_checkpoint_for_config(
+                config,
+                preset=preset,
+            )
+
+        should_skip_existing = (
             benchmark_args["resume_batch"]
             and existing is not None
             and existing["status"] in ExperimentLogger.TERMINAL_STATUSES
+        )
+        if (
+            should_skip_existing
+            and existing["status"] in {"failed", "oom"}
+            and not bool(benchmark_args.get("overwrite_checkpoint"))
+            and recovered_checkpoint is not None
         ):
+            should_skip_existing = False
+            logger.info(
+                "Retrying failed batch item (exp_id=%s, status=%s) from recoverable checkpoint.",
+                existing["id"],
+                existing["status"],
+            )
+        if should_skip_existing:
             skipped += 1
             logger.info(
                 "Skipping existing batch item (exp_id=%s, status=%s)",
@@ -870,20 +915,14 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             continue
 
         try:
-            config = build_config(
-                build_benchmark_config_inputs(
-                    benchmark_args,
-                    dataset=dataset,
-                    preset=preset,
-                    lr_scheduler=lr_scheduler,
-                    num_neighbors=effective_neighbor_list,
-                    preprocessing_preset=preprocessing_preset,
-                    graph_policy=graph_policy,
-                ),
-            )
+            run_config = config
+            run_checkpoint_path = None
+            if recovered_checkpoint is not None:
+                run_config, recovered_checkpoint_path = recovered_checkpoint
+                run_checkpoint_path = str(recovered_checkpoint_path)
             t0 = time.time()
             result = run_experiment(
-                config,
+                run_config,
                 preset=preset,
                 enable_mlflow=not bool(benchmark_args["no_mlflow"]),
                 mlflow_tracking_uri=benchmark_args["mlflow_tracking_uri"],
@@ -892,6 +931,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                 profile_name=profile_name,
                 overwrite_checkpoint=bool(benchmark_args.get("overwrite_checkpoint")),
                 change_note=benchmark_args.get("change_note"),
+                checkpoint_path=run_checkpoint_path,
             )
             elapsed = time.time() - t0
             runtime_probe_estimate = _runtime_probe_estimate_from_result(

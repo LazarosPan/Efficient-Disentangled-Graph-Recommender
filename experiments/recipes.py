@@ -120,7 +120,9 @@ def resolve_profile_num_neighbors(
         return None
     if isinstance(raw_neighbors, Mapping):
         if not raw_neighbors:
-            raise ValueError("num_neighbors must be a non-empty mapping when provided as an object.")
+            raise ValueError(
+                "num_neighbors must be a non-empty mapping when provided as an object.",
+            )
         resolved: dict[str, list[list[int]]] = {}
         for key, raw_option in raw_neighbors.items():
             resolved[str(key)] = _normalize_num_neighbors_options(
