@@ -1510,7 +1510,7 @@ class CausalTrainingContractTests(unittest.TestCase):
         )
         config = self._build_dual_branch_config()
 
-        model = build_runtime_model(canonical, build_graph(canonical, config), config)
+        model = build_runtime_model(config, canonical, build_graph(canonical, config))
 
         self.assertTrue(
             torch.equal(
@@ -1552,8 +1552,8 @@ class CausalTrainingContractTests(unittest.TestCase):
             test_mask=np.array([False, False, False, True]),
         )
         config = self._build_dual_branch_config()
-        model_a = build_runtime_model(canonical_a, build_graph(canonical_a, config), config)
-        model_b = build_runtime_model(canonical_b, build_graph(canonical_b, config), config)
+        model_a = build_runtime_model(config, canonical_a, build_graph(canonical_a, config))
+        model_b = build_runtime_model(config, canonical_b, build_graph(canonical_b, config))
 
         expected_items = torch.tensor(
             [[0, 1, 0, 0, 0, 0, 0, 0, 0, 0], [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]],

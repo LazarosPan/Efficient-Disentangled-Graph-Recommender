@@ -28,7 +28,6 @@ from experiments.run_experiment import (
     _auto_batch_probe_candidates,
     _auto_batch_probe_interactions,
     _bootstrap_cagra_embeddings,
-    _build_canonical_name,
     _build_evaluation_identity,
     _build_training_identity,
     _cuda_memory_snapshot,
@@ -42,7 +41,7 @@ from experiments.run_experiment import (
     build_runtime_model,
     normalize_benchmark_config_overrides,
 )
-from scripts.query_results import _build_canonical_name_from_config, _format_scoremix
+from scripts.query_results import _format_scoremix
 from src.data.canonical import CanonicalInteractions
 from src.data.graph_builder import build_graph
 from src.losses.loss_suite import LossSuite
@@ -55,6 +54,7 @@ from src.profiling.gpu_profiler import (
 )
 from src.training.mini_batch_trainer import MiniBatchTrainer
 from src.utils.config import UCaGNNConfig
+from src.utils.experiment_naming import build_canonical_experiment_name
 from src.utils.reproducibility import build_torch_generator
 from src.utils.trainer_runtime import TrainerRuntime
 from torch.nn import functional
@@ -199,7 +199,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.preprocessing_preset, "kuairec_watchratio")
         self.assertIn(
             "ppresetkuairec_watchratio",
-            _build_canonical_name(config, None, None),
+            build_canonical_experiment_name(config, None, None),
         )
 
     def test_build_config_accepts_lr_scheduler_override(self) -> None:
@@ -225,7 +225,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 lr_scheduler="cosine",
             ),
         )
-        canonical = _build_canonical_name(config, "ucagnn", None)
+        canonical = build_canonical_experiment_name(config, "ucagnn", None)
 
         self.assertIn("lr-cosine", canonical)
 
@@ -242,8 +242,8 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         stored_config = dataclasses.asdict(config)
 
         self.assertEqual(
-            _build_canonical_name_from_config(stored_config, "ucagnn", None),
-            _build_canonical_name(config, "ucagnn", None),
+            build_canonical_experiment_name(stored_config, "ucagnn", None),
+            build_canonical_experiment_name(config, "ucagnn", None),
         )
 
     def test_query_results_scoremix_uses_current_config_field(self) -> None:
@@ -1066,7 +1066,13 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(profile["config_overrides"]["interest_gnn_layers"], 1)
         self.assertEqual(profile["config_overrides"]["conformity_gnn_layers"], 2)
         self.assertEqual(profile["config_overrides"]["dropout"], 0.1)
-        self.assertEqual(profile["config_overrides"]["num_neighbors"], [8, 4])
+        self.assertEqual(
+            profile["config_overrides"]["num_neighbors"],
+            {
+                "small": [[6, 3], [4, 2]],
+                "medium": [[10, 5], [16, 8]],
+            },
+        )
         self.assertNotIn("hard_negative_ratio", profile["config_overrides"])
         self.assertNotIn("loss_schedule", profile["config_overrides"])
         self.assertTrue(benchmark_args["use_early_stopping"])
@@ -1087,13 +1093,31 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(benchmark_args["interest_gnn_layers"], 1)
         self.assertEqual(benchmark_args["conformity_gnn_layers"], 2)
         self.assertEqual(benchmark_args["dropout"], 0.1)
-        self.assertEqual(benchmark_args["num_neighbors"], [8, 4])
+        self.assertEqual(
+            benchmark_args["num_neighbors"],
+            {
+                "small": [[6, 3], [4, 2]],
+                "medium": [[10, 5], [16, 8]],
+            },
+        )
         self.assertEqual(benchmark_args["graph_policy"], "observed")
         self.assertIsNone(benchmark_args["graph_policy_options"])
         self.assertEqual(benchmark_args["hard_negative_ratio"], 0.0)
         self.assertIsNone(benchmark_args["loss_schedule"])
         self.assertEqual(benchmark_args["auxiliary_losses_start_epoch"], 15)
         self.assertEqual(benchmark_args["popularity_supervision_start_epoch"], 30)
+
+    def test_deeper_comparison_profile_keeps_original_num_neighbors_sweep(self) -> None:
+        """The deeper comparison profile should stay on its original fan-out sweep."""
+        profile = get_formal_profile("core-deeper-comparison-i2-c3")
+        benchmark_args = formal_main._build_new_run_args(
+            SimpleNamespace(overwrite_checkpoint=False),
+            "core-deeper-comparison-i2-c3",
+        )
+
+        expected_neighbors = [[10, 5, 3], [5, 3, 2]]
+        self.assertEqual(profile["config_overrides"]["num_neighbors"], expected_neighbors)
+        self.assertEqual(benchmark_args["num_neighbors"], expected_neighbors)
 
     def test_benchmark_config_inputs_bridge_into_build_config(self) -> None:
         """Formal benchmark args should rebuild one run through the shared config contract."""
@@ -1262,7 +1286,13 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertNotIn("auto_batch_size", profile["config_overrides"])
         self.assertEqual(profile["config_overrides"]["interest_gnn_layers"], 1)
         self.assertEqual(profile["config_overrides"]["conformity_gnn_layers"], 2)
-        self.assertEqual(profile["config_overrides"]["num_neighbors"], [8, 4])
+        self.assertEqual(
+            profile["config_overrides"]["num_neighbors"],
+            {
+                "small": [[6, 3], [4, 2]],
+                "medium": [[10, 5], [16, 8]],
+            },
+        )
         self.assertNotIn("scoring_weight_modes", benchmark_args)
         self.assertEqual(
             benchmark_args["datasets"],
@@ -1272,7 +1302,13 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(benchmark_args["single_branch_gnn_layers"], 2)
         self.assertEqual(benchmark_args["interest_gnn_layers"], 1)
         self.assertEqual(benchmark_args["conformity_gnn_layers"], 2)
-        self.assertEqual(benchmark_args["num_neighbors"], [8, 4])
+        self.assertEqual(
+            benchmark_args["num_neighbors"],
+            {
+                "small": [[6, 3], [4, 2]],
+                "medium": [[10, 5], [16, 8]],
+            },
+        )
         self.assertIsNone(benchmark_args["sample_interactions"])
         self.assertIsNone(benchmark_args["loader_max_rows"])
 
@@ -1869,9 +1905,30 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(normalized["num_neighbors"], [[10, 5], [5, 3]])
         self.assertEqual(normalized["batch_size"], UCaGNNConfig().batch_size)
         self.assertTrue(normalized["auto_batch_size"])
+        self.assertEqual(normalized["use_early_stopping"], UCaGNNConfig().use_early_stopping)
+        self.assertEqual(normalized["patience"], UCaGNNConfig().patience)
         self.assertIsNone(normalized["graph_policy"])
         self.assertIsNone(normalized["graph_policy_options"])
         self.assertEqual(normalized["hard_negative_ratio"], 0.25)
+
+    def test_normalize_benchmark_config_overrides_supports_dataset_keyed_neighbor_sweeps(self) -> None:
+        """Benchmark payload normalization should preserve dataset-keyed neighbor sweeps."""
+        normalized = normalize_benchmark_config_overrides(
+            {
+                "num_neighbors": {
+                    "small": [[6, 3], [4, 2]],
+                    "medium": [[10, 5], [16, 8]],
+                },
+            },
+        )
+
+        self.assertEqual(
+            normalized["num_neighbors"],
+            {
+                "small": [[6, 3], [4, 2]],
+                "medium": [[10, 5], [16, 8]],
+            },
+        )
 
     def test_normalize_benchmark_config_overrides_supports_graph_policy_sweeps(self) -> None:
         """Benchmark payload normalization should expand graph-policy sweep lists safely."""
@@ -2441,6 +2498,39 @@ class BenchmarkPlanTests(unittest.TestCase):
             ("amazonbook", "ucagnn", "cosine", None, "observed", (10, 5)),
             plan,
         )
+
+    def test_build_benchmark_plan_resolves_dataset_keyed_num_neighbors(self) -> None:
+        """Benchmark planning should resolve per-tier neighbor sweeps before expansion."""
+        args = SimpleNamespace(
+            datasets=["small", "medium"],
+            presets=["ucagnn"],
+            num_neighbors={
+                "small": [[6, 3], [4, 2]],
+                "medium": [[10, 5], [16, 8]],
+            },
+            lr_scheduler="plateau",
+        )
+
+        plan = build_benchmark_plan(args)
+
+        self.assertEqual(
+            plan[:4],
+            [
+                ("amazonbook", "ucagnn", "plateau", None, "observed", (6, 3)),
+                ("amazonbook", "ucagnn", "plateau", None, "observed", (4, 2)),
+                ("movielens1m", "ucagnn", "plateau", None, "observed", (6, 3)),
+                ("movielens1m", "ucagnn", "plateau", None, "observed", (4, 2)),
+            ],
+        )
+        self.assertIn(
+            ("kuairec_v2", "ucagnn", "plateau", None, "observed", (10, 5)),
+            plan,
+        )
+        self.assertIn(
+            ("kuairand1k", "ucagnn", "plateau", None, "observed", (16, 8)),
+            plan,
+        )
+        self.assertEqual(len(plan), 8)
 
     def test_build_benchmark_plan_resolves_all_lr_schedulers(self) -> None:
         """The lr_scheduler='all' shorthand should expand to all supported schedulers."""
