@@ -112,6 +112,70 @@
       }
     },
     {
+      "id": "core-ucagnn-mainline-opposite-fanout-smaller-lr",
+      "aliases": [
+        "default-opposite-fanout-smaller-lr",
+        "latest-opposite-fanout-smaller-lr",
+        "core-paper-architecture-comparison-opposite-fanout-smaller-lr"
+      ],
+      "description": "Core U-CaGNN thesis mainline across practical datasets. Paper baselines are split into separate run-once profiles so U-CaGNN tuning can iterate without rerunning fixed paper defaults. Opposite fan-out from the default (smaller for small datasets, larger for medium datasets) and smaller learning rate to check whether the default settings are actually optimal before committing to long runs.",
+      "matrix": {
+        "datasets": [
+          "small",
+          "medium"
+        ],
+        "presets": [
+          "ucagnn"
+        ]
+      },
+      "config_overrides": {
+        "epochs": 200,
+        "use_early_stopping": true,
+        "patience": 10,
+        "lr": 0.001,
+        "lr_scheduler": "cosine",
+        "batch_size_candidates": [
+          32768,
+          16384,
+          8192,
+          4096,
+          2048,
+          1024,
+          512,
+          256
+        ],
+        "single_branch_gnn_layers": 2,
+        "interest_gnn_layers": 1,
+        "conformity_gnn_layers": 2,
+        "dropout": 0.1,
+        "graph_policy": "observed",
+        "num_neighbors": {
+          "medium": [
+            [
+              6,
+              3
+            ],
+            [
+              4,
+              2
+            ]
+          ],
+          "small": [
+            [
+              10,
+              5
+            ],
+            [
+              16,
+              8
+            ]
+          ]
+        },
+        "auxiliary_losses_start_epoch": 15,
+        "popularity_supervision_start_epoch": 30
+      }
+    },
+    {
       "id": "paper-lightgcn-small-baselines",
       "description": "Run-once paper-faithful LightGCN baselines for the smaller practical datasets so finished baseline metrics are available before committing to large video runs.",
       "matrix": {
