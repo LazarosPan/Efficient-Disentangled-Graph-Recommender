@@ -34,6 +34,14 @@ logger = logging.getLogger(__name__)
 _STATE_KEY_MIGRATIONS: dict[str, str] = {
     "propensity.mlp": "_propensity_mlp",
 }
+REQUIRED_CHECKPOINT_KEYS = frozenset(
+    {
+        "model_state",
+        "optimizer_state",
+        "loss_suite_state",
+        "config",
+    },
+)
 
 
 def autocast_context(
@@ -151,6 +159,14 @@ def empty_cuda_cache(device: torch.device) -> None:
     """
     if device.type == "cuda":
         torch.cuda.empty_cache()
+
+
+def is_cuda_oom_error(exc: BaseException) -> bool:
+    """Return whether an exception represents a CUDA out-of-memory failure."""
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    message = str(exc).lower()
+    return "cuda" in message and "out of memory" in message
 
 
 def _migrate_model_state(state: dict[str, Any]) -> dict[str, Any]:

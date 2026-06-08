@@ -36,6 +36,88 @@ SUPPORTED_LR_SCHEDULERS: tuple[LRSchedulerName, ...] = (
     "polynomial",
     "linear",
 )
+CONFIG_PRESET_METHODS: dict[str, str] = {
+    "ucagnn": "preset_full",
+    "lightgcn": "preset_lightgcn",
+    "lightgcn_paper": "preset_lightgcn_paper",
+    "dice_paper": "preset_dice_paper",
+    "dice_like": "preset_dice_like",
+    "dice_like_ablation": "preset_dice_like",
+}
+CONFIG_PRESET_CHOICES: tuple[str, ...] = tuple(CONFIG_PRESET_METHODS)
+CONFIG_OVERRIDE_FIELDS = (
+    "epochs",
+    "batch_size",
+    "auto_batch_size",
+    "batch_size_candidates",
+    "embed_dim",
+    "single_branch_gnn_layers",
+    "interest_gnn_layers",
+    "conformity_gnn_layers",
+    "dropout",
+    "lr",
+    "lr_scheduler",
+    "lr_scheduler_factor",
+    "lr_scheduler_patience",
+    "use_early_stopping",
+    "patience",
+    "use_features",
+    "feature_policy",
+    "graph_policy",
+    "training_graph_mode",
+    "branch_loss_mode",
+    "recommendation_loss_mode",
+    "negative_sampling_strategy",
+    "preprocessing_preset",
+    "derived_split_mode",
+    "num_neighbors",
+    "hard_negative_ratio",
+    "score_mix_min_weight",
+    "score_weight_interest",
+    "score_weight_conformity",
+    "score_weight_popularity",
+    "dice_sampler_margin",
+    "dice_sampler_pool",
+    "dice_branch_margin",
+    "dice_loss_decay",
+    "dice_margin_decay",
+    "dice_adaptive_decay",
+    "n_negatives",
+    "distance_correlation_max_pairs",
+    "contrastive_max_pairs",
+    "contrastive_temperature",
+    "uniformity_max_pairs",
+    "uniformity_temperature",
+    "use_conformity_au",
+    "loss_weight_recommendation",
+    "loss_weight_interest_bpr",
+    "loss_weight_conformity_bpr",
+    "loss_weight_independence",
+    "loss_weight_contrastive",
+    "loss_weight_align",
+    "loss_weight_uniform",
+    "loss_weight_popularity",
+    "loss_weight_propensity_calibration",
+    "use_ipw",
+    "auxiliary_loss_schedule",
+    "auxiliary_ramp_rate",
+    "independence_ramp_rate",
+    "auxiliary_losses_start_epoch",
+    "popularity_supervision_start_epoch",
+    "loss_schedule",
+    "sample_interactions",
+    "loader_max_rows",
+)
+_BENCHMARK_EXCLUDED_FIELDS = ("embed_dim",)
+BENCHMARK_CONFIG_FIELDS = (
+    *(
+        field_name
+        for field_name in CONFIG_OVERRIDE_FIELDS
+        if field_name not in _BENCHMARK_EXCLUDED_FIELDS
+    ),
+    "device",
+    "data_dir",
+)
 PAPER_BASELINE_PRESETS = frozenset(("lightgcn_paper", "dice_paper"))
 GRAPH_POLICY_CHOICES: tuple[GraphPolicy, ...] = ("observed", "cagra_augmented")
 PresetOverrideValue = bool | int | float | str | list[int]

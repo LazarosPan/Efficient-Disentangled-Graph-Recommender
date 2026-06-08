@@ -36,14 +36,33 @@ def _max_gnn_layers(config: object) -> int:
     )
 
 
+def _format_num_neighbors_vector(num_neighbors: object) -> str:
+    """Return one fan-out vector as a compact slug fragment."""
+    return "-".join(str(value) for value in num_neighbors)
+
+
+def _format_num_neighbors_payload(num_neighbors: object) -> str | None:
+    """Return a compact label for a raw or keyed num_neighbors payload."""
+    if num_neighbors is None:
+        return None
+    if isinstance(num_neighbors, Mapping):
+        parts: list[str] = []
+        for key in sorted(num_neighbors):
+            value = _format_num_neighbors_payload(num_neighbors[key])
+            parts.append(f"{key}[{value or 'na'}]")
+        return "__".join(parts)
+    if isinstance(num_neighbors, (list, tuple)):
+        if not num_neighbors:
+            return None
+        if all(isinstance(item, (list, tuple)) for item in num_neighbors):
+            return "+".join(_format_num_neighbors_vector(item) for item in num_neighbors)
+        return _format_num_neighbors_vector(num_neighbors)
+    return str(num_neighbors)
+
+
 def _num_neighbors_label(config: object) -> str | None:
     """Return the fan-out label for a config if it has one."""
-    num_neighbors = _config_value(config, "num_neighbors")
-    if isinstance(num_neighbors, list | tuple):
-        return "-".join(str(value) for value in num_neighbors)
-    if num_neighbors is not None:
-        return str(num_neighbors)
-    return None
+    return _format_num_neighbors_payload(_config_value(config, "num_neighbors"))
 
 
 def build_canonical_experiment_name(
