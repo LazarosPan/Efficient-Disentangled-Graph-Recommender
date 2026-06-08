@@ -62,45 +62,31 @@ def _normalize_num_neighbors_vector(
     return [int(value) for value in raw_value]
 
 
-def resolve_profile_num_neighbors(
-    overrides: Mapping[str, Any],
-) -> list[list[int]] | None:
-    """Resolve one or many neighbor vectors from one profile payload.
-
-    Args:
-        overrides: Profile override mapping that may contain ``num_neighbors``
-            as either one vector or a list of vectors.
-
-    Returns:
-        Ordered list of per-run fan-out vectors to expand in benchmark
-        planning. A single configured vector still returns as a one-element
-        list.
-
-    """
-    if "num_neighbors_options" in overrides:
-        raise ValueError("Use num_neighbors only; num_neighbors_options was removed.")
-    raw_neighbors = overrides.get("num_neighbors")
-    if raw_neighbors is None:
-        return None
+def _normalize_num_neighbors_options(
+    raw_value: object,
+    *,
+    field_name: str,
+) -> list[list[int]]:
+    """Return one deduplicated fan-out sweep from a vector or a vector list."""
     if (
-        isinstance(raw_neighbors, (list, tuple))
-        and raw_neighbors
-        and all(not isinstance(value, (list, tuple)) for value in raw_neighbors)
+        isinstance(raw_value, (list, tuple))
+        and raw_value
+        and all(not isinstance(value, (list, tuple)) for value in raw_value)
     ):
-        resolved = _normalize_num_neighbors_vector(raw_neighbors, field_name="num_neighbors")
+        resolved = _normalize_num_neighbors_vector(raw_value, field_name=field_name)
         return [list(resolved)]
 
-    if not isinstance(raw_neighbors, (list, tuple)) or not raw_neighbors:
+    if not isinstance(raw_value, (list, tuple)) or not raw_value:
         raise ValueError(
-            "num_neighbors must be a non-empty fan-out vector or a non-empty list of vectors.",
+            f"{field_name} must be a non-empty fan-out vector or a non-empty list of vectors.",
         )
 
     deduped: list[list[int]] = []
     seen: set[tuple[int, ...]] = set()
-    for index, raw_option in enumerate(raw_neighbors):
+    for index, raw_option in enumerate(raw_value):
         option = _normalize_num_neighbors_vector(
             raw_option,
-            field_name=f"num_neighbors[{index}]",
+            field_name=f"{field_name}[{index}]",
         )
         option_key = tuple(option)
         if option_key in seen:
@@ -109,6 +95,74 @@ def resolve_profile_num_neighbors(
         deduped.append(option)
 
     return deduped
+
+
+def resolve_profile_num_neighbors(
+    overrides: Mapping[str, Any],
+) -> list[list[int]] | dict[str, list[list[int]]] | None:
+    """Resolve one or many neighbor vectors from one profile payload.
+
+    Args:
+        overrides: Profile override mapping that may contain ``num_neighbors``
+            as either one vector, a list of vectors, or a mapping of dataset
+            or dataset-tier labels to those shapes.
+
+    Returns:
+        Ordered list of per-run fan-out vectors to expand in benchmark
+        planning, or a dataset-keyed mapping of such sweeps when the profile
+        wants different neighbor sweeps per dataset or dataset class.
+
+    """
+    if "num_neighbors_options" in overrides:
+        raise ValueError("Use num_neighbors only; num_neighbors_options was removed.")
+    raw_neighbors = overrides.get("num_neighbors")
+    if raw_neighbors is None:
+        return None
+    if isinstance(raw_neighbors, Mapping):
+        if not raw_neighbors:
+            raise ValueError("num_neighbors must be a non-empty mapping when provided as an object.")
+        resolved: dict[str, list[list[int]]] = {}
+        for key, raw_option in raw_neighbors.items():
+            resolved[str(key)] = _normalize_num_neighbors_options(
+                raw_option,
+                field_name=f"num_neighbors[{key}]",
+            )
+        return resolved
+    if (
+        isinstance(raw_neighbors, (list, tuple))
+        and raw_neighbors
+        and all(not isinstance(value, (list, tuple)) for value in raw_neighbors)
+    ):
+        resolved = _normalize_num_neighbors_vector(raw_neighbors, field_name="num_neighbors")
+        return [list(resolved)]
+
+    return _normalize_num_neighbors_options(raw_neighbors, field_name="num_neighbors")
+
+
+def _format_num_neighbors_options(num_neighbors: list[list[int]]) -> str:
+    """Return a readable slug fragment for one fan-out sweep."""
+    return "+".join("-".join(str(value) for value in neighbors) for neighbors in num_neighbors)
+
+
+def _format_num_neighbors_payload(num_neighbors: object) -> str | None:
+    """Return a readable slug fragment for a num_neighbors payload."""
+    if num_neighbors is None:
+        return None
+    if isinstance(num_neighbors, Mapping):
+        parts: list[str] = []
+        for key in sorted(num_neighbors):
+            options = num_neighbors[key]
+            parts.append(f"{key}[{_format_num_neighbors_payload(options)}]")
+        return "__".join(parts)
+    if isinstance(num_neighbors, (list, tuple)):
+        if not num_neighbors:
+            return None
+        if all(isinstance(value, (list, tuple)) for value in num_neighbors):
+            return _format_num_neighbors_options(
+                [list(value) for value in num_neighbors],
+            )
+        return "x".join(str(value) for value in num_neighbors)
+    return str(num_neighbors)
 
 
 def _resolved_profile_matrix(profile: dict[str, Any]) -> dict[str, Any]:
@@ -129,9 +183,12 @@ def _resolved_profile_overrides(profile: dict[str, Any]) -> dict[str, Any]:
     overrides = dict(profile.get("config_overrides", {}))
     neighbor_sweep = resolve_profile_num_neighbors(overrides)
     if neighbor_sweep is not None:
-        overrides["num_neighbors"] = (
-            neighbor_sweep[0] if len(neighbor_sweep) == 1 else neighbor_sweep
-        )
+        if isinstance(neighbor_sweep, dict):
+            overrides["num_neighbors"] = neighbor_sweep
+        else:
+            overrides["num_neighbors"] = (
+                neighbor_sweep[0] if len(neighbor_sweep) == 1 else neighbor_sweep
+            )
     return overrides
 
 
@@ -152,12 +209,8 @@ def _formal_profile_name(profile: dict[str, Any]) -> str:
     """Build a deterministic semantic profile name from the profile payload."""
     matrix = _resolved_profile_matrix(profile)
     overrides = _resolved_profile_overrides(profile)
-    neighbor_options = resolve_profile_num_neighbors(overrides) or []
-    neighbor_slug = (
-        "+".join("x".join(str(value) for value in neighbors) for neighbors in neighbor_options)
-        if neighbor_options
-        else "na"
-    )
+    neighbor_options = resolve_profile_num_neighbors(overrides)
+    neighbor_slug = _format_num_neighbors_payload(neighbor_options) or "na"
     batch_slug = (
         "abauto"
         if overrides.get("auto_batch_size", True)  # True matches UCaGNNConfig default

@@ -27,8 +27,10 @@ from scripts._workflow_helpers import (
 from src.utils.cli_parsers import (
     normalize_benchmark_datasets_arg,
     resolve_benchmark_datasets,
+    benchmark_dataset_lookup_keys,
 )
 from src.utils.config import (
+    BENCHMARK_CONFIG_FIELDS,
     DEFAULT_SEED,
     PAPER_BASELINE_PRESETS,
     SUPPORTED_LR_SCHEDULERS,
@@ -45,7 +47,6 @@ from experiments.recipes import (
     resolve_profile_num_neighbors,
 )
 from experiments.run_experiment import (
-    BENCHMARK_CONFIG_FIELDS,
     build_benchmark_config_inputs,
     build_config,
     normalize_benchmark_config_overrides,
@@ -575,16 +576,66 @@ def _benchmark_graph_policy_values(
     return [UCaGNNConfig().graph_policy]
 
 
+def _format_num_neighbors_sweep(num_neighbors: list[list[int]]) -> str:
+    """Return one readable sweep fragment for a neighbor option set."""
+    return ", ".join(
+        "[" + ", ".join(str(value) for value in neighbors) + "]"
+        for neighbors in num_neighbors
+    )
+
+
 def _benchmark_num_neighbors_values(
     benchmark_args: Mapping[str, object],
+    *,
+    dataset: str | None = None,
 ) -> list[list[int]]:
     """Return the resolved neighbor vectors for one benchmark plan."""
-    neighbor_sweep = resolve_profile_num_neighbors(
-        {"num_neighbors": benchmark_args.get("num_neighbors")},
-    )
+    raw_num_neighbors = benchmark_args.get("num_neighbors")
+    if isinstance(raw_num_neighbors, Mapping):
+        if dataset is None:
+            raise ValueError(
+                "Dataset-specific num_neighbors mappings require a dataset name.",
+            )
+        for lookup_key in benchmark_dataset_lookup_keys(dataset):
+            selected_neighbors = raw_num_neighbors.get(lookup_key)
+            if selected_neighbors is None:
+                continue
+            neighbor_sweep = resolve_profile_num_neighbors(
+                {"num_neighbors": selected_neighbors},
+            )
+            if neighbor_sweep is not None:
+                return neighbor_sweep
+        available = ", ".join(sorted(str(key) for key in raw_num_neighbors))
+        raise ValueError(
+            f"No num_neighbors entry matches dataset '{dataset}'. Available keys: {available}",
+        )
+
+    neighbor_sweep = resolve_profile_num_neighbors({"num_neighbors": raw_num_neighbors})
     if neighbor_sweep is not None:
         return neighbor_sweep
     return [list(UCaGNNConfig().num_neighbors)]
+
+
+def _benchmark_num_neighbors_summary(
+    benchmark_args: Mapping[str, object],
+) -> str:
+    """Return a compact summary of the resolved num_neighbors payload."""
+    raw_num_neighbors = benchmark_args.get("num_neighbors")
+    if isinstance(raw_num_neighbors, Mapping):
+        parts: list[str] = []
+        for key, selected_neighbors in raw_num_neighbors.items():
+            resolved = resolve_profile_num_neighbors(
+                {"num_neighbors": selected_neighbors},
+            )
+            if resolved is None:
+                continue
+            parts.append(f"{key}: {_format_num_neighbors_sweep(resolved)}")
+        return ", ".join(parts)
+
+    resolved = resolve_profile_num_neighbors({"num_neighbors": raw_num_neighbors})
+    if resolved is None:
+        resolved = [list(UCaGNNConfig().num_neighbors)]
+    return _format_num_neighbors_sweep(resolved)
 
 
 def build_benchmark_plan(
@@ -600,7 +651,10 @@ def build_benchmark_plan(
     benchmark_args = _coerce_benchmark_args(args)
     datasets = resolve_benchmark_datasets(benchmark_args["datasets"])
     presets = list(dict.fromkeys(benchmark_args["presets"]))
-    num_neighbor_values = _benchmark_num_neighbors_values(benchmark_args)
+    num_neighbor_values_by_dataset = {
+        dataset: _benchmark_num_neighbors_values(benchmark_args, dataset=dataset)
+        for dataset in datasets
+    }
     lr_scheduler_values = benchmark_args["lr_scheduler"]
     if isinstance(lr_scheduler_values, str):
         lr_scheduler_values = [lr_scheduler_values]
@@ -628,7 +682,7 @@ def build_benchmark_plan(
         for lr_scheduler in lr_scheduler_values_by_preset[preset]
         for preprocessing_preset in preprocessing_preset_values
         for graph_policy in graph_policy_values
-        for num_neighbors in num_neighbor_values
+        for num_neighbors in num_neighbor_values_by_dataset[dataset]
     ]
 
 
@@ -682,12 +736,8 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                 str(preprocessing_preset) for preprocessing_preset in resolved_preprocessing_presets
             ),
         )
-    neighbor_values = _benchmark_num_neighbors_values(benchmark_args)
-    if neighbor_values:
-        neighbor_shapes = ", ".join(
-            "[" + ", ".join(str(value) for value in neighbors) + "]"
-            for neighbors in neighbor_values
-        )
+    neighbor_shapes = _benchmark_num_neighbors_summary(benchmark_args)
+    if neighbor_shapes:
         print(f"  Neighbor shapes: {neighbor_shapes}")
     print(f"  Batch ID: {batch_id}")
     if profile_name:

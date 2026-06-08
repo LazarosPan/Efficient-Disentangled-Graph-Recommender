@@ -39,7 +39,14 @@ from src.losses.loss_suite import LossSuite
 from src.models.baselines import PaperGCNDICE, PaperLightGCN
 from src.models.ucagnn import UCaGNN
 from src.training.mini_batch_trainer import MiniBatchTrainer
-from src.utils.config import DEFAULT_SEED, GRAPH_POLICY_CHOICES, UCaGNNConfig
+from src.utils.config import (
+    BENCHMARK_CONFIG_FIELDS,
+    CONFIG_OVERRIDE_FIELDS,
+    CONFIG_PRESET_METHODS,
+    DEFAULT_SEED,
+    GRAPH_POLICY_CHOICES,
+    UCaGNNConfig,
+)
 from src.utils.experiment_logger import ExperimentLogger
 from src.utils.experiment_naming import build_canonical_experiment_name
 from src.utils.interaction_indexing import compute_normalized_popularity
@@ -53,6 +60,7 @@ from src.utils.reproducibility import (
     configure_torch_runtime,
     seed_everything,
 )
+from src.utils.trainer_runtime import REQUIRED_CHECKPOINT_KEYS, is_cuda_oom_error
 
 from experiments.cli_parsers import build_run_experiment_parser
 from experiments.recipes import (
@@ -64,160 +72,6 @@ from experiments.recipes import (
 logger = logging.getLogger("ucagnn")
 
 DB_PATH = THESIS_DB_PATH
-REQUIRED_CHECKPOINT_KEYS = frozenset(
-    {
-        "model_state",
-        "optimizer_state",
-        "loss_suite_state",
-        "config",
-    },
-)
-
-PRESETS = {
-    "ucagnn": "preset_full",
-    "lightgcn": "preset_lightgcn",
-    "lightgcn_paper": "preset_lightgcn_paper",
-    "dice_paper": "preset_dice_paper",
-    "dice_like": "preset_dice_like",
-    "dice_like_ablation": "preset_dice_like",
-}
-CONFIG_OVERRIDE_FIELDS = (
-    "epochs",
-    "batch_size",
-    "auto_batch_size",
-    "batch_size_candidates",
-    "embed_dim",
-    "single_branch_gnn_layers",
-    "interest_gnn_layers",
-    "conformity_gnn_layers",
-    "dropout",
-    "lr",
-    "lr_scheduler",
-    "lr_scheduler_factor",
-    "lr_scheduler_patience",
-    "use_early_stopping",
-    "patience",
-    "use_features",
-    "feature_policy",
-    "graph_policy",
-    "training_graph_mode",
-    "branch_loss_mode",
-    "recommendation_loss_mode",
-    "negative_sampling_strategy",
-    "preprocessing_preset",
-    "derived_split_mode",
-    "num_neighbors",
-    "hard_negative_ratio",
-    "score_mix_min_weight",
-    "score_weight_interest",
-    "score_weight_conformity",
-    "score_weight_popularity",
-    "dice_sampler_margin",
-    "dice_sampler_pool",
-    "dice_branch_margin",
-    "dice_loss_decay",
-    "dice_margin_decay",
-    "dice_adaptive_decay",
-    "n_negatives",
-    "distance_correlation_max_pairs",
-    "contrastive_max_pairs",
-    "contrastive_temperature",
-    "uniformity_max_pairs",
-    "uniformity_temperature",
-    "use_conformity_au",
-    "loss_weight_recommendation",
-    "loss_weight_interest_bpr",
-    "loss_weight_conformity_bpr",
-    "loss_weight_independence",
-    "loss_weight_contrastive",
-    "loss_weight_align",
-    "loss_weight_uniform",
-    "loss_weight_popularity",
-    "loss_weight_propensity_calibration",
-    "use_ipw",
-    "auxiliary_loss_schedule",
-    "auxiliary_ramp_rate",
-    "independence_ramp_rate",
-    "auxiliary_losses_start_epoch",
-    "popularity_supervision_start_epoch",
-    "loss_schedule",
-    "sample_interactions",
-    "loader_max_rows",
-)
-_BENCHMARK_SHARED_CONFIG_FIELD_SET = frozenset(
-    {
-        "epochs",
-        "use_early_stopping",
-        "patience",
-        "batch_size",
-        "auto_batch_size",
-        "batch_size_candidates",
-        "lr",
-        "lr_scheduler",
-        "lr_scheduler_factor",
-        "lr_scheduler_patience",
-        "single_branch_gnn_layers",
-        "interest_gnn_layers",
-        "conformity_gnn_layers",
-        "dropout",
-        "num_neighbors",
-        "hard_negative_ratio",
-        "score_mix_min_weight",
-        "score_weight_interest",
-        "score_weight_conformity",
-        "score_weight_popularity",
-        "training_graph_mode",
-        "branch_loss_mode",
-        "recommendation_loss_mode",
-        "negative_sampling_strategy",
-        "dice_sampler_margin",
-        "dice_sampler_pool",
-        "dice_branch_margin",
-        "dice_loss_decay",
-        "dice_margin_decay",
-        "dice_adaptive_decay",
-        "n_negatives",
-        "distance_correlation_max_pairs",
-        "contrastive_max_pairs",
-        "contrastive_temperature",
-        "uniformity_max_pairs",
-        "uniformity_temperature",
-        "use_conformity_au",
-        "loss_weight_recommendation",
-        "loss_weight_interest_bpr",
-        "loss_weight_conformity_bpr",
-        "loss_weight_independence",
-        "loss_weight_contrastive",
-        "loss_weight_align",
-        "loss_weight_uniform",
-        "loss_weight_popularity",
-        "loss_weight_propensity_calibration",
-        "use_ipw",
-        "auxiliary_loss_schedule",
-        "auxiliary_ramp_rate",
-        "independence_ramp_rate",
-        "auxiliary_losses_start_epoch",
-        "popularity_supervision_start_epoch",
-        "loss_schedule",
-        "loader_max_rows",
-        "sample_interactions",
-        "use_features",
-        "feature_policy",
-        "graph_policy",
-        "preprocessing_preset",
-        "derived_split_mode",
-    },
-)
-BENCHMARK_CONFIG_FIELDS = (
-    *(
-        field_name
-        for field_name in CONFIG_OVERRIDE_FIELDS
-        if field_name in _BENCHMARK_SHARED_CONFIG_FIELD_SET
-    ),
-    "device",
-    "data_dir",
-)
-BENCHMARK_CONFIG_INPUT_FIELDS = BENCHMARK_CONFIG_FIELDS
 _CHECKPOINT_IDENTITY_VERSION = 1
 _CHECKPOINT_HASH_LEN = 16
 _TRAINING_IDENTITY_FIELDS = (
@@ -310,15 +164,6 @@ _TRAINING_IDENTITY_FIELDS = (
 _EVALUATION_IDENTITY_FIELDS = ("eval_ks",)
 
 
-def _build_canonical_name(
-    config: UCaGNNConfig,
-    preset: str | None,
-    intervention: str | None,
-) -> str:
-    """Build a descriptive canonical experiment name from the effective config."""
-    return build_canonical_experiment_name(config, preset, intervention)
-
-
 def _stable_identity_hash(payload: dict[str, Any]) -> str:
     """Return a short deterministic hash for checkpoint identity payloads."""
     encoded = json.dumps(
@@ -374,7 +219,7 @@ def _default_checkpoint_path(
     training_hash: str,
 ) -> Path:
     """Return the default checkpoint path for a semantic training identity."""
-    canonical_name = _build_canonical_name(config, preset, intervention)
+    canonical_name = build_canonical_experiment_name(config, preset, intervention)
     return CHECKPOINT_DIR / f"{canonical_name}_train-{training_hash}.pt"
 
 
@@ -650,24 +495,20 @@ def _train_mask_numpy_from_data(data: Any) -> np.ndarray:
 
 
 def build_runtime_model(
-    config: UCaGNNConfig | Any,
+    config: UCaGNNConfig,
     canonical: Any,
     data: Any,
 ) -> torch.nn.Module:
     """Instantiate the runtime model for a loaded canonical dataset and graph.
 
     Args:
-        config: Runtime config or, for backward-compatible call sites, the
-            canonical dataset.
-        canonical: Canonical dataset or graph data for backward-compatible calls.
-        data: Graph data or runtime config for backward-compatible calls.
+        config: Runtime configuration.
+        canonical: Canonical dataset.
+        data: Runtime graph data.
 
     Returns:
         Instantiated model.
     """
-    if not isinstance(config, UCaGNNConfig):
-        config, canonical, data = data, config, canonical
-    assert isinstance(config, UCaGNNConfig)
     if config.baseline_family == "lightgcn_paper":
         return PaperLightGCN(
             canonical.n_users,
@@ -843,15 +684,6 @@ def _gpu_hardware_metadata(device: str) -> tuple[str | None, float | None]:
 
     props = torch.cuda.get_device_properties(torch.cuda.current_device())
     return props.name, props.total_memory / float(1024**3)
-
-
-def _iscuda__oom(exc: BaseException) -> bool:
-    """Return whether an exception represents a CUDA out-of-memory failure."""
-    if isinstance(exc, torch.OutOfMemoryError):
-        return True
-
-    message = str(exc).lower()
-    return "out of memory" in message and "cuda" in message
 
 
 def _exception_summary(exc: BaseException, *, max_chars: int = 500) -> str:
@@ -1041,7 +873,7 @@ def _probe_batch_size_candidate(
         stage = "backward_step"
         probe_trainer._apply_optimization_step(losses["total"])
     except Exception as exc:
-        if _iscuda__oom(exc):
+        if is_cuda_oom_error(exc):
             raise _AutoBatchProbeOOMError(
                 stage,
                 candidate_batch_size,
@@ -1113,7 +945,7 @@ def _resolve_auto_batch_size(
                     random_seed=config.seed + probe_index,
                 )
         except Exception as exc:
-            if not _iscuda__oom(exc):
+            if not is_cuda_oom_error(exc):
                 raise
             failures.append(candidate)
             logger.info(
@@ -1190,7 +1022,7 @@ def _verify_selected_auto_batch_size(
                     random_seed=config.seed + probe_index,
                 )
         except Exception as exc:
-            if not _iscuda__oom(exc):
+            if not is_cuda_oom_error(exc):
                 raise
             logger.warning(
                 (
@@ -1281,7 +1113,7 @@ def _build_mlflow_params(
         "use_dual_branch": config.use_dual_branch,
         "use_sign_aware": config.use_sign_aware,
         "use_ipw": config.use_ipw,
-        "canonical_name": _build_canonical_name(config, preset, intervention),
+        "canonical_name": build_canonical_experiment_name(config, preset, intervention),
         "run_started_at_utc": run_started_at_utc,
         **provenance,
     }
@@ -1341,7 +1173,7 @@ def _start_mlflow_run(
             logger.info("MLflow system metrics logging unavailable: %s", exc)
         mlflow.set_experiment(experiment_name)
         mlflow.start_run(
-            run_name=run_name or _build_canonical_name(config, preset, intervention),
+            run_name=run_name or build_canonical_experiment_name(config, preset, intervention),
         )
         mlflow.set_tags(
             _build_mlflow_tags(
@@ -1495,7 +1327,7 @@ def build_benchmark_config_inputs(
         seed=DEFAULT_SEED,
         copied_fields=_present_field_mapping(
             benchmark_args,
-            BENCHMARK_CONFIG_INPUT_FIELDS,
+            BENCHMARK_CONFIG_FIELDS,
         ),
         extra_overrides={
             "lr_scheduler": lr_scheduler,
@@ -1571,6 +1403,33 @@ def _normalize_benchmark_preprocessing_override(
     return deduped[0], deduped if len(deduped) > 1 else None
 
 
+def _normalize_benchmark_num_neighbors_override(
+    raw_value: object,
+) -> list[list[int]] | dict[str, list[list[int]]] | None:
+    """Normalize benchmark ``num_neighbors`` overrides for one profile payload."""
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, Mapping):
+        normalized: dict[str, list[list[int]]] = {}
+        for key, value in raw_value.items():
+            if isinstance(value, Mapping):
+                raise ValueError(
+                    f"num_neighbors[{key}] must be a vector or a list of vectors, not a nested mapping.",
+                )
+            resolved = resolve_profile_num_neighbors({"num_neighbors": value})
+            if resolved is None:
+                raise ValueError(
+                    f"num_neighbors[{key}] must be a non-empty fan-out vector or a non-empty list of vectors.",
+                )
+            normalized[str(key)] = resolved
+        return normalized
+
+    resolved = resolve_profile_num_neighbors({"num_neighbors": raw_value})
+    if resolved is None:
+        return None
+    return resolved[0] if len(resolved) == 1 else resolved
+
+
 def normalize_benchmark_config_overrides(
     raw_config: Mapping[str, object],
 ) -> dict[str, object]:
@@ -1589,7 +1448,15 @@ def normalize_benchmark_config_overrides(
     normalized: dict[str, object] = {
         field_name: raw_config.get(field_name) for field_name in BENCHMARK_CONFIG_FIELDS
     }
-    normalized["use_early_stopping"] = raw_config.get("use_early_stopping", True)
+    # Keep the benchmark plan explicit even when the catalog omits the stop policy.
+    use_early_stopping = raw_config.get("use_early_stopping")
+    normalized["use_early_stopping"] = (
+        default_config.use_early_stopping if use_early_stopping is None else use_early_stopping
+    )
+    patience = raw_config.get("patience")
+    normalized["patience"] = (
+        int(patience) if patience is not None else default_config.patience
+    )
     use_features = raw_config.get("use_features")
     normalized["use_features"] = bool(use_features) if use_features is not None else None
     feature_policy = raw_config.get("feature_policy")
@@ -1658,15 +1525,8 @@ def normalize_benchmark_config_overrides(
     )
     dropout = raw_config.get("dropout")
     normalized["dropout"] = float(dropout) if dropout is not None else None
-    neighbor_sweep = resolve_profile_num_neighbors(
-        {"num_neighbors": raw_config.get("num_neighbors")},
-    )
-    normalized["num_neighbors"] = (
-        None
-        if neighbor_sweep is None
-        else neighbor_sweep[0]
-        if len(neighbor_sweep) == 1
-        else neighbor_sweep
+    normalized["num_neighbors"] = _normalize_benchmark_num_neighbors_override(
+        raw_config.get("num_neighbors"),
     )
     normalized["hard_negative_ratio"] = float(
         raw_config.get("hard_negative_ratio", default_config.hard_negative_ratio),
@@ -1790,8 +1650,8 @@ def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfi
         if effective_preset is None:
             effective_preset = recipe.get("preset")
 
-    if effective_preset is not None and effective_preset not in PRESETS:
-        available = ", ".join(sorted(PRESETS))
+    if effective_preset is not None and effective_preset not in CONFIG_PRESET_METHODS:
+        available = ", ".join(sorted(CONFIG_PRESET_METHODS))
         raise ValueError(
             f"Unknown preset '{effective_preset}'. Available presets: {available}",
         )
@@ -1823,8 +1683,8 @@ def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfi
     config = UCaGNNConfig()
 
     # Apply preset
-    if effective_preset in PRESETS:
-        getattr(config, PRESETS[effective_preset])()
+    if effective_preset in CONFIG_PRESET_METHODS:
+        getattr(config, CONFIG_PRESET_METHODS[effective_preset])()
 
     for override_group in (recipe_overrides, explicit_overrides):
         for key, val in override_group.items():
@@ -1913,7 +1773,7 @@ def run_experiment(
     _resolve_auto_batch_size(config, canonical, data)
     _verify_selected_auto_batch_size(config, canonical, data)
     _release_cuda_probe_memory()
-    canonical_name = _build_canonical_name(config, preset, intervention)
+    canonical_name = build_canonical_experiment_name(config, preset, intervention)
     training_identity, training_hash = _build_training_identity(
         config,
         preset,
@@ -2141,7 +2001,7 @@ def run_experiment(
                             checkpoint_every=checkpoint_every,
                         )
                         resolved_checkpoint_path = current_checkpoint_path
-                        canonical_name = _build_canonical_name(
+                        canonical_name = build_canonical_experiment_name(
                             config,
                             preset,
                             intervention,
@@ -2175,7 +2035,7 @@ def run_experiment(
                                     pass
                         break
                     except Exception as exc:
-                        if not _iscuda__oom(exc):
+                        if not is_cuda_oom_error(exc):
                             raise
                         fallback_checkpoint_path = (
                             current_checkpoint_path
@@ -2330,7 +2190,7 @@ def run_experiment(
             "train_batches_per_epoch": train_batches_per_epoch,
         }
     except Exception as exc:
-        is_oom = _iscuda__oom(exc)
+        is_oom = is_cuda_oom_error(exc)
         failure_reason = f"{type(exc).__name__}: {exc}"
         experiment_logger.update_experiment_status(
             exp_id,
