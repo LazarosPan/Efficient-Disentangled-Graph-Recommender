@@ -1,3 +1,3 @@
-from .gpu_profiler import GPUProfiler, profile_stage
+from .gpu_profiler import GPUProfiler
 
-__all__ = ["GPUProfiler", "profile_stage"]
+__all__ = ["GPUProfiler"]

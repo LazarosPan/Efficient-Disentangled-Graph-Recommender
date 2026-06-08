@@ -135,7 +135,6 @@ class GPUProfiler:
             lines.append(f"  {'EPOCH WALL':20s} {self.epoch_elapsed_ms:8.1f}ms")
         return "\n".join(lines)
 
-    # TODO: Seems like duplicate, def_stage already has VRAM tracking. Maybe we can unify them?
     @staticmethod
     def peak_vram_mb() -> float | None:
         """Return peak VRAM allocated (MB) since the last reset, without sync.
@@ -210,14 +209,6 @@ def sample_gpu_resource_snapshot(device: torch.device) -> GPUResourceSnapshot | 
     )
 
 
-def sample_gpu_utilization_percent(device: torch.device) -> float | None:
-    """Return current GPU utilization via ``nvidia-smi`` when available."""
-    snapshot = sample_gpu_resource_snapshot(device)
-    if snapshot is None:
-        return None
-    return snapshot.utilization_pct
-
-
 class TrainingResourceMonitor:
     """Sample GPU resources while the training batch loop is active."""
 
@@ -289,13 +280,3 @@ class TrainingResourceMonitor:
         snapshot = sample_gpu_resource_snapshot(self.device)
         if snapshot is not None:
             self._samples.append(snapshot)
-
-
-@contextmanager
-def profile_stage(name: str, profiler: GPUProfiler | None = None):
-    """Convenience wrapper -- no-op if profiler is None."""
-    if profiler is not None:
-        with profiler.stage(name):
-            yield
-    else:
-        yield
