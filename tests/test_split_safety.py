@@ -95,9 +95,11 @@ class _ComponentRankingModel(torch.nn.Module):
         user_conformity_emb: torch.Tensor,
         branch_interest_scores: torch.Tensor | None = None,
         branch_conformity_scores: torch.Tensor | None = None,
+        expand_context_scores: bool = False,
     ) -> None:
         """Store full-catalog refined scorer components."""
         super().__init__()
+        self.expand_context_scores = expand_context_scores
         self.anchor = torch.nn.Parameter(torch.zeros(1))
         self.register_buffer("interest_scores", interest_scores.float(), persistent=False)
         self.register_buffer("conformity_scores", conformity_scores.float(), persistent=False)
@@ -157,12 +159,24 @@ class _ComponentRankingModel(torch.nn.Module):
         del propagated
         batch_users = user_ids.cpu()
         device = user_ids.device
+        if self.expand_context_scores:
+            context_scores = (
+                self.context_scores[0]
+                .to(device=device)
+                .unsqueeze(0)
+                .expand(
+                    user_ids.size(0),
+                    -1,
+                )
+            )
+        else:
+            context_scores = self.context_scores.index_select(0, batch_users).to(device=device)
         return {
             "interest_score": self.interest_scores.index_select(0, batch_users).to(device=device),
             "conformity_score": self.conformity_scores.index_select(0, batch_users).to(
                 device=device
             ),
-            "context_score": self.context_scores.index_select(0, batch_users).to(device=device),
+            "context_score": context_scores,
             "branch_interest_score": self.branch_interest_scores.index_select(0, batch_users).to(
                 device=device
             ),
@@ -884,6 +898,54 @@ class SplitSafetyTests(unittest.TestCase):
         for key in diagnostic_keys:
             self.assertIn(key, metrics)
             self.assertTrue(np.isfinite(metrics[key]), msg=f"{key} should be finite")
+
+    def test_evaluator_keeps_expanded_context_diagnostics_finite_after_seen_masking(
+        self,
+    ) -> None:
+        """Item-only expanded context scores must not be mutated by seen-item masking."""
+        evaluator = Evaluator(UCaGNNConfig(device="cpu"))
+
+        user_nodes = [0] * 11 + [1] * 11
+        item_ids = [*list(range(30, 40)), 0, *list(range(40, 50)), 1]
+        data = Data(edge_index=torch.empty((2, 0), dtype=torch.long), num_nodes=52)
+        data.edge_sign = torch.empty((0,), dtype=torch.bfloat16)
+        data.train_mask = torch.tensor([True] * 10 + [False] + [True] * 10 + [False])
+        data.val_mask = torch.zeros(22, dtype=torch.bool)
+        data.test_mask = ~data.train_mask
+        data.labels = torch.ones(22, dtype=torch.float32)
+        data.user_nodes = torch.tensor(user_nodes, dtype=torch.long)
+        data.item_nodes = torch.tensor([item_id + 2 for item_id in item_ids], dtype=torch.long)
+        data.n_users = 2
+        data.n_items = 50
+        data.popularity = torch.arange(50, dtype=torch.float32)
+
+        base = torch.arange(50, dtype=torch.float32).unsqueeze(0).expand(2, -1)
+        context = torch.arange(50, dtype=torch.float32).unsqueeze(0)
+        model = _ComponentRankingModel(
+            interest_scores=base,
+            conformity_scores=torch.zeros_like(base),
+            context_scores=context,
+            score_mix_weights=torch.tensor(
+                [[0.75, 0.0, 0.25], [0.75, 0.0, 0.25]],
+                dtype=torch.float32,
+            ),
+            user_interest_emb=torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32),
+            user_conformity_emb=torch.tensor([[0.0, 1.0], [1.0, 0.0]], dtype=torch.float32),
+            expand_context_scores=True,
+        )
+
+        metrics = evaluator.evaluate(
+            model,
+            data,
+            data.test_mask,
+            batch_size=2,
+            include_refined_diagnostics=True,
+        )
+
+        self.assertTrue(math.isfinite(metrics["context_contribution@20"]))
+        self.assertTrue(math.isfinite(metrics["context_contribution@40"]))
+        self.assertGreater(metrics["context_contribution@20"], 0.0)
+        self.assertGreater(metrics["context_contribution@40"], 0.0)
 
     def test_evaluator_branch_ranking_diagnostics_use_raw_branch_scores(self) -> None:
         """Branch ranking diagnostics should evaluate branch-local BPR score surfaces."""

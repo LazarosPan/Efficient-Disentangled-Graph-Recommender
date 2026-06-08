@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import tempfile
 import unittest
 import warnings
 from pathlib import Path
@@ -30,7 +31,9 @@ from experiments.run_experiment import (
     _bootstrap_cagra_embeddings,
     _build_evaluation_identity,
     _build_training_identity,
+    _checkpoint_ready_for_evaluation,
     _cuda_memory_snapshot,
+    _default_checkpoint_path,
     _exception_summary,
     _release_cuda_probe_memory,
     _resume_auto_batch_fallback,
@@ -40,6 +43,8 @@ from experiments.run_experiment import (
     build_runtime_config_inputs,
     build_runtime_model,
     normalize_benchmark_config_overrides,
+    recoverable_checkpoint_for_config,
+    recoverable_checkpoint_path,
 )
 from scripts.query_results import _format_scoremix
 from src.data.canonical import CanonicalInteractions
@@ -1911,7 +1916,9 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertIsNone(normalized["graph_policy_options"])
         self.assertEqual(normalized["hard_negative_ratio"], 0.25)
 
-    def test_normalize_benchmark_config_overrides_supports_dataset_keyed_neighbor_sweeps(self) -> None:
+    def test_normalize_benchmark_config_overrides_supports_dataset_keyed_neighbor_sweeps(
+        self,
+    ) -> None:
         """Benchmark payload normalization should preserve dataset-keyed neighbor sweeps."""
         normalized = normalize_benchmark_config_overrides(
             {
@@ -1986,6 +1993,302 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertFalse(should_stop)
         self.assertEqual(runtime.patience_counter, 0)
+
+    def test_checkpoint_eval_loads_best_state_not_latest_state(self) -> None:
+        """Recovery evaluation should use the best validation model state."""
+        config = UCaGNNConfig(device="cpu")
+        training_identity, training_hash = _build_training_identity(
+            config,
+            "ucagnn",
+            None,
+        )
+        model = torch.nn.Linear(1, 1, bias=False)
+        with torch.no_grad():
+            model.weight.fill_(1.0)
+        runtime = TrainerRuntime.__new__(TrainerRuntime)
+        runtime.model = model
+        runtime.loss_suite = Mock()
+        runtime.loss_suite.state_dict.return_value = {"loss": "state"}
+        runtime.optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        runtime.scheduler = None
+        runtime.ema_model = None
+        runtime.config = config
+        runtime.best_ndcg = 0.5
+        runtime.patience_counter = 10
+        runtime.best_state = {"weight": torch.full_like(model.weight.detach(), 2.0)}
+        runtime.completed_epoch = 39
+        runtime.resume_history = {
+            "train_loss": [1.0],
+            "val_metrics": [{"NDCG@40": 0.5}],
+        }
+        runtime.exp_id = 123
+        runtime.training_identity = training_identity
+        runtime.training_hash = training_hash
+        runtime.evaluation_identity = None
+        runtime.evaluation_hash = None
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            checkpoint_path = Path(tmp_dir) / "best.pt"
+            runtime.save_checkpoint(
+                checkpoint_path,
+                history=runtime.resume_history,
+                training_finished=True,
+            )
+            payload = torch.load(
+                checkpoint_path,
+                map_location="cpu",
+                weights_only=False,
+            )
+
+            self.assertTrue(payload["training_finished"])
+            self.assertFalse(payload["is_complete"])
+            self.assertEqual(float(payload["model_state"]["weight"].item()), 1.0)
+            self.assertEqual(float(payload["best_state"]["weight"].item()), 2.0)
+
+            recovered_model = torch.nn.Linear(1, 1, bias=False)
+            recovered_runtime = TrainerRuntime.__new__(TrainerRuntime)
+            recovered_runtime.model = recovered_model
+            recovered_runtime.loss_suite = Mock()
+            recovered_runtime.optimizer = torch.optim.SGD(
+                recovered_model.parameters(),
+                lr=0.1,
+            )
+            recovered_runtime.scheduler = None
+            recovered_runtime.ema_model = None
+            recovered_runtime.device = torch.device("cpu")
+
+            recovered_runtime.load_checkpoint(
+                checkpoint_path,
+                load_best_model=True,
+            )
+
+        self.assertEqual(float(recovered_model.weight.item()), 2.0)
+
+    def test_checkpoint_ready_for_evaluation_accepts_legacy_early_stop_state(
+        self,
+    ) -> None:
+        """Older failed checkpoints should recover when patience already fired."""
+        config = UCaGNNConfig(device="cpu")
+        config.epochs = 200
+        config.use_early_stopping = True
+        config.patience = 10
+        checkpoint_state = {
+            "completed_epoch": 39,
+            "patience_counter": 10,
+            "best_state": {"embedding.weight": torch.ones(1)},
+        }
+
+        self.assertTrue(_checkpoint_ready_for_evaluation(checkpoint_state, config))
+
+    def test_recoverable_checkpoint_path_requires_finished_training_state(self) -> None:
+        """Formal recovery should only re-enter rows with finished checkpoints."""
+        config = UCaGNNConfig(device="cpu")
+        training_identity, training_hash = _build_training_identity(
+            config,
+            "ucagnn",
+            None,
+        )
+        model = torch.nn.Linear(1, 1, bias=False)
+        runtime = TrainerRuntime.__new__(TrainerRuntime)
+        runtime.model = model
+        runtime.loss_suite = Mock()
+        runtime.loss_suite.state_dict.return_value = {"loss": "state"}
+        runtime.optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        runtime.scheduler = None
+        runtime.ema_model = None
+        runtime.config = config
+        runtime.best_ndcg = 0.1
+        runtime.patience_counter = 0
+        runtime.best_state = {"weight": torch.full_like(model.weight.detach(), 2.0)}
+        runtime.completed_epoch = 0
+        runtime.resume_history = {"train_loss": [1.0], "val_metrics": [{"NDCG@40": 0.1}]}
+        runtime.exp_id = 123
+        runtime.training_identity = training_identity
+        runtime.training_hash = training_hash
+        runtime.evaluation_identity = None
+        runtime.evaluation_hash = None
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            checkpoint_path = Path(tmp_dir) / "recoverable.pt"
+            runtime.save_checkpoint(checkpoint_path, history=runtime.resume_history)
+            self.assertIsNone(
+                recoverable_checkpoint_path(
+                    config,
+                    preset="ucagnn",
+                    checkpoint_path=checkpoint_path,
+                ),
+            )
+
+            runtime.save_checkpoint(
+                checkpoint_path,
+                history=runtime.resume_history,
+                training_finished=True,
+            )
+
+            self.assertEqual(
+                recoverable_checkpoint_path(
+                    config,
+                    preset="ucagnn",
+                    checkpoint_path=checkpoint_path,
+                ),
+                checkpoint_path,
+            )
+
+    def test_recoverable_checkpoint_searches_auto_batch_candidates(self) -> None:
+        """Recovery lookup should find saved auto-selected batch-size checkpoints."""
+        config = UCaGNNConfig(device="cpu")
+        config.batch_size = 4096
+        config.auto_batch_size = True
+        config.batch_size_candidates = [32768, 8192, 4096]
+        checkpoint_config = dataclasses.replace(config, batch_size=8192)
+        training_identity, training_hash = _build_training_identity(
+            checkpoint_config,
+            "ucagnn",
+            None,
+        )
+        model = torch.nn.Linear(1, 1, bias=False)
+        runtime = TrainerRuntime.__new__(TrainerRuntime)
+        runtime.model = model
+        runtime.loss_suite = Mock()
+        runtime.loss_suite.state_dict.return_value = {"loss": "state"}
+        runtime.optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        runtime.scheduler = None
+        runtime.ema_model = None
+        runtime.config = checkpoint_config
+        runtime.best_ndcg = 0.1
+        runtime.patience_counter = 10
+        runtime.best_state = {"weight": torch.full_like(model.weight.detach(), 2.0)}
+        runtime.completed_epoch = 39
+        runtime.resume_history = {
+            "train_loss": [1.0],
+            "val_metrics": [{"NDCG@40": 0.1}],
+        }
+        runtime.exp_id = 123
+        runtime.training_identity = training_identity
+        runtime.training_hash = training_hash
+        runtime.evaluation_identity = None
+        runtime.evaluation_hash = None
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch("experiments.run_experiment.CHECKPOINT_DIR", Path(tmp_dir)),
+        ):
+            checkpoint_path = _default_checkpoint_path(
+                checkpoint_config,
+                "ucagnn",
+                None,
+                training_hash,
+            )
+            runtime.save_checkpoint(
+                checkpoint_path,
+                history=runtime.resume_history,
+                training_finished=True,
+            )
+
+            recovered = recoverable_checkpoint_for_config(
+                config,
+                preset="ucagnn",
+            )
+
+            self.assertIsNotNone(recovered)
+            recovered_config, recovered_path = recovered
+            self.assertEqual(recovered_config.batch_size, 8192)
+            self.assertEqual(recovered_path, checkpoint_path)
+            self.assertEqual(
+                recoverable_checkpoint_path(config, preset="ucagnn"),
+                checkpoint_path,
+            )
+
+    def test_run_experiment_skips_auto_batch_probe_for_recoverable_checkpoint(
+        self,
+    ) -> None:
+        """A finished checkpoint should be loaded before auto-batch probing starts."""
+        config = UCaGNNConfig(device="cpu")
+        config.batch_size = 4096
+        config.auto_batch_size = True
+        config.batch_size_candidates = [32768, 8192, 4096]
+        checkpoint_config = dataclasses.replace(config, batch_size=8192)
+        training_identity, training_hash = _build_training_identity(
+            checkpoint_config,
+            "ucagnn",
+            None,
+        )
+        model = torch.nn.Linear(1, 1, bias=False)
+        runtime = TrainerRuntime.__new__(TrainerRuntime)
+        runtime.model = model
+        runtime.loss_suite = Mock()
+        runtime.loss_suite.state_dict.return_value = {"loss": "state"}
+        runtime.optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        runtime.scheduler = None
+        runtime.ema_model = None
+        runtime.config = checkpoint_config
+        runtime.best_ndcg = 0.1
+        runtime.patience_counter = 10
+        runtime.best_state = {"weight": torch.full_like(model.weight.detach(), 2.0)}
+        runtime.completed_epoch = 39
+        runtime.resume_history = {
+            "train_loss": [1.0],
+            "val_metrics": [{"NDCG@40": 0.1}],
+        }
+        runtime.exp_id = 321
+        runtime.training_identity = training_identity
+        runtime.training_hash = training_hash
+        runtime.evaluation_identity = None
+        runtime.evaluation_hash = None
+        canonical = SimpleNamespace(item_propensity_targets=None)
+        data = SimpleNamespace(
+            num_nodes=0,
+            edge_index=torch.empty((2, 0), dtype=torch.long),
+            train_mask=torch.zeros(0, dtype=torch.bool),
+            val_mask=torch.zeros(0, dtype=torch.bool),
+            test_mask=torch.zeros(0, dtype=torch.bool),
+        )
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch("experiments.run_experiment.CHECKPOINT_DIR", Path(tmp_dir)),
+        ):
+            checkpoint_path = _default_checkpoint_path(
+                checkpoint_config,
+                "ucagnn",
+                None,
+                training_hash,
+            )
+            runtime.save_checkpoint(
+                checkpoint_path,
+                history=runtime.resume_history,
+                is_complete=True,
+                test_metrics={"NDCG@20": 0.1},
+                exp_id=321,
+            )
+
+            with (
+                patch(
+                    "experiments.run_experiment.load_runtime_data",
+                    return_value=(canonical, data),
+                ),
+                patch(
+                    "experiments.run_experiment._resolve_auto_batch_size",
+                    side_effect=AssertionError("auto batch probe should not run"),
+                ),
+                patch(
+                    "experiments.run_experiment._verify_selected_auto_batch_size",
+                    side_effect=AssertionError("auto batch verify should not run"),
+                ),
+                patch(
+                    "experiments.run_experiment.build_runtime_model",
+                    return_value=torch.nn.Linear(1, 1, bias=False),
+                ),
+            ):
+                result = formal_main.run_experiment(
+                    config,
+                    preset="ucagnn",
+                    enable_mlflow=False,
+                )
+
+        self.assertEqual(result["exp_id"], 321)
+        self.assertEqual(result["checkpoint_path"], str(checkpoint_path))
+        self.assertEqual(result["test_metrics"], {"NDCG@20": 0.1})
 
     def test_step_scheduler_uses_metric_only_for_plateau(self) -> None:
         """ReduceLROnPlateau should consume the validation metric; others should not."""
@@ -2565,6 +2868,119 @@ class BenchmarkPlanTests(unittest.TestCase):
             exit_code = formal_main.run_benchmark(normalized_args)
 
         self.assertEqual(exit_code, 0)
+
+    def test_run_benchmark_retries_failed_row_when_checkpoint_is_recoverable(self) -> None:
+        """Failed terminal rows should re-enter only for checkpoint re-evaluation."""
+        normalized_args = formal_main._normalize_benchmark_args(
+            SimpleNamespace(
+                datasets=["movielens1m"],
+                presets=["ucagnn"],
+                num_neighbors=[10, 5],
+                lr_scheduler="plateau",
+                batch_id="batch-a",
+                resume_batch=True,
+                dry_run=False,
+                no_mlflow=True,
+                mlflow_tracking_uri=None,
+                mlflow_experiment_name="ucagnn-formal",
+                profile_name="test-profile",
+                profile_slug="test-profile",
+                overwrite_checkpoint=False,
+            ),
+        )
+        tracker = Mock()
+        tracker.find_latest_batch_experiment.return_value = {"id": 17, "status": "failed"}
+
+        class FakeExperimentLogger:
+            TERMINAL_STATUSES = ("completed", "failed", "oom")
+
+            def __init__(self, db_path: str) -> None:
+                self.db_path = db_path
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(tracker, name)
+
+        with (
+            patch.object(formal_main, "ExperimentLogger", FakeExperimentLogger),
+            patch.object(
+                formal_main,
+                "recoverable_checkpoint_for_config",
+                return_value=(UCaGNNConfig(), Path("/tmp/recoverable.pt")),
+            ) as recoverable_checkpoint,
+            patch.object(
+                formal_main,
+                "run_experiment",
+                return_value={
+                    "exp_id": 17,
+                    "test_metrics": {"NDCG@20": 0.1, "NDCG@40": 0.2},
+                    "resumed": True,
+                    "peak_vram_mb": None,
+                    "epochs_stopped_at": 40,
+                    "checkpoint_path": "/tmp/recoverable.pt",
+                    "training_time_s": 0.0,
+                    "train_batches_per_epoch": None,
+                },
+            ) as run_experiment,
+        ):
+            exit_code = formal_main.run_benchmark(normalized_args)
+
+        self.assertEqual(exit_code, 0)
+        recoverable_checkpoint.assert_called_once()
+        run_experiment.assert_called_once()
+        self.assertEqual(
+            run_experiment.call_args.kwargs["checkpoint_path"],
+            "/tmp/recoverable.pt",
+        )
+        tracker.close.assert_called_once()
+
+    def test_run_benchmark_keeps_failed_row_skipped_without_recoverable_checkpoint(
+        self,
+    ) -> None:
+        """Failed terminal rows without usable checkpoints should not retrain under resume."""
+        normalized_args = formal_main._normalize_benchmark_args(
+            SimpleNamespace(
+                datasets=["movielens1m"],
+                presets=["ucagnn"],
+                num_neighbors=[10, 5],
+                lr_scheduler="plateau",
+                batch_id="batch-a",
+                resume_batch=True,
+                dry_run=False,
+                no_mlflow=True,
+                mlflow_tracking_uri=None,
+                mlflow_experiment_name="ucagnn-formal",
+                profile_name="test-profile",
+                profile_slug="test-profile",
+                overwrite_checkpoint=False,
+            ),
+        )
+        tracker = Mock()
+        tracker.find_latest_batch_experiment.return_value = {"id": 17, "status": "failed"}
+
+        class FakeExperimentLogger:
+            TERMINAL_STATUSES = ("completed", "failed", "oom")
+
+            def __init__(self, db_path: str) -> None:
+                self.db_path = db_path
+
+            def __getattr__(self, name: str) -> object:
+                return getattr(tracker, name)
+
+        with (
+            patch.object(formal_main, "ExperimentLogger", FakeExperimentLogger),
+            patch.object(
+                formal_main,
+                "recoverable_checkpoint_for_config",
+                return_value=None,
+            ) as recoverable_checkpoint,
+            patch.object(formal_main, "run_experiment") as run_experiment,
+        ):
+            exit_code = formal_main.run_benchmark(normalized_args)
+
+        self.assertEqual(exit_code, 0)
+        recoverable_checkpoint.assert_called_once()
+        run_experiment.assert_not_called()
+        tracker.close.assert_called_once()
 
     def test_parse_formal_profile_sequence_accepts_comma_separated_names(self) -> None:
         """formal-run should accept a comma-separated profile queue."""
