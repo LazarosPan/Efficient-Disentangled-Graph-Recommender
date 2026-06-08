@@ -148,15 +148,6 @@ def _load_config_json(config_json: str | None) -> dict[str, object]:
         return {}
 
 
-def _build_canonical_name_from_config(
-    config: dict[str, object],
-    preset: str | None,
-    intervention: str | None,
-) -> str:
-    """Reconstruct the canonical experiment name from stored config."""
-    return build_canonical_experiment_name(config, preset, intervention)
-
-
 def _format_metric_value(value: float | None) -> str:
     """Return a consistent display string for a metric cell."""
     return f"{value:.4f}" if value is not None else "-"
@@ -676,7 +667,7 @@ def _print_formal_rows(
         previous_dataset = dataset
         row_crru_scores = crru_scores.get(int(row["id"]), {})
         config = _load_config_json(row["config_json"])
-        canonical_name = _build_canonical_name_from_config(config, row["preset"], None)
+        canonical_name = build_canonical_experiment_name(config, row["preset"], None)
         print(
             (
                 f"{dataset:<14} | {row['preset'] or '-':<12} | "
@@ -744,7 +735,7 @@ def _print_ablation_rows(
         row_crru_scores = crru_scores.get(int(row["id"]), {})
         config = _load_config_json(row["config_json"])
         intervention = row["intervention"]
-        canonical_name = _build_canonical_name_from_config(config, row["preset"], intervention)
+        canonical_name = build_canonical_experiment_name(config, row["preset"], intervention)
         print(
             (
                 f"{dataset:<14} | {intervention or '-':<20} | "
