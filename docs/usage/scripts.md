@@ -56,6 +56,8 @@ uv run python src/data_exploration/explore_all_datasets.py --output-dir results/
 
 ## Data
 
+Dataset loaders read repository-local raw files under `data/<Dataset>/raw` and do not trigger PyG downloads. Use `data/datasets_information.md` for the current file and column contract.
+
 ```bash
 uv run download-datasets
 ```
