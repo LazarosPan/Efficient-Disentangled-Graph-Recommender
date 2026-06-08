@@ -862,7 +862,11 @@ class TrainerRuntime:
             self.best_ndcg,
         )
         if checkpoint_path is not None and checkpoint_every is not None and checkpoint_every > 0:
-            self.save_checkpoint(checkpoint_path, history=history)
+            self.save_checkpoint(
+                checkpoint_path,
+                history=history,
+                training_finished=True,
+            )
         return True
 
     def _maybe_save_checkpoint(
@@ -886,6 +890,7 @@ class TrainerRuntime:
         path: str | Path,
         history: dict[str, list] | None = None,
         is_complete: bool = False,
+        training_finished: bool = False,
         test_metrics: dict[str, float] | None = None,
         exp_id: int | None = None,
         canonical_name: str | None = None,
@@ -893,6 +898,7 @@ class TrainerRuntime:
         """Save training state in the shared checkpoint schema."""
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        training_finished = training_finished or is_complete
         checkpoint: dict[str, Any] = {
             "model_state": self.model.state_dict(),
             "loss_suite_state": self.loss_suite.state_dict(),
@@ -914,6 +920,7 @@ class TrainerRuntime:
             "training_hash": self.training_hash,
             "evaluation_identity": self.evaluation_identity,
             "evaluation_hash": self.evaluation_hash,
+            "training_finished": training_finished,
             "is_complete": is_complete,
             "test_metrics": test_metrics,
         }
@@ -922,10 +929,20 @@ class TrainerRuntime:
         torch.save(checkpoint, path)
         logger.info("Checkpoint saved to %s", path)
 
-    def load_checkpoint(self, path: str | Path) -> dict[str, Any]:
+    def load_checkpoint(
+        self,
+        path: str | Path,
+        *,
+        load_best_model: bool = False,
+    ) -> dict[str, Any]:
         """Load training state from the shared checkpoint schema."""
         ckpt = torch.load(path, map_location=self.device, weights_only=False)
-        model_state = _migrate_model_state(ckpt["model_state"])
+        raw_model_state = (
+            ckpt.get("best_state")
+            if load_best_model and ckpt.get("best_state") is not None
+            else ckpt["model_state"]
+        )
+        model_state = _migrate_model_state(raw_model_state)
         self.model.load_state_dict(model_state)
         self.loss_suite.load_state_dict(ckpt["loss_suite_state"])
         self.optimizer.load_state_dict(ckpt["optimizer_state"])
@@ -955,5 +972,6 @@ class TrainerRuntime:
                     "Failed to restore CUDA RNG state from checkpoint %s",
                     path,
                 )
-        logger.info("Checkpoint loaded from %s", path)
+        state_label = "best model" if raw_model_state is ckpt.get("best_state") else "latest model"
+        logger.info("Checkpoint loaded from %s (%s)", path, state_label)
         return ckpt

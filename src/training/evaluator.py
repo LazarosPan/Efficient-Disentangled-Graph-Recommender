@@ -304,6 +304,21 @@ class Evaluator:
         return LinkPredMetricCollection(metrics)
 
     @staticmethod
+    def _mask_ranking_scores(
+        score_matrix: torch.Tensor,
+        seen_rows: torch.Tensor,
+        seen_cols: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return ranking scores with already-seen user-item pairs excluded."""
+        ranking_scores = score_matrix.float()
+        if seen_rows.numel() == 0:
+            return ranking_scores
+        if 0 in ranking_scores.stride():
+            ranking_scores = ranking_scores.clone()
+        ranking_scores[seen_rows, seen_cols] = float("-inf")
+        return ranking_scores
+
+    @staticmethod
     def _matches_split_mask(target_mask: torch.Tensor, split_mask: torch.Tensor) -> bool:
         """Return whether ``target_mask`` identifies the same split as ``split_mask``."""
         if target_mask is split_mask:
@@ -612,11 +627,7 @@ class Evaluator:
             if seen_row_parts:
                 seen_rows = move_tensor_to_device(torch.cat(seen_row_parts), device)
                 seen_cols = move_tensor_to_device(torch.cat(seen_col_parts), device)
-                scores[seen_rows, seen_cols] = float("-inf")
-                if score_components is not None:
-                    for component_score in score_components.values():
-                        if component_score.ndim == 2 and component_score.shape == scores.shape:
-                            component_score[seen_rows, seen_cols] = float("-inf")
+                scores = self._mask_ranking_scores(scores, seen_rows, seen_cols)
 
             # Build batch ground truth on-the-fly (small: batch_size * n_items)
             gt_rows: list[torch.Tensor] = []
@@ -656,6 +667,27 @@ class Evaluator:
                 gt_item_index,
             )
             if score_components is not None and branch_ranking_metrics:
+                branch_seen_rows: torch.Tensor | None = None
+                branch_seen_cols: torch.Tensor | None = None
+                branch_seen_row_parts: list[torch.Tensor] = []
+                branch_seen_col_parts: list[torch.Tensor] = []
+                for kept_row_index, original_row_index in enumerate(keep_rows):
+                    seen_items = user_seen_items.get(batch_user_ids[original_row_index])
+                    if seen_items is None or seen_items.numel() == 0:
+                        continue
+                    branch_seen_row_parts.append(
+                        torch.full((seen_items.numel(),), kept_row_index, dtype=torch.long),
+                    )
+                    branch_seen_col_parts.append(seen_items)
+                if branch_seen_row_parts:
+                    branch_seen_rows = move_tensor_to_device(
+                        torch.cat(branch_seen_row_parts),
+                        device,
+                    )
+                    branch_seen_cols = move_tensor_to_device(
+                        torch.cat(branch_seen_col_parts),
+                        device,
+                    )
                 for branch_name, score_keys in _BRANCH_RANKING_SCORE_KEYS.items():
                     branch_scores = next(
                         (
@@ -667,6 +699,12 @@ class Evaluator:
                     )
                     if branch_scores is None:
                         continue
+                    if branch_seen_rows is not None and branch_seen_cols is not None:
+                        branch_scores = self._mask_ranking_scores(
+                            branch_scores,
+                            branch_seen_rows,
+                            branch_seen_cols,
+                        )
                     _, branch_pred_index_mat = torch.topk(
                         branch_scores.float(),
                         max_k,
