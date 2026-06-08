@@ -70,6 +70,12 @@ Important runtime details:
 - sign-aware scalars (`alpha_pos`, `alpha_neg`) live in a zero-weight-decay optimizer group,
 - `use_torch_compile` is opt-in because sampled subgraphs are too dynamic for a default compile win,
 - best validation state is tracked even when `use_early_stopping=False`,
+- training continuation checkpoints keep the latest optimizer/RNG state for resume,
+  while finished-training and recovery evaluation load the best validation model
+  state when available,
+- finished-checkpoint recovery is checked before dataset auto-batch probing; when
+  `auto_batch_size=True`, the lookup tries the configured candidate batch-size
+  identities and binds the saved batch size instead of probing CUDA again,
 - validation retries once on CUDA after optimizer-state offload, then falls back to CPU if evaluation still OOMs,
 - a late auto-batch training OOM releases the failed trainer and resumes the next smaller candidate from the latest completed-epoch checkpoint when one exists,
 - auto-batch probe, verification, and training-fallback OOM logs include the original exception summary plus PyTorch CUDA allocated, reserved, peak-allocated, and peak-reserved memory; probe OOMs also annotate the failing stage and sampled-subgraph dimensions when a subgraph had already been prepared,
@@ -120,6 +126,7 @@ Current evaluation rules:
 - evaluator batch sizing keeps the 512 MiB score-matrix cap split-aware and budgets extra headroom when refined-score component export materializes the interest, conformity, context, and final full-catalog views,
 - refined scorer diagnostics reuse the same propagated batch state and top-k recommendations as thesis ranking metrics, and gather native-dtype top-k slices before float accumulation math,
 - diagnostics append `score_mix_*` summary stats, weighted branch contributions at `@20/@40`, interest-vs-conformity cosine checks, and per-component popularity Spearman when the model exports those components on the final test pass,
+- seen-item exclusion is applied to the final ranking score surface and standalone branch-ranking score surfaces; item-only context component diagnostics remain read-only because they are gathered only at already-excluded final top-k recommendations,
 - dual-branch final-test diagnostics also evaluate standalone raw interest/conformity branch rankers with PyG-standard `NDCG`, `Recall`, and `AveragePopularity` at `@20/@40`; these are diagnostic evidence for branch behavior, not extra primary thesis metrics,
 - do not add custom paper-nonstandard ranking outputs unless a paper-faithful definition is implemented and explicitly justified; default thesis outputs should stay with PyG-standard metrics and easy-to-interpret diagnostics,
 - split-specific ground-truth and exclusion dictionaries are cached by mask identity,
@@ -141,6 +148,12 @@ Current rules:
 - the default checkpoint filename includes `training_hash`,
 - changing a training-defining field requires a new checkpoint,
 - evaluation-only changes such as `eval_ks` may reuse the same checkpoint,
+- an incomplete checkpoint marked `training_finished` or a legacy checkpoint whose
+  early-stopping patience already fired is re-evaluated from `best_state` instead
+  of continuing training,
+- before auto-batch probing, recovery lookup searches exact and auto-batch
+  candidate checkpoint identities, so a saved best checkpoint can be evaluated
+  without repeating the representative CUDA batch probe,
 - `--overwrite-checkpoint` deletes the resolved checkpoint before a fresh run starts.
 
 ## Experiment tracking
