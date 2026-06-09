@@ -556,45 +556,6 @@ class ScoringModule(nn.Module):
             "final_score": final_score,
         }
 
-    def get_score_weight_tensor(
-        self,
-        device: torch.device | None = None,
-        dtype: torch.dtype | None = None,
-    ) -> torch.Tensor:
-        """Return the scorer prior weights.
-
-        Args:
-            device: Optional target device.
-            dtype: Optional target dtype.
-
-        Returns:
-            Prior weight tensor.
-        """
-        weights = self._fixed_score_mix_weights(
-            torch.ones(len(self.component_names), dtype=torch.bool),
-            device=self.score_prior_weights.device,
-            dtype=self.score_prior_weights.dtype,
-            batch_size=1,
-        ).squeeze(0)
-        if device is not None or dtype is not None:
-            weights = weights.to(
-                device=device or weights.device,
-                dtype=dtype or weights.dtype,
-            )
-        return weights
-
-    def get_score_weight_summary(self) -> dict[str, float]:
-        """Return scorer prior weights as Python floats.
-
-        Returns:
-            Mapping from score name to prior weight.
-        """
-        weights = self.get_score_weight_tensor().detach().cpu().tolist()
-        return {
-            f"score_weight_{name}": float(weight)
-            for name, weight in zip(self.component_names, weights, strict=True)
-        }
-
     def forward(
         self,
         propagated: dict[str, torch.Tensor],
