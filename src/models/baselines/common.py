@@ -74,6 +74,66 @@ def score_pairwise(
     return (user_emb[user_ids] * item_emb[item_ids]).sum(dim=-1)
 
 
+def propagate_user_item_channels(
+    edge_index: torch.Tensor,
+    edge_norm: torch.Tensor | None,
+    *,
+    n_users: int,
+    n_items: int,
+    channel_specs: tuple[
+        tuple[str, str, torch.Tensor, torch.Tensor, nn.Module],
+        ...,
+    ],
+    add_self_loops: bool = False,
+) -> dict[str, torch.Tensor]:
+    """Propagate one or more user/item embedding channels over the same graph."""
+    if not channel_specs:
+        return {}
+
+    adj = build_sparse_adjacency(
+        edge_index,
+        edge_norm,
+        num_nodes=n_users + n_items,
+        dtype=channel_specs[0][2].dtype,
+        add_self_loops=add_self_loops,
+    )
+    propagated: dict[str, torch.Tensor] = {}
+    for user_key, item_key, user_emb, item_emb, propagation in channel_specs:
+        channel_x = torch.cat([user_emb, item_emb], dim=0)
+        channel_prop = propagation(channel_x, adj)
+        propagated[user_key] = channel_prop[:n_users]
+        propagated[item_key] = channel_prop[n_users:]
+    return propagated
+
+
+def score_propagated_pair(
+    propagated: dict[str, torch.Tensor],
+    *,
+    user_key: str,
+    item_key: str,
+    user_ids: torch.Tensor,
+    item_ids: torch.Tensor,
+) -> torch.Tensor:
+    """Return pairwise dot products from a propagated embedding dictionary."""
+    return score_pairwise(
+        propagated[user_key],
+        propagated[item_key],
+        user_ids,
+        item_ids,
+    )
+
+
+def score_propagated_matrix(
+    propagated: dict[str, torch.Tensor],
+    *,
+    user_key: str,
+    item_key: str,
+    user_ids: torch.Tensor,
+) -> torch.Tensor:
+    """Return full-catalog dot-product scores from propagated embeddings."""
+    return propagated[user_key][user_ids] @ propagated[item_key].t()
+
+
 def fixed_score_mix_weights(
     user_ids: torch.Tensor,
     *,
@@ -148,15 +208,3 @@ class CanonicalBaselineRecommender(nn.Module):
         if dice_negative_mask is not None:
             output["dice_negative_mask"] = dice_negative_mask
         return output
-
-    @torch.no_grad()
-    def get_all_score_components(
-        self,
-        edge_index: torch.Tensor,
-        user_ids: torch.Tensor,
-        edge_sign: torch.Tensor | None = None,
-        edge_norm: torch.Tensor | None = None,
-    ) -> dict[str, torch.Tensor]:
-        """Return full-catalog score components for diagnostics."""
-        propagated = self.get_propagated_for_eval(edge_index, edge_sign, edge_norm)
-        return self.get_score_components_from_propagated(propagated, user_ids)
