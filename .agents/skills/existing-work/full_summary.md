@@ -1,12 +1,12 @@
 # Causal Embeddings for Recommendation: Theory Synthesis
 
 ## 1. Foundational Causal Formalisms
-Source: [summary_survey_papers_4.md](summary_survey_papers_4.md); [methematical_formulations.md](methematical_formulations.md)
+Source: [summary_survey_papers_4.md](../../../docs/paper_summaries/summary_survey_papers_4.md); [methematical_formulations.md](../../../docs/paper_summaries/methematical_formulations.md)
 
 Recommendation treats item exposure as treatment and click, purchase, rating, or downstream engagement as outcome. The literature centers on Potential Outcome (PO) and Structural Causal Models (SCM).
 
 ### 1.1 Potential Outcome and Structural Causal Model Views
-Source: [summary_survey_papers_4.md](summary_survey_papers_4.md); [methematical_formulations.md](methematical_formulations.md)
+Source: [summary_survey_papers_4.md](../../../docs/paper_summaries/summary_survey_papers_4.md); [methematical_formulations.md](../../../docs/paper_summaries/methematical_formulations.md)
 
 | Framework | Core definition | Standard quantities |
 | --- | --- | --- |
@@ -22,7 +22,7 @@ $$P(y \mid do(x)) = \sum_m P(m \mid x) \sum_{x'} P(y \mid x', m) P(x')$$
 The three do-calculus rules repeatedly cited are insertion or deletion of observations, action or observation exchange, and insertion or deletion of actions.
 
 ### 1.2 Core Causal Quantities and Adjustment Formulas
-Source: [summary_survey_papers_4.md](summary_survey_papers_4.md); [methematical_formulations.md](methematical_formulations.md)
+Source: [summary_survey_papers_4.md](../../../docs/paper_summaries/summary_survey_papers_4.md); [methematical_formulations.md](../../../docs/paper_summaries/methematical_formulations.md)
 
 | Concept | Formula or definition |
 | --- | --- |
@@ -38,7 +38,7 @@ Source: [summary_survey_papers_4.md](summary_survey_papers_4.md); [methematical_
 IV4Rec is the recurring instrumental-variable example: search queries act as instruments, and the residual after removing display-position artifacts is treated as the causal preference component.
 
 ### 1.3 Variable Roles and Bias Types
-Source: [summary_survey_papers_4.md](summary_survey_papers_4.md); [methematical_formulations.md](methematical_formulations.md)
+Source: [summary_survey_papers_4.md](../../../docs/paper_summaries/summary_survey_papers_4.md); [methematical_formulations.md](../../../docs/paper_summaries/methematical_formulations.md)
 
 | Role | Meaning |
 | --- | --- |
@@ -61,7 +61,7 @@ Source: [summary_survey_papers_4.md](summary_survey_papers_4.md); [methematical_
 The surveys also identify assumption fragility around positivity, spill-over effects in social networks, and dynamic feedback in online environments.
 
 ## 2. Additive Causal Model and Disentanglement Logic
-Source: [methematical_formulations.md](methematical_formulations.md); [summary_survey_papers_4.md](summary_survey_papers_4.md); [summary_by_paper_10.md](summary_by_paper_10.md)
+Source: [methematical_formulations.md](../../../docs/paper_summaries/methematical_formulations.md); [summary_survey_papers_4.md](../../../docs/paper_summaries/summary_survey_papers_4.md); [summary_by_paper_10.md](../../../docs/paper_summaries/summary_by_paper_10.md)
 
 Most causal embedding methods decompose the interaction score into interest and conformity components:
 
@@ -70,7 +70,7 @@ $$S_{ui} = S_{ui}^{int} + S_{ui}^{con}$$
 Here $S_{ui}^{int}$ denotes genuine user interest and $S_{ui}^{con}$ denotes conformity or popularity bias. The summaries tie this decomposition to a colliding-effect view: the observed click is treated as a collider of interest and conformity, so observing clicks creates spurious dependence between those factors.
 
 ### 2.1 Interest-Dominant and Conformity-Dominant Partitioning
-Source: [methematical_formulations.md](methematical_formulations.md); [summary_by_paper_10.md](summary_by_paper_10.md)
+Source: [methematical_formulations.md](../../../docs/paper_summaries/methematical_formulations.md); [summary_by_paper_10.md](../../../docs/paper_summaries/summary_by_paper_10.md)
 
 | Partition | Condition | Causal interpretation |
 | --- | --- | --- |
@@ -82,7 +82,7 @@ The standard ranking objective remains BPR:
 $$\mathcal{L}_{BPR} = -\sum_{(u,i,j)} \ln \sigma(\hat{s}_{ui} - \hat{s}_{uj})$$
 
 ### 2.2 Regularization, Contrastive Learning, and Causal Separation
-Source: [methematical_formulations.md](methematical_formulations.md)
+Source: [methematical_formulations.md](../../../docs/paper_summaries/methematical_formulations.md)
 
 | Mechanism | Formula | Role |
 | --- | --- | --- |
@@ -93,7 +93,7 @@ Source: [methematical_formulations.md](methematical_formulations.md)
 | Conformity contrastive loss | $L_{conf} = -\log \frac{(1 - \exp(-I_{pop})) \times \exp(S(E_{conf}^u, E_{conf}^{i+}))}{\exp(S(E_{conf}^u, E_{conf}^{i+})) + \sum \exp(S(E_{conf}^u, E_{conf}^{i-}))}$ | Isolates popularity-driven behavior. |
 
 ### 2.3 Specialized Operations Used by Later Methods
-Source: [methematical_formulations.md](methematical_formulations.md); [summary_by_paper_10.md](summary_by_paper_10.md)
+Source: [methematical_formulations.md](../../../docs/paper_summaries/methematical_formulations.md); [summary_by_paper_10.md](../../../docs/paper_summaries/summary_by_paper_10.md)
 
 | Technique | Formula | Role |
 | --- | --- | --- |
@@ -106,10 +106,10 @@ Source: [methematical_formulations.md](methematical_formulations.md); [summary_b
 | Average Causal Effect for explanation | $ACE = \Pr(y=1 \mid do(x=1)) - \Pr(y=1 \mid do(x=0))$ | Measures explanation validity under intervention. |
 
 ## 3. Survey Consensus, Benchmarks, and Evaluation
-Source: [summary_survey_papers_4.md](summary_survey_papers_4.md); [notes_by_paper_10.md](notes_by_paper_10.md); [summary_propcore.md](summary_propcore.md)
+Source: [summary_survey_papers_4.md](../../../docs/paper_summaries/summary_survey_papers_4.md); [notes_by_paper_10.md](../../../docs/paper_summaries/notes_by_paper_10.md); [summary_propcore.md](../../../docs/paper_summaries/summary_propcore.md)
 
 ### 3.1 Survey Scope and Taxonomy
-Source: [summary_survey_papers_4.md](summary_survey_papers_4.md)
+Source: [summary_survey_papers_4.md](../../../docs/paper_summaries/summary_survey_papers_4.md)
 
 | Survey | Published | Main framing |
 | --- | --- | --- |
@@ -121,7 +121,7 @@ Source: [summary_survey_papers_4.md](summary_survey_papers_4.md)
 Recurring problem families: explainable recommendation, fairness, uplift or heterogeneous effects, robust or out-of-distribution recommendation, unbiased or debiased recommendation, data augmentation and denoising, and causal generalization.
 
 ### 3.2 Frequently Cited Datasets
-Source: [summary_survey_papers_4.md](summary_survey_papers_4.md); [notes_by_paper_10.md](notes_by_paper_10.md)
+Source: [summary_survey_papers_4.md](../../../docs/paper_summaries/summary_survey_papers_4.md); [notes_by_paper_10.md](../../../docs/paper_summaries/notes_by_paper_10.md)
 
 | Dataset family | Examples and density cues | Typical use |
 | --- | --- | --- |
@@ -132,7 +132,7 @@ Source: [summary_survey_papers_4.md](summary_survey_papers_4.md); [notes_by_pape
 | Semi-simulated causal data | PROPCARE evaluation setting | Exposure and uplift evaluation without original exposure logs |
 
 ### 3.3 Evaluation Metrics
-Source: [summary_survey_papers_4.md](summary_survey_papers_4.md); [notes_by_paper_10.md](notes_by_paper_10.md); [summary_propcore.md](summary_propcore.md)
+Source: [summary_survey_papers_4.md](../../../docs/paper_summaries/summary_survey_papers_4.md); [notes_by_paper_10.md](../../../docs/paper_summaries/notes_by_paper_10.md); [summary_propcore.md](../../../docs/paper_summaries/summary_propcore.md)
 
 | Objective | Metrics explicitly used in the sources |
 | --- | --- |
@@ -147,10 +147,10 @@ Standard ranking metrics can improve while causal quality degrades, especially u
 DDCE adds Novelty@K to the ranking view; PROPCARE defines $CP@K$ and $CDCG$ on semi-simulated counterfactual data.
 
 ## 4. Graph Backbones and Hybrid Architectures
-Source: [gcn_models.md](gcn_models.md); [summary_hybrid_transGNN.md](summary_hybrid_transGNN.md)
+Source: [gcn_models.md](../../../docs/paper_summaries/gcn_models.md); [summary_hybrid_transGNN.md](../../../docs/paper_summaries/summary_hybrid_transGNN.md)
 
 ### 4.1 LightGCN, LayerGCN, and LightGCN++
-Source: [gcn_models.md](gcn_models.md)
+Source: [gcn_models.md](../../../docs/paper_summaries/gcn_models.md)
 
 | Model | Core operator or rule | Reported configuration, guardrails, and limits |
 | --- | --- | --- |
@@ -159,7 +159,7 @@ Source: [gcn_models.md](gcn_models.md)
 | LightGCN++ | $e_i^{(k+1)} = \frac{1}{\|\mathcal{N}_i\|^{\alpha}} \sum_{u \in \mathcal{N}_i} \frac{1}{\|\mathcal{N}_u\|^{\beta}} e_u^{(k)}$, $e_i = \gamma e_i^{(0)} + (1-\gamma) \frac{1}{K} \sum_{k=1}^{K} e_i^{(k)}$ | Replaces fixed normalization with tunable $\alpha$, $\beta$, and $\gamma$; requires embedding normalization at every layer; $d=64$, $B=2048$, $K=2$, learning rate 0.001, regularization 0.0001; time complexity $O(\|E\| + \|E\|Kd + \|V\|Kd)$; runtime increase 0.08% to 5.29% per epoch over LightGCN. |
 
 ### 4.2 TransGNN and SIGformer
-Source: [summary_hybrid_transGNN.md](summary_hybrid_transGNN.md)
+Source: [summary_hybrid_transGNN.md](../../../docs/paper_summaries/summary_hybrid_transGNN.md)
 
 | Model | Architecture sequence | Loss, configuration, and complexity |
 | --- | --- | --- |
@@ -167,10 +167,10 @@ Source: [summary_hybrid_transGNN.md](summary_hybrid_transGNN.md)
 | SIGformer | Identity projection to $Q$, $K$, $V$; sign-aware spectral and path encodings; attention-based layer updates; layer averaging; dot-product prediction | Modified BPR over positive and negative feedback; $L=3$, $d=64$, $d_h=64$, learning rate $1e^{-2}$, weight decay $1e^{-4}$; complexity $O((n+m)d\hat{N})$; negative interactions are critical in the reported ablations. |
 
 ## 5. Method Families and Representative Models
-Source: [summary_by_paper_10.md](summary_by_paper_10.md); [notes_by_paper_10.md](notes_by_paper_10.md); [methematical_formulations.md](methematical_formulations.md); [summary_propcore.md](summary_propcore.md); [summary_survey_papers_4.md](summary_survey_papers_4.md)
+Source: [summary_by_paper_10.md](../../../docs/paper_summaries/summary_by_paper_10.md); [notes_by_paper_10.md](../../../docs/paper_summaries/notes_by_paper_10.md); [methematical_formulations.md](../../../docs/paper_summaries/methematical_formulations.md); [summary_propcore.md](../../../docs/paper_summaries/summary_propcore.md); [summary_survey_papers_4.md](../../../docs/paper_summaries/summary_survey_papers_4.md)
 
 ### 5.1 Disentanglement and Popularity-Debiasing Models
-Source: [summary_by_paper_10.md](summary_by_paper_10.md); [notes_by_paper_10.md](notes_by_paper_10.md); [methematical_formulations.md](methematical_formulations.md)
+Source: [summary_by_paper_10.md](../../../docs/paper_summaries/summary_by_paper_10.md); [notes_by_paper_10.md](../../../docs/paper_summaries/notes_by_paper_10.md); [methematical_formulations.md](../../../docs/paper_summaries/methematical_formulations.md)
 
 | Method | Core mechanism | Losses or scores | Reported data, metrics, or scaling notes |
 | --- | --- | --- | --- |
@@ -180,7 +180,7 @@ Source: [summary_by_paper_10.md](summary_by_paper_10.md); [notes_by_paper_10.md]
 | CaDCR | Bipartite interaction graph, LightGCN-style encoder, $K$ intent blocks, causal intervention, and multi-task curriculum learning | $\mathcal{L} = \mathcal{L}_{BPR} + \lambda_1(\mathcal{L}_{cl} + \mathcal{L}_{it}) + \lambda_2 \Theta^2$ and $P(Y\mid do(U=u)) - P(Y\mid do(U=0)) = \frac{1}{N} \sum_{i=1}^{N}(P(\hat{y}_{ui}\mid i \odot H) - P(\hat{y}_{ui}\mid i))$ | Gowalla, Amazon-Book, and Tmall; reported depth $L=3$, embedding size 64, batch size 4096, Adam optimizer, time per epoch of about 8 seconds on Gowalla and about 10 seconds on Amazon-Book and Tmall, and intent-granularity sensitivity when $K$ becomes large. |
 
 ### 5.2 Multimodal and Fairness-Oriented Models
-Source: [summary_by_paper_10.md](summary_by_paper_10.md); [notes_by_paper_10.md](notes_by_paper_10.md); [methematical_formulations.md](methematical_formulations.md)
+Source: [summary_by_paper_10.md](../../../docs/paper_summaries/summary_by_paper_10.md); [notes_by_paper_10.md](../../../docs/paper_summaries/notes_by_paper_10.md); [methematical_formulations.md](../../../docs/paper_summaries/methematical_formulations.md)
 
 | Method | Core mechanism | Losses or scores | Reported data, metrics, or scaling notes |
 | --- | --- | --- | --- |
@@ -189,7 +189,7 @@ Source: [summary_by_paper_10.md](summary_by_paper_10.md); [notes_by_paper_10.md]
 | FMMRec | Filter network and biased learner split modal embeddings into fair and unfair components; role-indicator embeddings distinguish user and item roles; fair and unfair relation mining are constructed by kNN sparsification | Recommendation loss, sensitive-attribute prediction losses, and orthogonality loss; final adjustment $\hat{e}_u = e_u + \lambda_h(\overline{h}_u - \tilde{h}_u)$ | MovieLens and MicroLens; fairness is evaluated with attacker AUC and micro-averaged F1; kNN sparsification reduces user-relation complexity from dense similarity matrices to $O(|\mathcal{U}|d^2 + |\mathcal{V}|d^2)$. |
 
 ### 5.3 Semantic and Explanation Models
-Source: [summary_by_paper_10.md](summary_by_paper_10.md); [summary_survey_papers_4.md](summary_survey_papers_4.md); [methematical_formulations.md](methematical_formulations.md)
+Source: [summary_by_paper_10.md](../../../docs/paper_summaries/summary_by_paper_10.md); [summary_survey_papers_4.md](../../../docs/paper_summaries/summary_survey_papers_4.md); [methematical_formulations.md](../../../docs/paper_summaries/methematical_formulations.md)
 
 | Method | Core mechanism | Losses or scores | Reported data, metrics, or scaling notes |
 | --- | --- | --- | --- |
@@ -199,7 +199,7 @@ Source: [summary_by_paper_10.md](summary_by_paper_10.md); [summary_survey_papers
 | CountER | Counterfactual explanation by minimal feature perturbation and causal rule discovery | Survey-level explanation benchmark, often paired with PRINCE | The surveys use it as a state-of-the-art counterfactual explanation reference. |
 
 ### 5.4 Treatment-Control and Propensity Models
-Source: [summary_by_paper_10.md](summary_by_paper_10.md); [summary_propcore.md](summary_propcore.md); [methematical_formulations.md](methematical_formulations.md)
+Source: [summary_by_paper_10.md](../../../docs/paper_summaries/summary_by_paper_10.md); [summary_propcore.md](../../../docs/paper_summaries/summary_propcore.md); [methematical_formulations.md](../../../docs/paper_summaries/methematical_formulations.md)
 
 | Method | Core mechanism | Losses or scores | Reported data, metrics, or scaling notes |
 | --- | --- | --- | --- |
@@ -207,10 +207,10 @@ Source: [summary_by_paper_10.md](summary_by_paper_10.md); [summary_propcore.md](
 | PROPCARE | Learns propensity and relevance jointly from ordinary interaction logs, then infers exposure labels for downstream causal ranking | $y_{u,i} = p_{u,i} r_{u,i}$, $\mathcal{L}_{naive}$, popularity-guided $\mathcal{L}_{pop}$, global $KL(Q \parallel Beta(\alpha, \beta))$, exposure prediction $\hat{Z}_{u,i}$, DLCE loss, causal metrics $CP@K$ and $CDCG$, popularity-consistency statistic $ratio_b$, and explicit bias decomposition | Semi-simulated counterfactual evaluation; treats popularity as an exposure prior; clipping thresholds $\chi_1$ and $\chi_0$ stabilize ranking; training time is described as linear in the number of user-item pairs. |
 
 ## 6. Computational Bottlenecks, Training Regimes, and ANN Acceleration
-Source: [summary_performance_papers.md](summary_performance_papers.md); [summary_survey_papers_4.md](summary_survey_papers_4.md); [summary_by_paper_10.md](summary_by_paper_10.md); [gcn_models.md](gcn_models.md); [summary_hybrid_transGNN.md](summary_hybrid_transGNN.md)
+Source: [summary_performance_papers.md](summary_performance_papers.md); [summary_survey_papers_4.md](../../../docs/paper_summaries/summary_survey_papers_4.md); [summary_by_paper_10.md](../../../docs/paper_summaries/summary_by_paper_10.md); [gcn_models.md](../../../docs/paper_summaries/gcn_models.md); [summary_hybrid_transGNN.md](../../../docs/paper_summaries/summary_hybrid_transGNN.md)
 
 ### 6.1 Recurring Bottlenecks Across the Literature
-Source: [summary_survey_papers_4.md](summary_survey_papers_4.md); [summary_by_paper_10.md](summary_by_paper_10.md); [summary_performance_papers.md](summary_performance_papers.md)
+Source: [summary_survey_papers_4.md](../../../docs/paper_summaries/summary_survey_papers_4.md); [summary_by_paper_10.md](../../../docs/paper_summaries/summary_by_paper_10.md); [summary_performance_papers.md](summary_performance_papers.md)
 
 | Bottleneck | Source-backed characterization |
 | --- | --- |
@@ -249,7 +249,7 @@ Source: [summary_performance_papers.md](summary_performance_papers.md)
 | PANORAMA | Learned orthogonal transform through a Cayley transform plus progressive pruning and accretive refinement; 2x to 30x end-to-end speedups with no recall loss in the reported setup; strongest gains reach 2x to 40x on IVFFlat and 2x to 30x on IVFPQ under AVX-512 execution | Additional memory overhead $O(nL)$, diminishing returns after too many refinement levels, smaller gains for non-contiguous layouts, and L3-cache or data-movement limits in graph and tree indexes |
 
 ## 7. Open Problems Reported Across the Sources
-Source: [summary_survey_papers_4.md](summary_survey_papers_4.md); [summary_by_paper_10.md](summary_by_paper_10.md); [summary_performance_papers.md](summary_performance_papers.md)
+Source: [summary_survey_papers_4.md](../../../docs/paper_summaries/summary_survey_papers_4.md); [summary_by_paper_10.md](../../../docs/paper_summaries/summary_by_paper_10.md); [summary_performance_papers.md](summary_performance_papers.md)
 
 | Problem | Source-backed description |
 | --- | --- |

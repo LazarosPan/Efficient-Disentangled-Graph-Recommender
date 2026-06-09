@@ -68,5 +68,5 @@ The diagram shows the runtime path: the embedding layer prepares tables and meta
 | `get_propagated_for_eval(edge_index, edge_sign, edge_norm, ...)` | `Evaluator` | One reusable full-graph propagated state. |
 | `score_users_from_propagated(propagated, user_ids, ...)` | `Evaluator` | Final `(batch_users, n_items)` score matrix. |
 | `get_score_components_from_propagated(propagated, user_ids)` | `Evaluator` diagnostics path | Batched refined scorer outputs from the same propagated evaluation state. |
-| `get_all_score_components(...)` | diagnostics and same-checkpoint evaluation tooling | Full-catalog component scores plus branch embeddings when dual-branch is active. |
+| `src/models/baselines/common.py` helpers | paper-baseline adapters | Shared channel propagation, pair scoring, full-catalog scoring, and fixed score-mix payloads. |
 | `build_training_output(...)` | internal training path | Shared payload containing scores, propagated tensors, optional IPW weights, optional DICE negative masks, and optional `propensity_scores`. |

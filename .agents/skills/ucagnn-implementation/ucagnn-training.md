@@ -147,7 +147,8 @@ Current rules:
 
 - the default checkpoint filename includes `training_hash`,
 - changing a training-defining field requires a new checkpoint,
-- evaluation-only changes such as `eval_ks` may reuse the same checkpoint,
+- evaluation cutoffs are fixed by `THESIS_EVAL_KS` in `Evaluator`, so checkpoint
+  filenames are keyed by training identity rather than report-display options,
 - an incomplete checkpoint marked `training_finished` or a legacy checkpoint whose
   early-stopping patience already fired is re-evaluated from `best_state` instead
   of continuing training,
@@ -162,8 +163,8 @@ Current rules:
 - **MLflow is secondary.** It mirrors runs and artifacts but is not the source of truth.
 - evaluator diagnostics go through the same metric logging path as thesis metrics; no parallel diagnostics store exists.
 - `formal-run` persists `results/formal_run_state.json` as a strict resume pointer, not as a profile definition. When `--profile` contains a comma-separated list, profiles run sequentially and the state file tracks the active/latest profile.
-- runtime-probe profiles keep `config_overrides.epochs=1` and store their full-run estimate target in profile-level `runtime_probe.target_epochs`; after a probe completes, `experiments/run_benchmark.py` logs estimated full training time, remaining time, seconds per epoch, batches per epoch, and batch/s under the SQLite `approximation` split.
+- runtime-probe profiles keep `config_overrides.epochs=1` and store their full-run estimate target in profile-level `runtime_probe.target_epochs`; after a probe completes, `experiments/run_benchmark.py` logs the canonical `RUNTIME_PROBE_METRIC_NAMES` under the SQLite `approximation` split.
 - Per-epoch training-window resources are logged when available: `gpu_utilization_pct` stores the average training GPU utilization for the epoch, `max_gpu_utilization_pct` stores the peak sampled training utilization, `train_peak_vram_allocated_mb` / `train_peak_vram_reserved_mb` store PyTorch allocator peaks, `train_peak_gpu_memory_used_mb` stores the peak `nvidia-smi memory.used` sample, and legacy `peak_vram_mb` uses the training `nvidia-smi` peak when available with PyTorch allocated peak as fallback.
-- Canonical experiment names are shared by runtime checkpointing and `query-results` through `src/utils/experiment_naming.py`.
+- Canonical experiment and fan-out labels are shared by runtime checkpointing, benchmark summaries, MLflow params, profile slugs, and `query-results` through `src/utils/experiment_naming.py`.
 - Query surfaces are centralized in `ExperimentLogger.VIEW_TABLES`, which powers the `completed`, `attention`, `errors`, and `comparison` views used by `scripts/query_results.py`.
 - The default `query-results` thesis summary keeps CRRU inline: it prints a short Composite Resource-aware Recommendation Utility framing block, reports dataset-local section-row `CRRU@20` and `CRRU@40`, separates final formal thesis profiles from supporting historical/preprocessing-sweep rows, excludes runtime probes from ranking sections, reports currently supported public ablation variants separately, notes that CRRU is not a causal-effect estimator, and does not emit a separate CRRU table.
