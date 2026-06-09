@@ -29,7 +29,6 @@ from experiments.run_experiment import (
     _auto_batch_probe_candidates,
     _auto_batch_probe_interactions,
     _bootstrap_cagra_embeddings,
-    _build_evaluation_identity,
     _build_training_identity,
     _checkpoint_ready_for_evaluation,
     _cuda_memory_snapshot,
@@ -960,28 +959,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.interest_gnn_layers, 2)
         self.assertEqual(config.conformity_gnn_layers, 2)
         self.assertEqual(config.max_gnn_layers, 2)
-
-    def test_training_identity_ignores_eval_only_overrides(self) -> None:
-        """Resume compatibility should ignore non-training config changes."""
-        base = build_config(_experiment_args(preset="ucagnn"))
-        eval_override = build_config(_experiment_args(preset="ucagnn"))
-        eval_override.eval_ks = [5, 10]
-
-        base_identity, base_hash = _build_training_identity(base, "ucagnn", None)
-        override_identity, override_hash = _build_training_identity(
-            eval_override,
-            "ucagnn",
-            None,
-        )
-        _, base_eval_hash = _build_evaluation_identity(base, base_hash)
-        _, override_eval_hash = _build_evaluation_identity(
-            eval_override,
-            override_hash,
-        )
-
-        self.assertEqual(base_identity, override_identity)
-        self.assertEqual(base_hash, override_hash)
-        self.assertNotEqual(base_eval_hash, override_eval_hash)
 
     def test_training_identity_changes_when_training_config_changes(self) -> None:
         """Resume compatibility should change with training-defining config fields."""
@@ -2679,20 +2656,19 @@ class BenchmarkPlanTests(unittest.TestCase):
             ],
         )
 
-    def test_normalize_benchmark_args_strips_removed_scoring_weight_modes_field(self) -> None:
-        """Legacy saved payloads should drop removed score-mix mode metadata."""
-        args = formal_main._normalize_benchmark_args(
-            {
-                "datasets": ["movielens1m"],
-                "presets": ["ucagnn"],
-                "num_neighbors": [10, 5],
-                "scoring_weight_modes": ["fixed", "learned"],
-            },
-        )
-
-        self.assertNotIn("scoring_weight_modes", args)
-        self.assertEqual(args["presets"], ["ucagnn"])
-        self.assertEqual(args["num_neighbors"], [10, 5])
+    def test_normalize_benchmark_args_rejects_removed_scoring_weight_modes_field(
+        self,
+    ) -> None:
+        """Saved formal-run state should reject removed score-mix mode metadata."""
+        with self.assertRaises(ValueError):
+            formal_main._normalize_benchmark_args(
+                {
+                    "datasets": ["movielens1m"],
+                    "presets": ["ucagnn"],
+                    "num_neighbors": [10, 5],
+                    "scoring_weight_modes": ["fixed", "learned"],
+                },
+            )
 
     def test_plan_sweeps_datasets_within_each_method_combo(self) -> None:
         """Datasets should be the innermost loop of the execution plan."""

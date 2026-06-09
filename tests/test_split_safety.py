@@ -359,8 +359,8 @@ class SplitSafetyTests(unittest.TestCase):
             np.array([False, False, True, True]),
         )
 
-    def test_build_graph_can_use_time_windowed_train_popularity(self) -> None:
-        """Popularity windows should be computed from the recent train slice only."""
+    def test_build_graph_uses_positive_train_popularity(self) -> None:
+        """Popularity should be computed from positive train interactions only."""
         canonical = CanonicalInteractions(
             user_id=np.array([0, 0, 0], dtype=np.int64),
             item_id=np.array([0, 0, 1], dtype=np.int64),
