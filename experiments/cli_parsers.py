@@ -14,7 +14,7 @@ from src.utils.cli_parsers import (
 )
 
 from experiments.ablation_configs import ABLATION_VARIANTS
-from experiments.recipes import formal_profile_names, recipe_names
+from experiments.recipes import formal_profile_names, recipe_names, search_space_names
 
 
 def build_run_experiment_parser() -> argparse.ArgumentParser:
@@ -199,6 +199,92 @@ def build_formal_run_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_search_parser() -> argparse.ArgumentParser:
+    """Build the Optuna search CLI parser.
+
+    Returns:
+        Configured parser for ``experiments/run_search.py``.
+
+    """
+    spaces = search_space_names()
+    parser = argparse.ArgumentParser(
+        description="Run Optuna searches over configured U-CaGNN search spaces.",
+    )
+
+    sel = parser.add_argument_group("search selection")
+    sel.add_argument(
+        "--space",
+        choices=spaces,
+        help="Search-space id from experiments/search_spaces.json.",
+    )
+    sel.add_argument(
+        "--dataset",
+        default=None,
+        help="Optional dataset name to narrow the selected search space.",
+    )
+    sel.add_argument(
+        "--trials",
+        type=int,
+        default=None,
+        help="Number of Optuna trials. Defaults to the search-space value.",
+    )
+    sel.add_argument(
+        "--study-name",
+        default=None,
+        help="Optuna study name. Defaults to <space>-<dataset-or-all>.",
+    )
+    sel.add_argument(
+        "--list-spaces",
+        action="store_true",
+        help="Print available Optuna search spaces and exit.",
+    )
+
+    ex = parser.add_argument_group("execution")
+    ex.add_argument(
+        "--storage",
+        default="sqlite:///results/optuna_studies.db",
+        help="Optuna storage URI.",
+    )
+    ex.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print resolved bounds and base configs without training.",
+    )
+    ex.add_argument("--device", default="cuda", help="Device for training trials.")
+    ex.add_argument("--data-dir", default="data", help="Dataset root directory.")
+    ex.add_argument(
+        "--mlflow",
+        dest="no_mlflow",
+        action="store_false",
+        help="Enable MLflow tracking for trial runs. Disabled by default for search.",
+    )
+    ex.add_argument(
+        "--no-mlflow",
+        dest="no_mlflow",
+        action="store_true",
+        help="Disable MLflow tracking for trial runs. This is the search default.",
+    )
+    ex.add_argument(
+        "--mlflow-tracking-uri",
+        default=None,
+        help="Override MLflow tracking URI for trial runs.",
+    )
+    ex.add_argument(
+        "--mlflow-experiment-name",
+        default="ucagnn-optuna",
+        help="MLflow experiment name for trial runs.",
+    )
+    add_overwrite_checkpoint_arg(
+        ex,
+        help_text=(
+            "Accepted for compatibility; search runs do not save or resume checkpoints."
+        ),
+    )
+    parser.set_defaults(no_mlflow=True)
+
+    return parser
+
+
 def build_ablation_parser() -> argparse.ArgumentParser:
     """Build the ablation study CLI parser.
 
@@ -239,4 +325,5 @@ __all__ = [
     "build_benchmark_parser",
     "build_formal_run_parser",
     "build_run_experiment_parser",
+    "build_search_parser",
 ]

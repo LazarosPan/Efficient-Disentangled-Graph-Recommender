@@ -12,12 +12,20 @@ from typing import Any
 from src.utils.experiment_naming import format_num_neighbors_payload
 
 CATALOG_PATH = Path(__file__).with_name("experiment_catalog.json")
+SEARCH_SPACES_PATH = Path(__file__).with_name("search_spaces.json")
 
 
 @lru_cache(maxsize=1)
 def load_experiment_catalog() -> dict[str, Any]:
     """Load the experiment catalog from disk."""
     with CATALOG_PATH.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+@lru_cache(maxsize=1)
+def load_search_spaces_catalog() -> dict[str, Any]:
+    """Load the Optuna search-space catalog from disk."""
+    with SEARCH_SPACES_PATH.open("r", encoding="utf-8") as handle:
         return json.load(handle)
 
 
@@ -29,6 +37,17 @@ def _raw_recipe(recipe_name: str) -> dict[str, Any]:
             f"Unknown recipe '{recipe_name}'. Available recipes: {available}",
         )
     return recipes[recipe_name]
+
+
+def _raw_search_space(space_name: str) -> dict[str, Any]:
+    """Return one raw Optuna search-space payload from the search catalog."""
+    search_spaces = load_search_spaces_catalog().get("search_spaces", {})
+    if space_name not in search_spaces:
+        available = ", ".join(sorted(search_spaces))
+        raise KeyError(
+            f"Unknown search space '{space_name}'. Available search spaces: {available}",
+        )
+    return search_spaces[space_name]
 
 
 def recipe_names(include_aliases: bool = True) -> list[str]:
@@ -264,6 +283,27 @@ def default_formal_profile_name() -> str:
         if "default" in profile["aliases"]:
             return str(profile["id"])
     return str(profiles[0]["id"])
+
+
+def search_space_names() -> list[str]:
+    """Return available Optuna search-space identifiers."""
+    return sorted(load_search_spaces_catalog().get("search_spaces", {}))
+
+
+def get_search_space(space_name: str) -> dict[str, Any]:
+    """Return a named Optuna search-space definition from the search catalog."""
+    space = dict(_raw_search_space(space_name))
+    return {
+        "name": space_name,
+        "description": space.get("description", ""),
+        "base_profile": space.get("base_profile"),
+        "datasets": space.get("datasets"),
+        "objective": space.get("objective"),
+        "max_epochs": space.get("max_epochs"),
+        "trials": space.get("trials"),
+        "config_overrides": dict(space.get("config_overrides", {})),
+        "parameters": dict(space.get("parameters", {})),
+    }
 
 
 def get_formal_profile(profile_name: str) -> dict[str, Any]:

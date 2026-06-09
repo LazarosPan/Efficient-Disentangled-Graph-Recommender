@@ -1607,6 +1607,8 @@ def normalize_benchmark_config_overrides(
     )
     lr_value = raw_config.get("lr")
     normalized["lr"] = float(lr_value) if lr_value is not None else None
+    weight_decay = raw_config.get("weight_decay")
+    normalized["weight_decay"] = float(weight_decay) if weight_decay is not None else None
     normalized["lr_scheduler"] = _normalize_benchmark_lr_scheduler_override(
         raw_config.get("lr_scheduler"),
     )
@@ -1617,6 +1619,10 @@ def normalize_benchmark_config_overrides(
     lr_scheduler_patience = raw_config.get("lr_scheduler_patience")
     normalized["lr_scheduler_patience"] = (
         int(lr_scheduler_patience) if lr_scheduler_patience is not None else None
+    )
+    grad_clip_norm = raw_config.get("grad_clip_norm")
+    normalized["grad_clip_norm"] = (
+        float(grad_clip_norm) if grad_clip_norm is not None else None
     )
     single_branch_layers = raw_config.get("single_branch_gnn_layers")
     normalized["single_branch_gnn_layers"] = (
@@ -1661,7 +1667,7 @@ def normalize_benchmark_config_overrides(
         field_value = raw_config.get(field_name)
         normalized[field_name] = float(field_value) if field_value is not None else None
 
-    optional_bool_fields = ("use_ipw", "use_conformity_au")
+    optional_bool_fields = ("use_ipw", "use_conformity_au", "use_popularity_head")
     for field_name in optional_bool_fields:
         field_value = raw_config.get(field_name)
         normalized[field_name] = bool(field_value) if field_value is not None else None
@@ -1825,6 +1831,7 @@ def run_experiment(
     auto_resume: bool = True,
     overwrite_checkpoint: bool = False,
     include_refined_diagnostics: bool = True,
+    evaluate_test: bool = True,
 ) -> dict:
     """Run a single experiment end-to-end.
 
@@ -1858,6 +1865,9 @@ def run_experiment(
             diagnostics during final test evaluation. Quick smoke validation can
             disable this so undefined tiny-slice diagnostics do not mask runtime
             coverage.
+        evaluate_test: If True, run the final test evaluation and log test
+            metrics. Exploratory validation-only workflows can disable this so
+            test data stays reserved for promoted formal runs.
 
     Returns:
         Dict with keys:
@@ -2294,16 +2304,20 @@ def run_experiment(
                 canonical_name=canonical_name,
             )
 
-        logger.info("Running test evaluation...")
-        test_metrics = trainer._evaluate_split_metrics(
-            data.test_mask,
-            include_refined_diagnostics=include_refined_diagnostics,
-        )
-        for metric, value in sorted(test_metrics.items()):
-            logger.info(f"  {metric}: {value:.4f}")
-            experiment_logger.log_metric(exp_id, metric, value, split="test")
+        test_metrics: dict[str, float] = {}
+        if evaluate_test:
+            logger.info("Running test evaluation...")
+            test_metrics = trainer._evaluate_split_metrics(
+                data.test_mask,
+                include_refined_diagnostics=include_refined_diagnostics,
+            )
+            for metric, value in sorted(test_metrics.items()):
+                logger.info(f"  {metric}: {value:.4f}")
+                experiment_logger.log_metric(exp_id, metric, value, split="test")
+        else:
+            logger.info("Skipping test evaluation for validation-only run.")
 
-        if save_checkpoint or effective_auto_resume:
+        if evaluate_test and (save_checkpoint or effective_auto_resume):
             final_checkpoint_path = resolved_checkpoint_path
             trainer.save_checkpoint(
                 final_checkpoint_path,
