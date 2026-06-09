@@ -116,6 +116,30 @@ class ExperimentLogger:
         "metric_value",
         "timestamp",
     )
+    _EXPECTED_OPTUNA_SEARCH_TRIAL_COLUMNS: ClassVar[tuple[str, ...]] = (
+        "id",
+        "study_name",
+        "search_space",
+        "trial_number",
+        "dataset",
+        "experiment_id",
+        "batch_id",
+        "objective_metric",
+        "objective_split",
+        "objective_direction",
+        "objective_value",
+        "dataset_objective_value",
+        "params_json",
+        "state",
+        "failure_reason",
+        "runtime_s",
+        "peak_vram_mb",
+        "average_popularity_20",
+        "average_popularity_40",
+        "branch_diagnostics_json",
+        "created_at",
+        "updated_at",
+    )
 
     def __init__(self, db_path: str = "results/thesis_experiments.db") -> None:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -159,6 +183,15 @@ class ExperimentLogger:
                 "metrics",
                 self._EXPECTED_METRIC_COLUMNS,
                 self._create_metrics_table,
+                expected_fks=frozenset({"experiments"}),
+            )
+            or schema_changed
+        )
+        schema_changed = (
+            self._ensure_table(
+                "optuna_search_trials",
+                self._EXPECTED_OPTUNA_SEARCH_TRIAL_COLUMNS,
+                self._create_optuna_search_trials_table,
                 expected_fks=frozenset({"experiments"}),
             )
             or schema_changed
@@ -357,6 +390,35 @@ class ExperimentLogger:
             )
         """)
 
+    def _create_optuna_search_trials_table(self) -> None:
+        self.conn.execute("""
+            CREATE TABLE optuna_search_trials (
+                id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                study_name               TEXT    NOT NULL,
+                search_space             TEXT    NOT NULL,
+                trial_number             INTEGER NOT NULL,
+                dataset                  TEXT    NOT NULL,
+                experiment_id            INTEGER REFERENCES experiments(id),
+                batch_id                 TEXT,
+                objective_metric         TEXT    NOT NULL,
+                objective_split          TEXT    NOT NULL,
+                objective_direction      TEXT    NOT NULL,
+                objective_value          REAL,
+                dataset_objective_value  REAL,
+                params_json              TEXT    NOT NULL,
+                state                    TEXT    NOT NULL,
+                failure_reason           TEXT,
+                runtime_s                REAL,
+                peak_vram_mb             REAL,
+                average_popularity_20    REAL,
+                average_popularity_40    REAL,
+                branch_diagnostics_json  TEXT,
+                created_at               TEXT    NOT NULL,
+                updated_at               TEXT    NOT NULL,
+                UNIQUE(study_name, search_space, trial_number, dataset)
+            )
+        """)
+
     def _create_indexes_and_views(self) -> None:
         self.conn.executescript("""
             CREATE INDEX IF NOT EXISTS idx_experiments_lookup
@@ -385,6 +447,14 @@ class ExperimentLogger:
 
             CREATE INDEX IF NOT EXISTS idx_profiling_exp_stage_epoch
                 ON profiling(experiment_id, stage, epoch);
+
+            CREATE INDEX IF NOT EXISTS idx_optuna_search_trials_lookup
+                ON optuna_search_trials(study_name, search_space, trial_number, dataset);
+
+            CREATE INDEX IF NOT EXISTS idx_optuna_search_trials_objective
+                ON optuna_search_trials(
+                    search_space, dataset, state, objective_metric, objective_value DESC
+                );
 
             DROP VIEW IF EXISTS experiment_summary;
 
@@ -943,6 +1013,109 @@ class ExperimentLogger:
                 exp_id,
             ),
         )
+
+    def log_optuna_search_trial(
+        self,
+        *,
+        study_name: str,
+        search_space: str,
+        trial_number: int,
+        dataset: str,
+        objective_metric: str,
+        objective_split: str,
+        objective_direction: str,
+        params: dict[str, object],
+        state: str,
+        experiment_id: int | None = None,
+        batch_id: str | None = None,
+        objective_value: float | None = None,
+        dataset_objective_value: float | None = None,
+        failure_reason: str | None = None,
+        runtime_s: float | None = None,
+        peak_vram_mb: float | None = None,
+        average_popularity_20: float | None = None,
+        average_popularity_40: float | None = None,
+        branch_diagnostics: dict[str, object] | None = None,
+    ) -> int:
+        """Persist one Optuna search trial/dataset row.
+
+        The natural key is one Optuna trial for one dataset. A multi-dataset
+        study therefore stores one row per dataset and shares the same
+        ``objective_value`` once the trial-level aggregate is known.
+        """
+        now = datetime.now(UTC).isoformat()
+        params_json = json.dumps(params, sort_keys=True, default=str)
+        diagnostics_json = (
+            None
+            if branch_diagnostics is None
+            else json.dumps(branch_diagnostics, sort_keys=True, default=str)
+        )
+        cursor = self._execute_with_retry(
+            (
+                "INSERT INTO optuna_search_trials ("
+                "study_name, search_space, trial_number, dataset, experiment_id, "
+                "batch_id, objective_metric, objective_split, objective_direction, "
+                "objective_value, dataset_objective_value, params_json, state, "
+                "failure_reason, runtime_s, peak_vram_mb, average_popularity_20, "
+                "average_popularity_40, branch_diagnostics_json, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(study_name, search_space, trial_number, dataset) DO UPDATE SET "
+                "experiment_id = COALESCE("
+                "excluded.experiment_id, optuna_search_trials.experiment_id"
+                "), "
+                "batch_id = COALESCE(excluded.batch_id, optuna_search_trials.batch_id), "
+                "objective_metric = excluded.objective_metric, "
+                "objective_split = excluded.objective_split, "
+                "objective_direction = excluded.objective_direction, "
+                "objective_value = COALESCE("
+                "excluded.objective_value, optuna_search_trials.objective_value"
+                "), "
+                "dataset_objective_value = COALESCE("
+                "excluded.dataset_objective_value, optuna_search_trials.dataset_objective_value"
+                "), "
+                "params_json = excluded.params_json, "
+                "state = excluded.state, "
+                "failure_reason = excluded.failure_reason, "
+                "runtime_s = COALESCE(excluded.runtime_s, optuna_search_trials.runtime_s), "
+                "peak_vram_mb = COALESCE("
+                "excluded.peak_vram_mb, optuna_search_trials.peak_vram_mb"
+                "), "
+                "average_popularity_20 = COALESCE("
+                "excluded.average_popularity_20, optuna_search_trials.average_popularity_20"
+                "), "
+                "average_popularity_40 = COALESCE("
+                "excluded.average_popularity_40, optuna_search_trials.average_popularity_40"
+                "), "
+                "branch_diagnostics_json = COALESCE("
+                "excluded.branch_diagnostics_json, optuna_search_trials.branch_diagnostics_json"
+                "), "
+                "updated_at = excluded.updated_at"
+            ),
+            (
+                study_name,
+                search_space,
+                int(trial_number),
+                dataset,
+                experiment_id,
+                batch_id,
+                objective_metric,
+                objective_split,
+                objective_direction,
+                objective_value,
+                dataset_objective_value,
+                params_json,
+                state,
+                failure_reason,
+                runtime_s,
+                peak_vram_mb,
+                average_popularity_20,
+                average_popularity_40,
+                diagnostics_json,
+                now,
+                now,
+            ),
+        )
+        return cursor.lastrowid  # type: ignore[return-value]
 
     def find_latest_batch_experiment(
         self,
