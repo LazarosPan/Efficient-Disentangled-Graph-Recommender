@@ -9,6 +9,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from src.utils.experiment_naming import format_num_neighbors_payload
+
 CATALOG_PATH = Path(__file__).with_name("experiment_catalog.json")
 
 
@@ -141,36 +143,9 @@ def resolve_profile_num_neighbors(
     return _normalize_num_neighbors_options(raw_neighbors, field_name="num_neighbors")
 
 
-def _format_num_neighbors_options(num_neighbors: list[list[int]]) -> str:
-    """Return a readable slug fragment for one fan-out sweep."""
-    return "+".join("-".join(str(value) for value in neighbors) for neighbors in num_neighbors)
-
-
-def _format_num_neighbors_payload(num_neighbors: object) -> str | None:
-    """Return a readable slug fragment for a num_neighbors payload."""
-    if num_neighbors is None:
-        return None
-    if isinstance(num_neighbors, Mapping):
-        parts: list[str] = []
-        for key in sorted(num_neighbors):
-            options = num_neighbors[key]
-            parts.append(f"{key}[{_format_num_neighbors_payload(options)}]")
-        return "__".join(parts)
-    if isinstance(num_neighbors, (list, tuple)):
-        if not num_neighbors:
-            return None
-        if all(isinstance(value, (list, tuple)) for value in num_neighbors):
-            return _format_num_neighbors_options(
-                [list(value) for value in num_neighbors],
-            )
-        return "x".join(str(value) for value in num_neighbors)
-    return str(num_neighbors)
-
-
 def _resolved_profile_matrix(profile: dict[str, Any]) -> dict[str, Any]:
     """Normalize the catalog matrix shape for a formal profile."""
     matrix = dict(profile.get("matrix", {}))
-    matrix.pop("scoring_weight_modes", None)
     raw_datasets = matrix.get("datasets", "all")
     if isinstance(raw_datasets, str):
         matrix["datasets"] = [raw_datasets]
@@ -212,7 +187,7 @@ def _formal_profile_name(profile: dict[str, Any]) -> str:
     matrix = _resolved_profile_matrix(profile)
     overrides = _resolved_profile_overrides(profile)
     neighbor_options = resolve_profile_num_neighbors(overrides)
-    neighbor_slug = _format_num_neighbors_payload(neighbor_options) or "na"
+    neighbor_slug = format_num_neighbors_payload(neighbor_options) or "na"
     batch_slug = (
         "abauto"
         if overrides.get("auto_batch_size", True)  # True matches UCaGNNConfig default

@@ -48,7 +48,10 @@ from src.utils.config import (
     UCaGNNConfig,
 )
 from src.utils.experiment_logger import ExperimentLogger
-from src.utils.experiment_naming import build_canonical_experiment_name
+from src.utils.experiment_naming import (
+    build_canonical_experiment_name,
+    format_num_neighbors_payload,
+)
 from src.utils.interaction_indexing import compute_normalized_popularity
 from src.utils.project_paths import (
     CHECKPOINT_DIR,
@@ -161,7 +164,7 @@ _TRAINING_IDENTITY_FIELDS = (
     "val_ratio",
     "weight_decay",
 )
-_EVALUATION_IDENTITY_FIELDS = ("eval_ks",)
+_EVALUATION_IDENTITY_FIELDS: tuple[str, ...] = ()
 
 
 def _stable_identity_hash(payload: dict[str, Any]) -> str:
@@ -1236,7 +1239,7 @@ def _build_mlflow_params(
         params["profile_name"] = profile_name
     if change_note:
         params["change_note"] = change_note
-    params["num_neighbors"] = "-".join(str(value) for value in config.num_neighbors)
+    params["num_neighbors"] = format_num_neighbors_payload(config.num_neighbors) or "-"
     params["batch_size_candidates"] = "-".join(str(value) for value in config.batch_size_candidates)
     return params
 

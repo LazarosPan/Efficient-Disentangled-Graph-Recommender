@@ -36,7 +36,8 @@ from src.utils.config import (
     SUPPORTED_LR_SCHEDULERS,
     UCaGNNConfig,
 )
-from src.utils.experiment_logger import ExperimentLogger
+from src.utils.experiment_logger import RUNTIME_PROBE_METRIC_NAMES, ExperimentLogger
+from src.utils.experiment_naming import format_num_neighbors_payload
 from src.utils.project_paths import FORMAL_RUN_STATE_PATH, THESIS_DB_PATH
 
 from experiments.cli_parsers import build_benchmark_parser, build_formal_run_parser
@@ -188,7 +189,6 @@ def _normalize_benchmark_args(
 ) -> dict[str, object]:
     """Return a JSON-safe benchmark payload."""
     benchmark_args = normalize_config_inputs(raw_args)
-    benchmark_args.pop("scoring_weight_modes", None)
     unexpected_fields = sorted(set(benchmark_args) - set(NORMALIZED_BENCHMARK_FIELDS))
     if unexpected_fields:
         raise ValueError(
@@ -390,11 +390,11 @@ def _log_runtime_probe_estimate(
     estimate: Mapping[str, float],
 ) -> None:
     """Persist runtime-probe approximation metrics under an explicit split label."""
-    for metric_name, estimate_value in sorted(estimate.items()):
+    for metric_name in RUNTIME_PROBE_METRIC_NAMES:
         tracker.log_metric(
             exp_id,
             metric_name,
-            estimate_value,
+            estimate[metric_name],
             split="approximation",
         )
 
@@ -577,13 +577,6 @@ def _benchmark_graph_policy_values(
     return [UCaGNNConfig().graph_policy]
 
 
-def _format_num_neighbors_sweep(num_neighbors: list[list[int]]) -> str:
-    """Return one readable sweep fragment for a neighbor option set."""
-    return ", ".join(
-        "[" + ", ".join(str(value) for value in neighbors) + "]" for neighbors in num_neighbors
-    )
-
-
 def _benchmark_num_neighbors_values(
     benchmark_args: Mapping[str, object],
     *,
@@ -629,13 +622,13 @@ def _benchmark_num_neighbors_summary(
             )
             if resolved is None:
                 continue
-            parts.append(f"{key}: {_format_num_neighbors_sweep(resolved)}")
+            parts.append(f"{key}: {format_num_neighbors_payload(resolved)}")
         return ", ".join(parts)
 
     resolved = resolve_profile_num_neighbors({"num_neighbors": raw_num_neighbors})
     if resolved is None:
         resolved = [list(UCaGNNConfig().num_neighbors)]
-    return _format_num_neighbors_sweep(resolved)
+    return format_num_neighbors_payload(resolved) or ""
 
 
 def build_benchmark_plan(
@@ -761,7 +754,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             experiments,
             1,
         ):
-            neighbor_label = "-".join(str(value) for value in neighbors)
+            neighbor_label = format_num_neighbors_payload(neighbors) or ""
             print(
                 f"{i:>4} | {ds:<15} | {pr:<12} | {scheduler:<12} | "
                 f"{preprocessing_preset or '-'!s: <24} | "
@@ -788,7 +781,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
     ) in enumerate(experiments, 1):
         neighbor_list = list(num_neighbors)
         effective_neighbor_list = list(neighbor_list)
-        raw_neighbor_label = "-".join(str(value) for value in neighbor_list)
+        raw_neighbor_label = format_num_neighbors_payload(neighbor_list) or ""
         neighbor_label = raw_neighbor_label
 
         try:
@@ -797,7 +790,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                 preset,
                 neighbor_list,
             )
-            neighbor_label = "-".join(str(value) for value in effective_neighbor_list)
+            neighbor_label = format_num_neighbors_payload(effective_neighbor_list) or ""
         except Exception as e:
             failed += 1
             failure_notes.append(
@@ -1039,7 +1032,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                     "AveragePopularity@40",
                 ),
             )
-            neighbor_label = "-".join(str(value) for value in r["num_neighbors"])
+            neighbor_label = format_num_neighbors_payload(r["num_neighbors"]) or ""
             epochs = (
                 str(r.get("epochs_stopped_at")) if r.get("epochs_stopped_at") is not None else "-"
             )
