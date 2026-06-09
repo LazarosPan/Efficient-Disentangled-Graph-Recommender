@@ -21,12 +21,14 @@ Use `uv run <command> --help` when you need the full option surface for a specif
 ```bash
 uv run quick-validate
 uv run reset-experiment-db
+uv run prune-checkpoints
 uv run cleanup-experiment-artifacts
 ```
 
 - `quick-validate`: default post-change validator. It runs tiny recipe, ablation, observability, and evaluation checks.
 - `quick-validate` is now a zero-argument smoke command with one fixed tiny runtime shape, so validation follows the active recipe/ablation semantics instead of ad-hoc CLI overrides.
 - `reset-experiment-db`: deletes only `results/thesis_experiments.db` and its SQLite sidecars.
+- `prune-checkpoints`: dry-runs a top-N checkpoint retention plan from SQLite metadata. Use `--execute` to keep only the selected best checkpoints per dataset/model family and delete search-only checkpoints.
 - `cleanup-experiment-artifacts`: deletes the repo-local MLflow database, `results/formal_run_state.json`, `mlruns/`, and local checkpoints.
 
 The older direct script path still works:

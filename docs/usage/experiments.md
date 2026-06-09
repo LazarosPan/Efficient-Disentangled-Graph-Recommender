@@ -24,6 +24,35 @@ uv run formal-run --profile <slug-from-list-profiles> --overwrite-checkpoint
 - The current default formal profile is `core-ucagnn-mainline`: it runs only the `ucagnn` preset, uses early stopping with `patience=10`, keeps the 200-epoch budget, uses learned fused scoring, and makes the mainline branch asymmetry explicit with `interest_gnn_layers=1`, `conformity_gnn_layers=2`, and `num_neighbors={"small": [[6, 3], [4, 2]], "medium": [[10, 5], [16, 8]]}` while leaving `loss_schedule` at the baseline default so BPR is active from the start.
 - A second formal profile is reserved for the final matched comparison pass, where `lightgcn_paper` and `dice_paper` run beside U-CaGNN under the same canonical data and evaluation pipeline. The sampled `lightgcn` and legacy `dice_like` presets remain ablations, not paper-default baselines.
 
+## Optuna Search
+
+```bash
+uv run search-experiments --list-spaces
+uv run search-experiments --space ucagnn-core-optimization --trials 40
+uv run search-experiments --space ucagnn-core-optimization --dataset amazonbook --trials 20
+uv run search-experiments --space ucagnn-core-optimization --trials 1 --dry-run
+uv run search-experiments --space ucagnn-core-optimization --dataset amazonbook --trials 5 --mlflow
+```
+
+- `search-experiments` is U-CaGNN-only. It resolves `experiments/search_spaces.json` entries via each `base_profile`, samples existing `UCaGNNConfig` fields, and still executes each trial through `build_config()` and `run_experiment()`.
+- The Optuna objective is validation `NDCG@40` by default. Search runs skip final test evaluation; test metrics remain reserved for promoted confirmation profiles.
+- Search runs do not save or resume checkpoints. They also keep MLflow disabled by default to avoid large exploratory artifacts; pass `--mlflow` only when you explicitly want MLflow mirroring for a short search.
+- Optuna search spaces are configured separately from formal profiles: use `experiments/search_spaces.json` for tuning spaces and `experiments/experiment_catalog.json` for deterministic formal profiles/recipes.
+- Trial runs are grouped with `batch_id=optuna-<study>-trial-<number>` and `profile_name=<search-space>`. The sampled values are present in each experiment `config_json` and mirrored to the SQLite `optuna_search_trials` table.
+- `uv run query-results` writes `results/query_results.md` with a dedicated Optuna section, so formal runs, ablations, and tuning summaries are visible from one report.
+- Search spaces are exploratory. Promote selected winners manually into named formal profiles before running full 200-epoch confirmation and reporting test results.
+
+## Checkpoint Retention
+
+```bash
+uv run prune-checkpoints
+uv run prune-checkpoints --keep 3 --execute
+```
+
+- `prune-checkpoints` ranks mapped checkpoints from `results/thesis_experiments.db` and keeps the top N per dataset and model family (`ucagnn`, `dice`, `lightgcn`).
+- The command defaults to a dry run. Add `--execute` only after reviewing the deletion plan.
+- Existing Optuna-search checkpoints are deletion candidates by default because search results and parameters live in SQLite, not checkpoint files.
+
 ## Low-Level Single Experiments
 
 ```bash
