@@ -282,7 +282,6 @@ class Evaluator:
 
     def _build_metrics(
         self,
-        n_items: int,
         popularity: torch.Tensor,
     ) -> LinkPredMetricCollection:
         """Build the thesis-primary PyG metric bundle.
@@ -500,7 +499,7 @@ class Evaluator:
             dtype=torch.bfloat16,
         )
         assert popularity is not None
-        metrics = self._build_metrics(n_items=n_items, popularity=popularity)
+        metrics = self._build_metrics(popularity=popularity)
         metrics = metrics.to(device)
         diagnostics = (
             _EvaluatorDiagnosticsAccumulator(THESIS_EVAL_KS)
@@ -513,9 +512,7 @@ class Evaluator:
         )
         branch_ranking_metrics = (
             {
-                branch_name: self._build_metrics(n_items=n_items, popularity=popularity).to(
-                    device,
-                )
+                branch_name: self._build_metrics(popularity=popularity).to(device)
                 for branch_name in _BRANCH_RANKING_SCORE_KEYS
             }
             if export_score_components and self.config.use_dual_branch

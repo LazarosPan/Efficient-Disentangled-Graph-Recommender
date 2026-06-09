@@ -24,8 +24,11 @@ from pathlib import Path
 
 from experiments.ablation_configs import ABLATION_VARIANTS
 from src.utils.cli_parsers import build_query_results_parser
-from src.utils.experiment_logger import ExperimentLogger
-from src.utils.experiment_naming import build_canonical_experiment_name
+from src.utils.experiment_logger import RUNTIME_PROBE_METRIC_NAMES, ExperimentLogger
+from src.utils.experiment_naming import (
+    build_canonical_experiment_name,
+    format_num_neighbors_payload,
+)
 from src.utils.project_paths import RESULTS_DIR, THESIS_DB_PATH
 
 DB_PATH = Path(os.environ.get("THESIS_DB_PATH_OVERRIDE", str(THESIS_DB_PATH)))
@@ -45,15 +48,7 @@ FINAL_FORMAL_PROFILE_NAMES = frozenset(
         "paper-lightgcn-baselines",
     }
 )
-RUNTIME_PROBE_COLUMNS = (
-    "runtime_probe_target_epochs",
-    "runtime_probe_observed_epochs",
-    "runtime_probe_train_batches_per_epoch",
-    "runtime_probe_observed_batches_per_second",
-    "runtime_probe_seconds_per_epoch",
-    "runtime_probe_estimated_train_time_s",
-    "runtime_probe_estimated_remaining_train_time_s",
-)
+RUNTIME_PROBE_COLUMNS = RUNTIME_PROBE_METRIC_NAMES
 
 
 def connect() -> sqlite3.Connection:
@@ -181,12 +176,7 @@ def _format_crru_value(value: float | None) -> str:
 
 def _format_neighbors(config: dict[str, object]) -> str:
     """Return the configured neighborhood fan-out as a compact label."""
-    num_neighbors = config.get("num_neighbors")
-    if isinstance(num_neighbors, list):
-        return "-".join(str(value) for value in num_neighbors)
-    if num_neighbors is not None:
-        return str(num_neighbors)
-    return "-"
+    return format_num_neighbors_payload(config.get("num_neighbors")) or "-"
 
 
 def _format_scoremix(config: dict[str, object]) -> str:

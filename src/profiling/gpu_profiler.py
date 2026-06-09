@@ -9,7 +9,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 import torch
-from torch_geometric.profile import count_parameters, get_data_size, get_model_size
 
 
 @dataclass
@@ -144,19 +143,6 @@ class GPUProfiler:
         if not torch.cuda.is_available():
             return None
         return torch.cuda.max_memory_allocated() / 1024 / 1024
-
-    @staticmethod
-    def model_summary(model: torch.nn.Module) -> str:
-        """Return parameter count and model size via PyG utilities."""
-        n_params = count_parameters(model)
-        size_bytes = get_model_size(model)
-        return f"Parameters: {n_params:,} | Size: {size_bytes / 1024 / 1024:.1f} MB"
-
-    @staticmethod
-    def data_summary(data) -> str:
-        """Return data object size via PyG utilities."""
-        size_bytes = get_data_size(data)
-        return f"Data size: {size_bytes / 1024 / 1024:.1f} MB"
 
 
 def _parse_optional_float(value: str) -> float | None:
