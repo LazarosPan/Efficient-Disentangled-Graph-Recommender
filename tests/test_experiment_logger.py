@@ -214,6 +214,77 @@ class ExperimentLoggerTests(unittest.TestCase):
 
         self.assertEqual(row["training_mode"], "mini_batch")
 
+    def test_log_optuna_search_trial_upserts_parameter_search_row(self) -> None:
+        """Optuna trial metadata should live in a dedicated SQLite table."""
+        exp_id = self.logger.log_experiment(
+            dataset="amazonbook",
+            config=_DummyConfig(seed=13),
+            preset="ucagnn",
+            batch_id="optuna-study-trial-0",
+        )
+
+        self.logger.log_optuna_search_trial(
+            study_name="study",
+            search_space="ucagnn-core-optimization",
+            trial_number=0,
+            dataset="amazonbook",
+            experiment_id=exp_id,
+            batch_id="optuna-study-trial-0",
+            objective_metric="NDCG@40",
+            objective_split="val",
+            objective_direction="maximize",
+            objective_value=None,
+            dataset_objective_value=0.41,
+            params={"lr": 0.001, "num_neighbors": [10, 5]},
+            state="completed",
+            runtime_s=12.3,
+            peak_vram_mb=456.0,
+            average_popularity_40=1.7,
+            branch_diagnostics={"score_mix_interest_mean": 0.8},
+        )
+        self.logger.log_optuna_search_trial(
+            study_name="study",
+            search_space="ucagnn-core-optimization",
+            trial_number=0,
+            dataset="amazonbook",
+            experiment_id=exp_id,
+            batch_id="optuna-study-trial-0",
+            objective_metric="NDCG@40",
+            objective_split="val",
+            objective_direction="maximize",
+            objective_value=0.41,
+            dataset_objective_value=0.41,
+            params={"lr": 0.001, "num_neighbors": [10, 5]},
+            state="completed",
+        )
+
+        rows = self.logger.conn.execute(
+            """
+            SELECT experiment_id, objective_value, dataset_objective_value,
+                   params_json, state, runtime_s, peak_vram_mb,
+                   average_popularity_40, branch_diagnostics_json
+            FROM optuna_search_trials
+            """,
+        ).fetchall()
+
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["experiment_id"], exp_id)
+        self.assertEqual(row["state"], "completed")
+        self.assertAlmostEqual(row["objective_value"], 0.41)
+        self.assertAlmostEqual(row["dataset_objective_value"], 0.41)
+        self.assertEqual(
+            json.loads(row["params_json"]),
+            {"lr": 0.001, "num_neighbors": [10, 5]},
+        )
+        self.assertAlmostEqual(row["runtime_s"], 12.3)
+        self.assertAlmostEqual(row["peak_vram_mb"], 456.0)
+        self.assertAlmostEqual(row["average_popularity_40"], 1.7)
+        self.assertEqual(
+            json.loads(row["branch_diagnostics_json"]),
+            {"score_mix_interest_mean": 0.8},
+        )
+
     def test_experiment_summary_uses_peak_vram_metric_when_profiling_missing(self) -> None:
         """The summary view should expose peak VRAM stored as a train metric."""
         exp_id = self.logger.log_experiment(
@@ -714,6 +785,23 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.logger.log_metric(exp_id, "training_time_s", 11.2, split="train")
         self.logger.log_metric(exp_id, "peak_vram_mb", 2048.0, split="train")
         self.logger.update_experiment_status(exp_id, status="completed")
+        self.logger.log_optuna_search_trial(
+            study_name="tiny-study",
+            search_space="ucagnn-core-optimization",
+            trial_number=0,
+            dataset="amazonbook",
+            batch_id="optuna-tiny-study-trial-0",
+            objective_metric="NDCG@40",
+            objective_split="val",
+            objective_direction="maximize",
+            objective_value=0.42,
+            dataset_objective_value=0.42,
+            params={"lr": 0.001, "num_neighbors": [6, 3]},
+            state="completed",
+            runtime_s=1.2,
+            peak_vram_mb=128.0,
+            average_popularity_40=1.1,
+        )
 
         buffer = StringIO()
         temp_db_path = Path(self.temp_dir.name) / "experiments.sqlite"
@@ -1094,6 +1182,23 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.logger.log_metric(exp_id, "training_time_s", 11.2, split="train")
         self.logger.log_metric(exp_id, "peak_vram_mb", 2048.0, split="train")
         self.logger.update_experiment_status(exp_id, status="completed")
+        self.logger.log_optuna_search_trial(
+            study_name="tiny-study",
+            search_space="ucagnn-core-optimization",
+            trial_number=0,
+            dataset="amazonbook",
+            batch_id="optuna-tiny-study-trial-0",
+            objective_metric="NDCG@40",
+            objective_split="val",
+            objective_direction="maximize",
+            objective_value=0.42,
+            dataset_objective_value=0.42,
+            params={"lr": 0.001, "num_neighbors": [6, 3]},
+            state="completed",
+            runtime_s=1.2,
+            peak_vram_mb=128.0,
+            average_popularity_40=1.1,
+        )
 
         temp_db_path = Path(self.temp_dir.name) / "experiments.sqlite"
         output_path = Path(self.temp_dir.name) / "query_results.md"
@@ -1110,6 +1215,8 @@ class ExperimentLoggerTests(unittest.TestCase):
         stdout_text = buffer.getvalue()
         self.assertIn("THESIS TEST RESULTS", stdout_text)
         self.assertIn("dev-profile", stdout_text)
+        self.assertIn("OPTUNA U-CaGNN SEARCH TRIALS", stdout_text)
+        self.assertIn("tiny-study", stdout_text)
         self.assertIn(
             f"Wrote default results summary to {output_path.resolve()}",
             stdout_text,
@@ -1127,6 +1234,9 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertIn("CRRU@20", markdown_output)
         self.assertIn("CRRU@40", markdown_output)
         self.assertIn("dev-profile", markdown_output)
+        self.assertIn("OPTUNA U-CaGNN SEARCH TRIALS", markdown_output)
+        self.assertIn("ucagnn-core-optimization", markdown_output)
+        self.assertIn("lr=0.001", markdown_output)
         self.assertIn(
             "amazonbook_lightgcn_ep100_bs4096_dim64_layers2_nbr10-5_lr-plateau_seed13",
             markdown_output,
