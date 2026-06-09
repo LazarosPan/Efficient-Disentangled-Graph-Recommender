@@ -13,6 +13,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import ClassVar
 
+RUNTIME_PROBE_METRIC_NAMES: tuple[str, ...] = (
+    "runtime_probe_target_epochs",
+    "runtime_probe_observed_epochs",
+    "runtime_probe_train_batches_per_epoch",
+    "runtime_probe_observed_batches_per_second",
+    "runtime_probe_seconds_per_epoch",
+    "runtime_probe_estimated_train_time_s",
+    "runtime_probe_estimated_remaining_train_time_s",
+)
+
 
 class ExperimentLogger:
     """Persist experiment configs, per-epoch metrics, and profiling data to SQLite."""
@@ -37,7 +47,7 @@ class ExperimentLogger:
         "comparison": "experiment_code_comparison",
     }
     _SUMMARY_VIEW_SENTINEL_COLUMNS: ClassVar[tuple[str, ...]] = (
-        "runtime_probe_estimated_remaining_train_time_s",
+        RUNTIME_PROBE_METRIC_NAMES[-1],
         "test_final_popularity_spearman_40",
         "test_interest_branch_ndcg_20",
         "max_gpu_utilization_pct",
@@ -813,15 +823,17 @@ class ExperimentLogger:
         lower_msg = str(exc).lower()
         return "locked" in lower_msg or "busy" in lower_msg
 
-    def _execute_with_retry(self, sql: str, params: tuple[object, ...] | None = None) -> sqlite3.Cursor:
+    def _execute_with_retry(
+        self,
+        sql: str,
+        params: tuple[object, ...] | None = None,
+    ) -> sqlite3.Cursor:
         """Execute a write SQL statement and commit, retrying on lock contention."""
         last_error: sqlite3.OperationalError | None = None
         for attempt in range(self.LOCK_RETRY_ATTEMPTS):
             try:
                 cursor = (
-                    self.conn.execute(sql, params)
-                    if params is not None
-                    else self.conn.execute(sql)
+                    self.conn.execute(sql, params) if params is not None else self.conn.execute(sql)
                 )
                 self.conn.commit()
                 return cursor
@@ -994,38 +1006,6 @@ class ExperimentLogger:
             if metric_name not in metrics:
                 metrics[metric_name] = float(row[1])
         return metrics
-
-    def log_profiling(
-        self,
-        exp_id: int,
-        epoch: int,
-        stage,
-        stage_call_count: int = 1,
-    ) -> None:
-        """Log a single profiling row.
-
-        This method remains usable for direct inserts in verification scripts.
-        Regular training should prefer ``log_epoch()``, which aggregates raw
-        per-batch StageMetrics into one row per (epoch, stage).
-        """
-        self._execute_with_retry(
-            (
-                "INSERT INTO profiling (experiment_id, epoch, stage, duration_ms, "
-                "vram_before_mb, vram_after_mb, vram_peak_mb, stage_call_count, "
-                "timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            ),
-            (
-                exp_id,
-                epoch,
-                stage.name,
-                stage.elapsed_ms,
-                stage.vram_before_mb,
-                stage.vram_after_mb,
-                stage.vram_peak_mb,
-                stage_call_count,
-                datetime.now(UTC).isoformat(),
-            ),
-        )
 
     def log_metric(
         self,

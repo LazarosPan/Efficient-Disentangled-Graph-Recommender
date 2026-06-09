@@ -36,33 +36,33 @@ def _max_gnn_layers(config: object) -> int:
     )
 
 
-def _format_num_neighbors_vector(num_neighbors: object) -> str:
+def format_num_neighbors_vector(num_neighbors: object) -> str:
     """Return one fan-out vector as a compact slug fragment."""
     return "-".join(str(value) for value in num_neighbors)
 
 
-def _format_num_neighbors_payload(num_neighbors: object) -> str | None:
+def format_num_neighbors_payload(num_neighbors: object) -> str | None:
     """Return a compact label for a raw or keyed num_neighbors payload."""
     if num_neighbors is None:
         return None
     if isinstance(num_neighbors, Mapping):
         parts: list[str] = []
         for key in sorted(num_neighbors):
-            value = _format_num_neighbors_payload(num_neighbors[key])
+            value = format_num_neighbors_payload(num_neighbors[key])
             parts.append(f"{key}[{value or 'na'}]")
         return "__".join(parts)
     if isinstance(num_neighbors, (list, tuple)):
         if not num_neighbors:
             return None
         if all(isinstance(item, (list, tuple)) for item in num_neighbors):
-            return "+".join(_format_num_neighbors_vector(item) for item in num_neighbors)
-        return _format_num_neighbors_vector(num_neighbors)
+            return "+".join(format_num_neighbors_vector(item) for item in num_neighbors)
+        return format_num_neighbors_vector(num_neighbors)
     return str(num_neighbors)
 
 
 def _num_neighbors_label(config: object) -> str | None:
     """Return the fan-out label for a config if it has one."""
-    return _format_num_neighbors_payload(_config_value(config, "num_neighbors"))
+    return format_num_neighbors_payload(_config_value(config, "num_neighbors"))
 
 
 def build_canonical_experiment_name(
@@ -134,4 +134,8 @@ def build_canonical_experiment_name(
     return "_".join(parts)
 
 
-__all__ = ["build_canonical_experiment_name"]
+__all__ = [
+    "build_canonical_experiment_name",
+    "format_num_neighbors_payload",
+    "format_num_neighbors_vector",
+]

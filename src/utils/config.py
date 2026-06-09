@@ -409,7 +409,6 @@ class UCaGNNConfig:
     lr_scheduler: LRSchedulerName = "plateau"
     lr_scheduler_factor: float = 0.5
     lr_scheduler_patience: int = 5
-    eval_ks: list[int] = field(default_factory=lambda: [20, 40])
     # ── Training ─────────────────────────────────────────────────────────
     num_neighbors: list[int] = field(default_factory=lambda: [10, 5])
     sample_interactions: int | None = None
