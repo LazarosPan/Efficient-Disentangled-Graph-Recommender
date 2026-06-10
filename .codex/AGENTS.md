@@ -92,6 +92,7 @@ Read the SKILL.md files and choose which files that they point to are relevant f
 
 - `.agents/skills/cuvs/SKILL.md` - cuVS Python API reference.
 - `.agents/skills/existing-work/SKILL.md` - prior causal recommendation implementation synthesis.
+- `.agents/skills/optuna/SKILL.md` - key Optuna optimization workflows and their implementation mechanics.
 - `.agents/skills/mlflow/SKILL.md` - MLflow/PyTorch tracking guidance.
 - `.agents/skills/project-structure/SKILL.md` - project layout reference.
 - `.agents/skills/pytorch/SKILL.md` - PyTorch module and runtime guide.
