@@ -1,373 +1,90 @@
 {
-  "search_spaces": {
-    "ucagnn-core-optimization": {
-      "description": "Exploratory Optuna screen for U-CaGNN across the practical core thesis datasets. Promote selected winners manually into formal profiles before test reporting.",
-      "base_profile": "core-ucagnn-mainline",
-      "datasets": [
-        "amazonbook",
-        "movielens1m",
-        "kuairec_v2",
-        "kuairand1k"
-      ],
-      "objective": {
-        "metric": "NDCG@40",
-        "split": "val",
-        "direction": "maximize"
-      },
-      "max_epochs": 80,
-      "trials": 40,
-      "parameters": {
-        "lr": {
-          "type": "float",
-          "low": 0.0003,
-          "high": 0.03,
-          "log": true
+    "search_spaces": {
+        "ucagnn-core-optimization": {
+            "description": "Exploratory Optuna screen for U-CaGNN across the practical core thesis datasets. Promote selected winners manually into formal profiles before test reporting.",
+            "base_profile": "core-ucagnn-mainline",
+            "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+            "objective": {"metric": "NDCG@40", "split": "val", "direction": "maximize"},
+            "max_epochs": 80,
+            "trials": 40,
+            "parameters": {
+                "lr": {"type": "float", "low": 0.0003, "high": 0.03, "log": true},
+                "weight_decay": {"type": "float", "low": 0.00000001, "high": 0.001, "log": true},
+                "lr_scheduler": {"type": "categorical", "choices": ["cosine", "plateau", "none"]},
+                "lr_scheduler_factor": {"type": "float", "low": 0.3, "high": 0.8},
+                "grad_clip_norm": {"type": "float", "low": 0.5, "high": 5.0},
+                "interest_gnn_layers": {"type": "int", "low": 1, "high": 2},
+                "conformity_gnn_layers": {"type": "int", "low": 1, "high": 3},
+                "num_neighbors": {
+                    "type": "fanout",
+                    "choices_by_depth": {
+                        "1": [[8], [12], [16]],
+                        "2": [[4, 2], [6, 3], [8, 4], [10, 5], [16, 8]],
+                        "3": [[10, 5, 3], [16, 8, 4]]
+                    }
+                },
+                "dropout": {"type": "float", "low": 0.0, "high": 0.3},
+                "score_mix_min_weight": {"type": "float", "low": 0.0, "high": 0.1},
+                "loss_weight_independence": {"type": "float", "low": 0.0, "high": 0.02},
+                "loss_weight_contrastive": {"type": "float", "low": 0.0, "high": 0.05},
+                "loss_weight_popularity": {"type": "float", "low": 0.0, "high": 0.05},
+                "hard_negative_ratio": {"type": "float", "low": 0.0, "high": 0.35},
+                "dice_sampler_margin": {"type": "float", "low": 10.0, "high": 80.0}
+            }
         },
-        "weight_decay": {
-          "type": "float",
-          "low": 0.00000001,
-          "high": 0.001,
-          "log": true
+        "ucagnn-kuairand-diagnostic": {
+            "description": "KuaiRand-only exploratory search focused on popularity, conformity, and feature sensitivity before promoting a formal diagnostic profile.",
+            "base_profile": "core-ucagnn-mainline",
+            "datasets": ["kuairand1k"],
+            "objective": {"metric": "NDCG@40", "split": "val", "direction": "maximize"},
+            "max_epochs": 80,
+            "trials": 30,
+            "parameters": {
+                "lr": {"type": "float", "low": 0.0003, "high": 0.02, "log": true},
+                "dropout": {"type": "float", "low": 0.0, "high": 0.35},
+                "interest_gnn_layers": {"type": "int", "low": 1, "high": 2},
+                "conformity_gnn_layers": {"type": "int", "low": 1, "high": 3},
+                "num_neighbors": {
+                    "type": "fanout",
+                    "choices_by_depth": {
+                        "1": [[8], [16]],
+                        "2": [[4, 2], [8, 4], [10, 5], [16, 8]],
+                        "3": [[10, 5, 3], [16, 8, 4]]
+                    }
+                },
+                "score_mix_min_weight": {"type": "float", "low": 0.0, "high": 0.15},
+                "loss_weight_independence": {"type": "float", "low": 0.0, "high": 0.03},
+                "loss_weight_popularity": {"type": "float", "low": 0.0, "high": 0.08},
+                "hard_negative_ratio": {"type": "float", "low": 0.0, "high": 0.5},
+                "dice_sampler_margin": {"type": "float", "low": 10.0, "high": 100.0},
+                "use_popularity_head": {"type": "categorical", "choices": [true, false]},
+                "use_features": {"type": "categorical", "choices": [true, false]}
+            }
         },
-        "lr_scheduler": {
-          "type": "categorical",
-          "choices": [
-            "cosine",
-            "plateau",
-            "none"
-          ]
-        },
-        "lr_scheduler_factor": {
-          "type": "float",
-          "low": 0.3,
-          "high": 0.8
-        },
-        "grad_clip_norm": {
-          "type": "float",
-          "low": 0.5,
-          "high": 5.0
-        },
-        "interest_gnn_layers": {
-          "type": "int",
-          "low": 1,
-          "high": 2
-        },
-        "conformity_gnn_layers": {
-          "type": "int",
-          "low": 1,
-          "high": 3
-        },
-        "num_neighbors": {
-          "type": "fanout",
-          "choices_by_depth": {
-            "1": [
-              [
-                8
-              ],
-              [
-                12
-              ],
-              [
-                16
-              ]
-            ],
-            "2": [
-              [
-                4,
-                2
-              ],
-              [
-                6,
-                3
-              ],
-              [
-                8,
-                4
-              ],
-              [
-                10,
-                5
-              ],
-              [
-                16,
-                8
-              ]
-            ],
-            "3": [
-              [
-                10,
-                5,
-                3
-              ],
-              [
-                16,
-                8,
-                4
-              ]
-            ]
-          }
-        },
-        "dropout": {
-          "type": "float",
-          "low": 0.0,
-          "high": 0.3
-        },
-        "score_mix_min_weight": {
-          "type": "float",
-          "low": 0.0,
-          "high": 0.1
-        },
-        "loss_weight_independence": {
-          "type": "float",
-          "low": 0.0,
-          "high": 0.02
-        },
-        "loss_weight_contrastive": {
-          "type": "float",
-          "low": 0.0,
-          "high": 0.05
-        },
-        "loss_weight_popularity": {
-          "type": "float",
-          "low": 0.0,
-          "high": 0.05
-        },
-        "hard_negative_ratio": {
-          "type": "float",
-          "low": 0.0,
-          "high": 0.35
-        },
-        "dice_sampler_margin": {
-          "type": "float",
-          "low": 10.0,
-          "high": 80.0
+        "ucagnn-amazonbook-recovery": {
+            "description": "AmazonBook-only exploratory search focused on closing the LightGCN gap with U-CaGNN support, fan-out, and hard-negative knobs.",
+            "base_profile": "core-ucagnn-mainline",
+            "datasets": ["amazonbook"],
+            "objective": {"metric": "NDCG@40", "split": "val", "direction": "maximize"},
+            "max_epochs": 80,
+            "trials": 30,
+            "parameters": {
+                "lr": {"type": "float", "low": 0.0003, "high": 0.03, "log": true},
+                "weight_decay": {"type": "float", "low": 0.00000001, "high": 0.001, "log": true},
+                "dropout": {"type": "float", "low": 0.0, "high": 0.25},
+                "interest_gnn_layers": {"type": "int", "low": 1, "high": 2},
+                "conformity_gnn_layers": {"type": "int", "low": 1, "high": 2},
+                "num_neighbors": {
+                    "type": "fanout",
+                    "choices_by_depth": {"1": [[8], [16]], "2": [[6, 3], [8, 4], [10, 5], [16, 8]]}
+                },
+                "loss_weight_independence": {"type": "float", "low": 0.0, "high": 0.02},
+                "loss_weight_contrastive": {"type": "float", "low": 0.0, "high": 0.05},
+                "loss_weight_popularity": {"type": "float", "low": 0.0, "high": 0.05},
+                "hard_negative_ratio": {"type": "float", "low": 0.0, "high": 0.4},
+                "dice_sampler_margin": {"type": "float", "low": 10.0, "high": 80.0},
+                "use_features": {"type": "categorical", "choices": [true, false]}
+            }
         }
-      }
-    },
-    "ucagnn-kuairand-diagnostic": {
-      "description": "KuaiRand-only exploratory search focused on popularity, conformity, and feature sensitivity before promoting a formal diagnostic profile.",
-      "base_profile": "core-ucagnn-mainline",
-      "datasets": [
-        "kuairand1k"
-      ],
-      "objective": {
-        "metric": "NDCG@40",
-        "split": "val",
-        "direction": "maximize"
-      },
-      "max_epochs": 80,
-      "trials": 30,
-      "parameters": {
-        "lr": {
-          "type": "float",
-          "low": 0.0003,
-          "high": 0.02,
-          "log": true
-        },
-        "dropout": {
-          "type": "float",
-          "low": 0.0,
-          "high": 0.35
-        },
-        "interest_gnn_layers": {
-          "type": "int",
-          "low": 1,
-          "high": 2
-        },
-        "conformity_gnn_layers": {
-          "type": "int",
-          "low": 1,
-          "high": 3
-        },
-        "num_neighbors": {
-          "type": "fanout",
-          "choices_by_depth": {
-            "1": [
-              [
-                8
-              ],
-              [
-                16
-              ]
-            ],
-            "2": [
-              [
-                4,
-                2
-              ],
-              [
-                8,
-                4
-              ],
-              [
-                10,
-                5
-              ],
-              [
-                16,
-                8
-              ]
-            ],
-            "3": [
-              [
-                10,
-                5,
-                3
-              ],
-              [
-                16,
-                8,
-                4
-              ]
-            ]
-          }
-        },
-        "score_mix_min_weight": {
-          "type": "float",
-          "low": 0.0,
-          "high": 0.15
-        },
-        "loss_weight_independence": {
-          "type": "float",
-          "low": 0.0,
-          "high": 0.03
-        },
-        "loss_weight_popularity": {
-          "type": "float",
-          "low": 0.0,
-          "high": 0.08
-        },
-        "hard_negative_ratio": {
-          "type": "float",
-          "low": 0.0,
-          "high": 0.5
-        },
-        "dice_sampler_margin": {
-          "type": "float",
-          "low": 10.0,
-          "high": 100.0
-        },
-        "use_popularity_head": {
-          "type": "categorical",
-          "choices": [
-            true,
-            false
-          ]
-        },
-        "use_features": {
-          "type": "categorical",
-          "choices": [
-            true,
-            false
-          ]
-        }
-      }
-    },
-    "ucagnn-amazonbook-recovery": {
-      "description": "AmazonBook-only exploratory search focused on closing the LightGCN gap with U-CaGNN support, fan-out, and hard-negative knobs.",
-      "base_profile": "core-ucagnn-mainline",
-      "datasets": [
-        "amazonbook"
-      ],
-      "objective": {
-        "metric": "NDCG@40",
-        "split": "val",
-        "direction": "maximize"
-      },
-      "max_epochs": 80,
-      "trials": 30,
-      "parameters": {
-        "lr": {
-          "type": "float",
-          "low": 0.0003,
-          "high": 0.03,
-          "log": true
-        },
-        "weight_decay": {
-          "type": "float",
-          "low": 0.00000001,
-          "high": 0.001,
-          "log": true
-        },
-        "dropout": {
-          "type": "float",
-          "low": 0.0,
-          "high": 0.25
-        },
-        "interest_gnn_layers": {
-          "type": "int",
-          "low": 1,
-          "high": 2
-        },
-        "conformity_gnn_layers": {
-          "type": "int",
-          "low": 1,
-          "high": 2
-        },
-        "num_neighbors": {
-          "type": "fanout",
-          "choices_by_depth": {
-            "1": [
-              [
-                8
-              ],
-              [
-                16
-              ]
-            ],
-            "2": [
-              [
-                6,
-                3
-              ],
-              [
-                8,
-                4
-              ],
-              [
-                10,
-                5
-              ],
-              [
-                16,
-                8
-              ]
-            ]
-          }
-        },
-        "loss_weight_independence": {
-          "type": "float",
-          "low": 0.0,
-          "high": 0.02
-        },
-        "loss_weight_contrastive": {
-          "type": "float",
-          "low": 0.0,
-          "high": 0.05
-        },
-        "loss_weight_popularity": {
-          "type": "float",
-          "low": 0.0,
-          "high": 0.05
-        },
-        "hard_negative_ratio": {
-          "type": "float",
-          "low": 0.0,
-          "high": 0.4
-        },
-        "dice_sampler_margin": {
-          "type": "float",
-          "low": 10.0,
-          "high": 80.0
-        },
-        "use_features": {
-          "type": "categorical",
-          "choices": [
-            true,
-            false
-          ]
-        }
-      }
     }
-  }
 }
