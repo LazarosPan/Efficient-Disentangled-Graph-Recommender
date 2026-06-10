@@ -100,6 +100,7 @@ Read the SKILL.md files and choose which files that they point to are relevant f
 - `.agents/skills/numba/SKILL.md` - Numba JIT compilation guide and best practices.
 - `.agents/skills/causal-inference/SKILL.md` - key causal inference techniques and their implementation mechanics.
 - `.agents/skills/recsys/SKILL.md` - key recommendation techniques and their implementation mechanics.
+- `.agents/skills/graph-neural-networks/SKILL.md` - GNN architecture, training and optimization methods.
 - `.agents/skills/ucagnn-implementation/SKILL.md` - U-CaGNN implementation guide.
 
 ### Core project folders:
