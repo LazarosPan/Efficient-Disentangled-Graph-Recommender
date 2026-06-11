@@ -136,6 +136,50 @@ Quick validation uses larger tiny caps for sparse-positive Taobao and KuaiRand s
 
 `cagra_candidate_k` is evaluation-only. It is separate from `graph_policy="cagra_augmented"`, which changes the training graph itself.
 
+## CRRU reporting utility
+
+CRRU@K means Composite Resource-aware Recommendation Utility at K. It is the thesis-facing ranking utility used to compare completed formal and ablation runs when accuracy, popularity bias, and training resource cost all matter.
+
+CRRU is not a causal-effect estimator. CRRU itself is higher-is-better. Lower-cost raw quantities such as average popularity, VRAM, and seconds per epoch are inverted into higher-is-better sub-scores before the final score is computed.
+
+For each dataset and report section, metrics are min-max normalized over the rows in that section. Lower-cost quantities are inverted after normalization.
+
+$$
+\operatorname{Accuracy}@K =
+\operatorname{NDCG}@K^{0.50}
+\operatorname{Recall}@K^{0.35}
+\operatorname{Hit}@K^{0.15}
+$$
+
+$$
+\operatorname{Bias}@K =
+\operatorname{Pers}@K^{0.40}
+\left(1 - \operatorname{AvgPop}@K_n\right)^{0.60}
+$$
+
+$$
+\operatorname{Efficiency} =
+\left(1 - \log(1+\operatorname{VRAM})_n\right)^{0.50}
+\left(1 - \log(1+\operatorname{time/epoch})_n\right)^{0.50}
+$$
+
+$$
+\operatorname{CRRU}@K =
+\operatorname{Accuracy}@K^{0.55}
+\operatorname{Bias}@K^{0.30}
+\operatorname{Efficiency}^{0.15}
+$$
+
+The implementation uses dataset-local section-row min-max normalization with $\epsilon = 10^{-8}$:
+
+$$
+x_n = \frac{x - \min(x)}{\max(x) - \min(x) + \epsilon}
+$$
+
+The $\epsilon$ term is not a separate normalization method. It only prevents division by zero when every row in a dataset/report section has the same value and avoids exact zeros before fractional powers in the multiplicative CRRU formula. CRRU uses min-max rather than z-score because every term must stay bounded in `[0, 1]`; z-scores can be negative or greater than one, which makes fractional-power products hard to interpret and sometimes invalid.
+
+For Optuna search, the code uses `ValidationOnlineCRRU@20_40`: an online validation proxy with the same CRRU components and exponent structure, averaged over K=20 and K=40. NDCG, Recall, Hit, and Personalization are already bounded validation metrics. Average popularity, peak VRAM, and seconds per epoch use deterministic trial-local lower-cost transforms. Exact report-style CRRU is recomputed after completed rows exist.
+
 ## Checkpoints and identity
 
 | Identity | Purpose |

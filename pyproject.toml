@@ -57,6 +57,8 @@ download-datasets = "scripts.download_pyg_datasets:main"
 cleanup-experiment-artifacts = "scripts.cleanup_experiment_artifacts:main"
 prune-checkpoints = "scripts.prune_checkpoints:main"
 query-results = "scripts.query_results:main"
+report-optuna-optimization = "scripts.report_optuna_optimization:main"
+export-optuna-figures = "scripts.export_optuna_figures:main"
 reset-experiment-db = "scripts.reset_experiment_db:main"
 
 [tool.setuptools]

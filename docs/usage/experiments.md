@@ -28,18 +28,22 @@ uv run formal-run --profile <slug-from-list-profiles> --overwrite-checkpoint
 
 ```bash
 uv run search-experiments --list-spaces
-uv run search-experiments --space ucagnn-core-optimization --trials 40
-uv run search-experiments --space ucagnn-core-optimization --dataset amazonbook --trials 20
+uv run search-experiments --space ucagnn-core-optimization --trials 12
+uv run search-experiments --space ucagnn-core-optimization --dataset amazonbook --trials 12
 uv run search-experiments --space ucagnn-core-optimization --trials 1 --dry-run
 uv run search-experiments --space ucagnn-core-optimization --dataset amazonbook --trials 5 --mlflow
+uv run report-optuna-optimization
+uv run export-optuna-figures
+uv run optuna-dashboard sqlite:///results/optuna_studies.db
 ```
 
 - `search-experiments` is U-CaGNN-only. It resolves `experiments/search_spaces.json` entries via each `base_profile`, samples existing `UCaGNNConfig` fields, and still executes each trial through `build_config()` and `run_experiment()`.
-- The Optuna objective is validation `NDCG@40` by default. Search runs skip final test evaluation; test metrics remain reserved for promoted confirmation profiles.
+- The canonical search space is `ucagnn-core-optimization`. Without `--dataset`, each Optuna trial evaluates every core thesis dataset and averages the validation objective. With `--dataset`, `--trials N` means N independent trials for that dataset, which is the right path for dataset-specific hyperparameters.
+- The Optuna objective is validation `ValidationOnlineCRRU@20_40` by default. This is an online proxy with the same component/exponent structure as report CRRU, including VRAM and seconds-per-epoch efficiency penalties; exact report CRRU still uses dataset-local section-row min-max after rows exist. Search runs skip final test evaluation; test metrics remain reserved for promoted confirmation profiles.
 - Search runs do not save or resume checkpoints. They also keep MLflow disabled by default to avoid large exploratory artifacts; pass `--mlflow` only when you explicitly want MLflow mirroring for a short search.
 - Optuna search spaces are configured separately from formal profiles: use `experiments/search_spaces.json` for tuning spaces and `experiments/experiment_catalog.json` for deterministic formal profiles/recipes.
-- Trial runs are grouped with `batch_id=optuna-<study>-trial-<number>` and `profile_name=<search-space>`. The sampled values are present in each experiment `config_json` and mirrored to the SQLite `optuna_search_trials` table.
-- `uv run query-results` writes `results/query_results.md` with a dedicated Optuna section, so formal runs, ablations, and tuning summaries are visible from one report.
+- Trial runs are grouped with `batch_id=optuna-<study>-trial-<number>` and `profile_name=<search-space>`. The sampled values are present in each experiment `config_json`, while trial-level search metadata, importances, and failures are owned by Optuna RDB storage (`results/optuna_studies.db`), not the thesis SQLite database.
+- `uv run report-optuna-optimization` writes `results/optuna_optimization.md`; `uv run export-optuna-figures` writes PNG diagnostics; `uv run optuna-dashboard sqlite:///results/optuna_studies.db` opens the interactive dashboard.
 - Search spaces are exploratory. Promote selected winners manually into named formal profiles before running full 200-epoch confirmation and reporting test results.
 
 ## Checkpoint Retention

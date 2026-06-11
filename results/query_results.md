@@ -9,6 +9,7 @@ THESIS TEST RESULTS — formal and ablation runs only (full-data only)
 Database: /home/lazar/Documents/MSc_Data_Science/MSc_Thesis/Causal-Embeddings-for-Recommendations/results/thesis_experiments.db
 
 CRRU@K — Composite Resource-aware Recommendation Utility at K
+  Direction: higher is better; AvgPop, VRAM, and time/epoch are inverted.
   Accuracy@K = NDCG@K^0.50 * Recall@K^0.35 * Hit@K^0.15
   Bias@K     = Pers@K^0.40 * (1-AvgPop@K_n)^0.60
   Efficiency = (1-log(1+VRAM)_n)^0.50 * (1-log(1+time/epoch)_n)^0.50
@@ -507,69 +508,11 @@ movielens1m    | no_independence      | learned  | 20-10      |   0.0667 |     0
   Experiment: movielens1m_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_no_independence_seed13
 
 ================================================================================
-OPTUNA U-CaGNN SEARCH TRIALS - validation-only exploratory tuning
+OPTUNA U-CaGNN SEARCH REPORT
 ================================================================================
-Objective values are validation metrics. Promote selected configs into formal profiles before test reporting.
-Study                  | Space                        | Trial | Dataset        | State     |      Obj |  DataObj |  AvgPop@40 |     Time |     VRAM | Params
-------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-ucagnn-core-optimiz... | ucagnn-core-optimization     |    13 | amazonbook     | completed |   0.0547 |   0.0209 |     0.0315 |   196.3s |   5158MB | lr=0.003332, weight_decay=0.0001668, lr_scheduler=none, num_neighbors=[...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11737 | batch=optuna-ucagnn-core-optimization-all-trial-13 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |    14 | amazonbook     | completed |   0.0546 |   0.0204 |     0.0401 |   196.3s |   5158MB | lr=0.0005305, weight_decay=2.919e-07, lr_scheduler=cosine, num_neighbor...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11741 | batch=optuna-ucagnn-core-optimization-all-trial-14 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |     1 | amazonbook     | completed |   0.0535 |   0.0197 |     0.0411 |   189.4s |   5170MB | lr=0.0005566, weight_decay=2.94e-07, lr_scheduler=plateau, num_neighbor...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11725 | batch=optuna-ucagnn-core-optimization-all-trial-1 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |     0 | amazonbook     | completed |   0.0529 |   0.0212 |     0.0476 |   198.0s |   5158MB | lr=0.0005914, weight_decay=1.671e-05, lr_scheduler=none, num_neighbors=...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11721 | batch=optuna-ucagnn-core-optimization-all-trial-0 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |     5 | amazonbook     | completed |   0.0489 |   0.0206 |     0.0299 |   407.2s |   5160MB | lr=0.01069, weight_decay=2.412e-05, lr_scheduler=none, num_neighbors=[1...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11729 | batch=optuna-ucagnn-core-optimization-all-trial-5 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |    18 | amazonbook     | completed |   0.0485 |   0.0242 |     0.0528 |   207.3s |   5162MB | lr=0.0007359, weight_decay=4.134e-06, lr_scheduler=plateau, num_neighbo...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11745 | batch=optuna-ucagnn-core-optimization-all-trial-18 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |    10 | amazonbook     | completed |   0.0456 |   0.0203 |     0.0366 |   190.1s |   5154MB | lr=0.0008113, weight_decay=3.138e-06, lr_scheduler=cosine, num_neighbor...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11733 | batch=optuna-ucagnn-core-optimization-all-trial-10 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |    24 | amazonbook     | completed |        - |   0.0254 |     0.0972 |   198.1s |   5152MB | lr=0.02136, weight_decay=1.507e-06, lr_scheduler=plateau, num_neighbors...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11749 | batch=optuna-ucagnn-core-optimization-all-trial-24 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |    13 | kuairand1k     | completed |   0.0547 |   0.0063 |     0.0543 |  2789.7s |  15728MB | lr=0.003332, weight_decay=0.0001668, lr_scheduler=none, num_neighbors=[...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11740 | batch=optuna-ucagnn-core-optimization-all-trial-13 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |    14 | kuairand1k     | completed |   0.0546 |   0.0083 |     0.0516 |  5599.0s |  15842MB | lr=0.0005305, weight_decay=2.919e-07, lr_scheduler=cosine, num_neighbor...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11744 | batch=optuna-ucagnn-core-optimization-all-trial-14 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |     1 | kuairand1k     | completed |   0.0535 |   0.0046 |     0.0311 |  3715.6s |  15818MB | lr=0.0005566, weight_decay=2.94e-07, lr_scheduler=plateau, num_neighbor...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11728 | batch=optuna-ucagnn-core-optimization-all-trial-1 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |     0 | kuairand1k     | completed |   0.0529 |   0.0037 |     0.0142 |  3355.6s |  15752MB | lr=0.0005914, weight_decay=1.671e-05, lr_scheduler=none, num_neighbors=...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11724 | batch=optuna-ucagnn-core-optimization-all-trial-0 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |     5 | kuairand1k     | completed |   0.0489 |   0.0085 |     0.0433 |  3357.3s |  15536MB | lr=0.01069, weight_decay=2.412e-05, lr_scheduler=none, num_neighbors=[1...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11732 | batch=optuna-ucagnn-core-optimization-all-trial-5 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |    18 | kuairand1k     | completed |   0.0485 |   0.0091 |     0.0299 |  4296.2s |  13694MB | lr=0.0007359, weight_decay=4.134e-06, lr_scheduler=plateau, num_neighbo...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11748 | batch=optuna-ucagnn-core-optimization-all-trial-18 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |    10 | kuairand1k     | completed |   0.0456 |   0.0105 |     0.0399 |  4129.1s |  15544MB | lr=0.0008113, weight_decay=3.138e-06, lr_scheduler=cosine, num_neighbor...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11736 | batch=optuna-ucagnn-core-optimization-all-trial-10 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |    24 | kuairec_v2     | completed |        - |   0.0814 |     0.4001 |   291.1s |  10620MB | lr=0.02136, weight_decay=1.507e-06, lr_scheduler=plateau, num_neighbors...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11751 | batch=optuna-ucagnn-core-optimization-all-trial-24 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |    13 | kuairec_v2     | completed |   0.0547 |   0.0892 |     0.2979 |   506.6s |  10626MB | lr=0.003332, weight_decay=0.0001668, lr_scheduler=none, num_neighbors=[...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11739 | batch=optuna-ucagnn-core-optimization-all-trial-13 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |    14 | kuairec_v2     | completed |   0.0546 |   0.0906 |     0.3135 |   604.0s |  10628MB | lr=0.0005305, weight_decay=2.919e-07, lr_scheduler=cosine, num_neighbor...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11743 | batch=optuna-ucagnn-core-optimization-all-trial-14 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |     1 | kuairec_v2     | completed |   0.0535 |   0.0895 |     0.3243 |   503.2s |  11792MB | lr=0.0005566, weight_decay=2.94e-07, lr_scheduler=plateau, num_neighbor...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11727 | batch=optuna-ucagnn-core-optimization-all-trial-1 | status=completed
-ucagnn-core-optimiz... | ucagnn-core-optimization     |     0 | kuairec_v2     | completed |   0.0529 |   0.0831 |     0.3233 |   475.9s |  10636MB | lr=0.0005914, weight_decay=1.671e-05, lr_scheduler=none, num_neighbors=...
-  Objective:  val NDCG@40 (maximize)
-  Experiment: id=11723 | batch=optuna-ucagnn-core-optimization-all-trial-0 | status=completed
+Optuna search trials are reported from the Optuna RDB storage, not mirrored through the thesis experiment database.
+Report: /home/lazar/Documents/MSc_Data_Science/MSc_Thesis/Causal-Embeddings-for-Recommendations/results/optuna_optimization.md
+Generate: `uv run scripts/report_optuna_optimization.py`
+Figures: `uv run scripts/export_optuna_figures.py`
+Dashboard: `uv run optuna-dashboard sqlite:///results/optuna_studies.db`
 ```
