@@ -15,7 +15,7 @@ import optuna
 from experiments.run_search import DEFAULT_STORAGE
 from optuna.importance import FanovaImportanceEvaluator, get_param_importances
 from optuna.trial import FrozenTrial, TrialState
-from src.utils.crru import VALIDATION_ONLINE_CRRU_METRIC
+from src.utils.crru import VALIDATION_ONLINE_CRRU_K_METRICS, VALIDATION_ONLINE_CRRU_METRIC
 from src.utils.project_paths import RESULTS_DIR
 
 OPTUNA_OPTIMIZATION_MARKDOWN_PATH = RESULTS_DIR / "optuna_optimization.md"
@@ -54,6 +54,8 @@ DATASET_METRICS = (
     "HitRatio@40",
     "Personalization@40",
     "AveragePopularity@40",
+    VALIDATION_ONLINE_CRRU_K_METRICS[20],
+    VALIDATION_ONLINE_CRRU_K_METRICS[40],
     VALIDATION_ONLINE_CRRU_METRIC,
 )
 
@@ -282,8 +284,9 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
                 "### Best trial dataset metrics",
                 "",
                 "| Dataset | Objective | NDCG@20 | Recall@20 | Hit@20 | Pers@20 | AvgPop@20 | "
-                "NDCG@40 | Recall@40 | Hit@40 | Pers@40 | AvgPop@40 | ValCRRU |",
-                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+                "NDCG@40 | Recall@40 | Hit@40 | Pers@40 | AvgPop@40 | "
+                "ValCRRU@20 | ValCRRU@40 | ValCRRU@20_40 |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
             ],
         )
         for dataset in datasets:

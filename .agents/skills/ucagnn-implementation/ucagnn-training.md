@@ -178,7 +178,9 @@ $$
 
 The $\epsilon$ term is not a separate normalization method. It only prevents division by zero when every row in a dataset/report section has the same value and avoids exact zeros before fractional powers in the multiplicative CRRU formula. CRRU uses min-max rather than z-score because every term must stay bounded in `[0, 1]`; z-scores can be negative or greater than one, which makes fractional-power products hard to interpret and sometimes invalid.
 
-For Optuna search, the code uses `ValidationOnlineCRRU@20_40`: an online validation proxy with the same CRRU components and exponent structure, averaged over K=20 and K=40. NDCG, Recall, Hit, and Personalization are already bounded validation metrics. Average popularity, peak VRAM, and seconds per epoch use deterministic trial-local lower-cost transforms. Exact report-style CRRU is recomputed after completed rows exist.
+For Optuna search, the code uses `ValidationOnlineCRRU@20_40`: an online validation proxy with the same CRRU components and exponent structure, averaged over K=20 and K=40. Future trials also store `ValidationOnlineCRRU@20` and `ValidationOnlineCRRU@40` as dataset-scoped Optuna attributes for reporting. NDCG, Recall, Hit, and Personalization are already bounded validation metrics. Average popularity, peak VRAM, and seconds per epoch use deterministic trial-local lower-cost transforms. Exact report-style CRRU is recomputed after completed rows exist.
+
+The canonical Optuna space keeps interest propagation at 1-2 layers and searches conformity propagation at 1-3 layers. Three-hop conformity is included because historical completed trials favored branch depth 3; four-hop propagation is excluded from the canonical 17-18 hour budget until a separate deep-diagnostic run shows it is worth the extra memory, runtime, and over-smoothing risk.
 
 ## Checkpoints and identity
 

@@ -33,6 +33,10 @@ from collections.abc import Mapping, Sequence
 
 CRRU_EPSILON = 1e-8
 VALIDATION_ONLINE_CRRU_METRIC = "ValidationOnlineCRRU@20_40"
+VALIDATION_ONLINE_CRRU_K_METRICS = {
+    20: "ValidationOnlineCRRU@20",
+    40: "ValidationOnlineCRRU@40",
+}
 CRRU_REPORT_FORMULA_LINES = (
     "CRRU@K — Composite Resource-aware Recommendation Utility at K",
     "  Direction: higher is better; AvgPop, VRAM, and time/epoch are inverted.",

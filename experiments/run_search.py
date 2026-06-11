@@ -23,7 +23,12 @@ from src.utils.cli_parsers import (
     resolve_benchmark_datasets,
 )
 from src.utils.config import BENCHMARK_CONFIG_FIELDS, UCaGNNConfig
-from src.utils.crru import VALIDATION_ONLINE_CRRU_METRIC, compute_validation_online_crru_objective
+from src.utils.crru import (
+    VALIDATION_ONLINE_CRRU_K_METRICS,
+    VALIDATION_ONLINE_CRRU_METRIC,
+    compute_validation_online_crru_for_k,
+    compute_validation_online_crru_objective,
+)
 from src.utils.experiment_logger import ExperimentLogger
 from src.utils.project_paths import THESIS_DB_PATH
 
@@ -709,6 +714,14 @@ def _set_trial_attrs_from_result(
         metric_name=objective.metric,
         direction=objective.direction,
     )
+    if objective.metric == VALIDATION_ONLINE_CRRU_METRIC:
+        for k, metric_name in VALIDATION_ONLINE_CRRU_K_METRICS.items():
+            best_val_metrics[metric_name] = compute_validation_online_crru_for_k(
+                best_val_metrics,
+                k=k,
+                peak_vram_mb=result.get("peak_vram_mb"),
+                epoch_time_s=_result_epoch_time_s(result),
+            )
     prefix = f"{dataset}."
     trial.set_user_attr(prefix + "exp_id", result.get("exp_id"))
     trial.set_user_attr(prefix + "canonical_name", result.get("canonical_name"))
@@ -728,6 +741,7 @@ def _set_trial_attrs_from_result(
         "HitRatio@40",
         "Personalization@40",
         "AveragePopularity@40",
+        *VALIDATION_ONLINE_CRRU_K_METRICS.values(),
         VALIDATION_ONLINE_CRRU_METRIC,
     ):
         if metric_name in best_val_metrics:

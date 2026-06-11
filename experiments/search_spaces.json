@@ -1,7 +1,7 @@
 {
     "search_spaces": {
         "ucagnn-core-optimization": {
-            "description": "Canonical discrete Optuna screen for U-CaGNN. Without --dataset, each trial evaluates all core thesis datasets and averages the objective. With --dataset, --trials N means N independent trials for that dataset. Promote selected winners manually into formal profiles before test reporting.",
+            "description": "Canonical discrete Optuna screen for U-CaGNN. Without --dataset, each trial evaluates all core thesis datasets and averages the objective. With --dataset, --trials N means N independent trials for that dataset. Interest depth stays shallow; conformity depth includes 3 because historical completed trials favored it. Four-hop depth is excluded from this budgeted canonical search until a separate diagnostic justifies it. Promote selected winners manually into formal profiles before test reporting.",
             "base_profile": "core-ucagnn-mainline",
             "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
             "objective": {
@@ -40,13 +40,14 @@
                 "lr_scheduler": {"type": "categorical", "choices": ["none", "cosine", "plateau"]},
                 "lr_scheduler_factor": {"type": "grid_float", "low": 0.3, "high": 0.8, "step": 0.1},
                 "grad_clip_norm": {"type": "grid_float", "low": 0.5, "high": 5.0, "step": 0.5},
-                "interest_gnn_layers": {"type": "int", "low": 1, "high": 2},
-                "conformity_gnn_layers": {"type": "int", "low": 1, "high": 2},
+                "interest_gnn_layers": {"type": "int", "low": 1, "high": 3},
+                "conformity_gnn_layers": {"type": "int", "low": 1, "high": 3},
                 "num_neighbors": {
                     "type": "fanout",
                     "choices_by_depth": {
                         "1": [[8], [12], [16]],
-                        "2": [[4, 2], [6, 3], [8, 4], [10, 5], [16, 8]]
+                        "2": [[4, 2], [6, 3], [8, 4], [10, 5], [16, 8]],
+                        "3": [[5, 3, 2], [8, 4, 2], [10, 5, 3], [16, 8, 4]]
                     }
                 },
                 "dropout": {"type": "grid_float", "low": 0.0, "high": 0.3, "step": 0.05},
