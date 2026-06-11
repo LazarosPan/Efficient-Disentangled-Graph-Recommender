@@ -11,6 +11,7 @@ import math
 import traceback
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,7 @@ from src.utils.cli_parsers import (
     resolve_benchmark_datasets,
 )
 from src.utils.config import BENCHMARK_CONFIG_FIELDS, UCaGNNConfig
+from src.utils.crru import VALIDATION_ONLINE_CRRU_METRIC, compute_validation_online_crru_objective
 from src.utils.experiment_logger import ExperimentLogger
 from src.utils.project_paths import THESIS_DB_PATH
 
@@ -42,7 +44,7 @@ from experiments.run_experiment import (
 logger = logging.getLogger("ucagnn.search")
 
 DEFAULT_STORAGE = "sqlite:///results/optuna_studies.db"
-DEFAULT_OBJECTIVE_METRIC = "NDCG@40"
+DEFAULT_OBJECTIVE_METRIC = VALIDATION_ONLINE_CRRU_METRIC
 DEFAULT_OBJECTIVE_SPLIT = "val"
 DEFAULT_MAX_EPOCHS = 80
 DEFAULT_TRIALS = 40
@@ -68,7 +70,7 @@ SEARCH_PARAMETER_FIELDS = frozenset(
         "use_features",
     },
 )
-SUPPORTED_PARAMETER_TYPES = frozenset(("float", "int", "categorical", "fanout"))
+SUPPORTED_PARAMETER_TYPES = frozenset(("float", "grid_float", "int", "categorical", "fanout"))
 TRIAL_ATTRIBUTE_TRAIN_METRICS = (
     "training_time_s",
     "peak_vram_mb",
@@ -188,6 +190,51 @@ def _validate_numeric_parameter(field_name: str, spec: Mapping[str, Any]) -> Non
         raise ValueError(f"parameters.{field_name}.step must be > 0 when provided.")
 
 
+def _decimal_grid_value(value: Decimal) -> float:
+    """Return a stable float for a human-declared grid point."""
+    return float(format(value.normalize(), "f"))
+
+
+def _expand_grid_float_choices(field_name: str, spec: Mapping[str, Any]) -> list[float]:
+    """Expand one or more inclusive linear float-grid segments."""
+    raw_segments = spec.get("segments")
+    if raw_segments is None:
+        raw_segments = [spec]
+    if not isinstance(raw_segments, list) or not raw_segments:
+        raise ValueError(f"parameters.{field_name}.segments must be a non-empty list.")
+
+    choices: list[float] = []
+    seen: set[str] = set()
+    for raw_segment in raw_segments:
+        segment = _require_mapping(
+            raw_segment,
+            field_name=f"parameters.{field_name}.segments[]",
+        )
+        if not {"low", "high", "step"}.issubset(segment):
+            raise ValueError(
+                f"parameters.{field_name} grid segments must define low, high, and step.",
+            )
+        low = Decimal(str(segment["low"]))
+        high = Decimal(str(segment["high"]))
+        step = Decimal(str(segment["step"]))
+        if low > high:
+            raise ValueError(f"parameters.{field_name}.low must be <= high.")
+        if step <= 0:
+            raise ValueError(f"parameters.{field_name}.step must be > 0.")
+
+        current = low
+        while current <= high:
+            label = format(current.normalize(), "f")
+            if label not in seen:
+                seen.add(label)
+                choices.append(_decimal_grid_value(current))
+            current += step
+
+    if not choices:
+        raise ValueError(f"parameters.{field_name} grid must produce at least one value.")
+    return choices
+
+
 def _validate_categorical_parameter(field_name: str, spec: Mapping[str, Any]) -> None:
     """Validate a categorical Optuna parameter spec."""
     choices = spec.get("choices")
@@ -239,6 +286,8 @@ def _validate_parameter_specs(parameters: Mapping[str, Any]) -> dict[str, dict[s
             )
         if parameter_type in {"float", "int"}:
             _validate_numeric_parameter(field_name, spec)
+        elif parameter_type == "grid_float":
+            _expand_grid_float_choices(field_name, spec)
         elif parameter_type == "categorical":
             _validate_categorical_parameter(field_name, spec)
         elif parameter_type == "fanout":
@@ -474,6 +523,12 @@ def _suggest_parameter_value(
             log=bool(spec.get("log", False)),
             step=float(spec["step"]) if "step" in spec else None,
         )
+    if parameter_type == "grid_float":
+        return _suggest_categorical_value(
+            trial,
+            field_name,
+            _expand_grid_float_choices(field_name, spec),
+        )
     if parameter_type == "int":
         return trial.suggest_int(
             field_name,
@@ -536,6 +591,8 @@ def suggest_trial_overrides(
     for field_name, spec in search_space.parameters.items():
         if str(spec["type"]).lower() == "fanout":
             continue
+        if field_name == "lr_scheduler_factor" and sampled.get("lr_scheduler") != "plateau":
+            continue
         sampled[field_name] = _suggest_parameter_value(trial, field_name, spec)
     for field_name, spec in search_space.parameters.items():
         if str(spec["type"]).lower() != "fanout":
@@ -547,6 +604,37 @@ def suggest_trial_overrides(
             sampled_overrides=sampled,
         )
     return sampled
+
+
+def _result_epoch_time_s(result: Mapping[str, Any]) -> float | None:
+    """Return the trial-level seconds-per-epoch value used by validation CRRU."""
+    avg_epoch_time_s = result.get("avg_epoch_time_s")
+    if avg_epoch_time_s is not None and float(avg_epoch_time_s) > 0:
+        return float(avg_epoch_time_s)
+
+    training_time_s = result.get("training_time_s")
+    epochs_stopped_at = result.get("epochs_stopped_at")
+    if training_time_s is not None and epochs_stopped_at:
+        return float(training_time_s) / float(epochs_stopped_at)
+    return None
+
+
+def _objective_metric_value(
+    metrics: Mapping[str, float],
+    metric_name: str,
+    *,
+    result: Mapping[str, Any],
+) -> float:
+    """Return the objective value for one validation epoch."""
+    if metric_name == VALIDATION_ONLINE_CRRU_METRIC:
+        return compute_validation_online_crru_objective(
+            metrics,
+            peak_vram_mb=result.get("peak_vram_mb"),
+            epoch_time_s=_result_epoch_time_s(result),
+        )
+    if metric_name not in metrics:
+        raise ValueError(f"Validation metrics did not include {metric_name}.")
+    return float(metrics[metric_name])
 
 
 def _best_validation_metrics(
@@ -565,17 +653,20 @@ def _best_validation_metrics(
 
     candidates: list[dict[str, float]] = []
     for raw_metrics in raw_val_metrics:
-        if not isinstance(raw_metrics, Mapping) or metric_name not in raw_metrics:
+        if not isinstance(raw_metrics, Mapping):
             continue
-        value = float(raw_metrics[metric_name])
+        metrics = {
+            str(metric): float(metric_value)
+            for metric, metric_value in raw_metrics.items()
+            if math.isfinite(float(metric_value))
+        }
+        try:
+            value = _objective_metric_value(metrics, metric_name, result=result)
+        except ValueError:
+            continue
         if math.isfinite(value):
-            candidates.append(
-                {
-                    str(metric): float(metric_value)
-                    for metric, metric_value in raw_metrics.items()
-                    if math.isfinite(float(metric_value))
-                },
-            )
+            metrics[metric_name] = value
+            candidates.append(metrics)
     if not candidates:
         raise ValueError(f"No finite validation {metric_name} values were produced.")
 
@@ -605,109 +696,6 @@ def _latest_train_metrics(exp_id: int) -> dict[str, float]:
         tracker.close()
 
 
-def _finite_float_or_none(value: object) -> float | None:
-    """Return finite numeric values as floats, otherwise None."""
-    if value is None:
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return None
-    return number if math.isfinite(number) else None
-
-
-def _branch_diagnostics_from_result(result: Mapping[str, Any] | None) -> dict[str, object]:
-    """Extract branch diagnostic metrics suitable for compact JSON storage."""
-    if result is None:
-        return {}
-    test_metrics = result.get("test_metrics", {})
-    if not isinstance(test_metrics, Mapping):
-        return {}
-
-    diagnostics: dict[str, object] = {}
-    for metric_name, value in test_metrics.items():
-        has_diagnostic_prefix = any(
-            str(metric_name).startswith(prefix_)
-            for prefix_ in TRIAL_ATTRIBUTE_TEST_PREFIXES
-        )
-        if has_diagnostic_prefix:
-            diagnostics[str(metric_name)] = _json_safe(value)
-    return diagnostics
-
-
-def _best_validation_metrics_or_empty(
-    result: Mapping[str, Any] | None,
-    *,
-    objective: ObjectiveSpec,
-) -> dict[str, float]:
-    """Return best validation metrics when a trial produced them."""
-    if result is None:
-        return {}
-    try:
-        return _best_validation_metrics(
-            result,
-            metric_name=objective.metric,
-            direction=objective.direction,
-        )
-    except ValueError:
-        return {}
-
-
-def _log_search_trial_row(
-    *,
-    search_space: SearchSpaceSpec,
-    study_name: str,
-    trial_number: int,
-    dataset: str,
-    batch_id: str,
-    sampled_overrides: Mapping[str, Any],
-    state: str,
-    result: Mapping[str, Any] | None = None,
-    dataset_objective_value: float | None = None,
-    objective_value: float | None = None,
-    failure_reason: str | None = None,
-) -> None:
-    """Mirror one Optuna trial/dataset result into the thesis SQLite database."""
-    best_val_metrics = _best_validation_metrics_or_empty(
-        result,
-        objective=search_space.objective,
-    )
-    exp_id = result.get("exp_id") if isinstance(result, Mapping) else None
-    tracker = ExperimentLogger(db_path=str(THESIS_DB_PATH))
-    try:
-        tracker.log_optuna_search_trial(
-            study_name=study_name,
-            search_space=search_space.name,
-            trial_number=trial_number,
-            dataset=dataset,
-            experiment_id=exp_id if isinstance(exp_id, int) else None,
-            batch_id=batch_id,
-            objective_metric=search_space.objective.metric,
-            objective_split=search_space.objective.split,
-            objective_direction=search_space.objective.direction,
-            objective_value=objective_value,
-            dataset_objective_value=dataset_objective_value,
-            params=dict(_json_safe(sampled_overrides)),
-            state=state,
-            failure_reason=failure_reason,
-            runtime_s=_finite_float_or_none(
-                result.get("training_time_s") if isinstance(result, Mapping) else None,
-            ),
-            peak_vram_mb=_finite_float_or_none(
-                result.get("peak_vram_mb") if isinstance(result, Mapping) else None,
-            ),
-            average_popularity_20=_finite_float_or_none(
-                best_val_metrics.get("AveragePopularity@20"),
-            ),
-            average_popularity_40=_finite_float_or_none(
-                best_val_metrics.get("AveragePopularity@40"),
-            ),
-            branch_diagnostics=_branch_diagnostics_from_result(result),
-        )
-    finally:
-        tracker.close()
-
-
 def _set_trial_attrs_from_result(
     trial: optuna.Trial,
     *,
@@ -729,7 +717,19 @@ def _set_trial_attrs_from_result(
     trial.set_user_attr(prefix + "training_time_s", result.get("training_time_s"))
     trial.set_user_attr(prefix + "peak_vram_mb", result.get("peak_vram_mb"))
 
-    for metric_name in ("NDCG@20", "NDCG@40", "AveragePopularity@20", "AveragePopularity@40"):
+    for metric_name in (
+        "NDCG@20",
+        "Recall@20",
+        "HitRatio@20",
+        "Personalization@20",
+        "AveragePopularity@20",
+        "NDCG@40",
+        "Recall@40",
+        "HitRatio@40",
+        "Personalization@40",
+        "AveragePopularity@40",
+        VALIDATION_ONLINE_CRRU_METRIC,
+    ):
         if metric_name in best_val_metrics:
             trial.set_user_attr(prefix + f"val.{metric_name}", best_val_metrics[metric_name])
 
@@ -743,8 +743,7 @@ def _set_trial_attrs_from_result(
     if isinstance(test_metrics, Mapping):
         for metric_name, value in test_metrics.items():
             has_diagnostic_prefix = any(
-                str(metric_name).startswith(prefix_)
-                for prefix_ in TRIAL_ATTRIBUTE_TEST_PREFIXES
+                str(metric_name).startswith(prefix_) for prefix_ in TRIAL_ATTRIBUTE_TEST_PREFIXES
             )
             if has_diagnostic_prefix:
                 trial.set_user_attr(prefix + f"test.{metric_name}", float(value))
@@ -775,6 +774,22 @@ def _trial_change_note(
     )
 
 
+def _record_trial_failure(
+    trial: optuna.Trial,
+    *,
+    stage: str,
+    exc: Exception,
+    dataset: str | None = None,
+) -> None:
+    """Store failure diagnostics in Optuna RDB before re-raising."""
+    failure_reason = f"{type(exc).__name__}: {exc}"
+    trial.set_user_attr("failure_stage", stage)
+    trial.set_user_attr("failure_reason", failure_reason)
+    if dataset is not None:
+        trial.set_user_attr(f"{dataset}.failure_stage", stage)
+        trial.set_user_attr(f"{dataset}.failure_reason", failure_reason)
+
+
 def _objective_factory(
     search_space: SearchSpaceSpec,
     *,
@@ -789,26 +804,44 @@ def _objective_factory(
     """Build the Optuna objective callable for one resolved search space."""
 
     def objective(trial: optuna.Trial) -> float:
-        base_config = build_search_config(
-            search_space,
-            dataset=search_space.datasets[0],
-            sampled_overrides=None,
-            device=device,
-            data_dir=data_dir,
-        )
-        sampled_overrides = suggest_trial_overrides(
-            trial,
-            search_space,
-            base_config=base_config,
-        )
         trial.set_user_attr("search_space", search_space.name)
         trial.set_user_attr("study_name", study_name)
-        trial.set_user_attr("sampled_params", _json_safe(sampled_overrides))
         trial.set_user_attr("objective_metric", search_space.objective.metric)
         trial.set_user_attr("objective_split", search_space.objective.split)
+        try:
+            base_config = build_search_config(
+                search_space,
+                dataset=search_space.datasets[0],
+                sampled_overrides=None,
+                device=device,
+                data_dir=data_dir,
+            )
+            sampled_overrides = suggest_trial_overrides(
+                trial,
+                search_space,
+                base_config=base_config,
+            )
+        except Exception as exc:
+            _record_trial_failure(trial, stage="suggest_overrides", exc=exc)
+            raise
+
+        trial.set_user_attr("sampled_params", _json_safe(sampled_overrides))
+
+        configs_by_dataset: dict[str, UCaGNNConfig] = {}
+        for dataset in search_space.datasets:
+            try:
+                configs_by_dataset[dataset] = build_search_config(
+                    search_space,
+                    dataset=dataset,
+                    sampled_overrides=sampled_overrides,
+                    device=device,
+                    data_dir=data_dir,
+                )
+            except Exception as exc:
+                _record_trial_failure(trial, stage="build_config", exc=exc, dataset=dataset)
+                raise
 
         scores: list[float] = []
-        completed_results: list[tuple[str, Mapping[str, Any], float]] = []
         batch_id = _trial_batch_id(study_name, trial.number)
         change_note = _trial_change_note(
             search_space=search_space,
@@ -816,15 +849,8 @@ def _objective_factory(
             trial_number=trial.number,
             sampled_overrides=sampled_overrides,
         )
-        for dataset in search_space.datasets:
+        for dataset, config in configs_by_dataset.items():
             try:
-                config = build_search_config(
-                    search_space,
-                    dataset=dataset,
-                    sampled_overrides=sampled_overrides,
-                    device=device,
-                    data_dir=data_dir,
-                )
                 result = run_experiment(
                     config,
                     preset=SEARCH_PRESET,
@@ -849,52 +875,15 @@ def _objective_factory(
                     result=result,
                     objective=search_space.objective,
                 )
-                _log_search_trial_row(
-                    search_space=search_space,
-                    study_name=study_name,
-                    trial_number=trial.number,
-                    dataset=dataset,
-                    batch_id=batch_id,
-                    sampled_overrides=sampled_overrides,
-                    state="completed",
-                    result=result,
-                    dataset_objective_value=score,
-                )
-                completed_results.append((dataset, result, score))
                 scores.append(score)
             except Exception as exc:
-                failure_reason = f"{type(exc).__name__}: {exc}"
-                trial.set_user_attr(f"{dataset}.failure_reason", failure_reason)
-                trial.set_user_attr("failure_reason", failure_reason)
-                _log_search_trial_row(
-                    search_space=search_space,
-                    study_name=study_name,
-                    trial_number=trial.number,
-                    dataset=dataset,
-                    batch_id=batch_id,
-                    sampled_overrides=sampled_overrides,
-                    state="failed",
-                    failure_reason=failure_reason,
-                )
+                _record_trial_failure(trial, stage="run_experiment", exc=exc, dataset=dataset)
                 raise
 
         if not scores:
             raise ValueError("Trial produced no dataset scores.")
         objective_value = float(sum(scores) / len(scores))
         trial.set_user_attr("objective_value", objective_value)
-        for dataset, result, score in completed_results:
-            _log_search_trial_row(
-                search_space=search_space,
-                study_name=study_name,
-                trial_number=trial.number,
-                dataset=dataset,
-                batch_id=batch_id,
-                sampled_overrides=sampled_overrides,
-                state="completed",
-                result=result,
-                dataset_objective_value=score,
-                objective_value=objective_value,
-            )
         return objective_value
 
     return objective
