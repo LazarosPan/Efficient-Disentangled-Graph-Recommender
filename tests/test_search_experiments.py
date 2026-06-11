@@ -92,12 +92,11 @@ class SearchSpaceValidationTests(unittest.TestCase):
 
     def test_dry_run_resolves_base_config_without_training(self) -> None:
         """Dry-run payloads should build valid configs and avoid run_experiment()."""
-        spec = search.resolve_search_space(
-            "ucagnn-amazonbook-recovery",
-            dataset="amazonbook",
-        )
-
         with patch.object(search, "run_experiment") as run_experiment:
+            spec = search.resolve_search_space(
+                "ucagnn-core-optimization",
+                dataset="amazonbook",
+            )
             payload = search.build_dry_run_payload(
                 spec,
                 study_name="dry-study",
@@ -184,6 +183,45 @@ class SearchSpaceValidationTests(unittest.TestCase):
         self.assertFalse(config.use_popularity_head)
         self.assertEqual(config.sample_interactions, 100)
         self.assertEqual(config.loader_max_rows, 100)
+
+    def test_grid_float_parameter_samples_from_declared_steps(self) -> None:
+        """Segmented float grids should keep human-readable search points."""
+        spec = search.SearchSpaceSpec(
+            name="tiny-grid",
+            description="test search space",
+            base_profile="core-ucagnn-mainline",
+            datasets=("amazonbook",),
+            objective=search.ObjectiveSpec(),
+            max_epochs=3,
+            trials=1,
+            config_overrides={
+                "sample_interactions": 100,
+                "loader_max_rows": 100,
+            },
+            parameters={
+                "lr": {
+                    "type": "grid_float",
+                    "low": 0.0001,
+                    "high": 0.0003,
+                    "step": 0.0001,
+                },
+            },
+        )
+        base_config = search.build_search_config(
+            spec,
+            dataset="amazonbook",
+            device="cpu",
+            data_dir="data",
+        )
+        fixed_trial = optuna.trial.FixedTrial({"lr": 0.0002})
+
+        sampled = search.suggest_trial_overrides(
+            fixed_trial,
+            spec,
+            base_config=base_config,
+        )
+
+        self.assertEqual(sampled["lr"], 0.0002)
 
     def test_fanout_suggestions_use_depth_specific_optuna_parameter_names(self) -> None:
         """Conditional fan-out choices should not reuse one dynamic categorical name."""
@@ -277,12 +315,52 @@ class SearchSpaceValidationTests(unittest.TestCase):
 
         self.assertEqual(objective, 0.3)
 
+    def test_validation_crru_objective_uses_validation_metrics_only(self) -> None:
+        """The composite search objective should not read test metrics."""
+        val_metrics = {
+            "NDCG@20": 0.10,
+            "Recall@20": 0.20,
+            "HitRatio@20": 0.30,
+            "Personalization@20": 0.50,
+            "AveragePopularity@20": 1.0,
+            "NDCG@40": 0.30,
+            "Recall@40": 0.40,
+            "HitRatio@40": 0.50,
+            "Personalization@40": 0.70,
+            "AveragePopularity@40": 3.0,
+        }
+        result = {
+            "history": {"val_metrics": [val_metrics]},
+            "training_time_s": 10.0,
+            "epochs_stopped_at": 2,
+            "peak_vram_mb": 512.0,
+            "test_metrics": {"NDCG@40": 0.99},
+        }
+
+        objective = search.extract_validation_objective(
+            result,
+            search.ObjectiveSpec(
+                metric=search.VALIDATION_ONLINE_CRRU_METRIC,
+                split="val",
+                direction="maximize",
+            ),
+        )
+
+        self.assertAlmostEqual(
+            objective,
+            search.compute_validation_online_crru_objective(
+                val_metrics,
+                peak_vram_mb=512.0,
+                epoch_time_s=5.0,
+            ),
+        )
+
 
 class SearchExecutionTests(unittest.TestCase):
     """Smoke the search runner without doing real model training."""
 
-    def test_one_trial_search_creates_storage_and_logs_search_metadata(self) -> None:
-        """The controller should create Optuna storage and mirror trial rows to SQLite."""
+    def test_one_trial_search_creates_storage_without_thesis_trial_mirror(self) -> None:
+        """The controller should keep Optuna trial metadata in Optuna storage."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_path = Path(tmpdir)
             optuna_db = tmp_path / "optuna.db"
@@ -354,7 +432,10 @@ class SearchExecutionTests(unittest.TestCase):
                     "peak_vram_mb": 0.0,
                     "history": {
                         "val_metrics": [
-                            {"NDCG@40": 0.42, "AveragePopularity@40": 1.1},
+                            {
+                                "NDCG@40": 0.42,
+                                "AveragePopularity@40": 1.1,
+                            },
                         ],
                     },
                     "test_metrics": {},
@@ -379,17 +460,13 @@ class SearchExecutionTests(unittest.TestCase):
                     LIMIT 1
                     """,
                 ).fetchone()
-                search_row = conn.execute(
+                optuna_table = conn.execute(
                     """
-                    SELECT study_name, search_space, trial_number, dataset,
-                           experiment_id, batch_id, objective_metric, objective_split,
-                           objective_direction, objective_value, dataset_objective_value,
-                           params_json, state, runtime_s, peak_vram_mb,
-                           average_popularity_40
-                    FROM optuna_search_trials
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """,
+                    SELECT 1
+                    FROM sqlite_master
+                    WHERE type = 'table'
+                      AND name = 'optuna_search_trials'
+                    """
                 ).fetchone()
 
             self.assertIsNotNone(row)
@@ -402,22 +479,14 @@ class SearchExecutionTests(unittest.TestCase):
             config_json = json.loads(row["config_json"])
             self.assertEqual(config_json["sample_interactions"], 50)
             self.assertEqual(config_json["loader_max_rows"], 50)
-            self.assertIsNotNone(search_row)
-            self.assertEqual(search_row["study_name"], "tiny-study")
-            self.assertEqual(search_row["search_space"], "tiny-search")
-            self.assertEqual(search_row["trial_number"], 0)
-            self.assertEqual(search_row["dataset"], "amazonbook")
-            self.assertEqual(search_row["batch_id"], "optuna-tiny-study-trial-0")
-            self.assertEqual(search_row["objective_metric"], "NDCG@40")
-            self.assertEqual(search_row["objective_split"], "val")
-            self.assertEqual(search_row["objective_direction"], "maximize")
-            self.assertEqual(search_row["state"], "completed")
-            self.assertAlmostEqual(search_row["objective_value"], 0.42)
-            self.assertAlmostEqual(search_row["dataset_objective_value"], 0.42)
-            self.assertAlmostEqual(search_row["runtime_s"], 0.1)
-            self.assertAlmostEqual(search_row["peak_vram_mb"], 0.0)
-            self.assertAlmostEqual(search_row["average_popularity_40"], 1.1)
-            self.assertEqual(json.loads(search_row["params_json"]), {"lr_scheduler": "cosine"})
+            self.assertIsNone(optuna_table)
+
+            study = optuna.load_study(study_name="tiny-study", storage=f"sqlite:///{optuna_db}")
+            trial = study.trials[0]
+            self.assertEqual(trial.user_attrs["search_space"], "tiny-search")
+            self.assertEqual(trial.user_attrs["objective_metric"], "NDCG@40")
+            self.assertAlmostEqual(trial.user_attrs["amazonbook.objective"], 0.42)
+            self.assertEqual(trial.user_attrs["sampled_params"], {"lr_scheduler": "cosine"})
 
 
 if __name__ == "__main__":
