@@ -13,7 +13,6 @@ Usage:
 from __future__ import annotations
 
 import json
-import math
 import os
 import sqlite3
 import sys
@@ -24,6 +23,11 @@ from pathlib import Path
 
 from experiments.ablation_configs import ABLATION_VARIANTS
 from src.utils.cli_parsers import build_query_results_parser
+from src.utils.crru import (
+    CRRU_REPORT_FORMULA_LINES,
+    compute_crru_efficiency_scores,
+    compute_crru_scores_for_k,
+)
 from src.utils.experiment_logger import RUNTIME_PROBE_METRIC_NAMES, ExperimentLogger
 from src.utils.experiment_naming import (
     build_canonical_experiment_name,
@@ -33,13 +37,13 @@ from src.utils.project_paths import RESULTS_DIR, THESIS_DB_PATH
 
 DB_PATH = Path(os.environ.get("THESIS_DB_PATH_OVERRIDE", str(THESIS_DB_PATH)))
 QUERY_RESULTS_MARKDOWN_PATH = RESULTS_DIR / "query_results.md"
+OPTUNA_OPTIMIZATION_MARKDOWN_PATH = RESULTS_DIR / "optuna_optimization.md"
 VIEW_TABLES = ExperimentLogger.VIEW_TABLES
 FORMAL_BATCH_PREFIX = "formal-"
 ABLATION_BATCH_PREFIX = "ablation-"
 ABLATION_VARIANT_ORDER = {
     variant_name: index for index, variant_name in enumerate(ABLATION_VARIANTS)
 }
-CRRU_EPSILON = 1e-8
 FINAL_FORMAL_PROFILE_NAMES = frozenset(
     {
         "core-ucagnn-mainline",
@@ -49,7 +53,6 @@ FINAL_FORMAL_PROFILE_NAMES = frozenset(
     }
 )
 RUNTIME_PROBE_COLUMNS = RUNTIME_PROBE_METRIC_NAMES
-OPTUNA_SEARCH_SECTION_LIMIT = 20
 
 
 def connect() -> sqlite3.Connection:
@@ -193,55 +196,6 @@ def _format_scoremix(config: dict[str, object]) -> str:
     return "learned" if bool(config.get("use_learned_score_mix", False)) else "fixed"
 
 
-def _truncate_label(value: str | None, width: int) -> str:
-    """Trim a long display label so table columns remain readable."""
-    if not value:
-        return "-"
-    if len(value) <= width:
-        return value
-    return f"{value[: width - 3]}..."
-
-
-def _format_param_value(value: object) -> str:
-    """Return one sampled Optuna parameter value for compact display."""
-    if isinstance(value, float):
-        return f"{value:.4g}"
-    if isinstance(value, list):
-        return json.dumps(value, separators=(",", ":"))
-    return str(value)
-
-
-def _format_params_summary(params_json: str | None, *, width: int = 74) -> str:
-    """Return a priority-ordered summary of sampled Optuna parameters."""
-    if not params_json:
-        return "-"
-    try:
-        params = json.loads(params_json)
-    except json.JSONDecodeError:
-        return _truncate_label(params_json, width)
-    if not isinstance(params, dict) or not params:
-        return "-"
-
-    priority = (
-        "lr",
-        "weight_decay",
-        "lr_scheduler",
-        "num_neighbors",
-        "interest_gnn_layers",
-        "conformity_gnn_layers",
-        "dropout",
-        "score_mix_min_weight",
-        "hard_negative_ratio",
-        "dice_sampler_margin",
-        "use_features",
-        "use_popularity_head",
-    )
-    ordered_keys = [key for key in priority if key in params]
-    ordered_keys.extend(sorted(key for key in params if key not in set(priority)))
-    parts = [f"{key}={_format_param_value(params[key])}" for key in ordered_keys]
-    return _truncate_label(", ".join(parts), width)
-
-
 def _query_report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Return completed full-data formal and ablation rows with test metrics."""
     summary_columns = {
@@ -356,58 +310,6 @@ def _query_report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                 """,
             ).fetchall()
         raise
-
-
-def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
-    """Return whether a table exists in the connected SQLite database."""
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table_name,),
-    ).fetchone()
-    return row is not None
-
-
-def _optuna_search_sort_key(row: sqlite3.Row) -> tuple[object, ...]:
-    """Return a sort key that ranks completed Optuna rows by their objective."""
-    objective = row["objective_value"]
-    if objective is None:
-        objective = row["dataset_objective_value"]
-    has_objective = objective is not None
-    state_rank = 0 if row["state"] == "completed" and has_objective else 1
-    numeric_objective = float(objective) if objective is not None else float("inf")
-    objective_rank = (
-        numeric_objective
-        if row["objective_direction"] == "minimize"
-        else -numeric_objective
-    )
-    return (
-        state_rank,
-        str(row["search_space"] or ""),
-        str(row["dataset"] or ""),
-        objective_rank,
-        -int(row["trial_number"]),
-    )
-
-
-def _query_optuna_search_rows(conn: sqlite3.Connection, *, n: int) -> list[sqlite3.Row]:
-    """Return Optuna search rows for the default report."""
-    if not _table_exists(conn, "optuna_search_trials"):
-        return []
-    rows = conn.execute(
-        """
-        SELECT t.id, t.study_name, t.search_space, t.trial_number, t.dataset,
-               t.experiment_id, t.batch_id, t.objective_metric, t.objective_split,
-               t.objective_direction, t.objective_value, t.dataset_objective_value,
-               t.params_json, t.state, t.failure_reason, t.runtime_s, t.peak_vram_mb,
-               t.average_popularity_20, t.average_popularity_40,
-               t.branch_diagnostics_json, t.updated_at,
-               e.status AS experiment_status
-        FROM optuna_search_trials t
-        LEFT JOIN experiments e ON e.id = t.experiment_id
-        ORDER BY t.updated_at DESC, t.id DESC
-        """,
-    ).fetchall()
-    return sorted(rows, key=_optuna_search_sort_key)[:n]
 
 
 def _is_formal_row(row: sqlite3.Row) -> bool:
@@ -855,63 +757,19 @@ def _print_ablation_rows(
     print()
 
 
-def _print_optuna_search_rows(rows: list[sqlite3.Row]) -> None:
-    """Print exploratory Optuna search rows from the thesis database."""
+def _print_optuna_report_pointer() -> None:
+    """Print where the dedicated Optuna report lives."""
     print("=" * 80)
-    print("OPTUNA U-CaGNN SEARCH TRIALS - validation-only exploratory tuning")
+    print("OPTUNA U-CaGNN SEARCH REPORT")
     print("=" * 80)
     print(
-        "Objective values are validation metrics. Promote selected configs into formal "
-        "profiles before test reporting."
+        "Optuna search trials are reported from the Optuna RDB storage, not mirrored "
+        "through the thesis experiment database."
     )
-    if not rows:
-        print("No Optuna search trial rows found.")
-        print()
-        return
-
-    print(
-        (
-            f"{'Study':<22} | {'Space':<28} | {'Trial':>5} | {'Dataset':<14} | "
-            f"{'State':<9} | {'Obj':>8} | {'DataObj':>8} | {'AvgPop@40':>10} | "
-            f"{'Time':>8} | {'VRAM':>8} | Params"
-        ),
-    )
-    print("-" * 168)
-    for row in rows:
-        objective_label = _format_metric_value(row["objective_value"])
-        dataset_objective_label = _format_metric_value(row["dataset_objective_value"])
-        params_label = _format_params_summary(row["params_json"])
-        print(
-            (
-                f"{_truncate_label(row['study_name'], 22):<22} | "
-                f"{_truncate_label(row['search_space'], 28):<28} | "
-                f"{row['trial_number']:>5} | "
-                f"{row['dataset'] or '-':<14} | "
-                f"{row['state'] or '-':<9} | "
-                f"{objective_label:>8} | "
-                f"{dataset_objective_label:>8} | "
-                f"{_format_metric_value(row['average_popularity_40']):>10} | "
-                f"{_format_duration(row['runtime_s']):>8} | "
-                f"{_format_vram(row['peak_vram_mb']):>8} | "
-                f"{params_label}"
-            ),
-        )
-        print(
-            (
-                f"  Objective:  {row['objective_split']} {row['objective_metric']} "
-                f"({row['objective_direction']})"
-            ),
-        )
-        if row["experiment_id"] is not None:
-            print(
-                (
-                    f"  Experiment: id={row['experiment_id']} | "
-                    f"batch={row['batch_id'] or '-'} | "
-                    f"status={row['experiment_status'] or '-'}"
-                ),
-            )
-        if row["failure_reason"]:
-            print(f"  Failure:    {row['failure_reason']}")
+    print(f"Report: {OPTUNA_OPTIMIZATION_MARKDOWN_PATH}")
+    print("Generate: `uv run scripts/report_optuna_optimization.py`")
+    print("Figures: `uv run scripts/export_optuna_figures.py`")
+    print("Dashboard: `uv run optuna-dashboard sqlite:///results/optuna_studies.db`")
     print()
 
 
@@ -1131,35 +989,6 @@ def show_bottleneck(conn: sqlite3.Connection, exp_id: int) -> None:
     )
 
 
-def _minmax_normalize(
-    values: list[float | None],
-    *,
-    lower_is_better: bool = False,
-) -> list[float]:
-    """Return clamped dataset-local min-max normalized values."""
-    cleaned = [v if v is not None else 0.0 for v in values]
-    lo, hi = min(cleaned), max(cleaned)
-    scale = (hi - lo) + CRRU_EPSILON
-    normalized = [(v - lo) / scale for v in cleaned]
-    if lower_is_better:
-        normalized = [1.0 - value for value in normalized]
-    return [max(CRRU_EPSILON, min(1.0, value)) for value in normalized]
-
-
-def _compute_efficiency_scores(rows: list[sqlite3.Row]) -> list[float]:
-    """Compute the shared CRRU efficiency utility for one dataset."""
-    vram_n = _minmax_normalize(
-        [math.log1p(r["peak_vram_mb"]) if r["peak_vram_mb"] else None for r in rows],
-        lower_is_better=True,
-    )
-    epoch_times_s = [_crru_epoch_time_s(r) for r in rows]
-    time_n = _minmax_normalize(
-        [math.log1p(epoch_time_s) if epoch_time_s else None for epoch_time_s in epoch_times_s],
-        lower_is_better=True,
-    )
-    return [(vram**0.50) * (time**0.50) for vram, time in zip(vram_n, time_n, strict=True)]
-
-
 def _crru_epoch_time_s(row: sqlite3.Row) -> float | None:
     """Return the per-epoch runtime used by CRRU's efficiency term."""
     avg_epoch_time_s = _row_value(row, "avg_epoch_time_s")
@@ -1183,38 +1012,6 @@ def _crru_epoch_time_s(row: sqlite3.Row) -> float | None:
     return training_time_s if training_time_s is not None and training_time_s > 0 else None
 
 
-def _compute_crru_for_k(
-    rows: list[sqlite3.Row],
-    *,
-    k: int,
-    efficiency_scores: list[float],
-) -> list[float]:
-    """Compute CRRU@K scores for one dataset."""
-    ndcg_n = _minmax_normalize([r[f"test_ndcg_{k}"] for r in rows])
-    recall_n = _minmax_normalize([r[f"test_recall_{k}"] for r in rows])
-    hit_n = _minmax_normalize([r[f"test_hit_ratio_{k}"] for r in rows])
-    pers_n = _minmax_normalize([r[f"test_personalization_{k}"] for r in rows])
-    avg_pop_n = _minmax_normalize(
-        [r[f"test_average_popularity_{k}"] for r in rows],
-        lower_is_better=True,
-    )
-
-    scores: list[float] = []
-    for ndcg, recall, hit, pers, avg_pop, efficiency in zip(
-        ndcg_n,
-        recall_n,
-        hit_n,
-        pers_n,
-        avg_pop_n,
-        efficiency_scores,
-        strict=True,
-    ):
-        accuracy = (ndcg**0.50) * (recall**0.35) * (hit**0.15)
-        bias = (pers**0.40) * (avg_pop**0.60)
-        scores.append((accuracy**0.55) * (bias**0.30) * (efficiency**0.15))
-    return scores
-
-
 def _compute_dataset_crru_scores(rows: list[sqlite3.Row]) -> dict[int, dict[int, float]]:
     """Return dataset-local CRRU@20 and CRRU@40 scores keyed by experiment ID."""
     scores_by_id: dict[int, dict[int, float]] = {}
@@ -1223,9 +1020,26 @@ def _compute_dataset_crru_scores(rows: list[sqlite3.Row]) -> dict[int, dict[int,
         rows_by_dataset[row["dataset"] or "-"].append(row)
 
     for dataset_rows in rows_by_dataset.values():
-        efficiency_scores = _compute_efficiency_scores(dataset_rows)
-        crru_20 = _compute_crru_for_k(dataset_rows, k=20, efficiency_scores=efficiency_scores)
-        crru_40 = _compute_crru_for_k(dataset_rows, k=40, efficiency_scores=efficiency_scores)
+        efficiency_scores = compute_crru_efficiency_scores(
+            [row["peak_vram_mb"] for row in dataset_rows],
+            [_crru_epoch_time_s(row) for row in dataset_rows],
+        )
+        crru_20 = compute_crru_scores_for_k(
+            ndcg=[row["test_ndcg_20"] for row in dataset_rows],
+            recall=[row["test_recall_20"] for row in dataset_rows],
+            hit=[row["test_hit_ratio_20"] for row in dataset_rows],
+            personalization=[row["test_personalization_20"] for row in dataset_rows],
+            average_popularity=[row["test_average_popularity_20"] for row in dataset_rows],
+            efficiency_scores=efficiency_scores,
+        )
+        crru_40 = compute_crru_scores_for_k(
+            ndcg=[row["test_ndcg_40"] for row in dataset_rows],
+            recall=[row["test_recall_40"] for row in dataset_rows],
+            hit=[row["test_hit_ratio_40"] for row in dataset_rows],
+            personalization=[row["test_personalization_40"] for row in dataset_rows],
+            average_popularity=[row["test_average_popularity_40"] for row in dataset_rows],
+            efficiency_scores=efficiency_scores,
+        )
         for row, score_20, score_40 in zip(
             dataset_rows,
             crru_20,
@@ -1239,13 +1053,8 @@ def _compute_dataset_crru_scores(rows: list[sqlite3.Row]) -> dict[int, dict[int,
 
 def _print_crru_summary() -> None:
     """Print the CRRU framing used by the default thesis summary."""
-    print("CRRU@K — Composite Resource-aware Recommendation Utility at K")
-    print("  Accuracy@K = NDCG@K^0.50 * Recall@K^0.35 * Hit@K^0.15")
-    print("  Bias@K     = Pers@K^0.40 * (1-AvgPop@K_n)^0.60")
-    print("  Efficiency = (1-log(1+VRAM)_n)^0.50 * (1-log(1+time/epoch)_n)^0.50")
-    print("  CRRU@K     = Accuracy@K^0.55 * Bias@K^0.30 * Efficiency^0.15")
-    print(f"  Normalization: dataset-local section-row min-max with epsilon={CRRU_EPSILON:g}")
-    print("  Note: CRRU is not a causal-effect estimator.")
+    for line in CRRU_REPORT_FORMULA_LINES:
+        print(line)
     print()
 
 
@@ -1274,8 +1083,7 @@ def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
             _select_top_formal_rows(final_formal_rows, n=n, crru_scores=crru_scores),
             crru_scores=crru_scores,
             title=(
-                "FINAL FORMAL FULL-DATA TEST RUNS — thesis profiles ranked by CRRU@20 "
-                "then CRRU@40"
+                "FINAL FORMAL FULL-DATA TEST RUNS — thesis profiles ranked by CRRU@20 then CRRU@40"
             ),
             empty_message="No completed final formal full-data runs with test metrics found.",
         )
@@ -1298,7 +1106,7 @@ def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
             crru_scores=crru_scores,
         )
 
-    _print_optuna_search_rows(_query_optuna_search_rows(conn, n=OPTUNA_SEARCH_SECTION_LIMIT))
+    _print_optuna_report_pointer()
 
 
 def _render_default_summary(conn: sqlite3.Connection, *, n: int = 20) -> str:
