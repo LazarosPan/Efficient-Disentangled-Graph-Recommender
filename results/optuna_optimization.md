@@ -43,20 +43,20 @@ Importance warning: fewer than 10 completed trials are available, so rankings ar
 
 | Rank | Parameter | Importance |
 |---:|---|---:|
-| 1 | `score_mix_min_weight` | 0.385684 |
-| 2 | `loss_weight_independence` | 0.109065 |
-| 3 | `grad_clip_norm` | 0.097822 |
-| 4 | `lr` | 0.082337 |
-| 5 | `loss_weight_popularity` | 0.065346 |
-| 6 | `hard_negative_ratio` | 0.058497 |
-| 7 | `loss_weight_contrastive` | 0.043184 |
-| 8 | `num_neighbors` | 0.036591 |
-| 9 | `lr_scheduler` | 0.035961 |
-| 10 | `lr_scheduler_factor` | 0.030370 |
-| 11 | `weight_decay` | 0.029157 |
-| 12 | `interest_gnn_layers` | 0.019111 |
-| 13 | `dice_sampler_margin` | 0.003658 |
-| 14 | `dropout` | 0.003216 |
+| 1 | `score_mix_min_weight` | 0.462784 |
+| 2 | `grad_clip_norm` | 0.113540 |
+| 3 | `lr_scheduler_factor` | 0.102061 |
+| 4 | `lr` | 0.058312 |
+| 5 | `loss_weight_independence` | 0.048531 |
+| 6 | `dice_sampler_margin` | 0.047580 |
+| 7 | `loss_weight_contrastive` | 0.042808 |
+| 8 | `num_neighbors` | 0.033540 |
+| 9 | `weight_decay` | 0.029049 |
+| 10 | `lr_scheduler` | 0.020351 |
+| 11 | `loss_weight_popularity` | 0.018661 |
+| 12 | `hard_negative_ratio` | 0.014737 |
+| 13 | `dropout` | 0.005678 |
+| 14 | `interest_gnn_layers` | 0.002367 |
 | 15 | `conformity_gnn_layers` | 0.000000 |
 
 ### Deterministic fANOVA importance sensitivity
@@ -111,3 +111,83 @@ Promote the top 3 completed trials into formal profiles only after checking data
 - Trial `13`: objective `0.054655`; params `lr=0.0033316463486321624, weight_decay=0.0001668305104500467, lr_scheduler=none, lr_scheduler_factor=0.6782271722318489, num_neighbors=[10,5,3], interest_gnn_layers=2, conformity_gnn_layers=3, dropout=0.056407298601787954, score_mix_min_weight=0.04609223578500779, loss_weight_independence=0.018210763985648457, loss_weight_contrastive=0.04252820052888093, loss_weight_popularity=0.018759925858591837, hard_negative_ratio=0.11028866050624442, dice_sampler_margin=52.18128063621856, grad_clip_norm=3.5041741729350835`
 - Trial `14`: objective `0.054615`; params `lr=0.0005305435251997633, weight_decay=2.9189899490610144e-07, lr_scheduler=cosine, lr_scheduler_factor=0.31883783477279504, num_neighbors=[10,5,3], interest_gnn_layers=2, conformity_gnn_layers=3, dropout=0.22555559509679202, score_mix_min_weight=0.05240945727149613, loss_weight_independence=0.01921396539489154, loss_weight_contrastive=0.04002751238457918, loss_weight_popularity=0.045333074007442735, hard_negative_ratio=0.2229156142531178, dice_sampler_margin=67.46741679564227, grad_clip_norm=2.1709143194259166`
 - Trial `1`: objective `0.053529`; params `lr=0.0005566208031279619, weight_decay=2.9404294889632233e-07, lr_scheduler=plateau, lr_scheduler_factor=0.5352849584479376, num_neighbors=[10,5,3], interest_gnn_layers=1, conformity_gnn_layers=3, dropout=0.2868315968038065, score_mix_min_weight=0.0726151572950548, loss_weight_independence=0.005948101933040131, loss_weight_contrastive=0.008207844167369832, loss_weight_popularity=0.018693825201241476, hard_negative_ratio=0.03997125949044938, dice_sampler_margin=61.297523383809185, grad_clip_norm=3.705573798357397`
+
+## Study: `ucagnn-core-optimization-all-val-validationonlinecrru-20-40`
+
+- Direction: `maximize`
+- Objective: `val ValidationOnlineCRRU@20_40`
+- Trials: 31 total, 30 completed, 0 failed, 0 running, 1 pruned
+
+### Best trial
+
+- Trial: `18`
+- Objective value: `0.165526`
+- Parameters: `lr=0.005, weight_decay=0.0001, lr_scheduler=plateau, lr_scheduler_factor=0.8, num_neighbors=[5,3,2], interest_gnn_layers=2, conformity_gnn_layers=3, dropout=0.0, score_mix_min_weight=0.08, loss_weight_independence=0.0175, loss_weight_contrastive=0.015, loss_weight_popularity=0.045, hard_negative_ratio=0.2, dice_sampler_margin=10.0, grad_clip_norm=2.0`
+
+### Best trial dataset metrics
+
+| Dataset | Objective | NDCG@20 | Recall@20 | Hit@20 | Pers@20 | AvgPop@20 | NDCG@40 | Recall@40 | Hit@40 | Pers@40 | AvgPop@40 | ValCRRU@20 | ValCRRU@40 | ValCRRU@20_40 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| amazonbook | 0.134095 | 0.022377 | 0.039884 | 0.111981 | 0.963740 | 0.093333 | 0.028522 | 0.061812 | 0.166290 | 0.947241 | 0.082885 | 0.121846 | 0.146344 | 0.134095 |
+| kuairand1k | 0.037463 | 0.007302 | 0.000311 | 0.111111 | 0.998438 | 0.021927 | 0.007080 | 0.000636 | 0.202202 | 0.997588 | 0.021738 | 0.034130 | 0.040796 | 0.037463 |
+| kuairec_v2 | 0.223264 | 0.129233 | 0.036118 | 0.777313 | 0.966431 | 0.428725 | 0.120338 | 0.056969 | 0.880574 | 0.956826 | 0.397166 | 0.214317 | 0.232211 | 0.223264 |
+| movielens1m | 0.267281 | 0.081507 | 0.118152 | 0.434060 | 0.969596 | 0.214245 | 0.106736 | 0.196425 | 0.588266 | 0.946759 | 0.198721 | 0.241148 | 0.293415 | 0.267281 |
+
+### Dashboard-like Optuna importances
+
+| Rank | Parameter | Importance |
+|---:|---|---:|
+| 1 | `loss_weight_independence` | 0.156818 |
+| 2 | `lr` | 0.146195 |
+| 3 | `score_mix_min_weight` | 0.129462 |
+| 4 | `conformity_gnn_layers` | 0.127081 |
+| 5 | `loss_weight_popularity` | 0.114906 |
+| 6 | `loss_weight_contrastive` | 0.078728 |
+| 7 | `lr_scheduler` | 0.078487 |
+| 8 | `grad_clip_norm` | 0.043112 |
+| 9 | `weight_decay` | 0.042775 |
+| 10 | `dice_sampler_margin` | 0.038665 |
+| 11 | `hard_negative_ratio` | 0.025989 |
+| 12 | `dropout` | 0.016509 |
+| 13 | `interest_gnn_layers` | 0.001274 |
+
+### Deterministic fANOVA importance sensitivity
+
+| Rank | Parameter | Importance |
+|---:|---|---:|
+| 1 | `conformity_gnn_layers` | 0.155532 |
+| 2 | `score_mix_min_weight` | 0.154892 |
+| 3 | `loss_weight_independence` | 0.146179 |
+| 4 | `lr_scheduler` | 0.095544 |
+| 5 | `loss_weight_contrastive` | 0.079401 |
+| 6 | `hard_negative_ratio` | 0.078098 |
+| 7 | `lr` | 0.069591 |
+| 8 | `loss_weight_popularity` | 0.066441 |
+| 9 | `dice_sampler_margin` | 0.064464 |
+| 10 | `weight_decay` | 0.039827 |
+| 11 | `dropout` | 0.033750 |
+| 12 | `grad_clip_norm` | 0.010980 |
+| 13 | `interest_gnn_layers` | 0.005301 |
+
+### Top 10 completed trials
+
+| Rank | Trial | Objective | Avg train time (s) | Avg peak VRAM (MB) | Parameters |
+|---:|---:|---:|---:|---:|---|
+| 1 | 18 | 0.165526 | 437.42 | 7173.5 | `lr=0.005, weight_decay=0.0001, lr_scheduler=plateau, lr_scheduler_factor=0.8, num_neighbors=[5,3,2], interest_gnn_layers=2, conformity_gnn_layers=3, dropout=0.0, score_mix_min_weight=0.08, loss_weight_independence=0.0175, loss_weight_contrastive=0.015, loss_weight_popularity=0.045, hard_negative_ratio=0.2, dice_sampler_margin=10.0, grad_clip_norm=2.0` |
+| 2 | 20 | 0.164048 | 409.96 | 7173.0 | `lr=0.004, weight_decay=3e-06, lr_scheduler=none, num_neighbors=[5,3,2], interest_gnn_layers=2, conformity_gnn_layers=3, dropout=0.0, score_mix_min_weight=0.08, loss_weight_independence=0.0175, loss_weight_contrastive=0.015, loss_weight_popularity=0.01, hard_negative_ratio=0.3, dice_sampler_margin=10.0, grad_clip_norm=3.0` |
+| 3 | 22 | 0.163554 | 413.65 | 7173.0 | `lr=0.004, weight_decay=1e-05, lr_scheduler=none, num_neighbors=[5,3,2], interest_gnn_layers=2, conformity_gnn_layers=3, dropout=0.0, score_mix_min_weight=0.08, loss_weight_independence=0.0175, loss_weight_contrastive=0.015, loss_weight_popularity=0.01, hard_negative_ratio=0.3, dice_sampler_margin=10.0, grad_clip_norm=3.0` |
+| 4 | 29 | 0.163354 | 426.10 | 7543.5 | `lr=0.004, weight_decay=3e-07, lr_scheduler=none, num_neighbors=[5,3,2], interest_gnn_layers=1, conformity_gnn_layers=3, dropout=0.15, score_mix_min_weight=0.09, loss_weight_independence=0.0175, loss_weight_contrastive=0.005, loss_weight_popularity=0.05, hard_negative_ratio=0.3, dice_sampler_margin=10.0, grad_clip_norm=1.5` |
+| 5 | 19 | 0.163061 | 395.41 | 7173.0 | `lr=0.004, weight_decay=0.0001, lr_scheduler=plateau, lr_scheduler_factor=0.8, num_neighbors=[5,3,2], interest_gnn_layers=2, conformity_gnn_layers=3, dropout=0.0, score_mix_min_weight=0.08, loss_weight_independence=0.0175, loss_weight_contrastive=0.015, loss_weight_popularity=0.01, hard_negative_ratio=0.3, dice_sampler_margin=10.0, grad_clip_norm=2.0` |
+| 6 | 16 | 0.160787 | 408.45 | 7790.0 | `lr=0.005, weight_decay=0.0001, lr_scheduler=plateau, lr_scheduler_factor=0.8, num_neighbors=[5,3,2], interest_gnn_layers=2, conformity_gnn_layers=3, dropout=0.0, score_mix_min_weight=0.06, loss_weight_independence=0.0175, loss_weight_contrastive=0.015, loss_weight_popularity=0.045, hard_negative_ratio=0.2, dice_sampler_margin=10.0, grad_clip_norm=2.0` |
+| 7 | 15 | 0.158799 | 561.31 | 7783.5 | `lr=0.005, weight_decay=0.0001, lr_scheduler=plateau, lr_scheduler_factor=0.8, num_neighbors=[5,3,2], interest_gnn_layers=3, conformity_gnn_layers=3, dropout=0.0, score_mix_min_weight=0.06, loss_weight_independence=0.0175, loss_weight_contrastive=0.015, loss_weight_popularity=0.045, hard_negative_ratio=0.2, dice_sampler_margin=10.0, grad_clip_norm=2.0` |
+| 8 | 25 | 0.158072 | 646.65 | 7752.5 | `lr=0.004, weight_decay=1e-05, lr_scheduler=none, num_neighbors=[5,3,2], interest_gnn_layers=2, conformity_gnn_layers=3, dropout=0.1, score_mix_min_weight=0.08, loss_weight_independence=0.0, loss_weight_contrastive=0.02, loss_weight_popularity=0.01, hard_negative_ratio=0.1, dice_sampler_margin=50.0, grad_clip_norm=3.0` |
+| 9 | 3 | 0.158042 | 539.88 | 7780.5 | `lr=0.0075, weight_decay=0.001, lr_scheduler=plateau, lr_scheduler_factor=0.6, num_neighbors=[10,5,3], interest_gnn_layers=3, conformity_gnn_layers=3, dropout=0.2, score_mix_min_weight=0.06, loss_weight_independence=0.015, loss_weight_contrastive=0.03, loss_weight_popularity=0.005, hard_negative_ratio=0.2, dice_sampler_margin=70.0, grad_clip_norm=2.5` |
+| 10 | 23 | 0.157905 | 450.61 | 7173.5 | `lr=0.0007, weight_decay=1e-05, lr_scheduler=none, num_neighbors=[5,3,2], interest_gnn_layers=2, conformity_gnn_layers=3, dropout=0.0, score_mix_min_weight=0.08, loss_weight_independence=0.0175, loss_weight_contrastive=0.015, loss_weight_popularity=0.01, hard_negative_ratio=0.3, dice_sampler_margin=10.0, grad_clip_norm=3.0` |
+
+### Formal-promotion candidates
+
+Promote the top 3 completed trials into formal profiles only after checking dataset-level balance, runtime, and whether popularity diagnostics are acceptable.
+
+- Trial `18`: objective `0.165526`; params `lr=0.005, weight_decay=0.0001, lr_scheduler=plateau, lr_scheduler_factor=0.8, num_neighbors=[5,3,2], interest_gnn_layers=2, conformity_gnn_layers=3, dropout=0.0, score_mix_min_weight=0.08, loss_weight_independence=0.0175, loss_weight_contrastive=0.015, loss_weight_popularity=0.045, hard_negative_ratio=0.2, dice_sampler_margin=10.0, grad_clip_norm=2.0`
+- Trial `20`: objective `0.164048`; params `lr=0.004, weight_decay=3e-06, lr_scheduler=none, num_neighbors=[5,3,2], interest_gnn_layers=2, conformity_gnn_layers=3, dropout=0.0, score_mix_min_weight=0.08, loss_weight_independence=0.0175, loss_weight_contrastive=0.015, loss_weight_popularity=0.01, hard_negative_ratio=0.3, dice_sampler_margin=10.0, grad_clip_norm=3.0`
+- Trial `22`: objective `0.163554`; params `lr=0.004, weight_decay=1e-05, lr_scheduler=none, num_neighbors=[5,3,2], interest_gnn_layers=2, conformity_gnn_layers=3, dropout=0.0, score_mix_min_weight=0.08, loss_weight_independence=0.0175, loss_weight_contrastive=0.015, loss_weight_popularity=0.01, hard_negative_ratio=0.3, dice_sampler_margin=10.0, grad_clip_norm=3.0`
