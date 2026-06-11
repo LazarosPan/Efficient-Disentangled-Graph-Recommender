@@ -157,10 +157,23 @@ class SearchSpaceValidationTests(unittest.TestCase):
         )
         fixed_trial = optuna.trial.FixedTrial(
             {
-                "interest_gnn_layers": 2,
-                "conformity_gnn_layers": 2,
-                "num_neighbors_depth_2": "[6,3]",
-                "use_popularity_head": False,
+                search._parameter_storage_name(
+                    "interest_gnn_layers",
+                    spec.parameters["interest_gnn_layers"],
+                ): 2,
+                search._parameter_storage_name(
+                    "conformity_gnn_layers",
+                    spec.parameters["conformity_gnn_layers"],
+                ): 2,
+                search._parameter_storage_name(
+                    "num_neighbors",
+                    spec.parameters["num_neighbors"],
+                    depth=2,
+                ): "[6,3]",
+                search._parameter_storage_name(
+                    "use_popularity_head",
+                    spec.parameters["use_popularity_head"],
+                ): False,
             },
         )
 
@@ -213,7 +226,9 @@ class SearchSpaceValidationTests(unittest.TestCase):
             device="cpu",
             data_dir="data",
         )
-        fixed_trial = optuna.trial.FixedTrial({"lr": 0.0002})
+        fixed_trial = optuna.trial.FixedTrial(
+            {search._parameter_storage_name("lr", spec.parameters["lr"]): 0.0002},
+        )
 
         sampled = search.suggest_trial_overrides(
             fixed_trial,
@@ -222,6 +237,82 @@ class SearchSpaceValidationTests(unittest.TestCase):
         )
 
         self.assertEqual(sampled["lr"], 0.0002)
+
+    def test_default_study_name_is_stable_across_parameter_changes(self) -> None:
+        """Default study names should not restart just because the grid changed."""
+        common_kwargs = {
+            "description": "test search space",
+            "base_profile": "core-ucagnn-mainline",
+            "datasets": ("amazonbook",),
+            "objective": search.ObjectiveSpec(),
+            "max_epochs": 1,
+            "trials": 1,
+            "config_overrides": {},
+        }
+        continuous_spec = search.SearchSpaceSpec(
+            name="tiny",
+            parameters={
+                "lr": {
+                    "type": "float",
+                    "low": 0.0001,
+                    "high": 0.01,
+                    "log": True,
+                },
+            },
+            **common_kwargs,
+        )
+        grid_spec = search.SearchSpaceSpec(
+            name="tiny",
+            parameters={
+                "lr": {
+                    "type": "grid_float",
+                    "low": 0.0001,
+                    "high": 0.001,
+                    "step": 0.0001,
+                },
+            },
+            **common_kwargs,
+        )
+
+        continuous_name = search.default_study_name(
+            "tiny",
+            ("amazonbook",),
+            search_space=continuous_spec,
+        )
+        grid_name = search.default_study_name(
+            "tiny",
+            ("amazonbook",),
+            search_space=grid_spec,
+        )
+
+        self.assertEqual(continuous_name, "tiny-amazonbook-val-validationonlinecrru-20-40")
+        self.assertEqual(grid_name, continuous_name)
+
+    def test_default_study_name_changes_when_objective_changes(self) -> None:
+        """Incomparable objectives should live in separate default studies."""
+        spec = search.SearchSpaceSpec(
+            name="tiny",
+            description="test search space",
+            base_profile="core-ucagnn-mainline",
+            datasets=("amazonbook",),
+            objective=search.ObjectiveSpec(metric="NDCG@40"),
+            max_epochs=1,
+            trials=1,
+            config_overrides={},
+            parameters={
+                "lr": {
+                    "type": "grid_float",
+                    "low": 0.0001,
+                    "high": 0.001,
+                    "step": 0.0001,
+                },
+            },
+        )
+
+        self.assertEqual(
+            search.default_study_name("tiny", ("amazonbook",), search_space=spec),
+            "tiny-amazonbook-val-ndcg-40",
+        )
 
     def test_fanout_suggestions_use_depth_specific_optuna_parameter_names(self) -> None:
         """Conditional fan-out choices should not reuse one dynamic categorical name."""
@@ -268,16 +359,36 @@ class SearchSpaceValidationTests(unittest.TestCase):
             )
             study.enqueue_trial(
                 {
-                    "interest_gnn_layers": 1,
-                    "conformity_gnn_layers": 1,
-                    "num_neighbors_depth_1": "[8]",
+                    search._parameter_storage_name(
+                        "interest_gnn_layers",
+                        spec.parameters["interest_gnn_layers"],
+                    ): 1,
+                    search._parameter_storage_name(
+                        "conformity_gnn_layers",
+                        spec.parameters["conformity_gnn_layers"],
+                    ): 1,
+                    search._parameter_storage_name(
+                        "num_neighbors",
+                        spec.parameters["num_neighbors"],
+                        depth=1,
+                    ): "[8]",
                 },
             )
             study.enqueue_trial(
                 {
-                    "interest_gnn_layers": 2,
-                    "conformity_gnn_layers": 3,
-                    "num_neighbors_depth_3": "[16,8,4]",
+                    search._parameter_storage_name(
+                        "interest_gnn_layers",
+                        spec.parameters["interest_gnn_layers"],
+                    ): 2,
+                    search._parameter_storage_name(
+                        "conformity_gnn_layers",
+                        spec.parameters["conformity_gnn_layers"],
+                    ): 3,
+                    search._parameter_storage_name(
+                        "num_neighbors",
+                        spec.parameters["num_neighbors"],
+                        depth=3,
+                    ): "[16,8,4]",
                 },
             )
 
@@ -293,8 +404,22 @@ class SearchSpaceValidationTests(unittest.TestCase):
             study.optimize(objective, n_trials=2)
 
             self.assertEqual(len(study.trials), 2)
-            self.assertIn("num_neighbors_depth_1", study.trials[0].params)
-            self.assertIn("num_neighbors_depth_3", study.trials[1].params)
+            self.assertIn(
+                search._parameter_storage_name(
+                    "num_neighbors",
+                    spec.parameters["num_neighbors"],
+                    depth=1,
+                ),
+                study.trials[0].params,
+            )
+            self.assertIn(
+                search._parameter_storage_name(
+                    "num_neighbors",
+                    spec.parameters["num_neighbors"],
+                    depth=3,
+                ),
+                study.trials[1].params,
+            )
 
     def test_objective_extraction_uses_validation_metrics_only(self) -> None:
         """A high test score should not influence the Optuna objective."""
@@ -358,6 +483,84 @@ class SearchSpaceValidationTests(unittest.TestCase):
 
 class SearchExecutionTests(unittest.TestCase):
     """Smoke the search runner without doing real model training."""
+
+    def test_search_trials_are_target_completed_count_not_extra_attempts(self) -> None:
+        """A repeated command with the same compatible study should not rerun training."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            optuna_db = Path(tmpdir) / "optuna.db"
+            storage = f"sqlite:///{optuna_db}"
+            spec = search.SearchSpaceSpec(
+                name="tiny-search",
+                description="test search space",
+                base_profile="core-ucagnn-mainline",
+                datasets=("amazonbook",),
+                objective=search.ObjectiveSpec(metric="NDCG@40"),
+                max_epochs=1,
+                trials=1,
+                config_overrides={
+                    "sample_interactions": 50,
+                    "loader_max_rows": 50,
+                },
+                parameters={
+                    "lr_scheduler": {
+                        "type": "categorical",
+                        "choices": ["cosine"],
+                    },
+                },
+            )
+            study = optuna.create_study(
+                study_name="existing-study",
+                storage=storage,
+                direction="maximize",
+            )
+            study.add_trial(
+                optuna.trial.create_trial(
+                    value=0.42,
+                    params={
+                        search._parameter_storage_name(
+                            "lr_scheduler",
+                            spec.parameters["lr_scheduler"],
+                        ): "cosine",
+                    },
+                    distributions={
+                        search._parameter_storage_name(
+                            "lr_scheduler",
+                            spec.parameters["lr_scheduler"],
+                        ): optuna.distributions.CategoricalDistribution(["cosine"]),
+                    },
+                    user_attrs={
+                        "search_space": "tiny-search",
+                        "objective_metric": "NDCG@40",
+                        "objective_split": "val",
+                        "sampled_params": {"lr_scheduler": "cosine"},
+                    },
+                    state=optuna.trial.TrialState.COMPLETE,
+                ),
+            )
+            args = SimpleNamespace(
+                list_spaces=False,
+                space="tiny-search",
+                dataset=None,
+                trials=1,
+                study_name="existing-study",
+                storage=storage,
+                dry_run=False,
+                device="cpu",
+                data_dir="data",
+                no_mlflow=True,
+                mlflow_tracking_uri=None,
+                mlflow_experiment_name="ucagnn-search-test",
+                overwrite_checkpoint=False,
+            )
+
+            with (
+                patch.object(search, "resolve_search_space", return_value=spec),
+                patch.object(search, "run_experiment") as run_experiment,
+            ):
+                exit_code = search.run_search(args)
+
+            self.assertEqual(exit_code, 0)
+            run_experiment.assert_not_called()
 
     def test_one_trial_search_creates_storage_without_thesis_trial_mirror(self) -> None:
         """The controller should keep Optuna trial metadata in Optuna storage."""
@@ -487,6 +690,71 @@ class SearchExecutionTests(unittest.TestCase):
             self.assertEqual(trial.user_attrs["objective_metric"], "NDCG@40")
             self.assertAlmostEqual(trial.user_attrs["amazonbook.objective"], 0.42)
             self.assertEqual(trial.user_attrs["sampled_params"], {"lr_scheduler": "cosine"})
+
+    def test_search_returns_failure_when_only_new_trials_fail(self) -> None:
+        """Historical completed trials must not hide failures from this invocation."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            optuna_db = Path(tmpdir) / "optuna.db"
+            storage = f"sqlite:///{optuna_db}"
+            study = optuna.create_study(
+                study_name="existing-study",
+                storage=storage,
+                direction="maximize",
+            )
+            study.add_trial(
+                optuna.trial.create_trial(
+                    value=0.1,
+                    params={},
+                    distributions={},
+                    state=optuna.trial.TrialState.COMPLETE,
+                ),
+            )
+            spec = search.SearchSpaceSpec(
+                name="tiny-search",
+                description="test search space",
+                base_profile="core-ucagnn-mainline",
+                datasets=("amazonbook",),
+                objective=search.ObjectiveSpec(metric="NDCG@40"),
+                max_epochs=1,
+                trials=1,
+                config_overrides={
+                    "sample_interactions": 50,
+                    "loader_max_rows": 50,
+                },
+                parameters={
+                    "lr_scheduler": {
+                        "type": "categorical",
+                        "choices": ["cosine"],
+                    },
+                },
+            )
+            args = SimpleNamespace(
+                list_spaces=False,
+                space="tiny-search",
+                dataset=None,
+                trials=1,
+                study_name="existing-study",
+                storage=storage,
+                dry_run=False,
+                device="cpu",
+                data_dir="data",
+                no_mlflow=True,
+                mlflow_tracking_uri=None,
+                mlflow_experiment_name="ucagnn-search-test",
+                overwrite_checkpoint=False,
+            )
+
+            with (
+                patch.object(search, "resolve_search_space", return_value=spec),
+                patch.object(
+                    search,
+                    "suggest_trial_overrides",
+                    side_effect=ValueError("bad search contract"),
+                ),
+            ):
+                exit_code = search.run_search(args)
+
+            self.assertEqual(exit_code, 1)
 
 
 if __name__ == "__main__":

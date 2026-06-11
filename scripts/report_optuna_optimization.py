@@ -96,6 +96,31 @@ def ordered_params(params: Mapping[str, Any]) -> list[tuple[str, Any]]:
     return [(key, params[key]) for key in keys]
 
 
+def logical_param_name(param_name: str) -> str:
+    """Return the thesis-facing config field for an Optuna storage parameter."""
+    base_name = param_name.split("__", 1)[0]
+    if base_name.startswith("num_neighbors_depth_"):
+        return "num_neighbors"
+    return base_name
+
+
+def logical_trial_params(trial: FrozenTrial) -> Mapping[str, Any]:
+    """Return logical sampled params, preferring stored U-CaGNN config fields."""
+    sampled_params = trial.user_attrs.get("sampled_params")
+    if isinstance(sampled_params, Mapping):
+        return sampled_params
+    return {logical_param_name(key): value for key, value in trial.params.items()}
+
+
+def logical_importances(importances: Mapping[str, float]) -> dict[str, float]:
+    """Coalesce storage-level Optuna importance names into logical config fields."""
+    coalesced: dict[str, float] = {}
+    for name, importance in importances.items():
+        logical_name = logical_param_name(name)
+        coalesced[logical_name] = coalesced.get(logical_name, 0.0) + float(importance)
+    return dict(sorted(coalesced.items(), key=lambda item: item[1], reverse=True))
+
+
 def format_param_value(value: Any) -> str:
     """Return a full, non-truncated parameter value."""
     if isinstance(value, dict | list | tuple):
@@ -178,12 +203,14 @@ def safe_importances(
 
 def dashboard_importances(study: optuna.Study) -> dict[str, float]:
     """Return Optuna's default importance view, matching dashboard target semantics."""
-    return safe_importances(study)
+    return logical_importances(safe_importances(study))
 
 
 def fanova_importances(study: optuna.Study) -> dict[str, float]:
     """Return deterministic fANOVA importances for sensitivity checking."""
-    return safe_importances(study, evaluator=FanovaImportanceEvaluator(seed=13))
+    return logical_importances(
+        safe_importances(study, evaluator=FanovaImportanceEvaluator(seed=13)),
+    )
 
 
 def failure_label(trial: FrozenTrial) -> str:
@@ -272,7 +299,7 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
             "",
             f"- Trial: `{best_trial.number}`",
             f"- Objective value: `{format_float(float(best_trial.value))}`",
-            f"- Parameters: `{format_params(best_trial.params)}`",
+            f"- Parameters: `{format_params(logical_trial_params(best_trial))}`",
             "",
         ],
     )
@@ -339,7 +366,7 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
             f"| {rank} | {trial.number} | {format_float(float(trial.value))} | "
             f"{format_float(average_trial_attr(trial, 'training_time_s'), digits=2)} | "
             f"{format_float(average_trial_attr(trial, 'peak_vram_mb'), digits=1)} | "
-            f"`{format_params(trial.params)}` |",
+            f"`{format_params(logical_trial_params(trial))}` |",
         )
     lines.append("")
 
@@ -355,7 +382,7 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
     for trial in sorted(trials, key=lambda item: trial_sort_key(study, item))[:3]:
         lines.append(
             f"- Trial `{trial.number}`: objective `{format_float(float(trial.value))}`; "
-            f"params `{format_params(trial.params)}`",
+            f"params `{format_params(logical_trial_params(trial))}`",
         )
     lines.append("")
     return "\n".join(lines)

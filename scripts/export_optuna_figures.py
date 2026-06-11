@@ -25,6 +25,7 @@ from scripts.report_optuna_optimization import (
     dataset_names,
     fanova_importances,
     load_studies,
+    logical_trial_params,
     trial_sort_key,
 )
 
@@ -207,9 +208,9 @@ def export_param_slices(study: optuna.Study, output_path: Path) -> bool:
 
     for ax, param_name in zip(axes, params, strict=True):
         raw_points = [
-            (trial.params[param_name], float(trial.value))
+            (logical_trial_params(trial)[param_name], float(trial.value))
             for trial in trials
-            if param_name in trial.params and trial.value is not None
+            if param_name in logical_trial_params(trial) and trial.value is not None
         ]
         if raw_points and all(isinstance(point[0], bool | int | float) for point in raw_points):
             points = [(float(value), str(value), objective) for value, objective in raw_points]
@@ -249,9 +250,18 @@ def export_top_parallel_coordinates(study: optuna.Study, output_path: Path) -> b
     trials = sorted(completed_trials(study), key=lambda trial: trial_sort_key(study, trial))[:10]
     if len(params) < 2 or len(trials) < 2:
         return False
+    trials = [
+        trial for trial in trials if all(param in logical_trial_params(trial) for param in params)
+    ]
+    if len(trials) < 2:
+        return False
 
     values_by_param: dict[str, list[object]] = {
-        param: [trial.params[param] for trial in trials if param in trial.params]
+        param: [
+            logical_trial_params(trial)[param]
+            for trial in trials
+            if param in logical_trial_params(trial)
+        ]
         for param in params
     }
     if any(not values for values in values_by_param.values()):
@@ -261,7 +271,7 @@ def export_top_parallel_coordinates(study: optuna.Study, output_path: Path) -> b
     for trial in trials:
         row: list[float] = []
         for param in params:
-            value = trial.params.get(param)
+            value = logical_trial_params(trial).get(param)
             values = values_by_param[param]
             if all(isinstance(item, bool | int | float) for item in values):
                 numeric_values = [float(item) for item in values]

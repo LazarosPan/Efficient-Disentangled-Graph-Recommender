@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import logging
 import math
@@ -501,16 +502,95 @@ def _choice_labels(choices: list[Any]) -> tuple[list[str], dict[str, Any]]:
     return labels, values_by_label
 
 
+def _parameter_distribution_payload(
+    field_name: str,
+    spec: Mapping[str, Any],
+    *,
+    depth: int | None = None,
+) -> dict[str, Any]:
+    """Return the Optuna distribution-relevant payload for one logical field.
+
+    Optuna requires each stored parameter name to keep one compatible
+    distribution forever. We keep the study name stable across search-space
+    edits, so the storage-facing parameter name must change when the declared
+    distribution changes. The logical field name still remains the config owner
+    through ``sampled_params``.
+    """
+    parameter_type = str(spec["type"]).lower()
+    if parameter_type == "grid_float":
+        return {
+            "type": "categorical",
+            "choices": _expand_grid_float_choices(field_name, spec),
+        }
+    if parameter_type == "categorical":
+        return {"type": "categorical", "choices": list(spec["choices"])}
+    if parameter_type == "float":
+        return {
+            "type": "float",
+            "low": float(spec["low"]),
+            "high": float(spec["high"]),
+            "log": bool(spec.get("log", False)),
+            "step": float(spec["step"]) if "step" in spec else None,
+        }
+    if parameter_type == "int":
+        return {
+            "type": "int",
+            "low": int(spec["low"]),
+            "high": int(spec["high"]),
+            "log": bool(spec.get("log", False)),
+            "step": int(spec.get("step", 1)),
+        }
+    if parameter_type == "fanout":
+        if depth is None:
+            raise ValueError("fanout distribution payload requires a depth.")
+        choices_by_depth = _require_mapping(
+            spec["choices_by_depth"],
+            field_name="parameters.num_neighbors.choices_by_depth",
+        )
+        raw_choices = choices_by_depth.get(str(depth)) or choices_by_depth.get(depth)
+        if raw_choices is None:
+            raise ValueError(f"num_neighbors has no choices for active depth {depth}.")
+        choices = resolve_profile_num_neighbors({"num_neighbors": raw_choices})
+        if choices is None:
+            raise ValueError(f"num_neighbors choices for active depth {depth} are empty.")
+        return {"type": "categorical", "depth": depth, "choices": choices}
+    raise ValueError(f"Unsupported parameter type: {parameter_type}")
+
+
+def _distribution_fingerprint(payload: Mapping[str, Any]) -> str:
+    """Return a short stable ID for one Optuna distribution."""
+    canonical = json.dumps(
+        _json_safe(payload),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:8]
+
+
+def _parameter_storage_name(
+    field_name: str,
+    spec: Mapping[str, Any],
+    *,
+    depth: int | None = None,
+) -> str:
+    """Return Optuna's storage-facing parameter name for one logical field."""
+    payload = _parameter_distribution_payload(field_name, spec, depth=depth)
+    suffix = _distribution_fingerprint(payload)
+    if depth is None:
+        return f"{field_name}__{suffix}"
+    return f"{field_name}_depth_{depth}__{suffix}"
+
+
 def _suggest_categorical_value(
     trial: optuna.Trial,
-    field_name: str,
+    optuna_param_name: str,
     choices: list[Any],
 ) -> Any:
     """Suggest a categorical value without passing structured choices to Optuna."""
     if all(choice is None or isinstance(choice, str | int | float | bool) for choice in choices):
-        return trial.suggest_categorical(field_name, choices)
+        return trial.suggest_categorical(optuna_param_name, choices)
     labels, values_by_label = _choice_labels(choices)
-    return values_by_label[trial.suggest_categorical(field_name, labels)]
+    return values_by_label[trial.suggest_categorical(optuna_param_name, labels)]
 
 
 def _suggest_parameter_value(
@@ -520,9 +600,11 @@ def _suggest_parameter_value(
 ) -> Any:
     """Suggest one non-fanout parameter value from a validated spec."""
     parameter_type = str(spec["type"]).lower()
+    optuna_param_name = _parameter_storage_name(field_name, spec)
+    trial.set_user_attr(f"optuna_param_name.{field_name}", optuna_param_name)
     if parameter_type == "float":
         return trial.suggest_float(
-            field_name,
+            optuna_param_name,
             float(spec["low"]),
             float(spec["high"]),
             log=bool(spec.get("log", False)),
@@ -531,19 +613,19 @@ def _suggest_parameter_value(
     if parameter_type == "grid_float":
         return _suggest_categorical_value(
             trial,
-            field_name,
+            optuna_param_name,
             _expand_grid_float_choices(field_name, spec),
         )
     if parameter_type == "int":
         return trial.suggest_int(
-            field_name,
+            optuna_param_name,
             int(spec["low"]),
             int(spec["high"]),
             step=int(spec.get("step", 1)),
             log=bool(spec.get("log", False)),
         )
     if parameter_type == "categorical":
-        return _suggest_categorical_value(trial, field_name, list(spec["choices"]))
+        return _suggest_categorical_value(trial, optuna_param_name, list(spec["choices"]))
     raise ValueError(f"Unsupported non-fanout parameter type: {parameter_type}")
 
 
@@ -579,7 +661,7 @@ def _suggest_fanout_value(
     if choices is None:
         raise ValueError(f"num_neighbors choices for active depth {depth} are empty.")
     labels, values_by_label = _choice_labels(choices)
-    optuna_param_name = f"num_neighbors_depth_{depth}"
+    optuna_param_name = _parameter_storage_name("num_neighbors", spec, depth=depth)
     selected_label = trial.suggest_categorical(optuna_param_name, labels)
     trial.set_user_attr("num_neighbors_param", optuna_param_name)
     return list(values_by_label[selected_label])
@@ -814,6 +896,7 @@ def _objective_factory(
     mlflow_tracking_uri: str | None,
     mlflow_experiment_name: str,
     overwrite_checkpoint: bool,
+    seen_sampled_param_keys: set[str] | None = None,
 ) -> Any:
     """Build the Optuna objective callable for one resolved search space."""
 
@@ -839,6 +922,13 @@ def _objective_factory(
             _record_trial_failure(trial, stage="suggest_overrides", exc=exc)
             raise
 
+        sampled_key = _canonical_sampled_params(sampled_overrides)
+        if seen_sampled_param_keys is not None and sampled_key in seen_sampled_param_keys:
+            trial.set_user_attr("duplicate_sampled_params", True)
+            trial.set_user_attr("duplicate_sampled_params_key", sampled_key)
+            raise optuna.TrialPruned(
+                "Duplicate completed compatible sampled_params; skipping training.",
+            )
         trial.set_user_attr("sampled_params", _json_safe(sampled_overrides))
 
         configs_by_dataset: dict[str, UCaGNNConfig] = {}
@@ -898,6 +988,8 @@ def _objective_factory(
             raise ValueError("Trial produced no dataset scores.")
         objective_value = float(sum(scores) / len(scores))
         trial.set_user_attr("objective_value", objective_value)
+        if seen_sampled_param_keys is not None:
+            seen_sampled_param_keys.add(sampled_key)
         return objective_value
 
     return objective
@@ -913,10 +1005,190 @@ def _ensure_storage_parent(storage: str) -> None:
     Path(raw_path).expanduser().parent.mkdir(parents=True, exist_ok=True)
 
 
-def default_study_name(space_name: str, datasets: tuple[str, ...]) -> str:
+def default_study_name(
+    space_name: str,
+    datasets: tuple[str, ...],
+    *,
+    search_space: SearchSpaceSpec | None = None,
+) -> str:
     """Return the default study name for a space/dataset selection."""
     dataset_part = datasets[0] if len(datasets) == 1 else "all"
-    return f"{space_name}-{dataset_part}"
+    base_name = f"{space_name}-{dataset_part}"
+    if search_space is None:
+        return base_name
+    objective_name = _slugify_fragment(
+        f"{search_space.objective.split}-{search_space.objective.metric}",
+    )
+    return f"{base_name}-{objective_name}"
+
+
+def _canonical_sampled_params(sampled_params: Mapping[str, Any]) -> str:
+    """Return a stable key for duplicate logical hyperparameter detection."""
+    return json.dumps(_json_safe(sampled_params), sort_keys=True, separators=(",", ":"))
+
+
+def _choice_matches(value: Any, choices: list[Any]) -> bool:
+    """Return whether a sampled value equals one declared choice."""
+    value_label = json.dumps(_json_safe(value), sort_keys=True, separators=(",", ":"))
+    return any(
+        value_label == json.dumps(_json_safe(choice), sort_keys=True, separators=(",", ":"))
+        for choice in choices
+    )
+
+
+def _float_matches_grid(value: Any, choices: list[float]) -> bool:
+    """Return whether a sampled value is one declared float grid point."""
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return False
+    return any(
+        math.isclose(numeric_value, choice, rel_tol=0.0, abs_tol=1e-12) for choice in choices
+    )
+
+
+def _sampled_value_matches_spec(value: Any, field_name: str, spec: Mapping[str, Any]) -> bool:
+    """Return whether a logical sampled value is valid under the current spec."""
+    parameter_type = str(spec["type"]).lower()
+    if parameter_type == "grid_float":
+        return _float_matches_grid(value, _expand_grid_float_choices(field_name, spec))
+    if parameter_type == "categorical":
+        return _choice_matches(value, list(spec["choices"]))
+    if parameter_type == "float":
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            return False
+        if numeric_value < float(spec["low"]) or numeric_value > float(spec["high"]):
+            return False
+        if "step" not in spec:
+            return True
+        step = float(spec["step"])
+        offset = (numeric_value - float(spec["low"])) / step
+        return math.isclose(offset, round(offset), rel_tol=0.0, abs_tol=1e-9)
+    if parameter_type == "int":
+        if isinstance(value, bool):
+            return False
+        try:
+            numeric_value = int(value)
+        except (TypeError, ValueError):
+            return False
+        if numeric_value != value and not (
+            isinstance(value, float) and numeric_value == float(value)
+        ):
+            return False
+        low = int(spec["low"])
+        high = int(spec["high"])
+        step = int(spec.get("step", 1))
+        return low <= numeric_value <= high and (numeric_value - low) % step == 0
+    raise ValueError(f"Unsupported non-fanout parameter type: {parameter_type}")
+
+
+def _sampled_fanout_matches_spec(
+    sampled_params: Mapping[str, Any],
+    spec: Mapping[str, Any],
+) -> bool:
+    """Return whether sampled ``num_neighbors`` is valid for current branch depth."""
+    raw_value = sampled_params.get("num_neighbors")
+    if not isinstance(raw_value, list):
+        return False
+    try:
+        interest_layers = int(sampled_params["interest_gnn_layers"])
+        conformity_layers = int(sampled_params["conformity_gnn_layers"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    depth = max(interest_layers, conformity_layers)
+    choices_by_depth = _require_mapping(
+        spec["choices_by_depth"],
+        field_name="parameters.num_neighbors.choices_by_depth",
+    )
+    raw_choices = choices_by_depth.get(str(depth)) or choices_by_depth.get(depth)
+    if raw_choices is None:
+        return False
+    choices = resolve_profile_num_neighbors({"num_neighbors": raw_choices})
+    if choices is None:
+        return False
+    return any(list(raw_value) == list(choice) for choice in choices)
+
+
+def _sampled_params_match_search_space(
+    sampled_params: Mapping[str, Any],
+    search_space: SearchSpaceSpec,
+) -> bool:
+    """Return whether a completed logical trial is reusable for current search space."""
+    allowed_keys = set(search_space.parameters)
+    if set(sampled_params) - allowed_keys:
+        return False
+    for field_name, spec in search_space.parameters.items():
+        parameter_type = str(spec["type"]).lower()
+        if parameter_type == "fanout":
+            if not _sampled_fanout_matches_spec(sampled_params, spec):
+                return False
+            continue
+        if field_name not in sampled_params:
+            if (
+                field_name == "lr_scheduler_factor"
+                and sampled_params.get("lr_scheduler") != "plateau"
+            ):
+                continue
+            return False
+        if not _sampled_value_matches_spec(sampled_params[field_name], field_name, spec):
+            return False
+    return True
+
+
+def _trial_matches_current_search_space(
+    trial: optuna.trial.FrozenTrial,
+    search_space: SearchSpaceSpec,
+) -> bool:
+    """Return whether a completed Optuna trial belongs to the current logical contract."""
+    if trial.state != optuna.trial.TrialState.COMPLETE or trial.value is None:
+        return False
+    if trial.user_attrs.get("search_space") != search_space.name:
+        return False
+    if trial.user_attrs.get("objective_metric") != search_space.objective.metric:
+        return False
+    if trial.user_attrs.get("objective_split") != search_space.objective.split:
+        return False
+    sampled_params = trial.user_attrs.get("sampled_params")
+    if not isinstance(sampled_params, Mapping):
+        return False
+    return _sampled_params_match_search_space(sampled_params, search_space)
+
+
+def _compatible_completed_trials(
+    study: optuna.Study,
+    search_space: SearchSpaceSpec,
+) -> list[optuna.trial.FrozenTrial]:
+    """Return completed trials reusable under the current logical search space."""
+    return [
+        trial for trial in study.trials if _trial_matches_current_search_space(trial, search_space)
+    ]
+
+
+def _best_trial_from_completed(
+    trials: list[optuna.trial.FrozenTrial],
+    *,
+    direction: str,
+) -> optuna.trial.FrozenTrial | None:
+    """Return the best trial within a prefiltered comparable trial set."""
+    if not trials:
+        return None
+    reverse = direction == "maximize"
+    return sorted(trials, key=lambda trial: float(trial.value), reverse=reverse)[0]
+
+
+def _print_best_trial_summary(
+    best_trial: optuna.trial.FrozenTrial,
+    *,
+    objective_metric: str,
+) -> None:
+    """Print best comparable trial details from logical sampled params."""
+    print(
+        (f"Best trial: {best_trial.number} | {objective_metric}={float(best_trial.value):.6f}"),
+    )
+    print("Best params:")
+    print(json.dumps(_json_safe(best_trial.user_attrs.get("sampled_params", {}))))
 
 
 def build_dry_run_payload(
@@ -969,7 +1241,11 @@ def run_search(args: argparse.Namespace) -> int:
         raise ValueError("--space is required unless --list-spaces is used.")
 
     search_space = resolve_search_space(args.space, dataset=args.dataset)
-    study_name = args.study_name or default_study_name(args.space, search_space.datasets)
+    study_name = args.study_name or default_study_name(
+        args.space,
+        search_space.datasets,
+        search_space=search_space,
+    )
     n_trials = int(args.trials or search_space.trials)
     if n_trials < 1:
         raise ValueError("--trials must be >= 1.")
@@ -998,36 +1274,80 @@ def run_search(args: argparse.Namespace) -> int:
         direction=search_space.objective.direction,
         load_if_exists=True,
     )
-    study.optimize(
-        _objective_factory(
-            search_space,
-            study_name=study_name,
-            device=args.device,
-            data_dir=args.data_dir,
-            enable_mlflow=not bool(args.no_mlflow),
-            mlflow_tracking_uri=args.mlflow_tracking_uri,
-            mlflow_experiment_name=args.mlflow_experiment_name,
-            overwrite_checkpoint=bool(args.overwrite_checkpoint),
-        ),
-        n_trials=n_trials,
-        catch=(Exception,),
-    )
-
-    completed_trials = [
-        trial for trial in study.trials if trial.state == optuna.trial.TrialState.COMPLETE
-    ]
-    if completed_trials:
+    compatible_completed = _compatible_completed_trials(study, search_space)
+    if len(compatible_completed) >= n_trials:
         print(
             (
-                f"Best trial: {study.best_trial.number} | "
-                f"{search_space.objective.metric}={study.best_value:.6f}"
+                f"Study {study_name} already has {len(compatible_completed)} completed "
+                f"compatible trial(s); target={n_trials}. Nothing to run."
             ),
         )
-        print("Best params:")
-        print(json.dumps(_json_safe(study.best_trial.user_attrs.get("sampled_params", {}))))
+        best_trial = _best_trial_from_completed(
+            compatible_completed,
+            direction=search_space.objective.direction,
+        )
+        if best_trial is not None:
+            _print_best_trial_summary(
+                best_trial,
+                objective_metric=search_space.objective.metric,
+            )
         return 0
 
-    print("No Optuna trials completed successfully.")
+    starting_trial_count = len(study.trials)
+    target_trials = n_trials
+    remaining = target_trials - len(compatible_completed)
+    max_attempts = max(remaining, remaining * 4)
+    seen_sampled_param_keys = {
+        _canonical_sampled_params(trial.user_attrs["sampled_params"])
+        for trial in compatible_completed
+        if isinstance(trial.user_attrs.get("sampled_params"), Mapping)
+    }
+    objective = _objective_factory(
+        search_space,
+        study_name=study_name,
+        device=args.device,
+        data_dir=args.data_dir,
+        enable_mlflow=not bool(args.no_mlflow),
+        mlflow_tracking_uri=args.mlflow_tracking_uri,
+        mlflow_experiment_name=args.mlflow_experiment_name,
+        overwrite_checkpoint=bool(args.overwrite_checkpoint),
+        seen_sampled_param_keys=seen_sampled_param_keys,
+    )
+    attempts = 0
+    while len(compatible_completed) < target_trials and attempts < max_attempts:
+        before_trial_count = len(study.trials)
+        study.optimize(
+            objective,
+            n_trials=1,
+            catch=(Exception,),
+        )
+        attempts += max(1, len(study.trials) - before_trial_count)
+        compatible_completed = _compatible_completed_trials(study, search_space)
+
+    new_trials = study.trials[starting_trial_count:]
+    if len(compatible_completed) >= target_trials:
+        best_trial = _best_trial_from_completed(
+            compatible_completed,
+            direction=search_space.objective.direction,
+        )
+        if best_trial is not None:
+            _print_best_trial_summary(
+                best_trial,
+                objective_metric=search_space.objective.metric,
+            )
+        return 0
+
+    failed_new_trials = [
+        trial for trial in new_trials if trial.state == optuna.trial.TrialState.FAIL
+    ]
+    print(
+        (
+            "Optuna search did not reach the requested compatible completed-trial target: "
+            f"{len(compatible_completed)}/{target_trials}."
+        ),
+    )
+    if failed_new_trials:
+        print(f"Failed trials in this invocation: {len(failed_new_trials)}")
     return 1
 
 
