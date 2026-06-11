@@ -80,6 +80,7 @@ dev = [
 target-version = "py313"
 line-length = 100
 src = ["src", "experiments", "scripts"]
+exclude = ["external", "data"]
 # FIXED: Moved from [tool.ruff.lint] to [tool.ruff]
 unsafe-fixes = true
 
