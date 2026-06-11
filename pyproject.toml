@@ -42,6 +42,7 @@ dependencies = [
     "numba>=0.65.1",
     "optuna>=4.9.0",
     "optuna-dashboard>=0.20.0",
+    "exa-py>=2.13.2",
 ]
 
 [[tool.uv.index]]

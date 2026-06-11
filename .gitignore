@@ -20,6 +20,11 @@ wheels/
 #Settings
 .vscode/
 
+# Local secrets
+.env
+.env.*
+!.env.example
+
 # External projects
 /external/*
 
