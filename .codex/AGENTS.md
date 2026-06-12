@@ -94,6 +94,7 @@ Read the SKILL.md files and choose which files that they point to are relevant f
 - `.agents/skills/existing-work/SKILL.md` - prior causal recommendation implementation synthesis.
 - `.agents/skills/optuna/SKILL.md` - key Optuna optimization workflows and their implementation mechanics.
 - `.agents/skills/mlflow/SKILL.md` - MLflow/PyTorch tracking guidance.
+- `.agents/skills/python-pattenrs/SKILL.md` - Python coding patterns.
 - `.agents/skills/project-structure/SKILL.md` - project layout reference.
 - `.agents/skills/pytorch/SKILL.md` - PyTorch module and runtime guide.
 - `.agents/skills/pytorch-geometric/SKILL.md` - PyG reference and performance tips.
