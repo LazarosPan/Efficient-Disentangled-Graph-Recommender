@@ -108,6 +108,39 @@ def _load_propensity_targets(
     return targets
 
 
+def _ensure_uint8_columns(df: pl.DataFrame, columns: tuple[str, ...]) -> pl.DataFrame:
+    """Return ``df`` with nullable or missing uint flag columns normalized."""
+    existing = set(df.columns)
+    expressions = [
+        (
+            pl.col(column).fill_null(0).cast(pl.UInt8)
+            if column in existing
+            else pl.lit(0, dtype=pl.UInt8).alias(column)
+        )
+        for column in columns
+    ]
+    return df.with_columns(expressions)
+
+
+def _ensure_float32_columns(df: pl.DataFrame, columns: tuple[str, ...]) -> pl.DataFrame:
+    """Return ``df`` with nullable, non-finite, or missing float columns normalized."""
+    existing = set(df.columns)
+    expressions = [
+        (
+            pl.col(column).fill_nan(0.0).fill_null(0.0).cast(pl.Float32)
+            if column in existing
+            else pl.lit(0.0, dtype=pl.Float32).alias(column)
+        )
+        for column in columns
+    ]
+    return df.with_columns(expressions)
+
+
+def _apply_row_mask(mask: np.ndarray, *arrays: np.ndarray) -> tuple[np.ndarray, ...]:
+    """Apply one row mask to aligned interaction arrays."""
+    return tuple(array[mask] for array in arrays)
+
+
 def load_kuairand1k(
     data_dir: str = "data",
     max_rows: int | None = None,
@@ -182,18 +215,8 @@ def load_kuairand1k(
         raise ValueError("KuaiRand-1K loader found no valid interaction rows.")
 
     # Fill missing optional columns with 0
-    for col in _OPTIONAL_UINT_COLS:
-        df = (
-            df.with_columns(pl.lit(0, dtype=pl.UInt8).alias(col))
-            if col not in df.columns
-            else df.with_columns(pl.col(col).fill_null(0).cast(pl.UInt8))
-        )
-    for col in _OPTIONAL_FLOAT_COLS:
-        df = (
-            df.with_columns(pl.lit(0.0, dtype=pl.Float32).alias(col))
-            if col not in df.columns
-            else df.with_columns(pl.col(col).fill_nan(0.0).fill_null(0.0).cast(pl.Float32))
-        )
+    df = _ensure_uint8_columns(df, _OPTIONAL_UINT_COLS)
+    df = _ensure_float32_columns(df, _OPTIONAL_FLOAT_COLS)
     df = (
         df.with_columns(pl.lit(0, dtype=pl.Int64).alias("time_ms"))
         if "time_ms" not in df.columns
@@ -222,18 +245,34 @@ def load_kuairand1k(
         keep_mask = is_rand_arr > 0
         if not np.any(keep_mask):
             raise ValueError("KuaiRand-1K random-only preset found no randomized rows.")
-        raw_users_arr = raw_users_arr[keep_mask]
-        raw_items_arr = raw_items_arr[keep_mask]
-        clicks_arr = clicks_arr[keep_mask]
-        likes_arr = likes_arr[keep_mask]
-        hates_arr = hates_arr[keep_mask]
-        follows_arr = follows_arr[keep_mask]
-        comments_arr = comments_arr[keep_mask]
-        long_views_arr = long_views_arr[keep_mask]
-        play_times_arr = play_times_arr[keep_mask]
-        durations_arr = durations_arr[keep_mask]
-        is_rand_arr = is_rand_arr[keep_mask]
-        timestamps_arr = timestamps_arr[keep_mask]
+        (
+            raw_users_arr,
+            raw_items_arr,
+            clicks_arr,
+            likes_arr,
+            hates_arr,
+            follows_arr,
+            comments_arr,
+            long_views_arr,
+            play_times_arr,
+            durations_arr,
+            is_rand_arr,
+            timestamps_arr,
+        ) = _apply_row_mask(
+            keep_mask,
+            raw_users_arr,
+            raw_items_arr,
+            clicks_arr,
+            likes_arr,
+            hates_arr,
+            follows_arr,
+            comments_arr,
+            long_views_arr,
+            play_times_arr,
+            durations_arr,
+            is_rand_arr,
+            timestamps_arr,
+        )
 
     # Compute watch-ratio priority before collapsing so the best interaction per
     # user-item pair is retained consistently across both presets. The collapse
