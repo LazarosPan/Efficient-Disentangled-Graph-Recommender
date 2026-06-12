@@ -42,9 +42,7 @@ wheels/
 /mlruns/*
 
 # Github
-.github/prompts/
-.github/agents/
-.github/issues/
+.github/
 
 # Codex
 # .codex/
