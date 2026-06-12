@@ -100,6 +100,60 @@ class DatasetSummary:
     randomized_exposure_share: float | None
 
 
+@dataclass(frozen=True)
+class ResponseSignalSpec:
+    """Plot metadata for one canonical response signal.
+
+    Args:
+        label: Plot title for the response distribution panel.
+        axis_label: X-axis label for the plotted signal.
+        value_labels: Optional categorical labels keyed by numeric value.
+
+    """
+
+    label: str
+    axis_label: str
+    value_labels: dict[float, str] | None = None
+
+
+RAW_TARGET_RESPONSE_SPECS = {
+    "movielens1m": ResponseSignalSpec("Rating distribution", "rating"),
+    "movielens20m": ResponseSignalSpec("Rating distribution", "rating"),
+    "kuairec_v2": ResponseSignalSpec("Watch-ratio distribution", "watch ratio"),
+    "kuairand1k": ResponseSignalSpec(
+        "Normalized watch-time distribution",
+        "play time / video duration",
+    ),
+    "taobao": ResponseSignalSpec(
+        "Interaction-type distribution",
+        "interaction type",
+        {
+            0.0: "page view",
+            1.0: "favorite",
+            2.0: "cart",
+            3.0: "purchase",
+        },
+    ),
+}
+DEFAULT_RAW_TARGET_RESPONSE_SPEC = ResponseSignalSpec(
+    "Response-value distribution",
+    "response value",
+)
+AMAZONBOOK_RESPONSE_SPEC = ResponseSignalSpec(
+    "Observed interaction distribution",
+    "interaction outcome",
+    {1.0: "observed interaction"},
+)
+SIGNED_RESPONSE_SPEC = ResponseSignalSpec(
+    "Signed-feedback distribution",
+    "signed feedback score",
+)
+LABEL_RESPONSE_SPEC = ResponseSignalSpec(
+    "Observed interaction distribution",
+    "interaction outcome",
+)
+
+
 def display_name(name: str) -> str:
     """Return a thesis-friendly dataset label.
 
@@ -654,6 +708,33 @@ def plot_relative_time_histogram(ax: Axes, timestamps: np.ndarray, color: str) -
     ax.grid(True, alpha=0.2)
 
 
+def response_signal_for_plot(
+    canonical: CanonicalInteractions,
+    summary: DatasetSummary,
+) -> tuple[np.ndarray, ResponseSignalSpec]:
+    """Return response values and plot metadata for one dataset.
+
+    Args:
+        canonical: Loaded canonical dataset.
+        summary: Scalar dataset summary for label selection.
+
+    Returns:
+        Tuple of numeric values and response plot metadata.
+
+    """
+    if summary.name == "amazonbook":
+        return np.asarray(canonical.label), AMAZONBOOK_RESPONSE_SPEC
+
+    if canonical.raw_target is not None:
+        spec = RAW_TARGET_RESPONSE_SPECS.get(summary.name, DEFAULT_RAW_TARGET_RESPONSE_SPEC)
+        return np.asarray(canonical.raw_target), spec
+
+    if np.any(canonical.sign != canonical.sign[0]):
+        return np.asarray(canonical.sign), SIGNED_RESPONSE_SPEC
+
+    return np.asarray(canonical.label), LABEL_RESPONSE_SPEC
+
+
 def plot_response_distribution(
     ax: Axes,
     canonical: CanonicalInteractions,
@@ -672,50 +753,10 @@ def plot_response_distribution(
         None. The axes are modified in place.
 
     """
-    value_labels: dict[float, str] | None = None
-
-    if summary.name in {"movielens1m", "movielens20m"} and canonical.raw_target is not None:
-        response_values = np.asarray(canonical.raw_target)
-        response_label = "Rating distribution"
-        response_axis_label = "rating"
-    elif summary.name == "kuairec_v2" and canonical.raw_target is not None:
-        response_values = np.asarray(canonical.raw_target)
-        response_label = "Watch-ratio distribution"
-        response_axis_label = "watch ratio"
-    elif summary.name == "kuairand1k" and canonical.raw_target is not None:
-        response_values = np.asarray(canonical.raw_target)
-        response_label = "Normalized watch-time distribution"
-        response_axis_label = "play time / video duration"
-    elif summary.name == "taobao" and canonical.raw_target is not None:
-        response_values = np.asarray(canonical.raw_target)
-        response_label = "Interaction-type distribution"
-        response_axis_label = "interaction type"
-        value_labels = {
-            0.0: "page view",
-            1.0: "favorite",
-            2.0: "cart",
-            3.0: "purchase",
-        }
-    elif summary.name == "amazonbook":
-        response_values = np.asarray(canonical.label)
-        response_label = "Observed interaction distribution"
-        response_axis_label = "interaction outcome"
-        value_labels = {1.0: "observed interaction"}
-    elif canonical.raw_target is not None:
-        response_values = np.asarray(canonical.raw_target)
-        response_label = "Response-value distribution"
-        response_axis_label = "response value"
-    elif np.any(canonical.sign != canonical.sign[0]):
-        response_values = np.asarray(canonical.sign)
-        response_label = "Signed-feedback distribution"
-        response_axis_label = "signed feedback score"
-    else:
-        response_values = np.asarray(canonical.label)
-        response_label = "Observed interaction distribution"
-        response_axis_label = "interaction outcome"
+    response_values, response_spec = response_signal_for_plot(canonical, summary)
 
     finite_values = response_values[np.isfinite(response_values)]
-    ax.set_title(response_label)
+    ax.set_title(response_spec.label)
 
     if finite_values.size == 0:
         ax.axis("off")
@@ -729,8 +770,8 @@ def plot_response_distribution(
     if np.unique(sample_values).size <= 12:
         unique_values, counts = np.unique(finite_values, return_counts=True)
         tick_labels = [
-            value_labels.get(float(value), format_scalar(value))
-            if value_labels is not None
+            response_spec.value_labels.get(float(value), format_scalar(value))
+            if response_spec.value_labels is not None
             else format_scalar(value)
             for value in unique_values
         ]
@@ -741,11 +782,11 @@ def plot_response_distribution(
             edgecolor="black",
             linewidth=0.4,
         )
-        ax.set_xlabel(response_axis_label)
+        ax.set_xlabel(response_spec.axis_label)
         ax.set_ylabel("number of interactions")
     else:
         ax.hist(finite_values, bins=40, color=color, edgecolor="white")
-        ax.set_xlabel(response_axis_label)
+        ax.set_xlabel(response_spec.axis_label)
         ax.set_ylabel("number of interactions")
     ax.grid(True, axis="y", alpha=0.2)
 
