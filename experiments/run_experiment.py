@@ -1621,9 +1621,7 @@ def normalize_benchmark_config_overrides(
         int(lr_scheduler_patience) if lr_scheduler_patience is not None else None
     )
     grad_clip_norm = raw_config.get("grad_clip_norm")
-    normalized["grad_clip_norm"] = (
-        float(grad_clip_norm) if grad_clip_norm is not None else None
-    )
+    normalized["grad_clip_norm"] = float(grad_clip_norm) if grad_clip_norm is not None else None
     single_branch_layers = raw_config.get("single_branch_gnn_layers")
     normalized["single_branch_gnn_layers"] = (
         int(single_branch_layers) if single_branch_layers is not None else None

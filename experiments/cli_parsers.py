@@ -9,12 +9,32 @@ from src.utils.cli_parsers import (
     BENCHMARK_TIER_CHOICES,
     PRESET_CHOICES,
     add_change_note_arg,
+    add_device_and_data_dir_args,
     add_execution_tracking_group,
+    add_mlflow_destination_args,
     add_overwrite_checkpoint_arg,
 )
 
 from experiments.ablation_configs import ABLATION_VARIANTS
 from experiments.recipes import formal_profile_names, recipe_names, search_space_names
+
+
+def _formal_run_profile_hint(message: str) -> str:
+    """Return a formal-run hint when a profile slug is passed to the wrong CLI."""
+    marker = "unrecognized arguments:"
+    if marker not in message:
+        return ""
+
+    unrecognized = message.split(marker, maxsplit=1)[1].strip().split()
+    if not unrecognized:
+        return ""
+
+    profiles = set(formal_profile_names())
+    matching_profile = next((arg for arg in unrecognized if arg in profiles), None)
+    if matching_profile is None:
+        return ""
+
+    return f"\n\nDid you mean to run:\n  uv run formal-run --profile {matching_profile} ?"
 
 
 def build_run_experiment_parser() -> argparse.ArgumentParser:
@@ -30,19 +50,7 @@ def build_run_experiment_parser() -> argparse.ArgumentParser:
 
         def error(self, message: str) -> typing.NoReturn:
             """Override error to suggest formal-run command if a profile name is passed."""
-            if "unrecognized arguments" in message:
-                try:
-                    unrecognized_part = message.split("unrecognized arguments:")[-1].strip()
-                    unrecognized = unrecognized_part.split()
-                    profiles = formal_profile_names()
-                    for arg in unrecognized:
-                        if arg in profiles:
-                            message += (
-                                f"\n\nDid you mean to run:\n  uv run formal-run --profile {arg} ?"
-                            )
-                            break
-                except Exception:
-                    pass
+            message += _formal_run_profile_hint(message)
             super().error(message)
 
     parser = ExperimentArgumentParser(description="Run a U-CaGNN experiment")
@@ -253,8 +261,13 @@ def build_search_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print resolved bounds and base configs without training.",
     )
-    ex.add_argument("--device", default="cuda", help="Device for training trials.")
-    ex.add_argument("--data-dir", default="data", help="Dataset root directory.")
+    add_device_and_data_dir_args(
+        ex,
+        device_default="cuda",
+        data_dir_default="data",
+        device_help="Device for training trials.",
+        data_dir_help="Dataset root directory.",
+    )
     ex.add_argument(
         "--mlflow",
         dest="no_mlflow",
@@ -267,15 +280,11 @@ def build_search_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable MLflow tracking for trial runs. This is the search default.",
     )
-    ex.add_argument(
-        "--mlflow-tracking-uri",
-        default=None,
-        help="Override MLflow tracking URI for trial runs.",
-    )
-    ex.add_argument(
-        "--mlflow-experiment-name",
-        default="ucagnn-optuna",
-        help="MLflow experiment name for trial runs.",
+    add_mlflow_destination_args(
+        ex,
+        experiment_name_default="ucagnn-optuna",
+        tracking_uri_help="Override MLflow tracking URI for trial runs.",
+        experiment_name_help="MLflow experiment name for trial runs.",
     )
     add_overwrite_checkpoint_arg(
         ex,

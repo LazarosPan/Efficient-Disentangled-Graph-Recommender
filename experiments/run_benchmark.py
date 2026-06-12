@@ -112,6 +112,7 @@ PLAN_COMPARISON_FIELDS = tuple(
     for field_name in NORMALIZED_BENCHMARK_FIELDS
     if field_name not in RUNTIME_ONLY_BENCHMARK_FIELDS
 )
+BenchmarkPlanItem = tuple[str, str, str, str | None, str, tuple[int, ...]]
 
 
 def _write_state(payload: dict[str, object]) -> None:
@@ -633,7 +634,7 @@ def _benchmark_num_neighbors_summary(
 
 def build_benchmark_plan(
     args: argparse.Namespace | Mapping[str, object] | object,
-) -> list[tuple[str, str, str, str | None, str, tuple[int, ...]]]:
+) -> list[BenchmarkPlanItem]:
     """Build the ordered benchmark execution plan.
 
     The semantic thesis matrix remains dataset * preset, but the
@@ -677,6 +678,48 @@ def build_benchmark_plan(
         for graph_policy in graph_policy_values
         for num_neighbors in num_neighbor_values_by_dataset[dataset]
     ]
+
+
+def _benchmark_item_label(
+    dataset: str,
+    preset: str,
+    lr_scheduler: str,
+    preprocessing_preset: str | None,
+    graph_policy: str,
+    neighbor_label: str,
+) -> str:
+    """Return the shared human-readable label for one benchmark item."""
+    return (
+        f"{dataset} / {preset} / {lr_scheduler} "
+        f"/ {preprocessing_preset or 'default'} / {graph_policy} / nbr{neighbor_label}"
+    )
+
+
+def _record_benchmark_failure(
+    failure_notes: list[str],
+    *,
+    dataset: str,
+    preset: str,
+    lr_scheduler: str,
+    preprocessing_preset: str | None,
+    graph_policy: str,
+    neighbor_label: str,
+    exc: Exception,
+) -> None:
+    """Log and store one benchmark failure through the shared format."""
+    item_label = _benchmark_item_label(
+        dataset,
+        preset,
+        lr_scheduler,
+        preprocessing_preset,
+        graph_policy,
+        neighbor_label,
+    )
+    failure_notes.append(
+        f"{item_label}: {type(exc).__name__}: {exc}",
+    )
+    logger.error("FAILED: %s", exc)
+    traceback.print_exception(type(exc), exc, exc.__traceback__)
 
 
 def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> int:
@@ -793,22 +836,29 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             neighbor_label = format_num_neighbors_payload(effective_neighbor_list) or ""
         except Exception as e:
             failed += 1
-            failure_notes.append(
-                (
-                    f"{dataset} / {preset} / {lr_scheduler} "
-                    f"/ {preprocessing_preset or 'default'} / {graph_policy} "
-                    f"/ nbr{neighbor_label}: {type(e).__name__}: {e}"
-                ),
+            _record_benchmark_failure(
+                failure_notes,
+                dataset=dataset,
+                preset=preset,
+                lr_scheduler=lr_scheduler,
+                preprocessing_preset=preprocessing_preset,
+                graph_policy=graph_policy,
+                neighbor_label=neighbor_label,
+                exc=e,
             )
-            logger.error(f"FAILED: {e}")
-            traceback.print_exc()
             continue
 
         print(f"\n{'=' * 70}")
         print(
-            "["
-            f"{i}/{len(experiments)}] {dataset} / {preset} / {lr_scheduler} "
-            f"/ {preprocessing_preset or 'default'} / {graph_policy} / nbr{neighbor_label}",
+            f"[{i}/{len(experiments)}] "
+            + _benchmark_item_label(
+                dataset,
+                preset,
+                lr_scheduler,
+                preprocessing_preset,
+                graph_policy,
+                neighbor_label,
+            ),
         )
         print("=" * 70)
 
@@ -826,15 +876,16 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             )
         except Exception as e:
             failed += 1
-            failure_notes.append(
-                (
-                    f"{dataset} / {preset} / {lr_scheduler} "
-                    f"/ {preprocessing_preset or 'default'} / {graph_policy} "
-                    f"/ nbr{neighbor_label}: {type(e).__name__}: {e}"
-                ),
+            _record_benchmark_failure(
+                failure_notes,
+                dataset=dataset,
+                preset=preset,
+                lr_scheduler=lr_scheduler,
+                preprocessing_preset=preprocessing_preset,
+                graph_policy=graph_policy,
+                neighbor_label=neighbor_label,
+                exc=e,
             )
-            logger.error(f"FAILED: {e}")
-            traceback.print_exc()
             continue
 
         existing = tracker.find_latest_batch_experiment(
@@ -970,16 +1021,16 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
 
         except Exception as e:
             failed += 1
-            failure_notes.append(
-                (
-                    f"{dataset} / {preset} / {lr_scheduler} / "
-                    f"{preprocessing_preset or 'default'} / {graph_policy} "
-                    f"/ nbr{neighbor_label}: "
-                    f"{type(e).__name__}: {e}"
-                ),
+            _record_benchmark_failure(
+                failure_notes,
+                dataset=dataset,
+                preset=preset,
+                lr_scheduler=lr_scheduler,
+                preprocessing_preset=preprocessing_preset,
+                graph_policy=graph_policy,
+                neighbor_label=neighbor_label,
+                exc=e,
             )
-            logger.error(f"FAILED: {e}")
-            traceback.print_exc()
             continue
 
     sorted_results = sorted(

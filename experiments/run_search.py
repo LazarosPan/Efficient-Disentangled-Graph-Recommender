@@ -10,7 +10,7 @@ import json
 import logging
 import math
 import traceback
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -91,7 +91,6 @@ SEARCH_PARAMETER_FIELDS = frozenset(
         "use_features",
     },
 )
-SUPPORTED_PARAMETER_TYPES = frozenset(("float", "grid_float", "int", "categorical", "fanout"))
 TRIAL_ATTRIBUTE_TRAIN_METRICS = (
     "training_time_s",
     "peak_vram_mb",
@@ -161,6 +160,11 @@ class SearchSpaceSpec:
     trials: int
     config_overrides: dict[str, Any]
     parameters: dict[str, dict[str, Any]]
+
+
+ParameterValidator = Callable[[str, Mapping[str, Any]], None]
+DistributionPayloadBuilder = Callable[[str, Mapping[str, Any], int | None], dict[str, Any]]
+ParameterSuggester = Callable[[optuna.Trial, str, str, Mapping[str, Any]], Any]
 
 
 def _slugify_fragment(raw: object) -> str:
@@ -282,6 +286,11 @@ def _expand_grid_float_choices(field_name: str, spec: Mapping[str, Any]) -> list
     return choices
 
 
+def _validate_grid_float_parameter(field_name: str, spec: Mapping[str, Any]) -> None:
+    """Validate a grid-float Optuna parameter spec."""
+    _expand_grid_float_choices(field_name, spec)
+
+
 def _validate_categorical_parameter(field_name: str, spec: Mapping[str, Any]) -> None:
     """Validate a categorical Optuna parameter spec."""
     choices = spec.get("choices")
@@ -313,6 +322,16 @@ def _validate_fanout_parameter(field_name: str, spec: Mapping[str, Any]) -> None
                 )
 
 
+_PARAMETER_VALIDATORS: dict[str, ParameterValidator] = {
+    "float": _validate_numeric_parameter,
+    "grid_float": _validate_grid_float_parameter,
+    "int": _validate_numeric_parameter,
+    "categorical": _validate_categorical_parameter,
+    "fanout": _validate_fanout_parameter,
+}
+SUPPORTED_PARAMETER_TYPES = frozenset(_PARAMETER_VALIDATORS)
+
+
 def _validate_parameter_specs(parameters: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """Validate search parameter specs and return a plain dict copy."""
     _validate_catalog_fields(
@@ -324,21 +343,15 @@ def _validate_parameter_specs(parameters: Mapping[str, Any]) -> dict[str, dict[s
     for field_name, raw_spec in parameters.items():
         spec = dict(_require_mapping(raw_spec, field_name=f"parameters.{field_name}"))
         parameter_type = str(spec.get("type", "")).lower()
-        if parameter_type not in SUPPORTED_PARAMETER_TYPES:
+        validator = _PARAMETER_VALIDATORS.get(parameter_type)
+        if validator is None:
             raise ValueError(
                 (
                     f"parameters.{field_name}.type must be one of "
                     f"{', '.join(sorted(SUPPORTED_PARAMETER_TYPES))}."
                 ),
             )
-        if parameter_type in {"float", "int"}:
-            _validate_numeric_parameter(field_name, spec)
-        elif parameter_type == "grid_float":
-            _expand_grid_float_choices(field_name, spec)
-        elif parameter_type == "categorical":
-            _validate_categorical_parameter(field_name, spec)
-        elif parameter_type == "fanout":
-            _validate_fanout_parameter(field_name, spec)
+        validator(field_name, spec)
         normalized[field_name] = spec
     return normalized
 
@@ -595,6 +608,87 @@ def _choice_labels(choices: list[Any]) -> tuple[list[str], dict[str, Any]]:
     return labels, values_by_label
 
 
+def _grid_float_distribution_payload(
+    field_name: str,
+    spec: Mapping[str, Any],
+    _depth: int | None,
+) -> dict[str, Any]:
+    """Return Optuna distribution payload for an expanded float grid."""
+    return {
+        "type": "categorical",
+        "choices": _expand_grid_float_choices(field_name, spec),
+    }
+
+
+def _categorical_distribution_payload(
+    _field_name: str,
+    spec: Mapping[str, Any],
+    _depth: int | None,
+) -> dict[str, Any]:
+    """Return Optuna distribution payload for categorical choices."""
+    return {"type": "categorical", "choices": list(spec["choices"])}
+
+
+def _float_distribution_payload(
+    _field_name: str,
+    spec: Mapping[str, Any],
+    _depth: int | None,
+) -> dict[str, Any]:
+    """Return Optuna distribution payload for a float range."""
+    return {
+        "type": "float",
+        "low": float(spec["low"]),
+        "high": float(spec["high"]),
+        "log": bool(spec.get("log", False)),
+        "step": float(spec["step"]) if "step" in spec else None,
+    }
+
+
+def _int_distribution_payload(
+    _field_name: str,
+    spec: Mapping[str, Any],
+    _depth: int | None,
+) -> dict[str, Any]:
+    """Return Optuna distribution payload for an integer range."""
+    return {
+        "type": "int",
+        "low": int(spec["low"]),
+        "high": int(spec["high"]),
+        "log": bool(spec.get("log", False)),
+        "step": int(spec.get("step", 1)),
+    }
+
+
+def _fanout_distribution_payload(
+    _field_name: str,
+    spec: Mapping[str, Any],
+    depth: int | None,
+) -> dict[str, Any]:
+    """Return Optuna distribution payload for the active fan-out depth."""
+    if depth is None:
+        raise ValueError("fanout distribution payload requires a depth.")
+    choices_by_depth = _require_mapping(
+        spec["choices_by_depth"],
+        field_name="parameters.num_neighbors.choices_by_depth",
+    )
+    raw_choices = choices_by_depth.get(str(depth)) or choices_by_depth.get(depth)
+    if raw_choices is None:
+        raise ValueError(f"num_neighbors has no choices for active depth {depth}.")
+    choices = resolve_profile_num_neighbors({"num_neighbors": raw_choices})
+    if choices is None:
+        raise ValueError(f"num_neighbors choices for active depth {depth} are empty.")
+    return {"type": "categorical", "depth": depth, "choices": choices}
+
+
+_DISTRIBUTION_PAYLOAD_BUILDERS: dict[str, DistributionPayloadBuilder] = {
+    "grid_float": _grid_float_distribution_payload,
+    "categorical": _categorical_distribution_payload,
+    "float": _float_distribution_payload,
+    "int": _int_distribution_payload,
+    "fanout": _fanout_distribution_payload,
+}
+
+
 def _parameter_distribution_payload(
     field_name: str,
     spec: Mapping[str, Any],
@@ -610,44 +704,10 @@ def _parameter_distribution_payload(
     through ``sampled_params``.
     """
     parameter_type = str(spec["type"]).lower()
-    if parameter_type == "grid_float":
-        return {
-            "type": "categorical",
-            "choices": _expand_grid_float_choices(field_name, spec),
-        }
-    if parameter_type == "categorical":
-        return {"type": "categorical", "choices": list(spec["choices"])}
-    if parameter_type == "float":
-        return {
-            "type": "float",
-            "low": float(spec["low"]),
-            "high": float(spec["high"]),
-            "log": bool(spec.get("log", False)),
-            "step": float(spec["step"]) if "step" in spec else None,
-        }
-    if parameter_type == "int":
-        return {
-            "type": "int",
-            "low": int(spec["low"]),
-            "high": int(spec["high"]),
-            "log": bool(spec.get("log", False)),
-            "step": int(spec.get("step", 1)),
-        }
-    if parameter_type == "fanout":
-        if depth is None:
-            raise ValueError("fanout distribution payload requires a depth.")
-        choices_by_depth = _require_mapping(
-            spec["choices_by_depth"],
-            field_name="parameters.num_neighbors.choices_by_depth",
-        )
-        raw_choices = choices_by_depth.get(str(depth)) or choices_by_depth.get(depth)
-        if raw_choices is None:
-            raise ValueError(f"num_neighbors has no choices for active depth {depth}.")
-        choices = resolve_profile_num_neighbors({"num_neighbors": raw_choices})
-        if choices is None:
-            raise ValueError(f"num_neighbors choices for active depth {depth} are empty.")
-        return {"type": "categorical", "depth": depth, "choices": choices}
-    raise ValueError(f"Unsupported parameter type: {parameter_type}")
+    builder = _DISTRIBUTION_PAYLOAD_BUILDERS.get(parameter_type)
+    if builder is None:
+        raise ValueError(f"Unsupported parameter type: {parameter_type}")
+    return builder(field_name, spec, depth)
 
 
 def _distribution_fingerprint(payload: Mapping[str, Any]) -> str:
@@ -686,6 +746,70 @@ def _suggest_categorical_value(
     return values_by_label[trial.suggest_categorical(optuna_param_name, labels)]
 
 
+def _suggest_float_parameter(
+    trial: optuna.Trial,
+    _field_name: str,
+    optuna_param_name: str,
+    spec: Mapping[str, Any],
+) -> Any:
+    """Suggest a float Optuna parameter value."""
+    return trial.suggest_float(
+        optuna_param_name,
+        float(spec["low"]),
+        float(spec["high"]),
+        log=bool(spec.get("log", False)),
+        step=float(spec["step"]) if "step" in spec else None,
+    )
+
+
+def _suggest_grid_float_parameter(
+    trial: optuna.Trial,
+    field_name: str,
+    optuna_param_name: str,
+    spec: Mapping[str, Any],
+) -> Any:
+    """Suggest a categorical value from an expanded float grid."""
+    return _suggest_categorical_value(
+        trial,
+        optuna_param_name,
+        _expand_grid_float_choices(field_name, spec),
+    )
+
+
+def _suggest_int_parameter(
+    trial: optuna.Trial,
+    _field_name: str,
+    optuna_param_name: str,
+    spec: Mapping[str, Any],
+) -> Any:
+    """Suggest an integer Optuna parameter value."""
+    return trial.suggest_int(
+        optuna_param_name,
+        int(spec["low"]),
+        int(spec["high"]),
+        step=int(spec.get("step", 1)),
+        log=bool(spec.get("log", False)),
+    )
+
+
+def _suggest_categorical_parameter(
+    trial: optuna.Trial,
+    _field_name: str,
+    optuna_param_name: str,
+    spec: Mapping[str, Any],
+) -> Any:
+    """Suggest a categorical Optuna parameter value."""
+    return _suggest_categorical_value(trial, optuna_param_name, list(spec["choices"]))
+
+
+_PARAMETER_SUGGESTERS: dict[str, ParameterSuggester] = {
+    "float": _suggest_float_parameter,
+    "grid_float": _suggest_grid_float_parameter,
+    "int": _suggest_int_parameter,
+    "categorical": _suggest_categorical_parameter,
+}
+
+
 def _suggest_parameter_value(
     trial: optuna.Trial,
     field_name: str,
@@ -695,30 +819,9 @@ def _suggest_parameter_value(
     parameter_type = str(spec["type"]).lower()
     optuna_param_name = _parameter_storage_name(field_name, spec)
     trial.set_user_attr(f"optuna_param_name.{field_name}", optuna_param_name)
-    if parameter_type == "float":
-        return trial.suggest_float(
-            optuna_param_name,
-            float(spec["low"]),
-            float(spec["high"]),
-            log=bool(spec.get("log", False)),
-            step=float(spec["step"]) if "step" in spec else None,
-        )
-    if parameter_type == "grid_float":
-        return _suggest_categorical_value(
-            trial,
-            optuna_param_name,
-            _expand_grid_float_choices(field_name, spec),
-        )
-    if parameter_type == "int":
-        return trial.suggest_int(
-            optuna_param_name,
-            int(spec["low"]),
-            int(spec["high"]),
-            step=int(spec.get("step", 1)),
-            log=bool(spec.get("log", False)),
-        )
-    if parameter_type == "categorical":
-        return _suggest_categorical_value(trial, optuna_param_name, list(spec["choices"]))
+    suggester = _PARAMETER_SUGGESTERS.get(parameter_type)
+    if suggester is not None:
+        return suggester(trial, field_name, optuna_param_name, spec)
     raise ValueError(f"Unsupported non-fanout parameter type: {parameter_type}")
 
 
