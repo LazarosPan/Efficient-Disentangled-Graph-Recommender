@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+
+NamePartFormatter = Callable[[object], str]
 
 
 def _config_value(config: object, field_name: str, default: object = None) -> object:
@@ -21,6 +23,34 @@ def _config_int(config: object, field_name: str, default: int = 0) -> int:
     """Return one integer config field."""
     value = _config_value(config, field_name, default)
     return int(value) if value is not None else default
+
+
+def _format_int_part(value: object) -> str:
+    """Format a config value as an integer name fragment."""
+    return str(int(value))
+
+
+def _optional_name_part(
+    value: object,
+    prefix: str,
+    formatter: NamePartFormatter = str,
+) -> str | None:
+    """Return a prefixed name fragment only when ``value`` is present."""
+    if value is None:
+        return None
+    return f"{prefix}{formatter(value)}"
+
+
+def _non_default_name_part(value: object, default: object, prefix: str) -> str | None:
+    """Return a prefixed name fragment only when ``value`` differs from default."""
+    if value in (None, default):
+        return None
+    return f"{prefix}{value}"
+
+
+def _extend_name_parts(parts: list[str], candidates: list[str | None]) -> None:
+    """Append all present candidate name fragments to ``parts``."""
+    parts.extend(part for part in candidates if part is not None)
 
 
 def _max_gnn_layers(config: object) -> int:
@@ -93,44 +123,34 @@ def build_canonical_experiment_name(
         parts.append(f"branchL{interest_layers}-{conformity_layers}")
 
     num_neighbors_label = _num_neighbors_label(config)
-    if num_neighbors_label is not None:
-        parts.append(f"nbr{num_neighbors_label}")
-
     sample_interactions = _config_value(config, "sample_interactions")
-    if sample_interactions is not None:
-        parts.append(f"sample{int(sample_interactions)}")
-
     loader_max_rows = _config_value(config, "loader_max_rows")
-    if loader_max_rows is not None:
-        parts.append(f"loadrows{int(loader_max_rows)}")
-
     preprocessing_preset = _config_value(config, "preprocessing_preset")
-    if preprocessing_preset is not None:
-        parts.append(f"ppreset{preprocessing_preset}")
-
     graph_policy = str(_config_value(config, "graph_policy", "observed"))
-    if graph_policy != "observed":
-        parts.append(f"graph{graph_policy}")
-
     derived_split_mode = str(
         _config_value(config, "derived_split_mode", "per_user_temporal"),
     )
-    if derived_split_mode != "per_user_temporal":
-        parts.append(f"split{derived_split_mode}")
-
-    if _config_bool(config, "use_features", False):
-        parts.append("feat")
-
     feature_policy = _config_value(config, "feature_policy", "thesis_default")
-    if feature_policy not in (None, "thesis_default"):
-        parts.append(f"fpolicy{feature_policy}")
-
-    parts.append(f"lr-{_config_value(config, 'lr_scheduler', 'none')}")
-
-    if intervention:
-        parts.append(intervention)
-
-    parts.append(f"seed{_config_int(config, 'seed')}")
+    _extend_name_parts(
+        parts,
+        [
+            _optional_name_part(num_neighbors_label, "nbr"),
+            _optional_name_part(sample_interactions, "sample", _format_int_part),
+            _optional_name_part(loader_max_rows, "loadrows", _format_int_part),
+            _optional_name_part(preprocessing_preset, "ppreset"),
+            _non_default_name_part(graph_policy, "observed", "graph"),
+            _non_default_name_part(
+                derived_split_mode,
+                "per_user_temporal",
+                "split",
+            ),
+            "feat" if _config_bool(config, "use_features", False) else None,
+            _non_default_name_part(feature_policy, "thesis_default", "fpolicy"),
+            f"lr-{_config_value(config, 'lr_scheduler', 'none')}",
+            intervention,
+            f"seed{_config_int(config, 'seed')}",
+        ],
+    )
     return "_".join(parts)
 
 

@@ -397,6 +397,7 @@ __all__ = [
     "add_batch_execution_args",
     "add_change_note_arg",
     "add_device_and_data_dir_args",
+    "add_execution_tracking_group",
     "add_mlflow_destination_args",
     "add_overwrite_checkpoint_arg",
     "build_data_information_parser",

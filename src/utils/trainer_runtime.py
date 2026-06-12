@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,28 @@ REQUIRED_CHECKPOINT_KEYS = frozenset(
         "config",
     },
 )
+_TRAINING_RESOURCE_METRIC_FIELDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("avg_gpu_utilization_pct", ("gpu_utilization_pct", "train_avg_gpu_utilization_pct")),
+    ("max_gpu_utilization_pct", ("max_gpu_utilization_pct", "train_max_gpu_utilization_pct")),
+    ("pytorch_peak_allocated_mb", ("train_peak_vram_allocated_mb",)),
+    ("pytorch_peak_reserved_mb", ("train_peak_vram_reserved_mb",)),
+    ("nvidia_peak_memory_used_mb", ("train_peak_gpu_memory_used_mb",)),
+)
+
+
+def _training_resource_metric_values(
+    resource_stats: TrainingResourceStats,
+    peak_vram_mb: float | None,
+) -> Iterator[tuple[str, float]]:
+    """Yield canonical train-resource metric names and values."""
+    for attr_name, metric_names in _TRAINING_RESOURCE_METRIC_FIELDS:
+        value = getattr(resource_stats, attr_name)
+        if value is None:
+            continue
+        for metric_name in metric_names:
+            yield metric_name, float(value)
+    if peak_vram_mb is not None:
+        yield "peak_vram_mb", float(peak_vram_mb)
 
 
 def autocast_context(
@@ -318,63 +341,59 @@ class TrainerRuntime:
     def _build_scheduler(self) -> Any:
         """Build the configured learning-rate scheduler for the optimizer."""
         scheduler_name = self.config.lr_scheduler
-        if scheduler_name == "none":
-            return None
-        if scheduler_name == "plateau":
-            return ReduceLROnPlateau(
+        scheduler_builders: dict[str, Callable[[], Any]] = {
+            "none": lambda: None,
+            "plateau": lambda: ReduceLROnPlateau(
                 self.optimizer,
                 mode="max",
                 factor=self.config.lr_scheduler_factor,
                 patience=self.config.lr_scheduler_patience,
-            )
-        if scheduler_name == "step":
-            return StepLR(
+            ),
+            "step": lambda: StepLR(
                 self.optimizer,
                 step_size=max(1, self.config.epochs // 10),
                 gamma=self.config.lr_scheduler_factor,
-            )
-        if scheduler_name == "multi_step":
-            return MultiStepLR(
+            ),
+            "multi_step": lambda: MultiStepLR(
                 self.optimizer,
                 milestones=[
                     max(1, int(self.config.epochs * 0.3)),
                     max(1, int(self.config.epochs * 0.8)),
                 ],
                 gamma=self.config.lr_scheduler_factor,
-            )
-        if scheduler_name == "exponential":
-            return ExponentialLR(
+            ),
+            "exponential": lambda: ExponentialLR(
                 self.optimizer,
                 gamma=max(0.01, self.config.lr_scheduler_factor),
-            )
-        if scheduler_name == "cosine":
-            return CosineAnnealingLR(
+            ),
+            "cosine": lambda: CosineAnnealingLR(
                 self.optimizer,
                 T_max=max(1, self.config.epochs),
-            )
-        if scheduler_name == "cosine_restart":
-            return CosineAnnealingWarmRestarts(
+            ),
+            "cosine_restart": lambda: CosineAnnealingWarmRestarts(
                 self.optimizer,
                 T_0=max(1, self.config.epochs // 10),
                 T_mult=2,
-            )
-        if scheduler_name == "polynomial":
-            exponent = max(0.1, self.config.lr_scheduler_factor)
-            return LambdaLR(
+            ),
+            "polynomial": lambda: LambdaLR(
                 self.optimizer,
                 lr_lambda=lambda epoch: max(
                     0.0,
-                    (1.0 - float(epoch) / float(self.config.epochs)) ** exponent,
+                    (1.0 - float(epoch) / float(self.config.epochs))
+                    ** max(0.1, self.config.lr_scheduler_factor),
                 ),
-            )
-        if scheduler_name == "linear":
-            return LinearLR(
+            ),
+            "linear": lambda: LinearLR(
                 self.optimizer,
                 start_factor=1.0,
                 end_factor=0.0,
                 total_iters=max(1, self.config.epochs),
-            )
-        raise ValueError(f"Unsupported lr_scheduler {scheduler_name!r}.")
+            ),
+        }
+        try:
+            return scheduler_builders[scheduler_name]()
+        except KeyError as exc:
+            raise ValueError(f"Unsupported lr_scheduler {scheduler_name!r}.") from exc
 
     def _get_train_interactions(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Return training user/item tensors in the shared index space."""
@@ -718,65 +737,14 @@ class TrainerRuntime:
                 [],
                 self.model,
             )
-            if resource_stats.avg_gpu_utilization_pct is not None:
+            for metric_name, metric_value in _training_resource_metric_values(
+                resource_stats,
+                peak_vram_mb,
+            ):
                 self.experiment_logger.log_metric(
                     self.exp_id,
-                    "gpu_utilization_pct",
-                    resource_stats.avg_gpu_utilization_pct,
-                    epoch=epoch,
-                    split="train",
-                )
-                self.experiment_logger.log_metric(
-                    self.exp_id,
-                    "train_avg_gpu_utilization_pct",
-                    resource_stats.avg_gpu_utilization_pct,
-                    epoch=epoch,
-                    split="train",
-                )
-            if resource_stats.max_gpu_utilization_pct is not None:
-                self.experiment_logger.log_metric(
-                    self.exp_id,
-                    "max_gpu_utilization_pct",
-                    resource_stats.max_gpu_utilization_pct,
-                    epoch=epoch,
-                    split="train",
-                )
-                self.experiment_logger.log_metric(
-                    self.exp_id,
-                    "train_max_gpu_utilization_pct",
-                    resource_stats.max_gpu_utilization_pct,
-                    epoch=epoch,
-                    split="train",
-                )
-            if resource_stats.pytorch_peak_allocated_mb is not None:
-                self.experiment_logger.log_metric(
-                    self.exp_id,
-                    "train_peak_vram_allocated_mb",
-                    resource_stats.pytorch_peak_allocated_mb,
-                    epoch=epoch,
-                    split="train",
-                )
-            if resource_stats.pytorch_peak_reserved_mb is not None:
-                self.experiment_logger.log_metric(
-                    self.exp_id,
-                    "train_peak_vram_reserved_mb",
-                    resource_stats.pytorch_peak_reserved_mb,
-                    epoch=epoch,
-                    split="train",
-                )
-            if resource_stats.nvidia_peak_memory_used_mb is not None:
-                self.experiment_logger.log_metric(
-                    self.exp_id,
-                    "train_peak_gpu_memory_used_mb",
-                    resource_stats.nvidia_peak_memory_used_mb,
-                    epoch=epoch,
-                    split="train",
-                )
-            if peak_vram_mb is not None:
-                self.experiment_logger.log_metric(
-                    self.exp_id,
-                    "peak_vram_mb",
-                    peak_vram_mb,
+                    metric_name,
+                    metric_value,
                     epoch=epoch,
                     split="train",
                 )
@@ -785,29 +753,12 @@ class TrainerRuntime:
                 f"val_{m}".replace("@", "_at_"): float(v) for m, v in val_metrics.items()
             }
             mlflow_metrics["train_loss"] = avg_loss
-            if resource_stats.avg_gpu_utilization_pct is not None:
-                mlflow_metrics["gpu_utilization_pct"] = resource_stats.avg_gpu_utilization_pct
-                mlflow_metrics["train_avg_gpu_utilization_pct"] = (
-                    resource_stats.avg_gpu_utilization_pct
-                )
-            if resource_stats.max_gpu_utilization_pct is not None:
-                mlflow_metrics["train_max_gpu_utilization_pct"] = (
-                    resource_stats.max_gpu_utilization_pct
-                )
-            if resource_stats.pytorch_peak_allocated_mb is not None:
-                mlflow_metrics["train_peak_vram_allocated_mb"] = (
-                    resource_stats.pytorch_peak_allocated_mb
-                )
-            if resource_stats.pytorch_peak_reserved_mb is not None:
-                mlflow_metrics["train_peak_vram_reserved_mb"] = (
-                    resource_stats.pytorch_peak_reserved_mb
-                )
-            if resource_stats.nvidia_peak_memory_used_mb is not None:
-                mlflow_metrics["train_peak_gpu_memory_used_mb"] = (
-                    resource_stats.nvidia_peak_memory_used_mb
-                )
-            if peak_vram_mb is not None:
-                mlflow_metrics["peak_vram_mb"] = peak_vram_mb
+            mlflow_metrics.update(
+                _training_resource_metric_values(
+                    resource_stats,
+                    peak_vram_mb,
+                ),
+            )
             self.mlflow_module.log_metrics(mlflow_metrics, step=epoch)
 
     def _update_early_stopping(
