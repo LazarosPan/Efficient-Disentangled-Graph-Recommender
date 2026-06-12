@@ -18,7 +18,7 @@ import logging
 import os
 import subprocess
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from importlib import metadata as importlib_metadata
 from pathlib import Path
@@ -75,6 +75,11 @@ from experiments.recipes import (
 logger = logging.getLogger("ucagnn")
 
 DB_PATH = THESIS_DB_PATH
+
+
+def _is_optuna_pruned_exception(exc: Exception) -> bool:
+    """Return whether an optional Optuna pruning callback stopped training."""
+    return exc.__class__.__name__ == "TrialPruned"
 _CHECKPOINT_IDENTITY_VERSION = 1
 _CHECKPOINT_HASH_LEN = 16
 _TRAINING_IDENTITY_FIELDS = (
@@ -1843,6 +1848,7 @@ def run_experiment(
     overwrite_checkpoint: bool = False,
     include_refined_diagnostics: bool = True,
     evaluate_test: bool = True,
+    training_epoch_callback: Callable[[int, Mapping[str, float], float], None] | None = None,
 ) -> dict:
     """Run a single experiment end-to-end.
 
@@ -1876,6 +1882,10 @@ def run_experiment(
             diagnostics during final test evaluation. Quick smoke validation can
             disable this so undefined tiny-slice diagnostics do not mask runtime
             coverage.
+        training_epoch_callback: Optional callback invoked after each validation
+            epoch with ``(epoch, val_metrics, epoch_time_s)``. Search workflows
+            use this for Optuna pruning; normal experiment entry points leave it
+            unset.
         evaluate_test: If True, run the final test evaluation and log test
             metrics. Exploratory validation-only workflows can disable this so
             test data stays reserved for promoted formal runs.
@@ -2175,6 +2185,7 @@ def run_experiment(
                             if should_persist_checkpoint
                             else None,
                             checkpoint_every=checkpoint_every,
+                            epoch_callback=training_epoch_callback,
                         )
                         resolved_checkpoint_path = current_checkpoint_path
                         canonical_name = build_canonical_experiment_name(
@@ -2268,6 +2279,7 @@ def run_experiment(
                     history=history,
                     checkpoint_path=resolved_checkpoint_path if should_persist_checkpoint else None,
                     checkpoint_every=checkpoint_every,
+                    epoch_callback=training_epoch_callback,
                 )
         else:
             history = history or {"train_loss": [], "val_metrics": []}
@@ -2382,10 +2394,11 @@ def run_experiment(
         }
     except Exception as exc:
         is_oom = is_cuda_oom_error(exc)
+        is_pruned = _is_optuna_pruned_exception(exc)
         failure_reason = f"{type(exc).__name__}: {exc}"
         experiment_logger.update_experiment_status(
             exp_id,
-            status="oom" if is_oom else "failed",
+            status="pruned" if is_pruned else ("oom" if is_oom else "failed"),
             failure_reason=failure_reason,
             oom_flag=is_oom,
         )
@@ -2393,7 +2406,7 @@ def run_experiment(
             try:
                 mlflow_module.set_tags(
                     {
-                        "status": "oom" if is_oom else "failed",
+                        "status": "pruned" if is_pruned else ("oom" if is_oom else "failed"),
                         "oom_flag": "true" if is_oom else "false",
                         "failure_reason": failure_reason[:500],
                         "failure_type": failure_reason.split(":", 1)[0],
@@ -2406,6 +2419,8 @@ def run_experiment(
         experiment_logger.close()
         if mlflow_module is not None:
             try:
+                if "is_pruned" in locals() and is_pruned:
+                    mlflow_status = "KILLED"
                 mlflow_module.end_run(status=mlflow_status)
             except Exception as exc:
                 logger.warning("Failed to close MLflow run cleanly: %s", exc)

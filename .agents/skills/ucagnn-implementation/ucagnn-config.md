@@ -69,13 +69,14 @@ For paper baselines, `build_config()` re-applies the paper-owned contract after 
 - `score_mix_min_weight=0.0` is the dataclass default; `preset_full()` sets it to `0.05` so learned fusion cannot collapse to interest-only when conformity/context are available, even if a current batch gives one component zero-valued scores.
 - `negative_sampling_strategy="standard"` is the dataclass default; `preset_full()` switches to DICE popularity-conditioned negatives with `n_negatives=1` and a stable `dice_branch_margin == dice_sampler_margin`.
 - `use_amp=True` is the default runtime path, and `amp_dtype` is fixed to `bfloat16`.
+- Core Optuna searches may tune `batch_size` as an exact categorical runtime/optimization knob while setting `auto_batch_size=False`. This tests the sampled batch size itself. Too-large CUDA batches fail as Optuna trials and the search continues, while formal recovery can still use auto-batch outside exact batch-size tuning.
 - `loss_weight_propensity_calibration=0.0` is opt-in and stays inactive unless model outputs, dataset targets, and explicit IPW/calibration config exist.
 - `distance_correlation_max_pairs=1024` and `uniformity_max_pairs=2048` cap quadratic auxiliary estimators while preserving deterministic hash-sampled coverage across epochs.
 
 ## Experiment-facing contract
 
 - The formal experiment grid is **dataset x preset**.
-- Support parameters such as `batch_size`, `num_neighbors`, `graph_policy`, and `lr_scheduler` are profile-owned runtime choices for U-CaGNN and tuned/fallback baselines, not thesis axes. Paper baselines lock their paper-owned values, including constant LR scheduling.
+- Support parameters such as `batch_size`, `num_neighbors`, `graph_policy`, and `lr_scheduler` are profile-owned runtime choices for U-CaGNN and tuned/fallback baselines, not thesis axes. U-CaGNN Optuna spaces can tune them for model selection, but final thesis tables should report them as selected runtime/optimization settings rather than as causal contributions. Paper baselines lock their paper-owned values, including constant LR scheduling.
 - Formal profiles and runtime config mappings may override existing score-fusion, loss-weight, auxiliary-schedule, and bounded-pair estimator fields so controlled causal-loss ablations are reproducible through the same checkpoint identity surface as the mainline.
 - Formal profiles may sweep `num_neighbors`, `graph_policy`, or preprocessing presets as lists, but each resolved run still receives one concrete value in the final `UCaGNNConfig`.
 - The default formal profile is `core-ucagnn-mainline` and targets the practical core datasets: `amazonbook`, `movielens1m`, `kuairec_v2`, and `kuairand1k`. Development, preprocessing-sweep, runtime-probe, `taobao`, and `movielens20m` profiles remain explicit instead of default catalog entries.

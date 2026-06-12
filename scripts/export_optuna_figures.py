@@ -56,6 +56,7 @@ DATASET_COLORS = {
 PARAMETER_LABELS = {
     "lr": "Learning rate",
     "weight_decay": "Weight decay",
+    "batch_size": "Training batch size",
     "lr_scheduler": "LR scheduler",
     "lr_scheduler_factor": "Plateau decay factor",
     "grad_clip_norm": "Gradient clipping norm",
@@ -90,6 +91,7 @@ PARAMETER_LABELS = {
 PROFILE_FALLBACK_PARAMS = (
     "lr",
     "weight_decay",
+    "batch_size",
     "conformity_gnn_layers",
     "interest_gnn_layers",
     "num_neighbors",

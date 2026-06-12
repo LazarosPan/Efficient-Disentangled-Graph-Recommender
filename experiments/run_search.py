@@ -23,7 +23,7 @@ from src.utils.cli_parsers import (
     normalize_benchmark_datasets_arg,
     resolve_benchmark_datasets,
 )
-from src.utils.config import BENCHMARK_CONFIG_FIELDS, UCaGNNConfig
+from src.utils.config import BENCHMARK_CONFIG_FIELDS, DEFAULT_SEED, UCaGNNConfig
 from src.utils.crru import (
     VALIDATION_ONLINE_CRRU_K_METRICS,
     VALIDATION_ONLINE_CRRU_METRIC,
@@ -59,6 +59,7 @@ SEARCH_PARAMETER_FIELDS = frozenset(
     {
         "lr",
         "weight_decay",
+        "batch_size",
         "lr_scheduler",
         "lr_scheduler_factor",
         "grad_clip_norm",
@@ -148,6 +149,28 @@ class ObjectiveSpec:
 
 
 @dataclass(frozen=True)
+class SamplerSpec:
+    """Resolved Optuna sampler settings for one search space."""
+
+    name: str = "tpe"
+    seed: int = DEFAULT_SEED
+    n_startup_trials: int = 12
+    multivariate: bool = True
+    group: bool = True
+    constant_liar: bool = False
+
+
+@dataclass(frozen=True)
+class PrunerSpec:
+    """Resolved Optuna pruner settings for one search space."""
+
+    name: str = "hyperband"
+    min_resource: int = 15
+    reduction_factor: int = 3
+    bootstrap_count: int = 4
+
+
+@dataclass(frozen=True)
 class SearchSpaceSpec:
     """Resolved catalog search-space definition."""
 
@@ -156,6 +179,8 @@ class SearchSpaceSpec:
     base_profile: str
     datasets: tuple[str, ...]
     objective: ObjectiveSpec
+    sampler: SamplerSpec
+    pruner: PrunerSpec
     max_epochs: int
     trials: int
     config_overrides: dict[str, Any]
@@ -225,6 +250,96 @@ def _normalize_objective(raw_objective: object) -> ObjectiveSpec:
     if direction not in {"maximize", "minimize"}:
         raise ValueError("objective.direction must be either 'maximize' or 'minimize'.")
     return ObjectiveSpec(metric=metric, split=split, direction=direction)
+
+
+def _normalize_sampler(raw_sampler: object) -> SamplerSpec:
+    """Resolve Optuna sampler settings from a search-space payload."""
+    if raw_sampler is None:
+        return SamplerSpec()
+    sampler = _require_mapping(raw_sampler, field_name="sampler")
+    name = str(sampler.get("name", "tpe")).lower()
+    if name not in {"tpe", "random"}:
+        raise ValueError("sampler.name must be one of: tpe, random.")
+    n_startup_trials = int(sampler.get("n_startup_trials", 12))
+    if n_startup_trials < 0:
+        raise ValueError("sampler.n_startup_trials must be >= 0.")
+    multivariate = bool(sampler.get("multivariate", True))
+    group = bool(sampler.get("group", True))
+    if group and not multivariate:
+        raise ValueError("sampler.group=true requires sampler.multivariate=true.")
+    return SamplerSpec(
+        name=name,
+        seed=int(sampler.get("seed", DEFAULT_SEED)),
+        n_startup_trials=n_startup_trials,
+        multivariate=multivariate,
+        group=group,
+        constant_liar=bool(sampler.get("constant_liar", False)),
+    )
+
+
+def _normalize_pruner(raw_pruner: object, *, max_epochs: int) -> PrunerSpec:
+    """Resolve Optuna pruner settings from a search-space payload."""
+    if raw_pruner is None:
+        return PrunerSpec()
+    pruner = _require_mapping(raw_pruner, field_name="pruner")
+    name = str(pruner.get("name", "hyperband")).lower()
+    if name not in {"hyperband", "successive_halving", "median", "none"}:
+        raise ValueError(
+            "pruner.name must be one of: hyperband, successive_halving, median, none.",
+        )
+    min_resource = int(pruner.get("min_resource", 15))
+    reduction_factor = int(pruner.get("reduction_factor", 3))
+    bootstrap_count = int(pruner.get("bootstrap_count", 4))
+    if min_resource < 1:
+        raise ValueError("pruner.min_resource must be >= 1.")
+    if min_resource > max_epochs and name != "none":
+        raise ValueError("pruner.min_resource must be <= max_epochs.")
+    if reduction_factor < 2:
+        raise ValueError("pruner.reduction_factor must be >= 2.")
+    if bootstrap_count < 0:
+        raise ValueError("pruner.bootstrap_count must be >= 0.")
+    return PrunerSpec(
+        name=name,
+        min_resource=min_resource,
+        reduction_factor=reduction_factor,
+        bootstrap_count=bootstrap_count,
+    )
+
+
+def _build_sampler(spec: SamplerSpec) -> optuna.samplers.BaseSampler:
+    """Instantiate the configured Optuna sampler."""
+    if spec.name == "random":
+        return optuna.samplers.RandomSampler(seed=spec.seed)
+    return optuna.samplers.TPESampler(
+        seed=spec.seed,
+        n_startup_trials=spec.n_startup_trials,
+        multivariate=spec.multivariate,
+        group=spec.group,
+        constant_liar=spec.constant_liar,
+    )
+
+
+def _build_pruner(spec: PrunerSpec, *, max_epochs: int) -> optuna.pruners.BasePruner:
+    """Instantiate the configured Optuna pruner."""
+    if spec.name == "none":
+        return optuna.pruners.NopPruner()
+    if spec.name == "median":
+        return optuna.pruners.MedianPruner(
+            n_startup_trials=spec.bootstrap_count,
+            n_warmup_steps=spec.min_resource,
+        )
+    if spec.name == "successive_halving":
+        return optuna.pruners.SuccessiveHalvingPruner(
+            min_resource=spec.min_resource,
+            reduction_factor=spec.reduction_factor,
+            bootstrap_count=spec.bootstrap_count,
+        )
+    return optuna.pruners.HyperbandPruner(
+        min_resource=spec.min_resource,
+        max_resource=max_epochs,
+        reduction_factor=spec.reduction_factor,
+        bootstrap_count=spec.bootstrap_count,
+    )
 
 
 def _validate_numeric_parameter(field_name: str, spec: Mapping[str, Any]) -> None:
@@ -440,6 +555,8 @@ def resolve_search_space(
     max_epochs = int(raw_space.get("max_epochs") or DEFAULT_MAX_EPOCHS)
     if max_epochs < 1:
         raise ValueError(f"search space '{space_name}' max_epochs must be >= 1.")
+    sampler = _normalize_sampler(raw_space.get("sampler"))
+    pruner = _normalize_pruner(raw_space.get("pruner"), max_epochs=max_epochs)
     trials = int(raw_space.get("trials") or DEFAULT_TRIALS)
     if trials < 1:
         raise ValueError(f"search space '{space_name}' trials must be >= 1.")
@@ -464,6 +581,8 @@ def resolve_search_space(
         base_profile=base_profile_name,
         datasets=tuple(datasets),
         objective=objective,
+        sampler=sampler,
+        pruner=pruner,
         max_epochs=max_epochs,
         trials=trials,
         config_overrides=config_overrides,
@@ -944,6 +1063,41 @@ def _objective_metric_value(
     return float(metrics[metric_name])
 
 
+def _build_pruning_epoch_callback(
+    trial: optuna.Trial,
+    *,
+    search_space: SearchSpaceSpec,
+    dataset: str,
+    dataset_index: int,
+) -> Callable[[int, Mapping[str, float], float], None]:
+    """Return a trainer callback that reports validation objective values to Optuna."""
+
+    def callback(epoch: int, val_metrics: Mapping[str, float], epoch_time_s: float) -> None:
+        metrics = {
+            str(metric): float(metric_value)
+            for metric, metric_value in val_metrics.items()
+            if math.isfinite(float(metric_value))
+        }
+        value = _objective_metric_value(
+            metrics,
+            search_space.objective.metric,
+            result={"avg_epoch_time_s": epoch_time_s},
+        )
+        step = dataset_index * search_space.max_epochs + epoch + 1
+        trial.report(value, step=step)
+        trial.set_user_attr(f"{dataset}.last_pruning_epoch", epoch + 1)
+        trial.set_user_attr(f"{dataset}.last_pruning_objective", value)
+        if trial.should_prune():
+            trial.set_user_attr(f"{dataset}.pruned_epoch", epoch + 1)
+            trial.set_user_attr(f"{dataset}.pruned_objective", value)
+            raise optuna.TrialPruned(
+                f"{dataset} pruned at epoch {epoch + 1}: "
+                f"{search_space.objective.metric}={value:.6f}",
+            )
+
+    return callback
+
+
 def _best_validation_metrics(
     result: Mapping[str, Any],
     *,
@@ -1174,7 +1328,7 @@ def _objective_factory(
             trial_number=trial.number,
             sampled_overrides=sampled_overrides,
         )
-        for dataset, config in configs_by_dataset.items():
+        for dataset_index, (dataset, config) in enumerate(configs_by_dataset.items()):
             try:
                 result = run_experiment(
                     config,
@@ -1191,6 +1345,12 @@ def _objective_factory(
                     overwrite_checkpoint=overwrite_checkpoint,
                     include_refined_diagnostics=False,
                     evaluate_test=False,
+                    training_epoch_callback=_build_pruning_epoch_callback(
+                        trial,
+                        search_space=search_space,
+                        dataset=dataset,
+                        dataset_index=dataset_index,
+                    ),
                 )
                 score = extract_validation_objective(result, search_space.objective)
                 trial.set_user_attr(f"{dataset}.objective", score)
@@ -1201,6 +1361,9 @@ def _objective_factory(
                     objective=search_space.objective,
                 )
                 scores.append(score)
+            except optuna.TrialPruned:
+                trial.set_user_attr(f"{dataset}.pruned", True)
+                raise
             except Exception as exc:
                 _record_trial_failure(trial, stage="run_experiment", exc=exc, dataset=dataset)
                 raise
@@ -1535,6 +1698,8 @@ def build_dry_run_payload(
         "study_name": study_name,
         "storage": storage,
         "objective": dataclasses.asdict(search_space.objective),
+        "sampler": dataclasses.asdict(search_space.sampler),
+        "pruner": dataclasses.asdict(search_space.pruner),
         "max_epochs": search_space.max_epochs,
         "trials": int(trials or search_space.trials),
         "config_overrides": _json_safe(search_space.config_overrides),
@@ -1556,6 +1721,8 @@ def _run_single_search_study(
         study_name=study_name,
         storage=args.storage,
         direction=search_space.objective.direction,
+        sampler=_build_sampler(search_space.sampler),
+        pruner=_build_pruner(search_space.pruner, max_epochs=search_space.max_epochs),
         load_if_exists=True,
     )
     seeded = _seed_dataset_local_study_from_existing_trials(

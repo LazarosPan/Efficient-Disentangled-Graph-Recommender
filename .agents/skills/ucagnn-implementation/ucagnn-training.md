@@ -76,6 +76,10 @@ Important runtime details:
 - finished-checkpoint recovery is checked before dataset auto-batch probing; when
   `auto_batch_size=True`, the lookup tries the configured candidate batch-size
   identities and binds the saved batch size instead of probing CUDA again,
+- Optuna search can attach a training epoch callback to `MiniBatchTrainer.train()`;
+  the callback reports validation objective values after each epoch and raises
+  `TrialPruned` when the configured Optuna pruner stops an unpromising trial.
+  Normal experiment, formal-run, and baseline paths leave this callback unset,
 - validation retries once on CUDA after optimizer-state offload, then falls back to CPU if evaluation still OOMs,
 - a late auto-batch training OOM releases the failed trainer and resumes the next smaller candidate from the latest completed-epoch checkpoint when one exists,
 - auto-batch probe, verification, and training-fallback OOM logs include the original exception summary plus PyTorch CUDA allocated, reserved, peak-allocated, and peak-reserved memory; probe OOMs also annotate the failing stage and sampled-subgraph dimensions when a subgraph had already been prepared,

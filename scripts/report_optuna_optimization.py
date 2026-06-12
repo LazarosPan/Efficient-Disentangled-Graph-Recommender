@@ -32,6 +32,7 @@ PAPER_FIGURE_FILENAMES = (
 PARAMETER_PRIORITY = (
     "lr",
     "weight_decay",
+    "batch_size",
     "lr_scheduler",
     "lr_scheduler_factor",
     "num_neighbors",
