@@ -131,6 +131,7 @@ Current evaluation rules:
 - do not add custom paper-nonstandard ranking outputs unless a paper-faithful definition is implemented and explicitly justified; default thesis outputs should stay with PyG-standard metrics and easy-to-interpret diagnostics,
 - split-specific ground-truth and exclusion dictionaries are cached by mask identity,
 - `cagra_candidate_k` optionally restricts scoring to ANN candidates on CUDA.
+- If `cagra_candidate_k > 0`, CAGRA is an explicit runtime requirement. The evaluator raises instead of silently falling back to full-catalog scoring, because otherwise the recorded config would claim ANN filtering while the metric was computed without it.
 
 Quick validation uses larger tiny caps for sparse-positive Taobao and KuaiRand slices so label-aware validation/test splits contain positive targets.
 

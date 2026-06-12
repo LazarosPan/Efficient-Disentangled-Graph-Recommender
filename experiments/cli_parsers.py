@@ -226,7 +226,10 @@ def build_search_parser() -> argparse.ArgumentParser:
         "--trials",
         type=int,
         default=None,
-        help="Number of Optuna trials. Defaults to the search-space value.",
+        help=(
+            "Target compatible completed Optuna trials per dataset. Existing compatible "
+            "trials count toward this target. Defaults to the search-space value."
+        ),
     )
     sel.add_argument(
         "--study-name",
@@ -276,9 +279,7 @@ def build_search_parser() -> argparse.ArgumentParser:
     )
     add_overwrite_checkpoint_arg(
         ex,
-        help_text=(
-            "Accepted for compatibility; search runs do not save or resume checkpoints."
-        ),
+        help_text=("Accepted for compatibility; search runs do not save or resume checkpoints."),
     )
     parser.set_defaults(no_mlflow=True)
 

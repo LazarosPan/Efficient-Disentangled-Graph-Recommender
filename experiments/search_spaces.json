@@ -1,7 +1,7 @@
 {
     "search_spaces": {
         "ucagnn-core-optimization": {
-            "description": "Canonical discrete Optuna screen for U-CaGNN. Without --dataset, each trial evaluates all core thesis datasets and averages the objective. With --dataset, --trials N means N independent trials for that dataset. Interest depth stays shallow; conformity depth includes 3 because historical completed trials favored it. Four-hop depth is excluded from this budgeted canonical search until a separate diagnostic justifies it. Promote selected winners manually into formal profiles before test reporting.",
+            "description": "Dataset-local second-pass Optuna screen for U-CaGNN. Without --dataset, the runner creates one independent study per core thesis dataset, so --trials N means target N compatible completed trials per dataset; existing compatible logical sampled_params count and are not rerun. The base grid is only a fallback. The parameters_by_dataset overrides are the active research grid: AmazonBook keeps the 0.004-0.005 LR / 5-3-2 basin while retaining 8-4 formal-run evidence; MovieLens keeps none/plateau schedules around 0.0004-0.005 with 2-to-3 layer branches; KuaiRec focuses on the 0.0002-0.0008 low-LR/lighter-fanout basin but keeps a small high-LR probe; KuaiRand focuses on dropout 0.15-0.30, plateau/cosine schedules, and 8-4 or 16-8 fanouts because the current best trials trade runtime for accuracy. This pass also tunes active causal branch-supervision weights and auxiliary schedule controls because those weights are thesis-owned rather than paper-fixed. Four-hop GNN depth remains excluded: current evidence does not justify extra over-smoothing and compute risk for the thesis budget.",
             "base_profile": "core-ucagnn-mainline",
             "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
             "objective": {
@@ -10,14 +10,14 @@
                 "direction": "maximize"
             },
             "max_epochs": 80,
-            "trials": 12,
+            "trials": 50,
             "parameters": {
                 "lr": {
                     "type": "grid_float",
                     "segments": [
-                        {"low": 0.0001, "high": 0.001, "step": 0.0001},
-                        {"low": 0.0015, "high": 0.005, "step": 0.0005},
-                        {"low": 0.0075, "high": 0.01, "step": 0.0025}
+                        {"low": 0.0002, "high": 0.0008, "step": 0.0001},
+                        {"low": 0.001, "high": 0.005, "step": 0.001},
+                        {"low": 0.007, "high": 0.01, "step": 0.001}
                     ]
                 },
                 "weight_decay": {
@@ -33,29 +33,40 @@
                         0.00001,
                         0.00003,
                         0.0001,
-                        0.0003,
-                        0.001
+                        0.0003
                     ]
                 },
                 "lr_scheduler": {"type": "categorical", "choices": ["none", "cosine", "plateau"]},
-                "lr_scheduler_factor": {"type": "grid_float", "low": 0.3, "high": 0.8, "step": 0.1},
-                "grad_clip_norm": {"type": "grid_float", "low": 0.5, "high": 5.0, "step": 0.5},
+                "lr_scheduler_factor": {"type": "grid_float", "low": 0.4, "high": 0.8, "step": 0.1},
+                "grad_clip_norm": {"type": "categorical", "choices": [0.5, 1.0, 2.0, 3.0, 5.0]},
                 "interest_gnn_layers": {"type": "int", "low": 1, "high": 3},
                 "conformity_gnn_layers": {"type": "int", "low": 1, "high": 3},
                 "num_neighbors": {
                     "type": "fanout",
                     "choices_by_depth": {
-                        "1": [[8], [12], [16]],
-                        "2": [[4, 2], [6, 3], [8, 4], [10, 5], [16, 8]],
+                        "1": [[8], [16]],
+                        "2": [[4, 2], [5, 3], [6, 3], [8, 4], [10, 5], [16, 8]],
                         "3": [[5, 3, 2], [8, 4, 2], [10, 5, 3], [16, 8, 4]]
                     }
                 },
                 "dropout": {"type": "grid_float", "low": 0.0, "high": 0.3, "step": 0.05},
                 "score_mix_min_weight": {
                     "type": "grid_float",
-                    "low": 0.0,
+                    "low": 0.03,
                     "high": 0.1,
                     "step": 0.01
+                },
+                "loss_weight_interest_bpr": {
+                    "type": "grid_float",
+                    "low": 0.01,
+                    "high": 0.04,
+                    "step": 0.005
+                },
+                "loss_weight_conformity_bpr": {
+                    "type": "grid_float",
+                    "low": 0.01,
+                    "high": 0.04,
+                    "step": 0.005
                 },
                 "loss_weight_independence": {
                     "type": "grid_float",
@@ -75,6 +86,26 @@
                     "high": 0.05,
                     "step": 0.005
                 },
+                "auxiliary_loss_schedule": {
+                    "type": "categorical",
+                    "choices": ["linear_ramp", "phased"]
+                },
+                "auxiliary_ramp_rate": {
+                    "type": "categorical",
+                    "choices": [0.0005, 0.001, 0.002]
+                },
+                "independence_ramp_rate": {
+                    "type": "categorical",
+                    "choices": [0.000125, 0.00025, 0.0005]
+                },
+                "auxiliary_losses_start_epoch": {
+                    "type": "categorical",
+                    "choices": [0, 5, 10, 15]
+                },
+                "popularity_supervision_start_epoch": {
+                    "type": "categorical",
+                    "choices": [0, 10, 20, 30]
+                },
                 "hard_negative_ratio": {
                     "type": "grid_float",
                     "low": 0.0,
@@ -87,6 +118,241 @@
                     "high": 80.0,
                     "step": 10.0
                 }
+            },
+            "parameters_by_dataset": {
+                "amazonbook": {
+                    "lr": {
+                        "type": "grid_float",
+                        "segments": [
+                            {"low": 0.002, "high": 0.006, "step": 0.001},
+                            {"low": 0.008, "high": 0.01, "step": 0.002}
+                        ]
+                    },
+                    "weight_decay": {
+                        "type": "categorical",
+                        "choices": [
+                            0.0,
+                            0.00000001,
+                            0.00000003,
+                            0.0000001,
+                            0.0000003,
+                            0.000001,
+                            0.000003,
+                            0.00001,
+                            0.00003,
+                            0.0001,
+                            0.0003
+                        ]
+                    },
+                    "lr_scheduler": {"type": "categorical", "choices": ["none", "plateau"]},
+                    "lr_scheduler_factor": {"type": "grid_float", "low": 0.6, "high": 0.8, "step": 0.1},
+                    "grad_clip_norm": {"type": "categorical", "choices": [1.0, 1.5, 2.0, 3.0]},
+                    "interest_gnn_layers": {"type": "int", "low": 1, "high": 2},
+                    "conformity_gnn_layers": {"type": "int", "low": 2, "high": 3},
+                    "num_neighbors": {
+                        "type": "fanout",
+                        "choices_by_depth": {
+                            "2": [[5, 3], [6, 3], [8, 4], [10, 5]],
+                            "3": [[5, 3, 2], [8, 4, 2], [10, 5, 3]]
+                        }
+                    },
+                    "dropout": {"type": "grid_float", "low": 0.0, "high": 0.15, "step": 0.05},
+                    "score_mix_min_weight": {"type": "grid_float", "low": 0.04, "high": 0.1, "step": 0.01},
+                    "loss_weight_interest_bpr": {"type": "grid_float", "low": 0.01, "high": 0.04, "step": 0.005},
+                    "loss_weight_conformity_bpr": {"type": "grid_float", "low": 0.01, "high": 0.04, "step": 0.005},
+                    "loss_weight_independence": {"type": "grid_float", "low": 0.0125, "high": 0.02, "step": 0.0025},
+                    "loss_weight_contrastive": {"type": "grid_float", "low": 0.005, "high": 0.04, "step": 0.005},
+                    "loss_weight_popularity": {"type": "grid_float", "low": 0.005, "high": 0.05, "step": 0.005},
+                    "auxiliary_loss_schedule": {"type": "categorical", "choices": ["linear_ramp", "phased"]},
+                    "auxiliary_ramp_rate": {"type": "categorical", "choices": [0.0005, 0.001, 0.002]},
+                    "independence_ramp_rate": {"type": "categorical", "choices": [0.00025, 0.0005, 0.001]},
+                    "auxiliary_losses_start_epoch": {"type": "categorical", "choices": [0, 5, 10, 15]},
+                    "popularity_supervision_start_epoch": {"type": "categorical", "choices": [10, 20, 30]},
+                    "hard_negative_ratio": {"type": "grid_float", "low": 0.15, "high": 0.35, "step": 0.05},
+                    "dice_sampler_margin": {"type": "grid_float", "low": 10.0, "high": 30.0, "step": 10.0}
+                },
+                "movielens1m": {
+                    "lr": {
+                        "type": "grid_float",
+                        "segments": [
+                            {"low": 0.0004, "high": 0.001, "step": 0.0002},
+                            {"low": 0.002, "high": 0.005, "step": 0.001}
+                        ]
+                    },
+                    "weight_decay": {
+                        "type": "categorical",
+                        "choices": [
+                            0.00000001,
+                            0.00000003,
+                            0.0000001,
+                            0.0000003,
+                            0.000001,
+                            0.000003,
+                            0.00001,
+                            0.00003,
+                            0.0001
+                        ]
+                    },
+                    "lr_scheduler": {"type": "categorical", "choices": ["none", "plateau"]},
+                    "lr_scheduler_factor": {"type": "grid_float", "low": 0.6, "high": 0.8, "step": 0.1},
+                    "grad_clip_norm": {"type": "categorical", "choices": [1.0, 2.0, 3.0, 5.0]},
+                    "interest_gnn_layers": {"type": "int", "low": 2, "high": 3},
+                    "conformity_gnn_layers": {"type": "int", "low": 2, "high": 3},
+                    "num_neighbors": {
+                        "type": "fanout",
+                        "choices_by_depth": {
+                            "2": [[5, 3], [6, 3], [8, 4], [10, 5], [16, 8]],
+                            "3": [[5, 3, 2], [8, 4, 2], [10, 5, 3], [16, 8, 4]]
+                        }
+                    },
+                    "dropout": {"type": "grid_float", "low": 0.0, "high": 0.15, "step": 0.05},
+                    "score_mix_min_weight": {"type": "grid_float", "low": 0.06, "high": 0.1, "step": 0.01},
+                    "loss_weight_interest_bpr": {"type": "grid_float", "low": 0.01, "high": 0.035, "step": 0.005},
+                    "loss_weight_conformity_bpr": {"type": "grid_float", "low": 0.015, "high": 0.04, "step": 0.005},
+                    "loss_weight_independence": {"type": "grid_float", "low": 0.0, "high": 0.0175, "step": 0.0025},
+                    "loss_weight_contrastive": {"type": "grid_float", "low": 0.005, "high": 0.03, "step": 0.005},
+                    "loss_weight_popularity": {"type": "grid_float", "low": 0.005, "high": 0.03, "step": 0.005},
+                    "auxiliary_loss_schedule": {"type": "categorical", "choices": ["linear_ramp", "phased"]},
+                    "auxiliary_ramp_rate": {"type": "categorical", "choices": [0.0005, 0.001, 0.002]},
+                    "independence_ramp_rate": {"type": "categorical", "choices": [0.000125, 0.00025, 0.0005]},
+                    "auxiliary_losses_start_epoch": {"type": "categorical", "choices": [0, 5, 10, 15]},
+                    "popularity_supervision_start_epoch": {"type": "categorical", "choices": [5, 10, 20, 30]},
+                    "hard_negative_ratio": {"type": "grid_float", "low": 0.1, "high": 0.35, "step": 0.05},
+                    "dice_sampler_margin": {"type": "grid_float", "low": 20.0, "high": 80.0, "step": 10.0}
+                },
+                "kuairec_v2": {
+                    "lr": {
+                        "type": "grid_float",
+                        "segments": [
+                            {"low": 0.0002, "high": 0.0008, "step": 0.0001},
+                            {"low": 0.003, "high": 0.005, "step": 0.001},
+                            {"low": 0.007, "high": 0.008, "step": 0.001}
+                        ]
+                    },
+                    "weight_decay": {
+                        "type": "categorical",
+                        "choices": [
+                            0.0,
+                            0.0000003,
+                            0.000001,
+                            0.000003,
+                            0.00001,
+                            0.00003,
+                            0.0001
+                        ]
+                    },
+                    "lr_scheduler": {"type": "categorical", "choices": ["none", "plateau"]},
+                    "lr_scheduler_factor": {"type": "grid_float", "low": 0.5, "high": 0.8, "step": 0.1},
+                    "grad_clip_norm": {"type": "categorical", "choices": [0.5, 1.0, 2.0, 3.0, 3.5]},
+                    "interest_gnn_layers": {"type": "int", "low": 1, "high": 2},
+                    "conformity_gnn_layers": {"type": "int", "low": 2, "high": 3},
+                    "num_neighbors": {
+                        "type": "fanout",
+                        "choices_by_depth": {
+                            "2": [[4, 2], [5, 3], [8, 4], [10, 5]],
+                            "3": [[5, 3, 2], [8, 4, 2], [10, 5, 3]]
+                        }
+                    },
+                    "dropout": {"type": "grid_float", "low": 0.0, "high": 0.3, "step": 0.05},
+                    "score_mix_min_weight": {"type": "grid_float", "low": 0.03, "high": 0.09, "step": 0.01},
+                    "loss_weight_interest_bpr": {"type": "grid_float", "low": 0.01, "high": 0.04, "step": 0.005},
+                    "loss_weight_conformity_bpr": {"type": "grid_float", "low": 0.01, "high": 0.04, "step": 0.005},
+                    "loss_weight_independence": {"type": "grid_float", "low": 0.01, "high": 0.02, "step": 0.0025},
+                    "loss_weight_contrastive": {"type": "grid_float", "low": 0.0, "high": 0.03, "step": 0.005},
+                    "loss_weight_popularity": {"type": "grid_float", "low": 0.01, "high": 0.05, "step": 0.005},
+                    "auxiliary_loss_schedule": {"type": "categorical", "choices": ["linear_ramp", "phased"]},
+                    "auxiliary_ramp_rate": {"type": "categorical", "choices": [0.001, 0.002, 0.004]},
+                    "independence_ramp_rate": {"type": "categorical", "choices": [0.00025, 0.0005, 0.001]},
+                    "auxiliary_losses_start_epoch": {"type": "categorical", "choices": [0, 5, 10]},
+                    "popularity_supervision_start_epoch": {"type": "categorical", "choices": [0, 10, 20]},
+                    "hard_negative_ratio": {"type": "grid_float", "low": 0.05, "high": 0.3, "step": 0.05},
+                    "dice_sampler_margin": {"type": "grid_float", "low": 20.0, "high": 80.0, "step": 10.0}
+                },
+                "kuairand1k": {
+                    "lr": {
+                        "type": "grid_float",
+                        "segments": [
+                            {"low": 0.0008, "high": 0.0012, "step": 0.0002},
+                            {"low": 0.002, "high": 0.004, "step": 0.0005},
+                            {"low": 0.006, "high": 0.01, "step": 0.002}
+                        ]
+                    },
+                    "weight_decay": {
+                        "type": "categorical",
+                        "choices": [
+                            0.0,
+                            0.00000001,
+                            0.00000003,
+                            0.0000001,
+                            0.0000003,
+                            0.000001,
+                            0.000003,
+                            0.00001
+                        ]
+                    },
+                    "lr_scheduler": {"type": "categorical", "choices": ["plateau", "cosine"]},
+                    "lr_scheduler_factor": {"type": "grid_float", "low": 0.5, "high": 0.8, "step": 0.1},
+                    "grad_clip_norm": {"type": "categorical", "choices": [0.5, 1.0, 2.5, 4.0, 5.0]},
+                    "interest_gnn_layers": {"type": "int", "low": 2, "high": 3},
+                    "conformity_gnn_layers": {"type": "int", "low": 1, "high": 2},
+                    "num_neighbors": {
+                        "type": "fanout",
+                        "choices_by_depth": {
+                            "2": [[8, 4], [16, 8]],
+                            "3": [[8, 4, 2], [10, 5, 3], [16, 8, 4]]
+                        }
+                    },
+                    "dropout": {"type": "grid_float", "low": 0.15, "high": 0.3, "step": 0.05},
+                    "score_mix_min_weight": {"type": "grid_float", "low": 0.04, "high": 0.09, "step": 0.01},
+                    "loss_weight_interest_bpr": {"type": "grid_float", "low": 0.005, "high": 0.03, "step": 0.005},
+                    "loss_weight_conformity_bpr": {"type": "grid_float", "low": 0.005, "high": 0.03, "step": 0.005},
+                    "loss_weight_independence": {"type": "grid_float", "low": 0.0, "high": 0.02, "step": 0.0025},
+                    "loss_weight_contrastive": {"type": "grid_float", "low": 0.02, "high": 0.05, "step": 0.005},
+                    "loss_weight_popularity": {"type": "grid_float", "low": 0.0, "high": 0.03, "step": 0.005},
+                    "auxiliary_loss_schedule": {"type": "categorical", "choices": ["linear_ramp", "phased"]},
+                    "auxiliary_ramp_rate": {"type": "categorical", "choices": [0.0005, 0.001, 0.002]},
+                    "independence_ramp_rate": {"type": "categorical", "choices": [0.000125, 0.00025, 0.0005]},
+                    "auxiliary_losses_start_epoch": {"type": "categorical", "choices": [5, 10, 15, 20]},
+                    "popularity_supervision_start_epoch": {"type": "categorical", "choices": [10, 20, 30]},
+                    "hard_negative_ratio": {"type": "grid_float", "low": 0.0, "high": 0.2, "step": 0.05},
+                    "dice_sampler_margin": {"type": "grid_float", "low": 50.0, "high": 80.0, "step": 10.0}
+                }
+            }
+        },
+        "ucagnn-cagra-ablation": {
+            "description": "Separate systems ablation for CAGRA rather than the default U-CaGNN accuracy search. This space tests whether ANN graph augmentation or evaluation candidate prefiltering improves the validation CRRU trade-off. Keep full-catalog formal evaluation (`cagra_candidate_k=0`) as the baseline row; nonzero `cagra_candidate_k` changes candidate coverage and must be reported as an ANN retrieval/runtime ablation, not as the default ranking protocol.",
+            "base_profile": "core-ucagnn-mainline",
+            "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+            "objective": {
+                "metric": "ValidationOnlineCRRU@20_40",
+                "split": "val",
+                "direction": "maximize"
+            },
+            "max_epochs": 60,
+            "trials": 16,
+            "parameters": {
+                "lr": {"type": "categorical", "choices": [0.0004, 0.001, 0.003, 0.004, 0.005]},
+                "weight_decay": {"type": "categorical", "choices": [0.0, 0.00000003, 0.00001, 0.0001]},
+                "lr_scheduler": {"type": "categorical", "choices": ["none", "plateau"]},
+                "lr_scheduler_factor": {"type": "categorical", "choices": [0.7, 0.8]},
+                "interest_gnn_layers": {"type": "int", "low": 1, "high": 3},
+                "conformity_gnn_layers": {"type": "int", "low": 2, "high": 3},
+                "num_neighbors": {
+                    "type": "fanout",
+                    "choices_by_depth": {
+                        "2": [[4, 2], [5, 3], [8, 4], [16, 8]],
+                        "3": [[5, 3, 2], [8, 4, 2], [16, 8, 4]]
+                    }
+                },
+                "dropout": {"type": "categorical", "choices": [0.0, 0.1, 0.25]},
+                "graph_policy": {"type": "categorical", "choices": ["observed", "cagra_augmented"]},
+                "cagra_candidate_k": {"type": "categorical", "choices": [0, 200, 500, 1000]},
+                "cagra_k": {"type": "categorical", "choices": [16, 32, 48]},
+                "cagra_out_degree": {"type": "categorical", "choices": [32, 64]},
+                "cagra_initial_degree": {"type": "categorical", "choices": [64, 128]},
+                "cagra_team_size": {"type": "categorical", "choices": [0, 8, 16]},
+                "cagra_metric": {"type": "categorical", "choices": ["inner_product", "cosine"]},
+                "cagra_itopk_size": {"type": "categorical", "choices": [64, 128]}
             }
         }
     }

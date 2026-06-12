@@ -2,7 +2,7 @@
 """Query experiment results from SQLite database.
 
 Usage:
-    python scripts/query_results.py                    # Formal top runs + full-data ablations
+    python scripts/query_results.py                    # Write formal/ablation summary markdown
     python scripts/query_results.py --view all         # Show all experiments
     python scripts/query_results.py --view completed   # Show only completed runs
     python scripts/query_results.py --view attention   # Show failed, OOM, running, or unknown runs
@@ -1131,14 +1131,13 @@ def _write_default_summary_markdown(report_text: str) -> None:
 
 
 def main() -> int:
-    """Parse arguments and print the requested experiment view."""
+    """Parse arguments and write or print the requested experiment view."""
     args = build_query_results_parser().parse_args()
 
     conn = connect()
     try:
         if args.view is None:
             report_text = _render_default_summary(conn)
-            print(report_text)
             _write_default_summary_markdown(report_text)
             print(f"Wrote default results summary to {QUERY_RESULTS_MARKDOWN_PATH.resolve()}")
         else:

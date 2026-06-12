@@ -1641,6 +1641,19 @@ def normalize_benchmark_config_overrides(
     normalized["num_neighbors"] = _normalize_benchmark_num_neighbors_override(
         raw_config.get("num_neighbors"),
     )
+    optional_int_fields = (
+        "cagra_k",
+        "cagra_out_degree",
+        "cagra_initial_degree",
+        "cagra_team_size",
+        "cagra_itopk_size",
+        "cagra_candidate_k",
+    )
+    for field_name in optional_int_fields:
+        field_value = raw_config.get(field_name)
+        normalized[field_name] = int(field_value) if field_value is not None else None
+    cagra_metric = raw_config.get("cagra_metric")
+    normalized["cagra_metric"] = str(cagra_metric) if cagra_metric is not None else None
     normalized["hard_negative_ratio"] = float(
         raw_config.get("hard_negative_ratio", default_config.hard_negative_ratio),
     )

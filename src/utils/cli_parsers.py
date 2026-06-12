@@ -326,8 +326,8 @@ def build_query_results_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Select a convenience exploration view before applying any extra "
-            "filters. Omit all flags to show the top-20 completed runs by "
-            "NDCG@20."
+            "filters. Omit all flags to write the default thesis summary to "
+            "results/query_results.md without printing the full report."
         ),
     )
     return parser

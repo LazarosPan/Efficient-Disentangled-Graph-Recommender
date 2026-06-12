@@ -60,6 +60,7 @@ For paper baselines, `build_config()` re-applies the paper-owned contract after 
 ## Defaults worth remembering
 
 - `graph_policy="observed"` is the default thesis path.
+- `cagra_k=32`, `cagra_out_degree=64`, `cagra_initial_degree=128`, `cagra_team_size=0`, `cagra_metric="inner_product"`, and `cagra_itopk_size=64` are the default CAGRA graph/search settings. They follow the CAGRA fixed-degree guidance while keeping the metric aligned with dot-product recommender scores.
 - `cagra_candidate_k=0` means evaluation scores the full catalog.
 - The dataclass default schedule is `phased`, but `preset_full()` switches to `linear_ramp`.
 - The dataclass default `propensity_clip_min` is `0.01`; `preset_full()` raises it to `0.1`.
@@ -79,3 +80,4 @@ For paper baselines, `build_config()` re-applies the paper-owned contract after 
 - Formal profiles may sweep `num_neighbors`, `graph_policy`, or preprocessing presets as lists, but each resolved run still receives one concrete value in the final `UCaGNNConfig`.
 - The default formal profile is `core-ucagnn-mainline` and targets the practical core datasets: `amazonbook`, `movielens1m`, `kuairec_v2`, and `kuairand1k`. Development, preprocessing-sweep, runtime-probe, `taobao`, and `movielens20m` profiles remain explicit instead of default catalog entries.
 - Public ablation variants start from `preset_full()`: `mainline`, `with_contrastive`, `no_popularity_head`, `no_independence`, and `no_features`. `with_contrastive` is the only additive variant; it enables the bounded DCCL-style branch contrastive auxiliary that remains off in the default mainline.
+- CAGRA is not part of the default core Optuna space because `graph_policy="cagra_augmented"` changes the training graph and `cagra_candidate_k > 0` changes evaluation candidate coverage. Use `ucagnn-cagra-ablation` for that systems/retrieval ablation, and keep `cagra_candidate_k=0` as the full-catalog baseline for formal ranking tables.

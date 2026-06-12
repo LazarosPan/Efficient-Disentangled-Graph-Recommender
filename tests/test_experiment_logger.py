@@ -1123,14 +1123,12 @@ class ExperimentLoggerTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         stdout_text = buffer.getvalue()
-        self.assertIn("THESIS TEST RESULTS", stdout_text)
-        self.assertIn("dev-profile", stdout_text)
-        self.assertIn("OPTUNA U-CaGNN SEARCH REPORT", stdout_text)
-        self.assertIn("report_optuna_optimization.py", stdout_text)
         self.assertIn(
             f"Wrote default results summary to {output_path.resolve()}",
             stdout_text,
         )
+        self.assertNotIn("THESIS TEST RESULTS", stdout_text)
+        self.assertNotIn("dev-profile", stdout_text)
         self.assertTrue(output_path.exists())
         markdown_output = output_path.read_text(encoding="utf-8")
         self.assertIn("# Query Results", markdown_output)

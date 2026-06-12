@@ -21,6 +21,14 @@ from src.utils.project_paths import RESULTS_DIR
 OPTUNA_OPTIMIZATION_MARKDOWN_PATH = RESULTS_DIR / "optuna_optimization.md"
 OPTUNA_FIGURES_DIR = RESULTS_DIR / "optuna_figures"
 DEFAULT_TOP_N = 10
+PAPER_FIGURE_FILENAMES = (
+    "optuna_progress_by_dataset.png",
+    "optuna_importance_by_dataset.png",
+    "optuna_crru_components_by_dataset.png",
+    "optuna_lr_branchmix_landscape.png",
+    "optuna_branch_depth_heatmaps.png",
+    "optuna_fanout_runtime_tradeoffs.png",
+)
 PARAMETER_PRIORITY = (
     "lr",
     "weight_decay",
@@ -34,9 +42,24 @@ PARAMETER_PRIORITY = (
     "conformity_gnn_layers",
     "dropout",
     "score_mix_min_weight",
+    "loss_weight_interest_bpr",
+    "loss_weight_conformity_bpr",
     "loss_weight_independence",
     "loss_weight_contrastive",
     "loss_weight_popularity",
+    "auxiliary_loss_schedule",
+    "auxiliary_ramp_rate",
+    "independence_ramp_rate",
+    "auxiliary_losses_start_epoch",
+    "popularity_supervision_start_epoch",
+    "graph_policy",
+    "cagra_candidate_k",
+    "cagra_k",
+    "cagra_out_degree",
+    "cagra_initial_degree",
+    "cagra_team_size",
+    "cagra_metric",
+    "cagra_itopk_size",
     "hard_negative_ratio",
     "dice_sampler_margin",
     "grad_clip_norm",
@@ -84,6 +107,21 @@ def completed_trials(study: optuna.Study) -> list[FrozenTrial]:
 def trial_sort_key(study: optuna.Study, trial: FrozenTrial) -> tuple[float, int]:
     """Sort trials according to the study direction."""
     value = float(trial.value) if trial.value is not None else float("nan")
+    direction = study.direction.name.lower()
+    objective_rank = value if direction == "minimize" else -value
+    return objective_rank, int(trial.number)
+
+
+def dataset_trial_sort_key(
+    study: optuna.Study,
+    trial: FrozenTrial,
+    *,
+    dataset: str,
+) -> tuple[float, int]:
+    """Sort trials by one dataset-local objective."""
+    value = dataset_metric(trial, dataset, "objective")
+    if value is None:
+        value = float("nan")
     direction = study.direction.name.lower()
     objective_rank = value if direction == "minimize" else -value
     return objective_rank, int(trial.number)
@@ -149,6 +187,15 @@ def attr_float(trial: FrozenTrial, key: str) -> float | None:
 
 def dataset_names(trial: FrozenTrial) -> list[str]:
     """Return datasets represented by trial user attributes."""
+    declared = trial.user_attrs.get("datasets")
+    if isinstance(declared, list):
+        names = [
+            str(dataset)
+            for dataset in declared
+            if trial.user_attrs.get(f"{dataset}.objective") is not None
+        ]
+        if names:
+            return sorted(names)
     names = {
         key.rsplit(".", 1)[0]
         for key in trial.user_attrs
@@ -187,15 +234,16 @@ def safe_importances(
     study: optuna.Study,
     *,
     evaluator: object | None = None,
+    target: object | None = None,
 ) -> dict[str, float]:
     """Return Optuna parameter importances when enough completed trials exist."""
     if len(completed_trials(study)) < 2:
         return {}
     try:
         if evaluator is None:
-            importances = get_param_importances(study)
+            importances = get_param_importances(study, target=target)
         else:
-            importances = get_param_importances(study, evaluator=evaluator)
+            importances = get_param_importances(study, evaluator=evaluator, target=target)
         return {name: float(value) for name, value in importances.items()}
     except Exception:
         return {}
@@ -213,6 +261,25 @@ def fanova_importances(study: optuna.Study) -> dict[str, float]:
     )
 
 
+def dataset_importances(study: optuna.Study, dataset: str) -> dict[str, float]:
+    """Return dashboard-like importances for one dataset-local objective."""
+    trials = [
+        trial
+        for trial in completed_trials(study)
+        if dataset_metric(trial, dataset, "objective") is not None
+    ]
+    if len(trials) < 2:
+        return {}
+
+    def target(trial: FrozenTrial) -> float:
+        value = dataset_metric(trial, dataset, "objective")
+        if value is None:
+            raise ValueError(f"Trial {trial.number} has no {dataset} objective.")
+        return float(value)
+
+    return logical_importances(safe_importances(study, target=target))
+
+
 def failure_label(trial: FrozenTrial) -> str:
     """Return a compact failure reason for report grouping."""
     reason = trial.user_attrs.get("failure_reason")
@@ -220,6 +287,18 @@ def failure_label(trial: FrozenTrial) -> str:
     if reason:
         return f"{stage or 'unknown'}: {reason}"
     return "legacy failure before stored attrs; exact exception unavailable in Optuna RDB"
+
+
+def study_report_sort_key(study: optuna.Study) -> tuple[int, str]:
+    """Sort active dataset-local CRRU studies before historical/global screens."""
+    trials = completed_trials(study)
+    datasets = sorted({dataset for trial in trials for dataset in dataset_names(trial)})
+    objective_metric = str(trials[0].user_attrs.get("objective_metric", "")) if trials else ""
+    if objective_metric == VALIDATION_ONLINE_CRRU_METRIC and len(datasets) == 1:
+        return (0, study.study_name)
+    if objective_metric == VALIDATION_ONLINE_CRRU_METRIC:
+        return (1, study.study_name)
+    return (2, study.study_name)
 
 
 def render_failure_summary(study: optuna.Study) -> list[str]:
@@ -268,6 +347,74 @@ def render_importance_table(title: str, importances: Mapping[str, float]) -> lis
     return lines
 
 
+def render_dataset_best_trials(
+    study: optuna.Study,
+    *,
+    datasets: Sequence[str],
+    top_n: int = 3,
+) -> list[str]:
+    """Render dataset-local best configurations."""
+    lines = [
+        "### Per-dataset best trials",
+        "",
+        "These are the configurations to inspect for formal dataset-specific reruns. "
+        "For historical all-dataset studies, the `Study objective` column may be a global "
+        "mean and should not replace the dataset-local objective.",
+        "",
+    ]
+    for dataset in datasets:
+        ranked = sorted(
+            [
+                trial
+                for trial in completed_trials(study)
+                if dataset_metric(trial, dataset, "objective") is not None
+            ],
+            key=lambda trial: dataset_trial_sort_key(study, trial, dataset=dataset),
+        )
+        if not ranked:
+            continue
+        lines.extend(
+            [
+                f"#### Dataset: `{dataset}`",
+                "",
+                "| Rank | Trial | Dataset objective | Study objective | Train time (s) | "
+                "Peak VRAM (MB) | Parameters |",
+                "|---:|---:|---:|---:|---:|---:|---|",
+            ],
+        )
+        for rank, trial in enumerate(ranked[:top_n], start=1):
+            lines.append(
+                f"| {rank} | {trial.number} | "
+                f"{format_float(dataset_metric(trial, dataset, 'objective'))} | "
+                f"{format_float(float(trial.value) if trial.value is not None else None)} | "
+                f"{format_float(attr_float(trial, f'{dataset}.training_time_s'), digits=2)} | "
+                f"{format_float(attr_float(trial, f'{dataset}.peak_vram_mb'), digits=1)} | "
+                f"`{format_params(logical_trial_params(trial))}` |",
+            )
+        lines.append("")
+    return lines
+
+
+def render_dataset_importance_tables(
+    study: optuna.Study,
+    *,
+    datasets: Sequence[str],
+) -> list[str]:
+    """Render per-dataset objective importance diagnostics."""
+    lines: list[str] = []
+    for dataset in datasets:
+        importances = dataset_importances(study, dataset)
+        if not importances:
+            continue
+        lines.extend(
+            render_importance_table(
+                f"Dashboard-like Optuna importances for `{dataset}` objective",
+                importances,
+            ),
+        )
+    return lines
+
+
 def render_study_report(study: optuna.Study, *, top_n: int) -> str:
     """Render one Optuna study as markdown."""
     trials = completed_trials(study)
@@ -295,7 +442,7 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
     best_trial = sorted(trials, key=lambda trial: trial_sort_key(study, trial))[0]
     lines.extend(
         [
-            "### Best trial",
+            "### Best study-level trial",
             "",
             f"- Trial: `{best_trial.number}`",
             f"- Objective value: `{format_float(float(best_trial.value))}`",
@@ -325,6 +472,10 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
             )
         lines.append("")
 
+    all_datasets = sorted({dataset for trial in trials for dataset in dataset_names(trial)})
+    if all_datasets:
+        lines.extend(render_dataset_best_trials(study, datasets=all_datasets, top_n=3))
+
     default_importances = dashboard_importances(study)
     if default_importances:
         if len(trials) < 10:
@@ -347,6 +498,8 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
             fanova_importances(study),
         ),
     )
+    if all_datasets:
+        lines.extend(render_dataset_importance_tables(study, datasets=all_datasets))
 
     lines.extend(render_failure_summary(study))
 
@@ -374,16 +527,35 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
         [
             "### Formal-promotion candidates",
             "",
-            "Promote the top 3 completed trials into formal profiles only after checking "
-            "dataset-level balance, runtime, and whether popularity diagnostics are acceptable.",
+            "Promote dataset-local winners into formal profiles only after checking runtime "
+            "and whether popularity diagnostics are acceptable.",
             "",
         ],
     )
-    for trial in sorted(trials, key=lambda item: trial_sort_key(study, item))[:3]:
-        lines.append(
-            f"- Trial `{trial.number}`: objective `{format_float(float(trial.value))}`; "
-            f"params `{format_params(logical_trial_params(trial))}`",
-        )
+    if all_datasets:
+        for dataset in all_datasets:
+            ranked = sorted(
+                [
+                    trial
+                    for trial in trials
+                    if dataset_metric(trial, dataset, "objective") is not None
+                ],
+                key=lambda trial: dataset_trial_sort_key(study, trial, dataset=dataset),
+            )
+            for trial in ranked[:3]:
+                lines.append(
+                    f"- `{dataset}` trial `{trial.number}`: dataset objective "
+                    f"`{format_float(dataset_metric(trial, dataset, 'objective'))}`; "
+                    f"study objective "
+                    f"`{format_float(float(trial.value) if trial.value is not None else None)}`; "
+                    f"params `{format_params(logical_trial_params(trial))}`",
+                )
+    else:
+        for trial in sorted(trials, key=lambda item: trial_sort_key(study, item))[:3]:
+            lines.append(
+                f"- Trial `{trial.number}`: objective `{format_float(float(trial.value))}`; "
+                f"params `{format_params(logical_trial_params(trial))}`",
+            )
     lines.append("")
     return "\n".join(lines)
 
@@ -414,11 +586,54 @@ def render_report(studies: Sequence[optuna.Study], *, storage: str, top_n: int) 
         "study name, objective target, and completed-trial subset.",
         "- Optuna RDB storage is the canonical owner for search trials; the thesis SQLite "
         "database keeps formal experiment and training logs.",
+        "- Current default multi-dataset searches expand into one independent study per "
+        "dataset; older `*-all-*` studies are historical global-mean screens.",
+        "- The current second-pass grid tunes active U-CaGNN loss weights and schedule "
+        "knobs only; inactive DirectAU/IPW-only weights remain out of the default "
+        "search to avoid changing the thesis model family without a separate ablation.",
+        "- Schedule-conditioned parameters are sampled only when they affect the resolved "
+        "training config: ramp rates for `linear_ramp`, start epochs for `phased`.",
+        "",
+        "## Paper-ready figures",
+        "",
+        "Generated by `uv run scripts/export_optuna_figures.py`. The default exporter "
+        "writes a compact figure set and removes stale per-study PNGs from the figure "
+        "directory.",
         "",
     ]
+    for filename in PAPER_FIGURE_FILENAMES:
+        lines.append(f"- `{OPTUNA_FIGURES_DIR / filename}`")
+    lines.extend(
+        [
+            "",
+            "## Candidate report figures not generated by default",
+            "",
+            "Keep the default figure set compact. If the thesis needs one more figure, choose "
+            "one of these rather than exporting dozens of per-study diagnostics:",
+            "",
+            "- Dataset-local top-3 candidate profile plot: NDCG, Recall, personalization, "
+            "low-popularity score, epoch time, and VRAM for the formal-promotion trials.",
+            "- Loss-weight response surface: interest-BPR weight vs conformity-BPR weight, "
+            "colored by validation CRRU, one panel per dataset.",
+            "- Schedule ablation strip: `linear_ramp` vs `phased`, with active ramp/start "
+            "knobs annotated beside each dataset's best trial.",
+            "- CRRU frontier plot: accuracy component vs bias/diversity component, bubble "
+            "size for efficiency and star markers for promotion candidates.",
+            "",
+        ],
+    )
+    lines.extend(
+        [
+            "## Studies",
+            "",
+            "Active dataset-local CRRU studies are listed first; historical/global screens "
+            "remain below for provenance and failure diagnosis.",
+            "",
+        ],
+    )
     if not studies:
         lines.extend(["No Optuna studies found.", ""])
-    for study in studies:
+    for study in sorted(studies, key=study_report_sort_key):
         lines.append(render_study_report(study, top_n=top_n))
     return "\n".join(lines).rstrip() + "\n"
 

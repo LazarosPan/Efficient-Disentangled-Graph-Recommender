@@ -303,6 +303,7 @@ def get_search_space(space_name: str) -> dict[str, Any]:
         "trials": space.get("trials"),
         "config_overrides": dict(space.get("config_overrides", {})),
         "parameters": dict(space.get("parameters", {})),
+        "parameters_by_dataset": dict(space.get("parameters_by_dataset", {})),
     }
 
 

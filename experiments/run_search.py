@@ -10,7 +10,7 @@ import json
 import logging
 import math
 import traceback
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -67,9 +67,24 @@ SEARCH_PARAMETER_FIELDS = frozenset(
         "conformity_gnn_layers",
         "dropout",
         "score_mix_min_weight",
+        "loss_weight_interest_bpr",
+        "loss_weight_conformity_bpr",
         "loss_weight_independence",
         "loss_weight_contrastive",
         "loss_weight_popularity",
+        "auxiliary_loss_schedule",
+        "auxiliary_ramp_rate",
+        "independence_ramp_rate",
+        "auxiliary_losses_start_epoch",
+        "popularity_supervision_start_epoch",
+        "graph_policy",
+        "cagra_k",
+        "cagra_out_degree",
+        "cagra_initial_degree",
+        "cagra_team_size",
+        "cagra_metric",
+        "cagra_itopk_size",
+        "cagra_candidate_k",
         "hard_negative_ratio",
         "dice_sampler_margin",
         "use_popularity_head",
@@ -95,6 +110,32 @@ TRIAL_ATTRIBUTE_TEST_PREFIXES = (
     "interest_contribution@",
     "conformity_contribution@",
     "context_contribution@",
+)
+LINEAR_RAMP_ONLY_PARAMETER_FIELDS = frozenset(
+    {
+        "auxiliary_ramp_rate",
+        "independence_ramp_rate",
+    },
+)
+PHASED_ONLY_PARAMETER_FIELDS = frozenset(
+    {
+        "auxiliary_losses_start_epoch",
+        "popularity_supervision_start_epoch",
+    },
+)
+CAGRA_GRAPH_ONLY_PARAMETER_FIELDS = frozenset(
+    {
+        "cagra_k",
+    },
+)
+CAGRA_SEARCH_PARAMETER_FIELDS = frozenset(
+    {
+        "cagra_out_degree",
+        "cagra_initial_degree",
+        "cagra_team_size",
+        "cagra_metric",
+        "cagra_itopk_size",
+    },
 )
 
 
@@ -302,6 +343,53 @@ def _validate_parameter_specs(parameters: Mapping[str, Any]) -> dict[str, dict[s
     return normalized
 
 
+def _resolve_parameter_specs(
+    raw_space: Mapping[str, Any],
+    *,
+    all_datasets: Sequence[str],
+    active_dataset: str | None,
+) -> dict[str, dict[str, Any]]:
+    """Resolve base plus optional dataset-local parameter overrides.
+
+    The study name remains stable across search-space edits. Dataset-local
+    overrides keep one command (`--space ucagnn-core-optimization`) while
+    avoiding a single compromise grid for datasets with different Optuna basins.
+    """
+    raw_parameters = _require_mapping(raw_space.get("parameters", {}), field_name="parameters")
+    base_parameters = dict(raw_parameters)
+    raw_by_dataset = raw_space.get("parameters_by_dataset", {})
+    by_dataset = _require_mapping(
+        raw_by_dataset,
+        field_name="parameters_by_dataset",
+    )
+    unknown_datasets = sorted(set(by_dataset) - set(all_datasets))
+    if unknown_datasets:
+        raise ValueError(
+            "parameters_by_dataset contains datasets outside search_spaces.datasets: "
+            f"{', '.join(str(dataset) for dataset in unknown_datasets)}",
+        )
+
+    for dataset, raw_overrides in by_dataset.items():
+        overrides = dict(
+            _require_mapping(
+                raw_overrides,
+                field_name=f"parameters_by_dataset.{dataset}",
+            ),
+        )
+        _validate_parameter_specs({**base_parameters, **overrides})
+
+    if active_dataset is None:
+        return _validate_parameter_specs(base_parameters)
+
+    dataset_overrides = dict(
+        _require_mapping(
+            by_dataset.get(active_dataset, {}),
+            field_name=f"parameters_by_dataset.{active_dataset}",
+        ),
+    )
+    return _validate_parameter_specs({**base_parameters, **dataset_overrides})
+
+
 def resolve_search_space(
     space_name: str,
     *,
@@ -324,7 +412,8 @@ def resolve_search_space(
         )
 
     raw_datasets = raw_space.get("datasets") or base_profile["matrix"]["datasets"]
-    datasets = resolve_benchmark_datasets(normalize_benchmark_datasets_arg(raw_datasets))
+    all_datasets = resolve_benchmark_datasets(normalize_benchmark_datasets_arg(raw_datasets))
+    datasets = list(all_datasets)
     if dataset is not None:
         if dataset not in datasets:
             raise ValueError(
@@ -348,7 +437,11 @@ def resolve_search_space(
         field_name="config_overrides",
         allowed_fields=set(BENCHMARK_CONFIG_FIELDS),
     )
-    parameters = _validate_parameter_specs(dict(raw_space.get("parameters", {})))
+    parameters = _resolve_parameter_specs(
+        raw_space,
+        all_datasets=all_datasets,
+        active_dataset=dataset,
+    )
     if not parameters:
         raise ValueError(f"search space '{space_name}' must define at least one parameter.")
 
@@ -667,6 +760,30 @@ def _suggest_fanout_value(
     return list(values_by_label[selected_label])
 
 
+def _parameter_is_conditionally_active(
+    field_name: str,
+    sampled_params: Mapping[str, Any],
+) -> bool:
+    """Return whether a conditional parameter changes the resolved config."""
+    if field_name == "lr_scheduler_factor":
+        return sampled_params.get("lr_scheduler") == "plateau"
+    schedule = str(sampled_params.get("auxiliary_loss_schedule", "linear_ramp"))
+    if field_name in LINEAR_RAMP_ONLY_PARAMETER_FIELDS:
+        return schedule == "linear_ramp"
+    if field_name in PHASED_ONLY_PARAMETER_FIELDS:
+        return schedule == "phased"
+    graph_policy = str(sampled_params.get("graph_policy", "observed"))
+    try:
+        cagra_candidate_k = int(sampled_params.get("cagra_candidate_k", 0) or 0)
+    except (TypeError, ValueError):
+        cagra_candidate_k = 0
+    if field_name in CAGRA_GRAPH_ONLY_PARAMETER_FIELDS:
+        return graph_policy == "cagra_augmented"
+    if field_name in CAGRA_SEARCH_PARAMETER_FIELDS:
+        return graph_policy == "cagra_augmented" or cagra_candidate_k > 0
+    return True
+
+
 def suggest_trial_overrides(
     trial: optuna.Trial,
     search_space: SearchSpaceSpec,
@@ -678,7 +795,7 @@ def suggest_trial_overrides(
     for field_name, spec in search_space.parameters.items():
         if str(spec["type"]).lower() == "fanout":
             continue
-        if field_name == "lr_scheduler_factor" and sampled.get("lr_scheduler") != "plateau":
+        if not _parameter_is_conditionally_active(field_name, sampled):
             continue
         sampled[field_name] = _suggest_parameter_value(trial, field_name, spec)
     for field_name, spec in search_space.parameters.items():
@@ -903,6 +1020,7 @@ def _objective_factory(
     def objective(trial: optuna.Trial) -> float:
         trial.set_user_attr("search_space", search_space.name)
         trial.set_user_attr("study_name", study_name)
+        trial.set_user_attr("datasets", list(search_space.datasets))
         trial.set_user_attr("objective_metric", search_space.objective.metric)
         trial.set_user_attr("objective_split", search_space.objective.split)
         try:
@@ -1125,12 +1243,11 @@ def _sampled_params_match_search_space(
             if not _sampled_fanout_matches_spec(sampled_params, spec):
                 return False
             continue
+        if not _parameter_is_conditionally_active(field_name, sampled_params):
+            if field_name in sampled_params:
+                return False
+            continue
         if field_name not in sampled_params:
-            if (
-                field_name == "lr_scheduler_factor"
-                and sampled_params.get("lr_scheduler") != "plateau"
-            ):
-                continue
             return False
         if not _sampled_value_matches_spec(sampled_params[field_name], field_name, spec):
             return False
@@ -1153,7 +1270,102 @@ def _trial_matches_current_search_space(
     sampled_params = trial.user_attrs.get("sampled_params")
     if not isinstance(sampled_params, Mapping):
         return False
+    for dataset in search_space.datasets:
+        value = trial.user_attrs.get(f"{dataset}.objective")
+        if value is None:
+            return False
+    if len(search_space.datasets) == 1:
+        dataset = search_space.datasets[0]
+        dataset_value = float(trial.user_attrs[f"{dataset}.objective"])
+        if not math.isclose(float(trial.value), dataset_value, rel_tol=0.0, abs_tol=1e-12):
+            return False
     return _sampled_params_match_search_space(sampled_params, search_space)
+
+
+def _trial_can_seed_dataset_search(
+    trial: optuna.trial.FrozenTrial,
+    search_space: SearchSpaceSpec,
+    *,
+    dataset: str,
+) -> bool:
+    """Return whether an existing trial can seed one dataset-local study."""
+    if trial.state != optuna.trial.TrialState.COMPLETE:
+        return False
+    if trial.user_attrs.get("search_space") != search_space.name:
+        return False
+    if trial.user_attrs.get("objective_metric") != search_space.objective.metric:
+        return False
+    if trial.user_attrs.get("objective_split") != search_space.objective.split:
+        return False
+    try:
+        dataset_value = float(trial.user_attrs[f"{dataset}.objective"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if not math.isfinite(dataset_value):
+        return False
+    sampled_params = trial.user_attrs.get("sampled_params")
+    if not isinstance(sampled_params, Mapping):
+        return False
+    return _sampled_params_match_search_space(sampled_params, search_space)
+
+
+def _seed_dataset_local_study_from_existing_trials(
+    study: optuna.Study,
+    *,
+    storage: str,
+    search_space: SearchSpaceSpec,
+) -> int:
+    """Copy compatible historical trials into a dataset-local study."""
+    if len(search_space.datasets) != 1:
+        return 0
+    dataset = search_space.datasets[0]
+    seen_sampled_keys = {
+        _canonical_sampled_params(trial.user_attrs["sampled_params"])
+        for trial in study.trials
+        if isinstance(trial.user_attrs.get("sampled_params"), Mapping)
+    }
+    seeded = 0
+    for summary in optuna.get_all_study_summaries(storage=storage):
+        if summary.study_name == study.study_name:
+            continue
+        source_study = optuna.load_study(study_name=summary.study_name, storage=storage)
+        for source_trial in source_study.trials:
+            if not _trial_can_seed_dataset_search(
+                source_trial,
+                search_space,
+                dataset=dataset,
+            ):
+                continue
+            sampled_params = source_trial.user_attrs["sampled_params"]
+            sampled_key = _canonical_sampled_params(sampled_params)
+            if sampled_key in seen_sampled_keys:
+                continue
+            dataset_value = float(source_trial.user_attrs[f"{dataset}.objective"])
+            user_attrs = {
+                key: value
+                for key, value in source_trial.user_attrs.items()
+                if not (
+                    "." in str(key)
+                    and str(key).split(".", 1)[0] not in {dataset, "optuna_param_name"}
+                )
+            }
+            user_attrs["study_name"] = study.study_name
+            user_attrs["datasets"] = [dataset]
+            user_attrs["objective_value"] = dataset_value
+            user_attrs["seeded_from_study"] = summary.study_name
+            user_attrs["seeded_from_trial"] = source_trial.number
+            study.add_trial(
+                optuna.trial.create_trial(
+                    value=dataset_value,
+                    params=dict(source_trial.params),
+                    distributions=dict(source_trial.distributions),
+                    user_attrs=user_attrs,
+                    state=optuna.trial.TrialState.COMPLETE,
+                ),
+            )
+            seen_sampled_keys.add(sampled_key)
+            seeded += 1
+    return seeded
 
 
 def _compatible_completed_trials(
@@ -1228,45 +1440,14 @@ def build_dry_run_payload(
     }
 
 
-def run_search(args: argparse.Namespace) -> int:
-    """Execute a resolved Optuna search from parsed CLI args."""
-    if args.list_spaces:
-        print("Available search spaces:")
-        for space_name in search_space_names():
-            space = get_search_space(space_name)
-            description = space.get("description", "")
-            print(f"  {space_name}: {description}")
-        return 0
-    if args.space is None:
-        raise ValueError("--space is required unless --list-spaces is used.")
-
-    search_space = resolve_search_space(args.space, dataset=args.dataset)
-    study_name = args.study_name or default_study_name(
-        args.space,
-        search_space.datasets,
-        search_space=search_space,
-    )
-    n_trials = int(args.trials or search_space.trials)
-    if n_trials < 1:
-        raise ValueError("--trials must be >= 1.")
-
-    if args.dry_run:
-        print(
-            json.dumps(
-                build_dry_run_payload(
-                    search_space,
-                    study_name=study_name,
-                    storage=args.storage,
-                    trials=n_trials,
-                    device=args.device,
-                    data_dir=args.data_dir,
-                ),
-                indent=2,
-                sort_keys=True,
-            ),
-        )
-        return 0
-
+def _run_single_search_study(
+    args: argparse.Namespace,
+    *,
+    search_space: SearchSpaceSpec,
+    study_name: str,
+    n_trials: int,
+) -> int:
+    """Run one Optuna study for one resolved search-space dataset selection."""
     _ensure_storage_parent(args.storage)
     study = optuna.create_study(
         study_name=study_name,
@@ -1274,6 +1455,13 @@ def run_search(args: argparse.Namespace) -> int:
         direction=search_space.objective.direction,
         load_if_exists=True,
     )
+    seeded = _seed_dataset_local_study_from_existing_trials(
+        study,
+        storage=args.storage,
+        search_space=search_space,
+    )
+    if seeded:
+        print(f"Seeded {seeded} completed dataset-local trial(s) into {study_name}.")
     compatible_completed = _compatible_completed_trials(study, search_space)
     if len(compatible_completed) >= n_trials:
         print(
@@ -1349,6 +1537,132 @@ def run_search(args: argparse.Namespace) -> int:
     if failed_new_trials:
         print(f"Failed trials in this invocation: {len(failed_new_trials)}")
     return 1
+
+
+def _dataset_study_name(
+    explicit_study_name: str | None,
+    *,
+    space_name: str,
+    dataset_space: SearchSpaceSpec,
+) -> str:
+    """Return the study name for one dataset-local search."""
+    dataset = dataset_space.datasets[0]
+    if explicit_study_name:
+        return f"{explicit_study_name}-{dataset}"
+    return default_study_name(space_name, dataset_space.datasets, search_space=dataset_space)
+
+
+def _build_per_dataset_dry_run_payload(
+    args: argparse.Namespace,
+    *,
+    search_space: SearchSpaceSpec,
+    n_trials: int,
+) -> dict[str, Any]:
+    """Return dry-run details for the default dataset-local search expansion."""
+    payloads: dict[str, Any] = {}
+    for dataset in search_space.datasets:
+        dataset_space = resolve_search_space(args.space, dataset=dataset)
+        study_name = _dataset_study_name(
+            args.study_name,
+            space_name=args.space,
+            dataset_space=dataset_space,
+        )
+        payloads[dataset] = build_dry_run_payload(
+            dataset_space,
+            study_name=study_name,
+            storage=args.storage,
+            trials=n_trials,
+            device=args.device,
+            data_dir=args.data_dir,
+        )
+    return {
+        "search_mode": "per_dataset",
+        "search_space": search_space.name,
+        "datasets": list(search_space.datasets),
+        "target_trials_per_dataset": n_trials,
+        "storage": args.storage,
+        "dataset_payloads": payloads,
+    }
+
+
+def run_search(args: argparse.Namespace) -> int:
+    """Execute a resolved Optuna search from parsed CLI args."""
+    if args.list_spaces:
+        print("Available search spaces:")
+        for space_name in search_space_names():
+            space = get_search_space(space_name)
+            description = space.get("description", "")
+            print(f"  {space_name}: {description}")
+        return 0
+    if args.space is None:
+        raise ValueError("--space is required unless --list-spaces is used.")
+
+    search_space = resolve_search_space(args.space, dataset=args.dataset)
+    n_trials = int(args.trials or search_space.trials)
+    if n_trials < 1:
+        raise ValueError("--trials must be >= 1.")
+
+    if args.dataset is None and len(search_space.datasets) > 1:
+        if args.dry_run:
+            print(
+                json.dumps(
+                    _build_per_dataset_dry_run_payload(
+                        args,
+                        search_space=search_space,
+                        n_trials=n_trials,
+                    ),
+                    indent=2,
+                    sort_keys=True,
+                ),
+            )
+            return 0
+
+        exit_codes: list[int] = []
+        for dataset in search_space.datasets:
+            dataset_space = resolve_search_space(args.space, dataset=dataset)
+            study_name = _dataset_study_name(
+                args.study_name,
+                space_name=args.space,
+                dataset_space=dataset_space,
+            )
+            print(f"Dataset-local Optuna search: {dataset} -> {study_name}")
+            exit_codes.append(
+                _run_single_search_study(
+                    args,
+                    search_space=dataset_space,
+                    study_name=study_name,
+                    n_trials=n_trials,
+                ),
+            )
+        return 0 if all(code == 0 for code in exit_codes) else 1
+
+    study_name = args.study_name or default_study_name(
+        args.space,
+        search_space.datasets,
+        search_space=search_space,
+    )
+    if args.dry_run:
+        print(
+            json.dumps(
+                build_dry_run_payload(
+                    search_space,
+                    study_name=study_name,
+                    storage=args.storage,
+                    trials=n_trials,
+                    device=args.device,
+                    data_dir=args.data_dir,
+                ),
+                indent=2,
+                sort_keys=True,
+            ),
+        )
+        return 0
+    return _run_single_search_study(
+        args,
+        search_space=search_space,
+        study_name=study_name,
+        n_trials=n_trials,
+    )
 
 
 def main() -> int:
