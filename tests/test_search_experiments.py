@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import experiments.run_search as search
 import optuna
+import scripts.report_optuna_optimization as optuna_report
 from experiments.recipes import (
     load_experiment_catalog,
     load_search_spaces_catalog,
@@ -46,6 +47,50 @@ class SearchSpaceValidationTests(unittest.TestCase):
             self.assertEqual(config.epochs, spec.max_epochs)
             self.assertEqual(config.device, "cpu")
             self.assertEqual(len(config.num_neighbors), config.max_gnn_layers)
+
+    def test_search_space_resolves_sampler_and_pruner_from_catalog(self) -> None:
+        """Sampler/pruner blocks in search_spaces.json should not be dropped."""
+        spec = search.resolve_search_space(
+            "ucagnn-core-optimization",
+            dataset="amazonbook",
+        )
+
+        self.assertEqual(spec.sampler.seed, 42)
+        self.assertEqual(spec.sampler.name, "tpe")
+        self.assertEqual(spec.pruner.name, "hyperband")
+        self.assertEqual(spec.pruner.min_resource, 6)
+
+    def test_auto_batch_search_treats_batch_size_as_runtime_only(self) -> None:
+        """Historical sampled batch sizes should not break logical param matching."""
+        spec = search.SearchSpaceSpec(
+            name="tiny",
+            description="test search space",
+            base_profile="core-ucagnn-mainline",
+            datasets=("amazonbook",),
+            objective=search.ObjectiveSpec(),
+            max_epochs=1,
+            trials=1,
+            config_overrides={"auto_batch_size": True},
+            parameters={
+                "lr": {
+                    "type": "categorical",
+                    "choices": [0.003],
+                },
+            },
+        )
+
+        self.assertTrue(
+            search._sampled_params_match_search_space(
+                {"lr": 0.003, "batch_size": 512},
+                spec,
+            ),
+        )
+        self.assertFalse(
+            search._sampled_params_match_search_space(
+                {"lr": 0.003, "dropout": 0.1},
+                spec,
+            ),
+        )
 
     def test_search_space_validation_rejects_unknown_parameter_fields(self) -> None:
         """Search-space parameters should stay on the explicit existing-knob allowlist."""
@@ -109,8 +154,52 @@ class SearchSpaceValidationTests(unittest.TestCase):
         base_config = payload["base_configs"]["amazonbook"]
         self.assertEqual(base_config["baseline_family"], "ucagnn")
         self.assertEqual(base_config["dataset"], "amazonbook")
-        self.assertEqual(base_config["epochs"], 80)
+        self.assertEqual(base_config["epochs"], 60)
         self.assertEqual(base_config["device"], "cpu")
+        self.assertTrue(base_config["auto_batch_size"])
+        self.assertEqual(base_config["batch_size"], 4096)
+        self.assertEqual(
+            base_config["batch_size_candidates"],
+            [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+        )
+        self.assertNotIn("batch_size", payload["parameters"])
+
+    def test_optuna_report_effective_params_include_runtime_batch(self) -> None:
+        """Promotion candidates should show resolved runtime fields, not only sampled knobs."""
+        trial = optuna.trial.create_trial(
+            state=optuna.trial.TrialState.COMPLETE,
+            value=0.5,
+            params={},
+            distributions={},
+            user_attrs={
+                "datasets": ["kuairand1k"],
+                "sampled_params": {"lr": 0.003, "dropout": 0.15},
+                "kuairand1k.batch_size": 32768,
+                "kuairand1k.auto_batch_size": True,
+                "kuairand1k.avg_epoch_time_s": 12.5,
+                "kuairand1k.peak_vram_mb": 8192.0,
+                "kuairand1k.effective_config": {
+                    "epochs": 60,
+                    "patience": 8,
+                    "batch_size": 32768,
+                    "auto_batch_size": True,
+                    "batch_size_candidates": [32768, 16384, 8192, 4096],
+                    "lr": 0.003,
+                    "dropout": 0.15,
+                    "use_features": True,
+                },
+            },
+        )
+
+        formatted = optuna_report.format_effective_params(trial, dataset="kuairand1k")
+
+        self.assertIn("lr=0.003", formatted)
+        self.assertIn("dropout=0.15", formatted)
+        self.assertIn("batch_size=32768", formatted)
+        self.assertIn("auto_batch_size=True", formatted)
+        self.assertIn("batch_size_candidates=[32768,16384,8192,4096]", formatted)
+        self.assertIn("time_per_epoch_s=12.5", formatted)
+        self.assertIn("peak_vram_mb=8192.0", formatted)
 
     def test_trial_overrides_enter_build_config_path(self) -> None:
         """Sampled values should become a valid config without post-build mutation."""
@@ -563,6 +652,81 @@ class SearchExecutionTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             run_experiment.assert_not_called()
 
+    def test_real_pruned_trials_count_toward_search_budget(self) -> None:
+        """A pruned training trial is informative and should satisfy --trials."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            optuna_db = Path(tmpdir) / "optuna.db"
+            storage = f"sqlite:///{optuna_db}"
+            spec = search.SearchSpaceSpec(
+                name="tiny-search",
+                description="test search space",
+                base_profile="core-ucagnn-mainline",
+                datasets=("amazonbook",),
+                objective=search.ObjectiveSpec(metric="NDCG@40"),
+                max_epochs=1,
+                trials=1,
+                config_overrides={
+                    "sample_interactions": 50,
+                    "loader_max_rows": 50,
+                },
+                parameters={
+                    "lr_scheduler": {
+                        "type": "categorical",
+                        "choices": ["cosine"],
+                    },
+                },
+            )
+            storage_param = search._parameter_storage_name(
+                "lr_scheduler",
+                spec.parameters["lr_scheduler"],
+            )
+            study = optuna.create_study(
+                study_name="existing-study",
+                storage=storage,
+                direction="maximize",
+            )
+            study.add_trial(
+                optuna.trial.create_trial(
+                    params={storage_param: "cosine"},
+                    distributions={
+                        storage_param: optuna.distributions.CategoricalDistribution(["cosine"]),
+                    },
+                    user_attrs={
+                        "search_space": "tiny-search",
+                        "objective_metric": "NDCG@40",
+                        "objective_split": "val",
+                        "sampled_params": {"lr_scheduler": "cosine"},
+                        "amazonbook.pruned": True,
+                        "amazonbook.last_pruning_objective": 0.25,
+                    },
+                    state=optuna.trial.TrialState.PRUNED,
+                ),
+            )
+            args = SimpleNamespace(
+                list_spaces=False,
+                space="tiny-search",
+                dataset=None,
+                trials=1,
+                study_name="existing-study",
+                storage=storage,
+                dry_run=False,
+                device="cpu",
+                data_dir="data",
+                no_mlflow=True,
+                mlflow_tracking_uri=None,
+                mlflow_experiment_name="ucagnn-search-test",
+                overwrite_checkpoint=False,
+            )
+
+            with (
+                patch.object(search, "resolve_search_space", return_value=spec),
+                patch.object(search, "run_experiment") as run_experiment,
+            ):
+                exit_code = search.run_search(args)
+
+            self.assertEqual(exit_code, 0)
+            run_experiment.assert_not_called()
+
     def test_multi_dataset_default_runs_dataset_local_studies(self) -> None:
         """A multi-dataset command should optimize one independent study per dataset."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -653,8 +817,8 @@ class SearchExecutionTests(unittest.TestCase):
                 self.assertEqual(trial.user_attrs["datasets"], [dataset])
                 self.assertAlmostEqual(trial.user_attrs[f"{dataset}.objective"], expected)
 
-    def test_dataset_local_study_seeds_from_historical_global_trials(self) -> None:
-        """Dataset-local studies should reuse compatible completed global screens."""
+    def test_dataset_local_study_ignores_existing_imported_rows_for_budget(self) -> None:
+        """Previously imported rows should not satisfy the fresh local target."""
         with tempfile.TemporaryDirectory() as tmpdir:
             optuna_db = Path(tmpdir) / "optuna.db"
             storage = f"sqlite:///{optuna_db}"
@@ -681,14 +845,14 @@ class SearchExecutionTests(unittest.TestCase):
                 "lr_scheduler",
                 spec.parameters["lr_scheduler"],
             )
-            historical_study = optuna.create_study(
-                study_name="tiny-search-all-val-ndcg-40",
+            dataset_study = optuna.create_study(
+                study_name="tiny-search-amazonbook-val-ndcg-40",
                 storage=storage,
                 direction="maximize",
             )
-            historical_study.add_trial(
+            dataset_study.add_trial(
                 optuna.trial.create_trial(
-                    value=0.50,
+                    value=0.70,
                     params={storage_param: "cosine"},
                     distributions={
                         storage_param: optuna.distributions.CategoricalDistribution(
@@ -697,14 +861,15 @@ class SearchExecutionTests(unittest.TestCase):
                     },
                     user_attrs={
                         "search_space": "tiny-search",
-                        "study_name": "tiny-search-all-val-ndcg-40",
-                        "datasets": ["amazonbook", "movielens1m"],
+                        "study_name": "tiny-search-amazonbook-val-ndcg-40",
+                        "datasets": ["amazonbook"],
                         "objective_metric": "NDCG@40",
                         "objective_split": "val",
-                        "objective_value": 0.50,
+                        "objective_value": 0.70,
                         "sampled_params": {"lr_scheduler": "cosine"},
                         "amazonbook.objective": 0.70,
-                        "movielens1m.objective": 0.30,
+                        "seeded_from_study": "tiny-search-all-val-ndcg-40",
+                        "seeded_from_trial": 0,
                     },
                     state=optuna.trial.TrialState.COMPLETE,
                 ),
@@ -725,25 +890,52 @@ class SearchExecutionTests(unittest.TestCase):
                 overwrite_checkpoint=False,
             )
 
+            def fake_run_experiment(config, **_kwargs):
+                return {
+                    "exp_id": None,
+                    "canonical_name": f"{config.dataset}-fresh",
+                    "checkpoint_path": None,
+                    "epochs_stopped_at": 1,
+                    "training_time_s": 0.2,
+                    "peak_vram_mb": 0.0,
+                    "history": {
+                        "val_metrics": [
+                            {
+                                "NDCG@40": 0.72,
+                                "AveragePopularity@40": 1.0,
+                            },
+                        ],
+                    },
+                    "test_metrics": {},
+                }
+
             with (
                 patch.object(search, "resolve_search_space", return_value=spec),
-                patch.object(search, "run_experiment") as run_experiment,
+                patch.object(
+                    search, "run_experiment", side_effect=fake_run_experiment
+                ) as run_experiment,
             ):
                 exit_code = search.run_search(args)
 
             self.assertEqual(exit_code, 0)
-            run_experiment.assert_not_called()
+            run_experiment.assert_called_once()
             study = optuna.load_study(
                 study_name="tiny-search-amazonbook-val-ndcg-40",
                 storage=storage,
             )
-            self.assertEqual(len(study.trials), 1)
-            trial = study.trials[0]
-            self.assertAlmostEqual(float(trial.value), 0.70)
-            self.assertEqual(trial.user_attrs["datasets"], ["amazonbook"])
-            self.assertEqual(trial.user_attrs["seeded_from_study"], "tiny-search-all-val-ndcg-40")
-            self.assertEqual(trial.user_attrs["seeded_from_trial"], 0)
-            self.assertNotIn("movielens1m.objective", trial.user_attrs)
+            self.assertEqual(len(study.trials), 2)
+            seeded_trial = study.trials[0]
+            fresh_trial = study.trials[1]
+            self.assertAlmostEqual(float(seeded_trial.value), 0.70)
+            self.assertEqual(seeded_trial.user_attrs["datasets"], ["amazonbook"])
+            self.assertEqual(
+                seeded_trial.user_attrs["seeded_from_study"],
+                "tiny-search-all-val-ndcg-40",
+            )
+            self.assertEqual(seeded_trial.user_attrs["seeded_from_trial"], 0)
+            self.assertAlmostEqual(float(fresh_trial.value), 0.72)
+            self.assertNotIn("seeded_from_study", fresh_trial.user_attrs)
+            self.assertEqual(fresh_trial.user_attrs["sampled_params"], {"lr_scheduler": "cosine"})
 
     def test_one_trial_search_creates_storage_without_thesis_trial_mirror(self) -> None:
         """The controller should keep Optuna trial metadata in Optuna storage."""
