@@ -25,7 +25,11 @@ from ..data.interaction_masks import positive_interaction_mask
 from ..data.negative_sampler import NegativeSampler
 from ..losses.loss_suite import LossSuite
 from ..models.ucagnn import UCaGNN
-from ..profiling.gpu_profiler import GPUProfiler, TrainingResourceStats
+from ..profiling.gpu_profiler import (
+    GPUProfiler,
+    TrainingResourceStats,
+    reset_cuda_peak_memory_stats,
+)
 from .config import UCaGNNConfig
 from .reproducibility import configure_torch_runtime
 
@@ -677,8 +681,7 @@ class TrainerRuntime:
 
     def _reset_epoch_vram_stats(self) -> None:
         """Reset CUDA peak memory stats at epoch start for per-epoch VRAM tracking."""
-        if torch.cuda.is_available():
-            torch.cuda.reset_peak_memory_stats()
+        reset_cuda_peak_memory_stats()
 
     def _step_scheduler(self, metric_value: float, epoch: int) -> None:
         """Step the LR scheduler after the curriculum warmup has completed."""

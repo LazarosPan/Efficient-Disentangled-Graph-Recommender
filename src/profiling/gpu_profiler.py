@@ -11,6 +11,12 @@ from dataclasses import dataclass, field
 import torch
 
 
+def reset_cuda_peak_memory_stats() -> None:
+    """Reset PyTorch CUDA peak memory stats when CUDA is available."""
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+
+
 @dataclass
 class StageMetrics:
     name: str
@@ -86,8 +92,8 @@ class GPUProfiler:
         self._enabled = enabled
         self.stages.clear()
         self.epoch_elapsed_ms = 0.0
-        if self._enabled and torch.cuda.is_available():
-            torch.cuda.reset_peak_memory_stats()
+        if self._enabled:
+            reset_cuda_peak_memory_stats()
 
     @contextmanager
     def stage(self, name: str):
@@ -97,7 +103,7 @@ class GPUProfiler:
             return
 
         torch.cuda.synchronize()
-        torch.cuda.reset_peak_memory_stats()
+        reset_cuda_peak_memory_stats()
         vram_before = torch.cuda.memory_allocated() / 1024 / 1024
         t0 = time.perf_counter()
 
