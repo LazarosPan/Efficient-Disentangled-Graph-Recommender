@@ -81,7 +81,7 @@ class CanonicalInteractions:
             f", preset={self.preprocessing_preset}" if self.preprocessing_preset is not None else ""
         )
         return (
-            "CanonicalInteractions(n_users={self.n_users}, n_items={self.n_items}, "
+            f"CanonicalInteractions(n_users={self.n_users:,}, n_items={self.n_items:,}, "
             f"interactions={len(self):,}, pos_rate={self.label.mean():.2%}{uf}{itf}{feedback}"
             f"{preset}{splits})"
         )
