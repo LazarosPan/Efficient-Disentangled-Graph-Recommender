@@ -20,6 +20,7 @@ from experiments.cli_parsers import (
     build_run_experiment_parser,
     build_search_parser,
 )
+from src.utils.benchmark_datasets import resolve_benchmark_datasets
 from src.utils.cli_parsers import (
     build_data_information_parser,
     build_explore_all_datasets_parser,
@@ -176,7 +177,7 @@ class SearchParserTests(unittest.TestCase):
         self.assertEqual(args.storage, "sqlite:///results/optuna_studies.db")
         self.assertFalse(args.dry_run)
         self.assertTrue(args.no_mlflow)
-        self.assertFalse(args.overwrite_checkpoint)
+        self.assertFalse(hasattr(args, "overwrite_checkpoint"))
         self.assertEqual(args.device, "cuda")
         self.assertEqual(args.data_dir, "data")
         self.assertEqual(args.mlflow_experiment_name, "ucagnn-optuna")
@@ -204,6 +205,7 @@ class SearchParserTests(unittest.TestCase):
         self.assertEqual(args.space, "ucagnn-core-optimization")
         self.assertEqual(args.trials, 1)
         self.assertTrue(args.dry_run)
+        self.assertFalse(hasattr(args, "overwrite_checkpoint"))
 
 
 class BenchmarkParserTests(unittest.TestCase):
@@ -230,6 +232,11 @@ class BenchmarkParserTests(unittest.TestCase):
         args = build_benchmark_parser().parse_args(["--overwrite-checkpoint"])
 
         self.assertTrue(args.overwrite_checkpoint)
+
+    def test_benchmark_dataset_selector_error_names_unknown_value(self) -> None:
+        """Shared selector expansion should report the actual bad selector."""
+        with self.assertRaisesRegex(ValueError, "not_a_tier"):
+            resolve_benchmark_datasets(["not_a_tier"])
 
 
 class UtilityParserTests(unittest.TestCase):

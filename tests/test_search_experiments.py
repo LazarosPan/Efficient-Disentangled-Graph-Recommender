@@ -201,6 +201,47 @@ class SearchSpaceValidationTests(unittest.TestCase):
         self.assertIn("time_per_epoch_s=12.5", formatted)
         self.assertIn("peak_vram_mb=8192.0", formatted)
 
+    def test_optuna_report_trial_accounting_tracks_budget_semantics(self) -> None:
+        """Trial accounting should share the search controller's budget predicates."""
+        study = SimpleNamespace(
+            trials=[
+                optuna.trial.create_trial(
+                    state=optuna.trial.TrialState.COMPLETE,
+                    value=0.50,
+                    params={},
+                    distributions={},
+                ),
+                optuna.trial.create_trial(
+                    state=optuna.trial.TrialState.COMPLETE,
+                    value=0.55,
+                    params={},
+                    distributions={},
+                    user_attrs={"seeded_from_study": "historical-study"},
+                ),
+                optuna.trial.create_trial(
+                    state=optuna.trial.TrialState.PRUNED,
+                    params={},
+                    distributions={},
+                ),
+                optuna.trial.create_trial(
+                    state=optuna.trial.TrialState.PRUNED,
+                    params={},
+                    distributions={},
+                    user_attrs={"duplicate_sampled_params": True},
+                ),
+            ],
+        )
+
+        lines = optuna_report.render_trial_accounting(study)
+
+        self.assertIn("| COMPLETE | 1 | 1 | 2 |", lines)
+        self.assertIn("| PRUNED | 2 | 0 | 2 |", lines)
+        self.assertIn(
+            "- Fresh informative budget count: `2` (fresh COMPLETE + real fresh PRUNED).",
+            lines,
+        )
+        self.assertIn("- Duplicate-skip pruned trials excluded from that budget: `1`.", lines)
+
     def test_trial_overrides_enter_build_config_path(self) -> None:
         """Sampled values should become a valid config without post-build mutation."""
         spec = search.SearchSpaceSpec(
@@ -640,7 +681,6 @@ class SearchExecutionTests(unittest.TestCase):
                 no_mlflow=True,
                 mlflow_tracking_uri=None,
                 mlflow_experiment_name="ucagnn-search-test",
-                overwrite_checkpoint=False,
             )
 
             with (
@@ -715,7 +755,6 @@ class SearchExecutionTests(unittest.TestCase):
                 no_mlflow=True,
                 mlflow_tracking_uri=None,
                 mlflow_experiment_name="ucagnn-search-test",
-                overwrite_checkpoint=False,
             )
 
             with (
@@ -771,7 +810,6 @@ class SearchExecutionTests(unittest.TestCase):
                 no_mlflow=True,
                 mlflow_tracking_uri=None,
                 mlflow_experiment_name="ucagnn-search-test",
-                overwrite_checkpoint=False,
             )
 
             def resolve_space(_space_name: str, dataset: str | None = None):
@@ -887,7 +925,6 @@ class SearchExecutionTests(unittest.TestCase):
                 no_mlflow=True,
                 mlflow_tracking_uri=None,
                 mlflow_experiment_name="ucagnn-search-test",
-                overwrite_checkpoint=False,
             )
 
             def fake_run_experiment(config, **_kwargs):
@@ -975,7 +1012,6 @@ class SearchExecutionTests(unittest.TestCase):
                 no_mlflow=True,
                 mlflow_tracking_uri=None,
                 mlflow_experiment_name="ucagnn-search-test",
-                overwrite_checkpoint=False,
             )
 
             def fake_run_experiment(config, **kwargs):
@@ -1116,7 +1152,6 @@ class SearchExecutionTests(unittest.TestCase):
                 no_mlflow=True,
                 mlflow_tracking_uri=None,
                 mlflow_experiment_name="ucagnn-search-test",
-                overwrite_checkpoint=False,
             )
 
             with (

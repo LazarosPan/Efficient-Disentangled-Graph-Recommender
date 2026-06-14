@@ -43,7 +43,6 @@ from experiments.run_experiment import (
     build_runtime_model,
     normalize_benchmark_config_overrides,
     recoverable_checkpoint_for_config,
-    recoverable_checkpoint_path,
 )
 from scripts.query_results import _format_scoremix
 from src.data.canonical import CanonicalInteractions
@@ -57,7 +56,7 @@ from src.profiling.gpu_profiler import (
     sample_gpu_resource_snapshot,
 )
 from src.training.mini_batch_trainer import MiniBatchTrainer
-from src.utils.config import UCaGNNConfig
+from src.utils.config import SUPPORTED_LR_SCHEDULERS, UCaGNNConfig
 from src.utils.experiment_naming import build_canonical_experiment_name
 from src.utils.reproducibility import build_torch_generator
 from src.utils.trainer_runtime import TrainerRuntime
@@ -2057,7 +2056,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertTrue(_checkpoint_ready_for_evaluation(checkpoint_state, config))
 
-    def test_recoverable_checkpoint_path_requires_finished_training_state(self) -> None:
+    def test_recoverable_checkpoint_requires_finished_training_state(self) -> None:
         """Formal recovery should only re-enter rows with finished checkpoints."""
         config = UCaGNNConfig(device="cpu")
         training_identity, training_hash = _build_training_identity(
@@ -2089,7 +2088,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             checkpoint_path = Path(tmp_dir) / "recoverable.pt"
             runtime.save_checkpoint(checkpoint_path, history=runtime.resume_history)
             self.assertIsNone(
-                recoverable_checkpoint_path(
+                recoverable_checkpoint_for_config(
                     config,
                     preset="ucagnn",
                     checkpoint_path=checkpoint_path,
@@ -2102,14 +2101,14 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 training_finished=True,
             )
 
-            self.assertEqual(
-                recoverable_checkpoint_path(
-                    config,
-                    preset="ucagnn",
-                    checkpoint_path=checkpoint_path,
-                ),
-                checkpoint_path,
+            recovered = recoverable_checkpoint_for_config(
+                config,
+                preset="ucagnn",
+                checkpoint_path=checkpoint_path,
             )
+            self.assertIsNotNone(recovered)
+            assert recovered is not None
+            self.assertEqual(recovered[1], checkpoint_path)
 
     def test_recoverable_checkpoint_searches_auto_batch_candidates(self) -> None:
         """Recovery lookup should find saved auto-selected batch-size checkpoints."""
@@ -2171,10 +2170,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             recovered_config, recovered_path = recovered
             self.assertEqual(recovered_config.batch_size, 8192)
             self.assertEqual(recovered_path, checkpoint_path)
-            self.assertEqual(
-                recoverable_checkpoint_path(config, preset="ucagnn"),
-                checkpoint_path,
-            )
 
     def test_run_experiment_skips_auto_batch_probe_for_recoverable_checkpoint(
         self,
@@ -2823,7 +2818,7 @@ class BenchmarkPlanTests(unittest.TestCase):
         plan = build_benchmark_plan(args)
         schedulers = {entry[2] for entry in plan}
 
-        self.assertEqual(schedulers, set(formal_main.SUPPORTED_LR_SCHEDULERS))
+        self.assertEqual(schedulers, set(SUPPORTED_LR_SCHEDULERS))
 
     def test_run_benchmark_reuses_pre_normalized_payload_for_dry_run(self) -> None:
         """Dry-run benchmark execution should not renormalize an internal payload."""
