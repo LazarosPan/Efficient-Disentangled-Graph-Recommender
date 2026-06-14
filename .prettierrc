@@ -1,0 +1,14 @@
+{
+  "printWidth": 100,
+  "overrides": [
+    {
+      "files": [
+        "experiments/experiment_catalog.json",
+        "experiments/search_spaces.json"
+      ],
+      "options": {
+        "printWidth": 240
+      }
+    }
+  ]
+}

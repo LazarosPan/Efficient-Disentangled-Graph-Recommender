@@ -11,6 +11,7 @@ from torch import nn
 
 from ..data.subgraph_sampler import SubgraphBatch
 from ..utils.config import UCaGNNConfig
+from .common import training_output_payload
 from .embeddings import EmbeddingModule
 from .lightgcn import DualBranchGCN
 from .propensity import PropensityEstimator
@@ -158,22 +159,19 @@ class UCaGNN(nn.Module):
             ipw_weights = 1.0 / propensity
         else:
             propensity = None
-            ipw_weights = torch.ones(user_ids.size(0), device=user_ids.device)
+            ipw_weights = None
 
-        output: dict[str, torch.Tensor | dict[str, torch.Tensor]] = {
-            "pos_scores": pos_scores,
-            "neg_scores": neg_scores,
-            "embeddings": embeddings,
-            "propagated": propagated,
-            "ipw_weights": ipw_weights,
-            "loss_user_ids": user_ids,
-            "loss_neg_item_ids": neg_item_ids,
-        }
-        if dice_negative_mask is not None:
-            output["dice_negative_mask"] = dice_negative_mask
-        if propensity is not None:
-            output["propensity_scores"] = propensity
-        return output
+        return training_output_payload(
+            embeddings=embeddings,
+            propagated=propagated,
+            pos_scores=pos_scores,
+            neg_scores=neg_scores,
+            user_ids=user_ids,
+            neg_item_ids=neg_item_ids,
+            ipw_weights=ipw_weights,
+            dice_negative_mask=dice_negative_mask,
+            propensity_scores=propensity,
+        )
 
     def forward(
         self,
@@ -337,15 +335,3 @@ class UCaGNN(nn.Module):
             scores["user_interest_emb"] = propagated_with_metadata["user_interest"][user_ids]
             scores["user_conformity_emb"] = propagated_with_metadata["user_conformity"][user_ids]
         return scores
-
-    @torch.no_grad()
-    def get_all_score_components(
-        self,
-        edge_index: torch.Tensor,
-        user_ids: torch.Tensor,
-        edge_sign: torch.Tensor | None = None,
-        edge_norm: torch.Tensor | None = None,
-    ) -> dict[str, torch.Tensor]:
-        """Return full-catalog score components for evaluation and diagnostics."""
-        propagated = self.get_propagated_for_eval(edge_index, edge_sign, edge_norm)
-        return self.get_score_components_from_propagated(propagated, user_ids)

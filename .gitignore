@@ -20,6 +20,11 @@ wheels/
 #Settings
 .vscode/
 
+# Local secrets
+.env
+.env.*
+!.env.example
+
 # External projects
 /external/*
 
@@ -30,18 +35,18 @@ wheels/
 # Results
 /results/*
 !/results/query_results.md
+!/results/optuna_optimization.md
+!
 
 # MLFlow
 /mlruns/*
 
 # Github
-.github/prompts/
-.github/agents/
-.github/issues/
+.github/
 
 # Codex
 # .codex/
 # .agents/
 
 # Papers
-/Papers_Causal_Embeddings_Recommendation_Systems/
+# /Papers_Causal_Embeddings_Recommendation_Systems/

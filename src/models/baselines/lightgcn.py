@@ -9,9 +9,10 @@ from ...utils.config import UCaGNNConfig
 from ..lightgcn import LightGCNBranch
 from .common import (
     CanonicalBaselineRecommender,
-    build_sparse_adjacency,
+    propagate_user_item_channels,
     score_dict,
-    score_pairwise,
+    score_propagated_matrix,
+    score_propagated_pair,
 )
 
 
@@ -60,18 +61,21 @@ class PaperLightGCN(CanonicalBaselineRecommender):
         """Propagate full-graph LightGCN embeddings once for evaluation."""
         del edge_sign
         embeddings = self._initial_embeddings(dtype=embedding_dtype)
-        x = torch.cat([embeddings["user"], embeddings["item"]], dim=0)
-        adj = build_sparse_adjacency(
+        return propagate_user_item_channels(
             edge_index,
             edge_norm,
-            num_nodes=self.n_users + self.n_items,
-            dtype=x.dtype,
+            n_users=self.n_users,
+            n_items=self.n_items,
+            channel_specs=(
+                (
+                    "user",
+                    "item",
+                    embeddings["user"],
+                    embeddings["item"],
+                    self.propagation,
+                ),
+            ),
         )
-        propagated = self.propagation(x, adj)
-        return {
-            "user": propagated[: self.n_users],
-            "item": propagated[self.n_users :],
-        }
 
     def _score_pairs(
         self,
@@ -79,11 +83,12 @@ class PaperLightGCN(CanonicalBaselineRecommender):
         user_ids: torch.Tensor,
         item_ids: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
-        final_score = score_pairwise(
-            propagated["user"],
-            propagated["item"],
-            user_ids,
-            item_ids,
+        final_score = score_propagated_pair(
+            propagated,
+            user_key="user",
+            item_key="item",
+            user_ids=user_ids,
+            item_ids=item_ids,
         )
         return score_dict(
             final_score=final_score,
@@ -123,7 +128,12 @@ class PaperLightGCN(CanonicalBaselineRecommender):
         user_ids: torch.Tensor,
     ) -> torch.Tensor:
         """Return full-catalog LightGCN dot-product scores."""
-        return propagated["user"][user_ids] @ propagated["item"].t()
+        return score_propagated_matrix(
+            propagated,
+            user_key="user",
+            item_key="item",
+            user_ids=user_ids,
+        )
 
     @torch.no_grad()
     def get_score_components_from_propagated(

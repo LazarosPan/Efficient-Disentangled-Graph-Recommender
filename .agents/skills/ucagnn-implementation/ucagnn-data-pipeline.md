@@ -65,6 +65,8 @@ The diagram shows the runtime boundary: the loader always produces `CanonicalInt
 
 Repeated raw user-item pairs are collapsed before split derivation for loaders that need one pair to belong to only one split. The retained row is selected by maximum priority with timestamp as a tie-breaker, while `repeat_count`, `repeat_mean_target`, `repeat_max_target`, `repeat_latest_target`, and first/last timestamps preserve the discarded observations in the retained-row encounter order.
 
+`sample_canonical_interactions()` is the canonical owner for tiny-run interaction sampling. It preserves split coverage, remaps sampled user/item IDs, recomputes sampled popularity, and slices every interaction-, user-, and item-aligned canonical field, including repeat summaries, features, metadata arrays, and item-level propensity targets.
+
 ## Feature policy
 
 - `thesis_default` loads only safe pre-treatment features from the structured registry.

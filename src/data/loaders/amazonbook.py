@@ -68,39 +68,6 @@ def _parse_interaction_file(
     return pairs
 
 
-def _resolve_raw_dir(data_dir: str) -> Path:
-    """Resolve the local Amazon-Book raw directory without triggering downloads."""
-    return resolve_local_dataset_dir(
-        candidates=[
-            Path(data_dir) / "AmazonBook" / "raw",
-            Path(data_dir) / "AmazonBook" / "raw" / "amazon-book",
-        ],
-        required_files=["train.txt", "test.txt", "user_list.txt", "item_list.txt"],
-        missing_message=(
-            "AmazonBook raw files not found under data/AmazonBook/raw. "
-            "Expected train.txt, test.txt, user_list.txt, and item_list.txt."
-        ),
-    )
-
-
-def _build_arrays(
-    train_pairs: list[tuple[int, int]],
-    test_pairs: list[tuple[int, int]],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Concatenate train/test pairs and create split masks."""
-    all_pairs = train_pairs + test_pairs
-    raw_users = np.asarray([u for u, _ in all_pairs], dtype=np.int64)
-    raw_items = np.asarray([i for _, i in all_pairs], dtype=np.int64)
-
-    train_mask = np.zeros(len(all_pairs), dtype=bool)
-    test_mask = np.zeros(len(all_pairs), dtype=bool)
-    train_mask[: len(train_pairs)] = True
-    test_mask[len(train_pairs) :] = True
-
-    timestamps = np.zeros(len(all_pairs), dtype=np.int64)
-    return raw_users, raw_items, train_mask, test_mask, timestamps
-
-
 def load_amazonbook(
     data_dir: str = "data",
     max_rows: int | None = None,
@@ -115,7 +82,17 @@ def load_amazonbook(
     """
     del include_optional_features, feature_policy
 
-    raw_dir = _resolve_raw_dir(data_dir)
+    raw_dir = resolve_local_dataset_dir(
+        candidates=[
+            Path(data_dir) / "AmazonBook" / "raw",
+            Path(data_dir) / "AmazonBook" / "raw" / "amazon-book",
+        ],
+        required_files=["train.txt", "test.txt", "user_list.txt", "item_list.txt"],
+        missing_message=(
+            "AmazonBook raw files not found under data/AmazonBook/raw. "
+            "Expected train.txt, test.txt, user_list.txt, and item_list.txt."
+        ),
+    )
     train_target = max_rows
     test_target = None
     if max_rows is not None:
@@ -124,10 +101,15 @@ def load_amazonbook(
 
     train_pairs = _parse_interaction_file(raw_dir / "train.txt", max_rows=train_target)
     test_pairs = _parse_interaction_file(raw_dir / "test.txt", max_rows=test_target)
-    raw_users, raw_items, train_mask, test_mask, timestamps = _build_arrays(
-        train_pairs,
-        test_pairs,
-    )
+    all_pairs = train_pairs + test_pairs
+    raw_users = np.asarray([user_id for user_id, _ in all_pairs], dtype=np.int64)
+    raw_items = np.asarray([item_id for _, item_id in all_pairs], dtype=np.int64)
+
+    train_mask = np.zeros(len(all_pairs), dtype=bool)
+    test_mask = np.zeros(len(all_pairs), dtype=bool)
+    train_mask[: len(train_pairs)] = True
+    test_mask[len(train_pairs) :] = True
+    timestamps = np.zeros(len(all_pairs), dtype=np.int64)
 
     indexed = remap_interaction_ids(raw_users, raw_items)
     user_id = indexed.user_id

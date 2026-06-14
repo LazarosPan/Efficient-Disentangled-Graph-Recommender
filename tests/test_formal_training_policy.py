@@ -29,7 +29,6 @@ from experiments.run_experiment import (
     _auto_batch_probe_candidates,
     _auto_batch_probe_interactions,
     _bootstrap_cagra_embeddings,
-    _build_evaluation_identity,
     _build_training_identity,
     _checkpoint_ready_for_evaluation,
     _cuda_memory_snapshot,
@@ -44,7 +43,6 @@ from experiments.run_experiment import (
     build_runtime_model,
     normalize_benchmark_config_overrides,
     recoverable_checkpoint_for_config,
-    recoverable_checkpoint_path,
 )
 from scripts.query_results import _format_scoremix
 from src.data.canonical import CanonicalInteractions
@@ -58,7 +56,7 @@ from src.profiling.gpu_profiler import (
     sample_gpu_resource_snapshot,
 )
 from src.training.mini_batch_trainer import MiniBatchTrainer
-from src.utils.config import UCaGNNConfig
+from src.utils.config import SUPPORTED_LR_SCHEDULERS, UCaGNNConfig
 from src.utils.experiment_naming import build_canonical_experiment_name
 from src.utils.reproducibility import build_torch_generator
 from src.utils.trainer_runtime import TrainerRuntime
@@ -960,28 +958,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.interest_gnn_layers, 2)
         self.assertEqual(config.conformity_gnn_layers, 2)
         self.assertEqual(config.max_gnn_layers, 2)
-
-    def test_training_identity_ignores_eval_only_overrides(self) -> None:
-        """Resume compatibility should ignore non-training config changes."""
-        base = build_config(_experiment_args(preset="ucagnn"))
-        eval_override = build_config(_experiment_args(preset="ucagnn"))
-        eval_override.eval_ks = [5, 10]
-
-        base_identity, base_hash = _build_training_identity(base, "ucagnn", None)
-        override_identity, override_hash = _build_training_identity(
-            eval_override,
-            "ucagnn",
-            None,
-        )
-        _, base_eval_hash = _build_evaluation_identity(base, base_hash)
-        _, override_eval_hash = _build_evaluation_identity(
-            eval_override,
-            override_hash,
-        )
-
-        self.assertEqual(base_identity, override_identity)
-        self.assertEqual(base_hash, override_hash)
-        self.assertNotEqual(base_eval_hash, override_eval_hash)
 
     def test_training_identity_changes_when_training_config_changes(self) -> None:
         """Resume compatibility should change with training-defining config fields."""
@@ -2080,7 +2056,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertTrue(_checkpoint_ready_for_evaluation(checkpoint_state, config))
 
-    def test_recoverable_checkpoint_path_requires_finished_training_state(self) -> None:
+    def test_recoverable_checkpoint_requires_finished_training_state(self) -> None:
         """Formal recovery should only re-enter rows with finished checkpoints."""
         config = UCaGNNConfig(device="cpu")
         training_identity, training_hash = _build_training_identity(
@@ -2112,7 +2088,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             checkpoint_path = Path(tmp_dir) / "recoverable.pt"
             runtime.save_checkpoint(checkpoint_path, history=runtime.resume_history)
             self.assertIsNone(
-                recoverable_checkpoint_path(
+                recoverable_checkpoint_for_config(
                     config,
                     preset="ucagnn",
                     checkpoint_path=checkpoint_path,
@@ -2125,14 +2101,14 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 training_finished=True,
             )
 
-            self.assertEqual(
-                recoverable_checkpoint_path(
-                    config,
-                    preset="ucagnn",
-                    checkpoint_path=checkpoint_path,
-                ),
-                checkpoint_path,
+            recovered = recoverable_checkpoint_for_config(
+                config,
+                preset="ucagnn",
+                checkpoint_path=checkpoint_path,
             )
+            self.assertIsNotNone(recovered)
+            assert recovered is not None
+            self.assertEqual(recovered[1], checkpoint_path)
 
     def test_recoverable_checkpoint_searches_auto_batch_candidates(self) -> None:
         """Recovery lookup should find saved auto-selected batch-size checkpoints."""
@@ -2194,10 +2170,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             recovered_config, recovered_path = recovered
             self.assertEqual(recovered_config.batch_size, 8192)
             self.assertEqual(recovered_path, checkpoint_path)
-            self.assertEqual(
-                recoverable_checkpoint_path(config, preset="ucagnn"),
-                checkpoint_path,
-            )
 
     def test_run_experiment_skips_auto_batch_probe_for_recoverable_checkpoint(
         self,
@@ -2679,20 +2651,19 @@ class BenchmarkPlanTests(unittest.TestCase):
             ],
         )
 
-    def test_normalize_benchmark_args_strips_removed_scoring_weight_modes_field(self) -> None:
-        """Legacy saved payloads should drop removed score-mix mode metadata."""
-        args = formal_main._normalize_benchmark_args(
-            {
-                "datasets": ["movielens1m"],
-                "presets": ["ucagnn"],
-                "num_neighbors": [10, 5],
-                "scoring_weight_modes": ["fixed", "learned"],
-            },
-        )
-
-        self.assertNotIn("scoring_weight_modes", args)
-        self.assertEqual(args["presets"], ["ucagnn"])
-        self.assertEqual(args["num_neighbors"], [10, 5])
+    def test_normalize_benchmark_args_rejects_removed_scoring_weight_modes_field(
+        self,
+    ) -> None:
+        """Saved formal-run state should reject removed score-mix mode metadata."""
+        with self.assertRaises(ValueError):
+            formal_main._normalize_benchmark_args(
+                {
+                    "datasets": ["movielens1m"],
+                    "presets": ["ucagnn"],
+                    "num_neighbors": [10, 5],
+                    "scoring_weight_modes": ["fixed", "learned"],
+                },
+            )
 
     def test_plan_sweeps_datasets_within_each_method_combo(self) -> None:
         """Datasets should be the innermost loop of the execution plan."""
@@ -2847,7 +2818,7 @@ class BenchmarkPlanTests(unittest.TestCase):
         plan = build_benchmark_plan(args)
         schedulers = {entry[2] for entry in plan}
 
-        self.assertEqual(schedulers, set(formal_main.SUPPORTED_LR_SCHEDULERS))
+        self.assertEqual(schedulers, set(SUPPORTED_LR_SCHEDULERS))
 
     def test_run_benchmark_reuses_pre_normalized_payload_for_dry_run(self) -> None:
         """Dry-run benchmark execution should not renormalize an internal payload."""

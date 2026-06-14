@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import cast
@@ -546,6 +547,7 @@ class MiniBatchTrainer(TrainerRuntime):
         history: dict[str, list] | None = None,
         checkpoint_path: str | Path | None = None,
         checkpoint_every: int | None = 1,
+        epoch_callback: Callable[[int, Mapping[str, float], float], None] | None = None,
     ) -> dict[str, list]:
         """Run full training loop with mini-batch subgraph sampling.
 
@@ -706,6 +708,8 @@ class MiniBatchTrainer(TrainerRuntime):
             )
             self.completed_epoch = epoch
             self.resume_history = history
+            if epoch_callback is not None:
+                epoch_callback(epoch, val_metrics, epoch_time_s)
             if self._update_early_stopping(
                 current_ndcg,
                 primary_metric,

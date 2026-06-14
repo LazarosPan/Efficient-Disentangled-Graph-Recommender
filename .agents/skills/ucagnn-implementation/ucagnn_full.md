@@ -44,11 +44,12 @@ DICE-style independence remains a distance-correlation auxiliary, but the user a
 | `src/utils/config.py` | `UCaGNNConfig` defaults, validation, preset overrides |
 | `src/utils/experiment_naming.py` | shared canonical experiment names for checkpoints and result reports |
 | `src/data/loaders/_registry.py` | dataset registry and default preprocessing presets |
-| `src/data/canonical.py` | canonical interaction schema, split logic, item recency |
+| `src/data/canonical.py` | canonical interaction schema, split logic, tiny-run sampling, item recency |
 | `src/data/feature_policy.py` | safe-vs-optional feature registry |
 | `src/data/graph_builder.py` | graph construction, optional field transfer, train-only popularity, CAGRA augmentation |
 | `src/data/subgraph_sampler.py` | sampled k-hop subgraph extraction |
 | `src/data/negative_sampler.py` | vectorized negative sampling |
+| `src/models/common.py` | shared model helpers and training payload packaging |
 | `src/models/embeddings.py` | embedding layer |
 | `src/models/lightgcn.py` | propagation layer |
 | `src/models/baselines/lightgcn.py` | canonical paper LightGCN adapter |

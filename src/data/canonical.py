@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -428,6 +428,209 @@ class CanonicalInteractions:
             recent_items[user_id, : user_items.size] = user_items
             recent_mask[user_id, : user_items.size] = True
         return recent_items, recent_mask
+
+
+def _select_sample_counts(total: int, split_sizes: list[int]) -> list[int]:
+    """Allocate an exact sample budget across splits while preserving coverage."""
+    if total >= sum(split_sizes):
+        return list(split_sizes)
+
+    counts = [0] * len(split_sizes)
+    remaining = total
+    active = [index for index, size in enumerate(split_sizes) if size > 0]
+
+    if remaining >= len(active):
+        for index in active:
+            counts[index] = 1
+            remaining -= 1
+
+    if remaining <= 0:
+        return counts
+
+    total_available = sum(split_sizes)
+    raw_shares = [remaining * size / total_available for size in split_sizes]
+    base = [int(share) for share in raw_shares]
+    for index, value in enumerate(base):
+        increment = min(value, split_sizes[index] - counts[index])
+        counts[index] += increment
+        remaining -= increment
+
+    if remaining <= 0:
+        return counts
+
+    remainders = sorted(
+        range(len(split_sizes)),
+        key=lambda index: raw_shares[index] - int(raw_shares[index]),
+        reverse=True,
+    )
+    for index in remainders:
+        if remaining == 0:
+            break
+        spare_capacity = split_sizes[index] - counts[index]
+        if spare_capacity <= 0:
+            continue
+        counts[index] += 1
+        remaining -= 1
+
+    return counts
+
+
+def _slice_optional(arr: np.ndarray | None, idx: np.ndarray) -> np.ndarray | None:
+    """Return arr[idx], or None when arr is absent."""
+    return None if arr is None else arr[idx]
+
+
+def _slice_metadata(
+    metadata: dict | None,
+    canonical: CanonicalInteractions,
+    selected: np.ndarray,
+    selected_users: np.ndarray,
+    selected_items: np.ndarray,
+) -> dict | None:
+    """Slice array metadata when it is aligned to interactions, users, or items."""
+    if metadata is None:
+        return None
+
+    sliced: dict = {}
+    for key, value in metadata.items():
+        if not isinstance(value, np.ndarray) or value.ndim == 0:
+            sliced[key] = value
+            continue
+
+        if value.shape[0] == len(canonical):
+            sliced[key] = value[selected]
+        elif value.shape[0] == canonical.n_users:
+            sliced[key] = value[selected_users]
+        elif value.shape[0] == canonical.n_items:
+            sliced[key] = value[selected_items]
+        else:
+            sliced[key] = value
+    return sliced
+
+
+def sample_canonical_interactions(
+    canonical: CanonicalInteractions,
+    sample_interactions: int | None,
+    seed: int,
+    train_ratio: float,
+    val_ratio: float,
+    derived_split_mode: DerivedSplitMode = "per_user_temporal",
+) -> CanonicalInteractions:
+    """Return a split-preserving sampled CanonicalInteractions subset.
+
+    Args:
+        canonical: Full canonical dataset to sample.
+        sample_interactions: Desired interaction budget; ``None`` keeps the
+            original dataset.
+        seed: Random seed used for split-local sampling.
+        train_ratio: Train split ratio used when splits must be derived.
+        val_ratio: Validation split ratio used when splits must be derived.
+        derived_split_mode: Split derivation policy when masks are absent.
+
+    Returns:
+        CanonicalInteractions: A remapped canonical subset with interaction-,
+        user-, and item-aligned fields sliced consistently.
+
+    """
+    if sample_interactions is None or sample_interactions >= len(canonical):
+        return canonical
+
+    from ..utils.interaction_indexing import compute_normalized_popularity
+
+    rng = np.random.default_rng(seed)
+    train_mask, val_mask, test_mask = canonical.get_splits(
+        train_ratio,
+        val_ratio,
+        derived_split_mode=derived_split_mode,
+    )
+    split_indices = [
+        np.flatnonzero(train_mask),
+        np.flatnonzero(val_mask),
+        np.flatnonzero(test_mask),
+    ]
+    split_sizes = [len(indices) for indices in split_indices]
+    sample_counts = _select_sample_counts(sample_interactions, split_sizes)
+
+    chosen_parts: list[np.ndarray] = []
+    for indices, count in zip(split_indices, sample_counts, strict=True):
+        if count <= 0:
+            continue
+        chosen = (
+            indices
+            if count >= len(indices)
+            else np.sort(rng.choice(indices, size=count, replace=False))
+        )
+        chosen_parts.append(chosen)
+
+    selected = (
+        np.sort(np.concatenate(chosen_parts)) if chosen_parts else np.array([], dtype=np.int64)
+    )
+    selected_train = np.isin(selected, split_indices[0])
+    selected_val = np.isin(selected, split_indices[1])
+    selected_test = np.isin(selected, split_indices[2])
+
+    selected_users, user_inverse = np.unique(
+        canonical.user_id[selected],
+        return_inverse=True,
+    )
+    selected_items, item_inverse = np.unique(
+        canonical.item_id[selected],
+        return_inverse=True,
+    )
+
+    reverse_user_map = {value: key for key, value in canonical.user_map.items()}
+    reverse_item_map = {value: key for key, value in canonical.item_map.items()}
+    sampled_popularity = compute_normalized_popularity(
+        item_inverse.astype(np.int64, copy=False),
+        len(selected_items),
+    )
+
+    return replace(
+        canonical,
+        user_id=user_inverse.astype(np.int64, copy=False),
+        item_id=item_inverse.astype(np.int64, copy=False),
+        label=canonical.label[selected],
+        timestamp=canonical.timestamp[selected],
+        sign=canonical.sign[selected],
+        raw_target=_slice_optional(canonical.raw_target, selected),
+        behavior_type=_slice_optional(canonical.behavior_type, selected),
+        exposure_flag=_slice_optional(canonical.exposure_flag, selected),
+        source_domain=_slice_optional(canonical.source_domain, selected),
+        repeat_count=_slice_optional(canonical.repeat_count, selected),
+        repeat_mean_target=_slice_optional(canonical.repeat_mean_target, selected),
+        repeat_max_target=_slice_optional(canonical.repeat_max_target, selected),
+        repeat_latest_target=_slice_optional(canonical.repeat_latest_target, selected),
+        repeat_first_timestamp=_slice_optional(canonical.repeat_first_timestamp, selected),
+        repeat_last_timestamp=_slice_optional(canonical.repeat_last_timestamp, selected),
+        repeat_behavior_counts=_slice_optional(canonical.repeat_behavior_counts, selected),
+        item_propensity_targets=_slice_optional(
+            canonical.item_propensity_targets,
+            selected_items,
+        ),
+        popularity=sampled_popularity,
+        n_users=len(selected_users),
+        n_items=len(selected_items),
+        user_map={
+            reverse_user_map[int(old_id)]: new_id
+            for new_id, old_id in enumerate(selected_users.tolist())
+        },
+        item_map={
+            reverse_item_map[int(old_id)]: new_id
+            for new_id, old_id in enumerate(selected_items.tolist())
+        },
+        user_features=_slice_optional(canonical.user_features, selected_users),
+        item_features=_slice_optional(canonical.item_features, selected_items),
+        train_mask=selected_train,
+        val_mask=selected_val,
+        test_mask=selected_test,
+        metadata=_slice_metadata(
+            canonical.metadata,
+            canonical,
+            selected,
+            selected_users,
+            selected_items,
+        ),
+    )
 
 
 def build_indexed_canonical_interactions(

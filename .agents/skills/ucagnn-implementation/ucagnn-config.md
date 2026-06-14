@@ -54,12 +54,13 @@ For paper baselines, `build_config()` re-applies the paper-owned contract after 
 | Loss and schedule | `loss_weight_*`, `branch_loss_mode`, `recommendation_loss_mode`, `auxiliary_loss_schedule`, `auxiliary_ramp_rate`, `independence_ramp_rate`, `distance_correlation_max_pairs`, `contrastive_max_pairs`, `contrastive_temperature`, `uniformity_max_pairs`, `uniformity_temperature`, `use_conformity_au`, `loss_weight_propensity_calibration` | Enables auxiliaries, selects symmetric-vs-DICE branch supervision, caps quadratic auxiliary estimators, and controls how weights activate over time. |
 | Training mode | `training_graph_mode`, `negative_sampling_strategy`, `n_negatives`, `dice_sampler_margin`, `dice_sampler_pool`, `dice_branch_margin`, `dice_loss_decay`, `dice_margin_decay`, `dice_adaptive_decay` | Selects sampled-subgraph vs full-graph training and standard vs DICE popularity-conditioned negative sampling. |
 | Propensity | `use_ipw`, `propensity_hidden`, `propensity_clip_min`, `propensity_clip_max` | Controls the item-side propensity estimator; `use_ipw=True` requires positive `loss_weight_propensity_calibration`. |
-| Runtime | `batch_size`, `auto_batch_size`, `batch_size_candidates`, `epochs`, `patience`, `use_early_stopping`, `use_amp`, `use_torch_compile`, `use_ema`, `lr_scheduler`, `eval_ks` | Controls optimization and execution behavior. CUDA runs default to `bfloat16` AMP; the experiment CLIs do not expose a separate public AMP mode. |
+| Runtime | `batch_size`, `auto_batch_size`, `batch_size_candidates`, `epochs`, `patience`, `use_early_stopping`, `use_amp`, `use_torch_compile`, `use_ema`, `lr_scheduler` | Controls optimization and execution behavior. CUDA runs default to `bfloat16` AMP; the experiment CLIs do not expose a separate public AMP mode, and evaluation cutoffs are fixed by `Evaluator`'s thesis metric contract. |
 | Data | `dataset`, `preprocessing_preset`, `feature_policy`, `derived_split_mode`, `sample_interactions`, `loader_max_rows`, `seed` | Controls loader behavior, split derivation, and tiny-run caps. |
 
 ## Defaults worth remembering
 
 - `graph_policy="observed"` is the default thesis path.
+- `cagra_k=32`, `cagra_out_degree=64`, `cagra_initial_degree=128`, `cagra_team_size=0`, `cagra_metric="inner_product"`, and `cagra_itopk_size=64` are the default CAGRA graph/search settings. They follow the CAGRA fixed-degree guidance while keeping the metric aligned with dot-product recommender scores.
 - `cagra_candidate_k=0` means evaluation scores the full catalog.
 - The dataclass default schedule is `phased`, but `preset_full()` switches to `linear_ramp`.
 - The dataclass default `propensity_clip_min` is `0.01`; `preset_full()` raises it to `0.1`.
@@ -68,14 +69,17 @@ For paper baselines, `build_config()` re-applies the paper-owned contract after 
 - `score_mix_min_weight=0.0` is the dataclass default; `preset_full()` sets it to `0.05` so learned fusion cannot collapse to interest-only when conformity/context are available, even if a current batch gives one component zero-valued scores.
 - `negative_sampling_strategy="standard"` is the dataclass default; `preset_full()` switches to DICE popularity-conditioned negatives with `n_negatives=1` and a stable `dice_branch_margin == dice_sampler_margin`.
 - `use_amp=True` is the default runtime path, and `amp_dtype` is fixed to `bfloat16`.
+- Core Optuna searches use `auto_batch_size=True` with a descending throughput-oriented candidate ladder `[32768, 16384, 8192, 4096, 2048, 1024, 512, 256]`. Batch size is therefore a runtime selection recorded in logs and reports, not a sampled model-selection parameter. Too-large CUDA batches are rejected by the auto-batch probe and retried at smaller candidates; formal recovery uses the same auto-batch checkpoint lookup rules. The resolved config still has a concrete `batch_size` field for trainer/checkpoint identity before probing.
+- The active U-CaGNN search is intentionally coarse-to-focused. Datasets with completed local evidence can use narrow categorical basins, while KuaiRand keeps a small low/medium/high regime screen until it has fresh local trials. Do not replace an untested dataset with a dense grid over a small interval.
 - `loss_weight_propensity_calibration=0.0` is opt-in and stays inactive unless model outputs, dataset targets, and explicit IPW/calibration config exist.
 - `distance_correlation_max_pairs=1024` and `uniformity_max_pairs=2048` cap quadratic auxiliary estimators while preserving deterministic hash-sampled coverage across epochs.
 
 ## Experiment-facing contract
 
 - The formal experiment grid is **dataset x preset**.
-- Support parameters such as `batch_size`, `num_neighbors`, `graph_policy`, and `lr_scheduler` are profile-owned runtime choices for U-CaGNN and tuned/fallback baselines, not thesis axes. Paper baselines lock their paper-owned values, including constant LR scheduling.
+- Support parameters such as `batch_size`, `num_neighbors`, `graph_policy`, and `lr_scheduler` are profile-owned runtime choices for U-CaGNN and tuned/fallback baselines, not thesis axes. U-CaGNN Optuna spaces can tune them for model selection, but final thesis tables should report them as selected runtime/optimization settings rather than as causal contributions. Paper baselines lock their paper-owned values, including constant LR scheduling.
 - Formal profiles and runtime config mappings may override existing score-fusion, loss-weight, auxiliary-schedule, and bounded-pair estimator fields so controlled causal-loss ablations are reproducible through the same checkpoint identity surface as the mainline.
 - Formal profiles may sweep `num_neighbors`, `graph_policy`, or preprocessing presets as lists, but each resolved run still receives one concrete value in the final `UCaGNNConfig`.
 - The default formal profile is `core-ucagnn-mainline` and targets the practical core datasets: `amazonbook`, `movielens1m`, `kuairec_v2`, and `kuairand1k`. Development, preprocessing-sweep, runtime-probe, `taobao`, and `movielens20m` profiles remain explicit instead of default catalog entries.
 - Public ablation variants start from `preset_full()`: `mainline`, `with_contrastive`, `no_popularity_head`, `no_independence`, and `no_features`. `with_contrastive` is the only additive variant; it enables the bounded DCCL-style branch contrastive auxiliary that remains off in the default mainline.
+- CAGRA is not part of the default core Optuna space because `graph_policy="cagra_augmented"` changes the training graph and `cagra_candidate_k > 0` changes evaluation candidate coverage. Use `ucagnn-cagra-ablation` for that systems/retrieval ablation, and keep `cagra_candidate_k=0` as the full-catalog baseline for formal ranking tables.

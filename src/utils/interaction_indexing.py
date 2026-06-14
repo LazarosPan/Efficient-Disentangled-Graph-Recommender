@@ -124,40 +124,6 @@ def compute_normalized_popularity(item_id: np.ndarray, n_items: int) -> np.ndarr
     return pop_counts / max_count
 
 
-def compute_time_windowed_popularity(
-    item_id: np.ndarray,
-    n_items: int,
-    timestamp: np.ndarray,
-    window_seconds: int,
-) -> np.ndarray:
-    """Compute popularity using only interactions inside a trailing time window.
-
-    Args:
-        item_id: Contiguous item IDs aligned to interactions.
-        n_items: Number of unique items represented in item_id.
-        timestamp: Timestamps aligned to interactions.
-        window_seconds: Width of the trailing window in seconds.
-
-    Returns:
-        np.ndarray: Max-normalized popularity restricted to the selected window.
-        Falls back to all valid timestamps when the requested window is empty.
-
-    """
-    if item_id.size == 0:
-        return np.zeros(n_items, dtype=np.float32)
-
-    valid_timestamp_mask = timestamp > 0
-    if not np.any(valid_timestamp_mask):
-        return compute_normalized_popularity(item_id, n_items)
-
-    latest_timestamp = int(timestamp[valid_timestamp_mask].max())
-    earliest_allowed = latest_timestamp - window_seconds
-    window_mask = valid_timestamp_mask & (timestamp >= earliest_allowed)
-    if not np.any(window_mask):
-        return compute_normalized_popularity(item_id[valid_timestamp_mask], n_items)
-    return compute_normalized_popularity(item_id[window_mask], n_items)
-
-
 def compute_explicit_rating_signals(
     ratings: np.ndarray,
     threshold: float = 4.0,

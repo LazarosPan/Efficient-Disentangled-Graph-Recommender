@@ -9,7 +9,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from src.utils.experiment_naming import format_num_neighbors_payload
+
 CATALOG_PATH = Path(__file__).with_name("experiment_catalog.json")
+SEARCH_SPACES_PATH = Path(__file__).with_name("search_spaces.json")
 
 
 @lru_cache(maxsize=1)
@@ -19,14 +22,28 @@ def load_experiment_catalog() -> dict[str, Any]:
         return json.load(handle)
 
 
-def _raw_recipe(recipe_name: str) -> dict[str, Any]:
-    recipes = load_experiment_catalog().get("recipes", {})
-    if recipe_name not in recipes:
-        available = ", ".join(sorted(recipes))
+@lru_cache(maxsize=1)
+def load_search_spaces_catalog() -> dict[str, Any]:
+    """Load the Optuna search-space catalog from disk."""
+    with SEARCH_SPACES_PATH.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def _catalog_entry(
+    catalog: Mapping[str, Any],
+    *,
+    section: str,
+    entry_name: str,
+    entry_label: str,
+) -> dict[str, Any]:
+    """Return one named entry from a catalog section with a consistent error."""
+    entries = catalog.get(section, {})
+    if entry_name not in entries:
+        available = ", ".join(sorted(entries))
         raise KeyError(
-            f"Unknown recipe '{recipe_name}'. Available recipes: {available}",
+            f"Unknown {entry_label} '{entry_name}'. Available {entry_label}s: {available}",
         )
-    return recipes[recipe_name]
+    return entries[entry_name]
 
 
 def recipe_names(include_aliases: bool = True) -> list[str]:
@@ -43,12 +60,12 @@ def recipe_names(include_aliases: bool = True) -> list[str]:
     return sorted(name for name, recipe in raw.items() if "alias_for" not in recipe)
 
 
-def _slugify_fragment(raw: object) -> str:
-    """Return a filesystem-safe slug fragment for profile identifiers."""
+def slugify_fragment(raw: object, *, fallback: str = "") -> str:
+    """Return a filesystem-safe slug fragment for generated identifiers."""
     normalized = "".join(
         character.lower() if str(character).isalnum() else "-" for character in str(raw)
     )
-    return "-".join(part for part in normalized.split("-") if part)
+    return "-".join(part for part in normalized.split("-") if part) or fallback
 
 
 def _normalize_num_neighbors_vector(
@@ -141,36 +158,9 @@ def resolve_profile_num_neighbors(
     return _normalize_num_neighbors_options(raw_neighbors, field_name="num_neighbors")
 
 
-def _format_num_neighbors_options(num_neighbors: list[list[int]]) -> str:
-    """Return a readable slug fragment for one fan-out sweep."""
-    return "+".join("-".join(str(value) for value in neighbors) for neighbors in num_neighbors)
-
-
-def _format_num_neighbors_payload(num_neighbors: object) -> str | None:
-    """Return a readable slug fragment for a num_neighbors payload."""
-    if num_neighbors is None:
-        return None
-    if isinstance(num_neighbors, Mapping):
-        parts: list[str] = []
-        for key in sorted(num_neighbors):
-            options = num_neighbors[key]
-            parts.append(f"{key}[{_format_num_neighbors_payload(options)}]")
-        return "__".join(parts)
-    if isinstance(num_neighbors, (list, tuple)):
-        if not num_neighbors:
-            return None
-        if all(isinstance(value, (list, tuple)) for value in num_neighbors):
-            return _format_num_neighbors_options(
-                [list(value) for value in num_neighbors],
-            )
-        return "x".join(str(value) for value in num_neighbors)
-    return str(num_neighbors)
-
-
 def _resolved_profile_matrix(profile: dict[str, Any]) -> dict[str, Any]:
     """Normalize the catalog matrix shape for a formal profile."""
     matrix = dict(profile.get("matrix", {}))
-    matrix.pop("scoring_weight_modes", None)
     raw_datasets = matrix.get("datasets", "all")
     if isinstance(raw_datasets, str):
         matrix["datasets"] = [raw_datasets]
@@ -212,11 +202,11 @@ def _formal_profile_name(profile: dict[str, Any]) -> str:
     matrix = _resolved_profile_matrix(profile)
     overrides = _resolved_profile_overrides(profile)
     neighbor_options = resolve_profile_num_neighbors(overrides)
-    neighbor_slug = _format_num_neighbors_payload(neighbor_options) or "na"
+    neighbor_slug = format_num_neighbors_payload(neighbor_options) or "na"
     batch_slug = (
         "abauto"
         if overrides.get("auto_batch_size", True)  # True matches UCaGNNConfig default
-        else f"bs{_slugify_fragment(overrides.get('batch_size', 'na'))}"
+        else f"bs{slugify_fragment(overrides.get('batch_size', 'na'))}"
     )
     signature = json.dumps(
         {"matrix": matrix, "config_overrides": overrides},
@@ -225,8 +215,8 @@ def _formal_profile_name(profile: dict[str, Any]) -> str:
     digest = hashlib.sha1(signature.encode("utf-8")).hexdigest()[:8]
     lr_value = str(overrides.get("lr", "na")).replace(".", "p")
     return (
-        f"e{_slugify_fragment(overrides.get('epochs', 'na'))}-lr"
-        f"{_slugify_fragment(lr_value)}-{batch_slug}-n{neighbor_slug}-"
+        f"e{slugify_fragment(overrides.get('epochs', 'na'))}-lr"
+        f"{slugify_fragment(lr_value)}-{batch_slug}-n{neighbor_slug}-"
         f"{digest}"
     )
 
@@ -236,7 +226,7 @@ def _formal_profile_id(profile: dict[str, Any]) -> str:
     explicit_id = profile.get("id")
     if explicit_id is None:
         return _formal_profile_name(profile)
-    return _slugify_fragment(explicit_id)
+    return slugify_fragment(explicit_id)
 
 
 @lru_cache(maxsize=1)
@@ -250,7 +240,7 @@ def _resolved_formal_profiles() -> list[dict[str, Any]]:
         resolved_name = _formal_profile_name(profile)
         aliases = {resolved_id, resolved_name}
         raw_aliases = profile.get("aliases", [])
-        aliases.update(_slugify_fragment(alias) for alias in raw_aliases)
+        aliases.update(slugify_fragment(alias) for alias in raw_aliases)
         resolved_profiles.append(
             {
                 "id": resolved_id,
@@ -291,9 +281,40 @@ def default_formal_profile_name() -> str:
     return str(profiles[0]["id"])
 
 
+def search_space_names() -> list[str]:
+    """Return available Optuna search-space identifiers."""
+    return sorted(load_search_spaces_catalog().get("search_spaces", {}))
+
+
+def get_search_space(space_name: str) -> dict[str, Any]:
+    """Return a named Optuna search-space definition from the search catalog."""
+    space = dict(
+        _catalog_entry(
+            load_search_spaces_catalog(),
+            section="search_spaces",
+            entry_name=space_name,
+            entry_label="search space",
+        ),
+    )
+    return {
+        "name": space_name,
+        "description": space.get("description", ""),
+        "base_profile": space.get("base_profile"),
+        "datasets": space.get("datasets"),
+        "objective": space.get("objective"),
+        "sampler": space.get("sampler"),
+        "pruner": space.get("pruner"),
+        "max_epochs": space.get("max_epochs"),
+        "trials": space.get("trials"),
+        "config_overrides": dict(space.get("config_overrides", {})),
+        "parameters": dict(space.get("parameters", {})),
+        "parameters_by_dataset": dict(space.get("parameters_by_dataset", {})),
+    }
+
+
 def get_formal_profile(profile_name: str) -> dict[str, Any]:
     """Return a named formal profile from the experiment catalog."""
-    normalized_name = _slugify_fragment(profile_name.strip())
+    normalized_name = slugify_fragment(profile_name.strip())
     resolved_profile = _formal_profile_alias_index().get(normalized_name)
     if resolved_profile is not None:
         return {
@@ -313,7 +334,14 @@ def get_formal_profile(profile_name: str) -> dict[str, Any]:
 
 def get_recipe(recipe_name: str) -> dict[str, Any]:
     """Resolve a recipe, following aliases to their canonical target."""
-    recipe = dict(_raw_recipe(recipe_name))
+    recipe = dict(
+        _catalog_entry(
+            load_experiment_catalog(),
+            section="recipes",
+            entry_name=recipe_name,
+            entry_label="recipe",
+        ),
+    )
     alias_target = recipe.get("alias_for")
     if alias_target is None:
         return {

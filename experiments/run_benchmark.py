@@ -24,8 +24,8 @@ from scripts._workflow_helpers import (
     resolve_batch_id,
     thesis_metric_values,
 )
-from src.utils.cli_parsers import (
-    benchmark_dataset_lookup_keys,
+from src.training import THESIS_PRIMARY_METRICS
+from src.utils.benchmark_datasets import (
     normalize_benchmark_datasets_arg,
     resolve_benchmark_datasets,
 )
@@ -33,12 +33,18 @@ from src.utils.config import (
     BENCHMARK_CONFIG_FIELDS,
     DEFAULT_SEED,
     PAPER_BASELINE_PRESETS,
-    SUPPORTED_LR_SCHEDULERS,
     UCaGNNConfig,
 )
-from src.utils.experiment_logger import ExperimentLogger
+from src.utils.experiment_logger import RUNTIME_PROBE_METRIC_NAMES, ExperimentLogger
+from src.utils.experiment_naming import format_num_neighbors_payload
 from src.utils.project_paths import FORMAL_RUN_STATE_PATH, THESIS_DB_PATH
 
+from experiments.benchmark_resolvers import (
+    resolve_benchmark_graph_policy_values,
+    resolve_benchmark_lr_scheduler_values,
+    resolve_benchmark_num_neighbor_values,
+    resolve_benchmark_preprocessing_preset_values,
+)
 from experiments.cli_parsers import build_benchmark_parser, build_formal_run_parser
 from experiments.recipes import (
     default_formal_profile_name,
@@ -111,6 +117,7 @@ PLAN_COMPARISON_FIELDS = tuple(
     for field_name in NORMALIZED_BENCHMARK_FIELDS
     if field_name not in RUNTIME_ONLY_BENCHMARK_FIELDS
 )
+BenchmarkPlanItem = tuple[str, str, str, str | None, str, tuple[int, ...]]
 
 
 def _write_state(payload: dict[str, object]) -> None:
@@ -188,7 +195,6 @@ def _normalize_benchmark_args(
 ) -> dict[str, object]:
     """Return a JSON-safe benchmark payload."""
     benchmark_args = normalize_config_inputs(raw_args)
-    benchmark_args.pop("scoring_weight_modes", None)
     unexpected_fields = sorted(set(benchmark_args) - set(NORMALIZED_BENCHMARK_FIELDS))
     if unexpected_fields:
         raise ValueError(
@@ -390,28 +396,13 @@ def _log_runtime_probe_estimate(
     estimate: Mapping[str, float],
 ) -> None:
     """Persist runtime-probe approximation metrics under an explicit split label."""
-    for metric_name, estimate_value in sorted(estimate.items()):
+    for metric_name in RUNTIME_PROBE_METRIC_NAMES:
         tracker.log_metric(
             exp_id,
             metric_name,
-            estimate_value,
+            estimate[metric_name],
             split="approximation",
         )
-
-
-def _override_resumed_args(
-    benchmark_args: dict[str, object],
-    cli_args: argparse.Namespace,
-) -> dict[str, object]:
-    """Apply a small set of runtime overrides when resuming a saved run."""
-    overridden_args = dict(benchmark_args)
-    if getattr(cli_args, "overwrite_checkpoint", False):
-        overridden_args["overwrite_checkpoint"] = True
-    overridden_args["dry_run"] = False
-    overridden_args["resume_batch"] = True
-    overridden_args["sample_interactions"] = None
-    overridden_args["loader_max_rows"] = None
-    return overridden_args
 
 
 def _resolve_saved_benchmark_args(
@@ -427,7 +418,13 @@ def _resolve_saved_benchmark_args(
         expected_args,
     ):
         return expected_args, profile_name, False
-    benchmark_args = _override_resumed_args(saved_benchmark_args, cli_args)
+    benchmark_args = dict(saved_benchmark_args)
+    if getattr(cli_args, "overwrite_checkpoint", False):
+        benchmark_args["overwrite_checkpoint"] = True
+    benchmark_args["dry_run"] = False
+    benchmark_args["resume_batch"] = True
+    benchmark_args["sample_interactions"] = None
+    benchmark_args["loader_max_rows"] = None
     benchmark_args["profile_name"] = profile_name
     benchmark_args["profile_slug"] = profile_slug
     return benchmark_args, profile_name, True
@@ -564,58 +561,6 @@ def _resolve_benchmark_num_neighbors_for_preset(
     return list(num_neighbors[:required_hops])
 
 
-def _benchmark_graph_policy_values(
-    benchmark_args: Mapping[str, object],
-) -> list[str]:
-    """Return the resolved graph-policy values for one benchmark plan."""
-    graph_policy_options = benchmark_args.get("graph_policy_options")
-    if isinstance(graph_policy_options, (list, tuple)) and graph_policy_options:
-        return [str(graph_policy) for graph_policy in graph_policy_options]
-    graph_policy = benchmark_args.get("graph_policy")
-    if graph_policy is not None:
-        return [str(graph_policy)]
-    return [UCaGNNConfig().graph_policy]
-
-
-def _format_num_neighbors_sweep(num_neighbors: list[list[int]]) -> str:
-    """Return one readable sweep fragment for a neighbor option set."""
-    return ", ".join(
-        "[" + ", ".join(str(value) for value in neighbors) + "]" for neighbors in num_neighbors
-    )
-
-
-def _benchmark_num_neighbors_values(
-    benchmark_args: Mapping[str, object],
-    *,
-    dataset: str | None = None,
-) -> list[list[int]]:
-    """Return the resolved neighbor vectors for one benchmark plan."""
-    raw_num_neighbors = benchmark_args.get("num_neighbors")
-    if isinstance(raw_num_neighbors, Mapping):
-        if dataset is None:
-            raise ValueError(
-                "Dataset-specific num_neighbors mappings require a dataset name.",
-            )
-        for lookup_key in benchmark_dataset_lookup_keys(dataset):
-            selected_neighbors = raw_num_neighbors.get(lookup_key)
-            if selected_neighbors is None:
-                continue
-            neighbor_sweep = resolve_profile_num_neighbors(
-                {"num_neighbors": selected_neighbors},
-            )
-            if neighbor_sweep is not None:
-                return neighbor_sweep
-        available = ", ".join(sorted(str(key) for key in raw_num_neighbors))
-        raise ValueError(
-            f"No num_neighbors entry matches dataset '{dataset}'. Available keys: {available}",
-        )
-
-    neighbor_sweep = resolve_profile_num_neighbors({"num_neighbors": raw_num_neighbors})
-    if neighbor_sweep is not None:
-        return neighbor_sweep
-    return [list(UCaGNNConfig().num_neighbors)]
-
-
 def _benchmark_num_neighbors_summary(
     benchmark_args: Mapping[str, object],
 ) -> str:
@@ -629,18 +574,18 @@ def _benchmark_num_neighbors_summary(
             )
             if resolved is None:
                 continue
-            parts.append(f"{key}: {_format_num_neighbors_sweep(resolved)}")
+            parts.append(f"{key}: {format_num_neighbors_payload(resolved)}")
         return ", ".join(parts)
 
     resolved = resolve_profile_num_neighbors({"num_neighbors": raw_num_neighbors})
     if resolved is None:
         resolved = [list(UCaGNNConfig().num_neighbors)]
-    return _format_num_neighbors_sweep(resolved)
+    return format_num_neighbors_payload(resolved) or ""
 
 
 def build_benchmark_plan(
     args: argparse.Namespace | Mapping[str, object] | object,
-) -> list[tuple[str, str, str, str | None, str, tuple[int, ...]]]:
+) -> list[BenchmarkPlanItem]:
     """Build the ordered benchmark execution plan.
 
     The semantic thesis matrix remains dataset * preset, but the
@@ -652,22 +597,18 @@ def build_benchmark_plan(
     datasets = resolve_benchmark_datasets(benchmark_args["datasets"])
     presets = list(dict.fromkeys(benchmark_args["presets"]))
     num_neighbor_values_by_dataset = {
-        dataset: _benchmark_num_neighbors_values(benchmark_args, dataset=dataset)
+        dataset: resolve_benchmark_num_neighbor_values(benchmark_args, dataset=dataset)
         for dataset in datasets
     }
-    lr_scheduler_values = benchmark_args["lr_scheduler"]
-    if isinstance(lr_scheduler_values, str):
-        lr_scheduler_values = [lr_scheduler_values]
-    if lr_scheduler_values == ["all"]:
-        lr_scheduler_values = list(SUPPORTED_LR_SCHEDULERS)
+    lr_scheduler_values = resolve_benchmark_lr_scheduler_values(benchmark_args)
     lr_scheduler_values_by_preset = {
         preset: ["none"] if preset in PAPER_BASELINE_PRESETS else lr_scheduler_values
         for preset in presets
     }
-    graph_policy_values = _benchmark_graph_policy_values(benchmark_args)
-    preprocessing_preset_values = benchmark_args.get("preprocessing_preset_options") or [
-        benchmark_args.get("preprocessing_preset")
-    ]
+    graph_policy_values = resolve_benchmark_graph_policy_values(benchmark_args)
+    preprocessing_preset_values = resolve_benchmark_preprocessing_preset_values(
+        benchmark_args,
+    )
     return [
         (
             dataset,
@@ -684,6 +625,48 @@ def build_benchmark_plan(
         for graph_policy in graph_policy_values
         for num_neighbors in num_neighbor_values_by_dataset[dataset]
     ]
+
+
+def _benchmark_item_label(
+    dataset: str,
+    preset: str,
+    lr_scheduler: str,
+    preprocessing_preset: str | None,
+    graph_policy: str,
+    neighbor_label: str,
+) -> str:
+    """Return the shared human-readable label for one benchmark item."""
+    return (
+        f"{dataset} / {preset} / {lr_scheduler} "
+        f"/ {preprocessing_preset or 'default'} / {graph_policy} / nbr{neighbor_label}"
+    )
+
+
+def _record_benchmark_failure(
+    failure_notes: list[str],
+    *,
+    dataset: str,
+    preset: str,
+    lr_scheduler: str,
+    preprocessing_preset: str | None,
+    graph_policy: str,
+    neighbor_label: str,
+    exc: Exception,
+) -> None:
+    """Log and store one benchmark failure through the shared format."""
+    item_label = _benchmark_item_label(
+        dataset,
+        preset,
+        lr_scheduler,
+        preprocessing_preset,
+        graph_policy,
+        neighbor_label,
+    )
+    failure_notes.append(
+        f"{item_label}: {type(exc).__name__}: {exc}",
+    )
+    logger.error("FAILED: %s", exc)
+    traceback.print_exception(type(exc), exc, exc.__traceback__)
 
 
 def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> int:
@@ -721,11 +704,9 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
         if isinstance(schedulers, str):
             schedulers = [schedulers]
         print(f"  LR schedulers: {', '.join(schedulers)}")
-    graph_policies = _benchmark_graph_policy_values(benchmark_args)
+    graph_policies = resolve_benchmark_graph_policy_values(benchmark_args)
     print(f"  Graph policies: {', '.join(str(policy) for policy in graph_policies)}")
-    preprocessing_presets = benchmark_args.get("preprocessing_preset_options") or [
-        benchmark_args.get("preprocessing_preset"),
-    ]
+    preprocessing_presets = resolve_benchmark_preprocessing_preset_values(benchmark_args)
     resolved_preprocessing_presets = [
         preset for preset in preprocessing_presets if preset is not None
     ]
@@ -761,7 +742,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             experiments,
             1,
         ):
-            neighbor_label = "-".join(str(value) for value in neighbors)
+            neighbor_label = format_num_neighbors_payload(neighbors) or ""
             print(
                 f"{i:>4} | {ds:<15} | {pr:<12} | {scheduler:<12} | "
                 f"{preprocessing_preset or '-'!s: <24} | "
@@ -788,7 +769,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
     ) in enumerate(experiments, 1):
         neighbor_list = list(num_neighbors)
         effective_neighbor_list = list(neighbor_list)
-        raw_neighbor_label = "-".join(str(value) for value in neighbor_list)
+        raw_neighbor_label = format_num_neighbors_payload(neighbor_list) or ""
         neighbor_label = raw_neighbor_label
 
         try:
@@ -797,25 +778,32 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                 preset,
                 neighbor_list,
             )
-            neighbor_label = "-".join(str(value) for value in effective_neighbor_list)
+            neighbor_label = format_num_neighbors_payload(effective_neighbor_list) or ""
         except Exception as e:
             failed += 1
-            failure_notes.append(
-                (
-                    f"{dataset} / {preset} / {lr_scheduler} "
-                    f"/ {preprocessing_preset or 'default'} / {graph_policy} "
-                    f"/ nbr{neighbor_label}: {type(e).__name__}: {e}"
-                ),
+            _record_benchmark_failure(
+                failure_notes,
+                dataset=dataset,
+                preset=preset,
+                lr_scheduler=lr_scheduler,
+                preprocessing_preset=preprocessing_preset,
+                graph_policy=graph_policy,
+                neighbor_label=neighbor_label,
+                exc=e,
             )
-            logger.error(f"FAILED: {e}")
-            traceback.print_exc()
             continue
 
         print(f"\n{'=' * 70}")
         print(
-            "["
-            f"{i}/{len(experiments)}] {dataset} / {preset} / {lr_scheduler} "
-            f"/ {preprocessing_preset or 'default'} / {graph_policy} / nbr{neighbor_label}",
+            f"[{i}/{len(experiments)}] "
+            + _benchmark_item_label(
+                dataset,
+                preset,
+                lr_scheduler,
+                preprocessing_preset,
+                graph_policy,
+                neighbor_label,
+            ),
         )
         print("=" * 70)
 
@@ -833,15 +821,16 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             )
         except Exception as e:
             failed += 1
-            failure_notes.append(
-                (
-                    f"{dataset} / {preset} / {lr_scheduler} "
-                    f"/ {preprocessing_preset or 'default'} / {graph_policy} "
-                    f"/ nbr{neighbor_label}: {type(e).__name__}: {e}"
-                ),
+            _record_benchmark_failure(
+                failure_notes,
+                dataset=dataset,
+                preset=preset,
+                lr_scheduler=lr_scheduler,
+                preprocessing_preset=preprocessing_preset,
+                graph_policy=graph_policy,
+                neighbor_label=neighbor_label,
+                exc=e,
             )
-            logger.error(f"FAILED: {e}")
-            traceback.print_exc()
             continue
 
         existing = tracker.find_latest_batch_experiment(
@@ -977,16 +966,16 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
 
         except Exception as e:
             failed += 1
-            failure_notes.append(
-                (
-                    f"{dataset} / {preset} / {lr_scheduler} / "
-                    f"{preprocessing_preset or 'default'} / {graph_policy} "
-                    f"/ nbr{neighbor_label}: "
-                    f"{type(e).__name__}: {e}"
-                ),
+            _record_benchmark_failure(
+                failure_notes,
+                dataset=dataset,
+                preset=preset,
+                lr_scheduler=lr_scheduler,
+                preprocessing_preset=preprocessing_preset,
+                graph_policy=graph_policy,
+                neighbor_label=neighbor_label,
+                exc=e,
             )
-            logger.error(f"FAILED: {e}")
-            traceback.print_exc()
             continue
 
     sorted_results = sorted(
@@ -1030,16 +1019,9 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
         for r in sorted_results:
             metric_values = thesis_metric_values(
                 r["metrics"],
-                (
-                    "NDCG@20",
-                    "Recall@20",
-                    "AveragePopularity@20",
-                    "NDCG@40",
-                    "Recall@40",
-                    "AveragePopularity@40",
-                ),
+                THESIS_PRIMARY_METRICS,
             )
-            neighbor_label = "-".join(str(value) for value in r["num_neighbors"])
+            neighbor_label = format_num_neighbors_payload(r["num_neighbors"]) or ""
             epochs = (
                 str(r.get("epochs_stopped_at")) if r.get("epochs_stopped_at") is not None else "-"
             )

@@ -56,14 +56,24 @@ CONFIG_OVERRIDE_FIELDS = (
     "conformity_gnn_layers",
     "dropout",
     "lr",
+    "weight_decay",
     "lr_scheduler",
     "lr_scheduler_factor",
     "lr_scheduler_patience",
+    "grad_clip_norm",
     "use_early_stopping",
     "patience",
     "use_features",
+    "use_popularity_head",
     "feature_policy",
     "graph_policy",
+    "cagra_k",
+    "cagra_out_degree",
+    "cagra_initial_degree",
+    "cagra_team_size",
+    "cagra_metric",
+    "cagra_itopk_size",
+    "cagra_candidate_k",
     "training_graph_mode",
     "branch_loss_mode",
     "recommendation_loss_mode",
@@ -337,7 +347,7 @@ class UCaGNNConfig:
     training_graph_mode: TrainingGraphMode = "sampled"
 
     # ── Graph construction ───────────────────────────────────────────────
-    cagra_k: int = 20
+    cagra_k: int = 32
     cagra_out_degree: int = 64  # cuVS-recommended default graph degree
     cagra_initial_degree: int = 128  # cuVS-recommended intermediate graph degree
     cagra_team_size: int = 0  # 0 = auto-select (cuVS default)
@@ -409,7 +419,6 @@ class UCaGNNConfig:
     lr_scheduler: LRSchedulerName = "plateau"
     lr_scheduler_factor: float = 0.5
     lr_scheduler_patience: int = 5
-    eval_ks: list[int] = field(default_factory=lambda: [20, 40])
     # ── Training ─────────────────────────────────────────────────────────
     num_neighbors: list[int] = field(default_factory=lambda: [10, 5])
     sample_interactions: int | None = None
@@ -492,6 +501,20 @@ class UCaGNNConfig:
             raise ValueError(
                 f"graph_policy must be one of {', '.join(GRAPH_POLICY_CHOICES)}",
             )
+        if self.cagra_k < 1:
+            raise ValueError("cagra_k must be >= 1")
+        if self.cagra_out_degree < 1:
+            raise ValueError("cagra_out_degree must be >= 1")
+        if self.cagra_initial_degree < self.cagra_out_degree:
+            raise ValueError("cagra_initial_degree must be >= cagra_out_degree")
+        if self.cagra_team_size not in (0, 4, 8, 16, 32):
+            raise ValueError("cagra_team_size must be one of 0, 4, 8, 16, 32")
+        if self.cagra_metric not in ("sqeuclidean", "inner_product", "cosine"):
+            raise ValueError("cagra_metric must be sqeuclidean, inner_product, or cosine")
+        if self.cagra_itopk_size < self.cagra_k:
+            raise ValueError("cagra_itopk_size must be >= cagra_k")
+        if self.cagra_candidate_k < 0:
+            raise ValueError("cagra_candidate_k must be >= 0")
         if self.training_graph_mode not in ("sampled", "full"):
             raise ValueError("training_graph_mode must be either 'sampled' or 'full'")
         if self.branch_loss_mode not in ("symmetric_bpr", "dice"):

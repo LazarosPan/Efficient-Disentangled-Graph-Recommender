@@ -23,6 +23,7 @@ import csv
 import importlib
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -324,6 +325,9 @@ class DatasetRecord:
         return sum(record.size_bytes for record in self.file_records)
 
 
+TextCountParser = Callable[[Path, int | None], tuple[int | None, dict[str, Any]]]
+
+
 def safe_json(value: Any) -> Any:
     """Convert values into JSON-serializable primitives.
 
@@ -495,6 +499,72 @@ def parse_amazonbook_interactions(file_path: Path) -> tuple[int | None, dict[str
         return None, details
 
 
+def parse_csv_text_count(
+    file_path: Path,
+    _line_count: int | None,
+) -> tuple[int | None, dict[str, Any]]:
+    """Adapt CSV count parsing to the shared text parser signature.
+
+    Args:
+        file_path: CSV file path.
+        _line_count: Precomputed physical line count, unused for CSV parsing.
+
+    Returns:
+        Tuple of parsed count and parser details.
+
+    """
+    return parse_csv_counts(file_path)
+
+
+def parse_amazonbook_text_count(
+    file_path: Path,
+    _line_count: int | None,
+) -> tuple[int | None, dict[str, Any]]:
+    """Adapt AmazonBook interaction parsing to the shared text parser signature.
+
+    Args:
+        file_path: AmazonBook train/test file path.
+        _line_count: Precomputed physical line count, unused for interaction parsing.
+
+    Returns:
+        Tuple of parsed count and parser details.
+
+    """
+    return parse_amazonbook_interactions(file_path)
+
+
+TEXT_COUNT_PARSERS: dict[str, TextCountParser] = {
+    ".csv": parse_csv_text_count,
+    ".dat": parse_dat_counts,
+}
+
+
+def text_count_parser_for(
+    dataset_root: Path,
+    file_path: Path,
+    extension: str,
+) -> TextCountParser | None:
+    """Return the semantic count parser for one text-like dataset file.
+
+    Args:
+        dataset_root: Dataset root directory.
+        file_path: Absolute file path.
+        extension: Lowercase file extension.
+
+    Returns:
+        Parser callable when the file needs semantic parsing, otherwise ``None``.
+
+    """
+    parser = TEXT_COUNT_PARSERS.get(extension)
+    if parser is not None:
+        return parser
+
+    if file_path.name in {"train.txt", "test.txt"} and "AmazonBook" in str(dataset_root):
+        return parse_amazonbook_text_count
+
+    return None
+
+
 def try_numpy_metadata(file_path: Path) -> dict[str, Any]:
     """Extract lightweight metadata from NumPy files.
 
@@ -584,17 +654,10 @@ def build_file_record(dataset_root: Path, file_path: Path) -> FileRecord:
 
     if extension in TEXT_EXTENSIONS:
         line_count = safe_count_lines(file_path)
+        parser = text_count_parser_for(dataset_root, file_path, extension)
 
-        if extension == ".csv":
-            parsed_count, parsed_details = parse_csv_counts(file_path)
-            details.update(parsed_details)
-        elif extension == ".dat":
-            parsed_count, parsed_details = parse_dat_counts(file_path, line_count)
-            details.update(parsed_details)
-        elif file_path.name in {"train.txt", "test.txt"} and "AmazonBook" in str(
-            dataset_root,
-        ):
-            parsed_count, parsed_details = parse_amazonbook_interactions(file_path)
+        if parser is not None:
+            parsed_count, parsed_details = parser(file_path, line_count)
             details.update(parsed_details)
         elif line_count is not None:
             parsed_count = line_count

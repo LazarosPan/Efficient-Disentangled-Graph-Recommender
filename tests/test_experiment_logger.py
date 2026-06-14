@@ -214,6 +214,20 @@ class ExperimentLoggerTests(unittest.TestCase):
 
         self.assertEqual(row["training_mode"], "mini_batch")
 
+    def test_experiment_logger_no_longer_owns_optuna_search_trials(self) -> None:
+        """Optuna trial metadata should stay in Optuna RDB storage."""
+        self.assertFalse(hasattr(self.logger, "log_optuna_search_trial"))
+        row = self.logger.conn.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name = 'optuna_search_trials'
+            """
+        ).fetchone()
+
+        self.assertIsNone(row)
+
     def test_experiment_summary_uses_peak_vram_metric_when_profiling_missing(self) -> None:
         """The summary view should expose peak VRAM stored as a train metric."""
         exp_id = self.logger.log_experiment(
@@ -574,7 +588,10 @@ class ExperimentLoggerTests(unittest.TestCase):
         )
         rows = conn.execute("SELECT * FROM report_rows ORDER BY id").fetchall()
 
-        efficiency_scores = query_results._compute_efficiency_scores(rows)
+        efficiency_scores = query_results.compute_crru_efficiency_scores(
+            [row["peak_vram_mb"] for row in rows],
+            [query_results._crru_epoch_time_s(row) for row in rows],
+        )
 
         self.assertGreater(efficiency_scores[0], efficiency_scores[1])
 
@@ -714,7 +731,6 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.logger.log_metric(exp_id, "training_time_s", 11.2, split="train")
         self.logger.log_metric(exp_id, "peak_vram_mb", 2048.0, split="train")
         self.logger.update_experiment_status(exp_id, status="completed")
-
         buffer = StringIO()
         temp_db_path = Path(self.temp_dir.name) / "experiments.sqlite"
         with patch.object(query_results, "DB_PATH", temp_db_path), redirect_stdout(buffer):
@@ -1094,7 +1110,6 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.logger.log_metric(exp_id, "training_time_s", 11.2, split="train")
         self.logger.log_metric(exp_id, "peak_vram_mb", 2048.0, split="train")
         self.logger.update_experiment_status(exp_id, status="completed")
-
         temp_db_path = Path(self.temp_dir.name) / "experiments.sqlite"
         output_path = Path(self.temp_dir.name) / "query_results.md"
         buffer = StringIO()
@@ -1108,12 +1123,12 @@ class ExperimentLoggerTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         stdout_text = buffer.getvalue()
-        self.assertIn("THESIS TEST RESULTS", stdout_text)
-        self.assertIn("dev-profile", stdout_text)
         self.assertIn(
             f"Wrote default results summary to {output_path.resolve()}",
             stdout_text,
         )
+        self.assertNotIn("THESIS TEST RESULTS", stdout_text)
+        self.assertNotIn("dev-profile", stdout_text)
         self.assertTrue(output_path.exists())
         markdown_output = output_path.read_text(encoding="utf-8")
         self.assertIn("# Query Results", markdown_output)
@@ -1127,6 +1142,8 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertIn("CRRU@20", markdown_output)
         self.assertIn("CRRU@40", markdown_output)
         self.assertIn("dev-profile", markdown_output)
+        self.assertIn("OPTUNA U-CaGNN SEARCH REPORT", markdown_output)
+        self.assertIn("optuna_optimization.md", markdown_output)
         self.assertIn(
             "amazonbook_lightgcn_ep100_bs4096_dim64_layers2_nbr10-5_lr-plateau_seed13",
             markdown_output,

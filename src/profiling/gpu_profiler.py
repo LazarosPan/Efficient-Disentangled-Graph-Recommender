@@ -9,7 +9,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 import torch
-from torch_geometric.profile import count_parameters, get_data_size, get_model_size
+
+
+def reset_cuda_peak_memory_stats() -> None:
+    """Reset PyTorch CUDA peak memory stats when CUDA is available."""
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
 
 
 @dataclass
@@ -87,8 +92,8 @@ class GPUProfiler:
         self._enabled = enabled
         self.stages.clear()
         self.epoch_elapsed_ms = 0.0
-        if self._enabled and torch.cuda.is_available():
-            torch.cuda.reset_peak_memory_stats()
+        if self._enabled:
+            reset_cuda_peak_memory_stats()
 
     @contextmanager
     def stage(self, name: str):
@@ -98,7 +103,7 @@ class GPUProfiler:
             return
 
         torch.cuda.synchronize()
-        torch.cuda.reset_peak_memory_stats()
+        reset_cuda_peak_memory_stats()
         vram_before = torch.cuda.memory_allocated() / 1024 / 1024
         t0 = time.perf_counter()
 
@@ -144,19 +149,6 @@ class GPUProfiler:
         if not torch.cuda.is_available():
             return None
         return torch.cuda.max_memory_allocated() / 1024 / 1024
-
-    @staticmethod
-    def model_summary(model: torch.nn.Module) -> str:
-        """Return parameter count and model size via PyG utilities."""
-        n_params = count_parameters(model)
-        size_bytes = get_model_size(model)
-        return f"Parameters: {n_params:,} | Size: {size_bytes / 1024 / 1024:.1f} MB"
-
-    @staticmethod
-    def data_summary(data) -> str:
-        """Return data object size via PyG utilities."""
-        size_bytes = get_data_size(data)
-        return f"Data size: {size_bytes / 1024 / 1024:.1f} MB"
 
 
 def _parse_optional_float(value: str) -> float | None:

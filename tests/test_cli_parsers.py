@@ -18,7 +18,9 @@ from experiments.cli_parsers import (
     build_benchmark_parser,
     build_formal_run_parser,
     build_run_experiment_parser,
+    build_search_parser,
 )
+from src.utils.benchmark_datasets import resolve_benchmark_datasets
 from src.utils.cli_parsers import (
     build_data_information_parser,
     build_explore_all_datasets_parser,
@@ -161,6 +163,51 @@ class FormalRunParserTests(unittest.TestCase):
         self.assertTrue(args.overwrite_checkpoint)
 
 
+class SearchParserTests(unittest.TestCase):
+    """Pin the Optuna search parser contract."""
+
+    def test_search_parser_defaults(self) -> None:
+        """Search CLI should keep study execution optional until a space is selected."""
+        args = build_search_parser().parse_args([])
+
+        self.assertIsNone(args.space)
+        self.assertIsNone(args.dataset)
+        self.assertIsNone(args.trials)
+        self.assertIsNone(args.study_name)
+        self.assertEqual(args.storage, "sqlite:///results/optuna_studies.db")
+        self.assertFalse(args.dry_run)
+        self.assertTrue(args.no_mlflow)
+        self.assertFalse(hasattr(args, "overwrite_checkpoint"))
+        self.assertEqual(args.device, "cuda")
+        self.assertEqual(args.data_dir, "data")
+        self.assertEqual(args.mlflow_experiment_name, "ucagnn-optuna")
+
+    def test_search_parser_mlflow_is_explicit_opt_in(self) -> None:
+        """Search should avoid MLflow artifacts unless requested explicitly."""
+        default_args = build_search_parser().parse_args([])
+        enabled_args = build_search_parser().parse_args(["--mlflow"])
+
+        self.assertTrue(default_args.no_mlflow)
+        self.assertFalse(enabled_args.no_mlflow)
+
+    def test_search_parser_accepts_dry_run_space(self) -> None:
+        """Search CLI should expose a no-training dry-run path."""
+        args = build_search_parser().parse_args(
+            [
+                "--space",
+                "ucagnn-core-optimization",
+                "--trials",
+                "1",
+                "--dry-run",
+            ],
+        )
+
+        self.assertEqual(args.space, "ucagnn-core-optimization")
+        self.assertEqual(args.trials, 1)
+        self.assertTrue(args.dry_run)
+        self.assertFalse(hasattr(args, "overwrite_checkpoint"))
+
+
 class BenchmarkParserTests(unittest.TestCase):
     """Pin the benchmark parser defaults that moved behind the shared builder."""
 
@@ -185,6 +232,11 @@ class BenchmarkParserTests(unittest.TestCase):
         args = build_benchmark_parser().parse_args(["--overwrite-checkpoint"])
 
         self.assertTrue(args.overwrite_checkpoint)
+
+    def test_benchmark_dataset_selector_error_names_unknown_value(self) -> None:
+        """Shared selector expansion should report the actual bad selector."""
+        with self.assertRaisesRegex(ValueError, "not_a_tier"):
+            resolve_benchmark_datasets(["not_a_tier"])
 
 
 class UtilityParserTests(unittest.TestCase):

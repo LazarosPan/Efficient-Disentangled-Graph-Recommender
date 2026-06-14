@@ -24,4 +24,4 @@ See [docs/usage/](docs/usage/) for detailed usage guides on running experiments 
 
 ## Results
 
-Experiment results are logged to SQLite (`results/thesis_experiments.db`) and to MLflow (`results/mlflow.db`). A generated summary view lives in `results/query_results.md`.
+Experiment results are logged to SQLite (`results/thesis_experiments.db`) and to MLflow (`results/mlflow.db`). A generated summary view lives in `results/query_results.md`. The CRRU@K reporting metric is defined in [.agents/skills/ucagnn-implementation/ucagnn-training.md](.agents/skills/ucagnn-implementation/ucagnn-training.md); Optuna search diagnostics live in `results/optuna_optimization.md` with a compact paper-ready figure set in `results/optuna_figures/`.

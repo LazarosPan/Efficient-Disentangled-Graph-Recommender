@@ -5,16 +5,36 @@ from __future__ import annotations
 import argparse
 import typing
 
+from src.utils.benchmark_datasets import BENCHMARK_TIER_CHOICES
 from src.utils.cli_parsers import (
-    BENCHMARK_TIER_CHOICES,
     PRESET_CHOICES,
     add_change_note_arg,
+    add_device_and_data_dir_args,
     add_execution_tracking_group,
+    add_mlflow_destination_args,
     add_overwrite_checkpoint_arg,
 )
 
 from experiments.ablation_configs import ABLATION_VARIANTS
-from experiments.recipes import formal_profile_names, recipe_names
+from experiments.recipes import formal_profile_names, recipe_names, search_space_names
+
+
+def _formal_run_profile_hint(message: str) -> str:
+    """Return a formal-run hint when a profile slug is passed to the wrong CLI."""
+    marker = "unrecognized arguments:"
+    if marker not in message:
+        return ""
+
+    unrecognized = message.split(marker, maxsplit=1)[1].strip().split()
+    if not unrecognized:
+        return ""
+
+    profiles = set(formal_profile_names())
+    matching_profile = next((arg for arg in unrecognized if arg in profiles), None)
+    if matching_profile is None:
+        return ""
+
+    return f"\n\nDid you mean to run:\n  uv run formal-run --profile {matching_profile} ?"
 
 
 def build_run_experiment_parser() -> argparse.ArgumentParser:
@@ -30,19 +50,7 @@ def build_run_experiment_parser() -> argparse.ArgumentParser:
 
         def error(self, message: str) -> typing.NoReturn:
             """Override error to suggest formal-run command if a profile name is passed."""
-            if "unrecognized arguments" in message:
-                try:
-                    unrecognized_part = message.split("unrecognized arguments:")[-1].strip()
-                    unrecognized = unrecognized_part.split()
-                    profiles = formal_profile_names()
-                    for arg in unrecognized:
-                        if arg in profiles:
-                            message += (
-                                f"\n\nDid you mean to run:\n  uv run formal-run --profile {arg} ?"
-                            )
-                            break
-                except Exception:
-                    pass
+            message += _formal_run_profile_hint(message)
             super().error(message)
 
     parser = ExperimentArgumentParser(description="Run a U-CaGNN experiment")
@@ -199,6 +207,92 @@ def build_formal_run_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_search_parser() -> argparse.ArgumentParser:
+    """Build the Optuna search CLI parser.
+
+    Returns:
+        Configured parser for ``experiments/run_search.py``.
+
+    """
+    spaces = search_space_names()
+    parser = argparse.ArgumentParser(
+        description="Run Optuna searches over configured U-CaGNN search spaces.",
+    )
+
+    sel = parser.add_argument_group("search selection")
+    sel.add_argument(
+        "--space",
+        choices=spaces,
+        help="Search-space id from experiments/search_spaces.json.",
+    )
+    sel.add_argument(
+        "--dataset",
+        default=None,
+        help="Optional dataset name to narrow the selected search space.",
+    )
+    sel.add_argument(
+        "--trials",
+        type=int,
+        default=None,
+        help=(
+            "Target fresh informative Optuna trials per dataset: COMPLETE plus real "
+            "PRUNED, excluding FAIL/RUNNING, historically imported rows, and "
+            "duplicate-skip prunes. "
+            "Defaults to the search-space value."
+        ),
+    )
+    sel.add_argument(
+        "--study-name",
+        default=None,
+        help="Optuna study name. Defaults to <space>-<dataset-or-all>.",
+    )
+    sel.add_argument(
+        "--list-spaces",
+        action="store_true",
+        help="Print available Optuna search spaces and exit.",
+    )
+
+    ex = parser.add_argument_group("execution")
+    ex.add_argument(
+        "--storage",
+        default="sqlite:///results/optuna_studies.db",
+        help="Optuna storage URI.",
+    )
+    ex.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print resolved bounds and base configs without training.",
+    )
+    add_device_and_data_dir_args(
+        ex,
+        device_default="cuda",
+        data_dir_default="data",
+        device_help="Device for training trials.",
+        data_dir_help="Dataset root directory.",
+    )
+    ex.add_argument(
+        "--mlflow",
+        dest="no_mlflow",
+        action="store_false",
+        help="Enable MLflow tracking for trial runs. Disabled by default for search.",
+    )
+    ex.add_argument(
+        "--no-mlflow",
+        dest="no_mlflow",
+        action="store_true",
+        help="Disable MLflow tracking for trial runs. This is the search default.",
+    )
+    add_mlflow_destination_args(
+        ex,
+        experiment_name_default="ucagnn-optuna",
+        tracking_uri_help="Override MLflow tracking URI for trial runs.",
+        experiment_name_help="MLflow experiment name for trial runs.",
+    )
+    parser.set_defaults(no_mlflow=True)
+
+    return parser
+
+
 def build_ablation_parser() -> argparse.ArgumentParser:
     """Build the ablation study CLI parser.
 
@@ -239,4 +333,5 @@ __all__ = [
     "build_benchmark_parser",
     "build_formal_run_parser",
     "build_run_experiment_parser",
+    "build_search_parser",
 ]

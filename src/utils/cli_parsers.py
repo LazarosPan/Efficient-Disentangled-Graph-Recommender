@@ -5,76 +5,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from .benchmark_datasets import BENCHMARK_DATASETS
 from .config import CONFIG_PRESET_CHOICES
 
-BENCHMARK_DATASETS = [
-    "amazonbook",
-    "movielens1m",
-    "movielens20m",
-    "kuairec_v2",
-    "taobao",
-    "kuairand1k",
-]
-BENCHMARK_DATASET_TIERS: dict[str, list[str]] = {
-    "small": ["amazonbook", "movielens1m"],
-    "medium": ["kuairec_v2", "kuairand1k"],
-    "large": ["movielens20m", "taobao"],
-}
-BENCHMARK_DATASET_TIERS["all"] = BENCHMARK_DATASETS
-BENCHMARK_TIER_CHOICES = list(BENCHMARK_DATASET_TIERS)
 PRESET_CHOICES = list(CONFIG_PRESET_CHOICES)
 _VALIDATION_CATEGORIES = ["recipes", "ablations", "observability", "evaluation"]
-
-
-def normalize_benchmark_datasets_arg(raw: object) -> list[str]:
-    """Normalize the benchmark ``datasets`` field to a list of selectors."""
-    if isinstance(raw, (list, tuple)):
-        return list(raw)
-    if isinstance(raw, str):
-        return [part.strip() for part in raw.split(",") if part.strip()]
-    return ["all"]
-
-
-def resolve_benchmark_datasets(tiers: list[str] | str) -> list[str]:
-    """Expand tier selectors or explicit datasets to a deduplicated dataset list."""
-    if isinstance(tiers, str):
-        tiers = [tiers]
-    if "all" in tiers:
-        return list(BENCHMARK_DATASET_TIERS["all"])
-
-    known_datasets = set(BENCHMARK_DATASET_TIERS["all"])
-    seen: dict[str, None] = {}
-    for tier in tiers:
-        if tier in BENCHMARK_DATASET_TIERS:
-            for dataset_name in BENCHMARK_DATASET_TIERS[tier]:
-                seen[dataset_name] = None
-        elif tier in known_datasets:
-            seen[tier] = None
-        else:
-            raise ValueError(
-                (
-                    "Unknown dataset or tier '{tier}'. Expected one of "
-                    f"{sorted(list(BENCHMARK_DATASET_TIERS) + list(known_datasets))}."
-                ),
-            )
-    return list(seen)
-
-
-def benchmark_dataset_lookup_keys(dataset: str) -> list[str]:
-    """Return dataset and tier keys that can address one resolved dataset.
-
-    The exact dataset name comes first, followed by any matching benchmark tier
-    labels and finally ``all`` as a broad fallback.
-    """
-    keys = [dataset]
-    for tier_name, tier_datasets in BENCHMARK_DATASET_TIERS.items():
-        if tier_name == "all":
-            continue
-        if dataset in tier_datasets and tier_name not in keys:
-            keys.append(tier_name)
-    if "all" not in keys:
-        keys.append("all")
-    return keys
 
 
 def add_device_and_data_dir_args(
@@ -326,8 +261,8 @@ def build_query_results_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Select a convenience exploration view before applying any extra "
-            "filters. Omit all flags to show the top-20 completed runs by "
-            "NDCG@20."
+            "filters. Omit all flags to write the default thesis summary to "
+            "results/query_results.md without printing the full report."
         ),
     )
     return parser
@@ -390,19 +325,15 @@ def build_data_information_parser() -> argparse.ArgumentParser:
 
 
 __all__ = [
-    "BENCHMARK_DATASETS",
-    "BENCHMARK_DATASET_TIERS",
-    "BENCHMARK_TIER_CHOICES",
     "PRESET_CHOICES",
     "add_batch_execution_args",
     "add_change_note_arg",
     "add_device_and_data_dir_args",
+    "add_execution_tracking_group",
     "add_mlflow_destination_args",
     "add_overwrite_checkpoint_arg",
     "build_data_information_parser",
     "build_explore_all_datasets_parser",
     "build_query_results_parser",
     "build_quick_validate_parser",
-    "normalize_benchmark_datasets_arg",
-    "resolve_benchmark_datasets",
 ]

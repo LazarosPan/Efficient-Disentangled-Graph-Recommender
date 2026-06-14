@@ -11,9 +11,10 @@ from ...utils.config import UCaGNNConfig
 from ..lightgcn import LightGCNBranch
 from .common import (
     CanonicalBaselineRecommender,
-    build_sparse_adjacency,
+    propagate_user_item_channels,
     score_dict,
-    score_pairwise,
+    score_propagated_matrix,
+    score_propagated_pair,
 )
 
 
@@ -81,29 +82,29 @@ class PaperGCNDICE(CanonicalBaselineRecommender):
         """Propagate the two GCN-DICE channels over a self-looped graph."""
         del edge_sign
         embeddings = self._initial_embeddings(dtype=embedding_dtype)
-        adj = build_sparse_adjacency(
+        return propagate_user_item_channels(
             edge_index,
             edge_norm=None,
-            num_nodes=self.n_users + self.n_items,
-            dtype=embeddings["user_interest"].dtype,
+            n_users=self.n_users,
+            n_items=self.n_items,
             add_self_loops=True,
+            channel_specs=(
+                (
+                    "user_interest",
+                    "item_interest",
+                    embeddings["user_interest"],
+                    embeddings["item_interest"],
+                    self.interest_propagation,
+                ),
+                (
+                    "user_conformity",
+                    "item_conformity",
+                    embeddings["user_conformity"],
+                    embeddings["item_conformity"],
+                    self.conformity_propagation,
+                ),
+            ),
         )
-        int_x = torch.cat(
-            [embeddings["user_interest"], embeddings["item_interest"]],
-            dim=0,
-        )
-        pop_x = torch.cat(
-            [embeddings["user_conformity"], embeddings["item_conformity"]],
-            dim=0,
-        )
-        int_prop = self.interest_propagation(int_x, adj)
-        pop_prop = self.conformity_propagation(pop_x, adj)
-        return {
-            "user_interest": int_prop[: self.n_users],
-            "item_interest": int_prop[self.n_users :],
-            "user_conformity": pop_prop[: self.n_users],
-            "item_conformity": pop_prop[self.n_users :],
-        }
 
     def _score_pairs(
         self,
@@ -111,17 +112,19 @@ class PaperGCNDICE(CanonicalBaselineRecommender):
         user_ids: torch.Tensor,
         item_ids: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
-        interest_score = score_pairwise(
-            propagated["user_interest"],
-            propagated["item_interest"],
-            user_ids,
-            item_ids,
+        interest_score = score_propagated_pair(
+            propagated,
+            user_key="user_interest",
+            item_key="item_interest",
+            user_ids=user_ids,
+            item_ids=item_ids,
         )
-        conformity_score = score_pairwise(
-            propagated["user_conformity"],
-            propagated["item_conformity"],
-            user_ids,
-            item_ids,
+        conformity_score = score_propagated_pair(
+            propagated,
+            user_key="user_conformity",
+            item_key="item_conformity",
+            user_ids=user_ids,
+            item_ids=item_ids,
         )
         return score_dict(
             final_score=interest_score + conformity_score,
@@ -163,8 +166,18 @@ class PaperGCNDICE(CanonicalBaselineRecommender):
         user_ids: torch.Tensor,
     ) -> torch.Tensor:
         """Return full-catalog DICE interest+conformity scores."""
-        interest = propagated["user_interest"][user_ids] @ propagated["item_interest"].t()
-        conformity = propagated["user_conformity"][user_ids] @ propagated["item_conformity"].t()
+        interest = score_propagated_matrix(
+            propagated,
+            user_key="user_interest",
+            item_key="item_interest",
+            user_ids=user_ids,
+        )
+        conformity = score_propagated_matrix(
+            propagated,
+            user_key="user_conformity",
+            item_key="item_conformity",
+            user_ids=user_ids,
+        )
         return interest + conformity
 
     @torch.no_grad()
@@ -174,8 +187,18 @@ class PaperGCNDICE(CanonicalBaselineRecommender):
         user_ids: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
         """Return full-catalog DICE score components for diagnostics."""
-        interest = propagated["user_interest"][user_ids] @ propagated["item_interest"].t()
-        conformity = propagated["user_conformity"][user_ids] @ propagated["item_conformity"].t()
+        interest = score_propagated_matrix(
+            propagated,
+            user_key="user_interest",
+            item_key="item_interest",
+            user_ids=user_ids,
+        )
+        conformity = score_propagated_matrix(
+            propagated,
+            user_key="user_conformity",
+            item_key="item_conformity",
+            user_ids=user_ids,
+        )
         scores = score_dict(
             final_score=interest + conformity,
             interest_score=interest,

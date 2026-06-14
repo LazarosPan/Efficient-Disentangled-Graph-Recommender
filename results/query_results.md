@@ -9,6 +9,8 @@ THESIS TEST RESULTS — formal and ablation runs only (full-data only)
 Database: /home/lazar/Documents/MSc_Data_Science/MSc_Thesis/Causal-Embeddings-for-Recommendations/results/thesis_experiments.db
 
 CRRU@K — Composite Resource-aware Recommendation Utility at K
+  Direction: higher is better; AvgPop, VRAM, and time/epoch are inverted.
+  VRAM is a capacity cost; larger batches help only through lower time/epoch.
   Accuracy@K = NDCG@K^0.50 * Recall@K^0.35 * Hit@K^0.15
   Bias@K     = Pers@K^0.40 * (1-AvgPop@K_n)^0.60
   Efficiency = (1-log(1+VRAM)_n)^0.50 * (1-log(1+time/epoch)_n)^0.50
@@ -505,4 +507,13 @@ movielens1m    | mainline             | learned  | 20-10      |   0.0696 |     0
 movielens1m    | no_independence      | learned  | 20-10      |   0.0667 |     0.0708 |   0.4318 |    0.8496 |     0.4401 |   0.0836 |     0.1245 |   0.5909 |    0.8079 |     0.3891 | 2.810e-05 |   0.0023
   Resources:  time=302.2s | epochs=70 | time/epoch=4.3s | peak_vram=609MB | gpu_util=-
   Experiment: movielens1m_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_no_independence_seed13
+
+================================================================================
+OPTUNA U-CaGNN SEARCH REPORT
+================================================================================
+Optuna search trials are reported from the Optuna RDB storage, not mirrored through the thesis experiment database.
+Report: /home/lazar/Documents/MSc_Data_Science/MSc_Thesis/Causal-Embeddings-for-Recommendations/results/optuna_optimization.md
+Generate: `uv run scripts/report_optuna_optimization.py`
+Figures: `uv run scripts/export_optuna_figures.py`
+Dashboard: `uv run optuna-dashboard sqlite:///results/optuna_studies.db`
 ```

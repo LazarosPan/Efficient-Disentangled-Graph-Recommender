@@ -18,7 +18,7 @@ import logging
 import os
 import subprocess
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from importlib import metadata as importlib_metadata
 from pathlib import Path
@@ -33,23 +33,28 @@ if "PYTORCH_ALLOC_CONF" not in os.environ:
 import numpy as np
 import torch
 from scripts._workflow_helpers import configure_cli_logging
+from src.data.canonical import sample_canonical_interactions
 from src.data.graph_builder import build_graph
 from src.data.loaders import default_preprocessing_preset, load_dataset
 from src.losses.loss_suite import LossSuite
 from src.models.baselines import PaperGCNDICE, PaperLightGCN
 from src.models.ucagnn import UCaGNN
+from src.profiling.gpu_profiler import (
+    reset_cuda_peak_memory_stats as _reset_cuda_peak_memory_stats,
+)
 from src.training.mini_batch_trainer import MiniBatchTrainer
 from src.utils.config import (
     BENCHMARK_CONFIG_FIELDS,
     CONFIG_OVERRIDE_FIELDS,
     CONFIG_PRESET_METHODS,
     DEFAULT_SEED,
-    GRAPH_POLICY_CHOICES,
     UCaGNNConfig,
 )
 from src.utils.experiment_logger import ExperimentLogger
-from src.utils.experiment_naming import build_canonical_experiment_name
-from src.utils.interaction_indexing import compute_normalized_popularity
+from src.utils.experiment_naming import (
+    build_canonical_experiment_name,
+    format_num_neighbors_payload,
+)
 from src.utils.project_paths import (
     CHECKPOINT_DIR,
     MLFLOW_DB_PATH,
@@ -62,16 +67,23 @@ from src.utils.reproducibility import (
 )
 from src.utils.trainer_runtime import REQUIRED_CHECKPOINT_KEYS, is_cuda_oom_error
 
+from experiments.benchmark_resolvers import (
+    normalize_benchmark_graph_policy_override,
+    normalize_benchmark_lr_scheduler_override,
+    normalize_benchmark_num_neighbors_override,
+    normalize_benchmark_preprocessing_override,
+)
 from experiments.cli_parsers import build_run_experiment_parser
 from experiments.recipes import (
     get_recipe,
     recipe_summary_lines,
-    resolve_profile_num_neighbors,
 )
 
 logger = logging.getLogger("ucagnn")
 
 DB_PATH = THESIS_DB_PATH
+
+
 _CHECKPOINT_IDENTITY_VERSION = 1
 _CHECKPOINT_HASH_LEN = 16
 _TRAINING_IDENTITY_FIELDS = (
@@ -161,7 +173,7 @@ _TRAINING_IDENTITY_FIELDS = (
     "val_ratio",
     "weight_decay",
 )
-_EVALUATION_IDENTITY_FIELDS = ("eval_ks",)
+_EVALUATION_IDENTITY_FIELDS: tuple[str, ...] = ()
 
 
 def _stable_identity_hash(payload: dict[str, Any]) -> str:
@@ -223,7 +235,7 @@ def _default_checkpoint_path(
     return CHECKPOINT_DIR / f"{canonical_name}_train-{training_hash}.pt"
 
 
-def load_checkpoint_payload(
+def _load_checkpoint_payload(
     path: str | Path,
     device: str,
     *,
@@ -252,165 +264,6 @@ def load_checkpoint_payload(
     return payload
 
 
-def _select_sample_counts(total: int, split_sizes: list[int]) -> list[int]:
-    """Allocate an exact sample budget across splits while preserving coverage."""
-    if total >= sum(split_sizes):
-        return list(split_sizes)
-
-    counts = [0] * len(split_sizes)
-    remaining = total
-    active = [index for index, size in enumerate(split_sizes) if size > 0]
-
-    if remaining >= len(active):
-        for index in active:
-            counts[index] = 1
-            remaining -= 1
-
-    if remaining <= 0:
-        return counts
-
-    total_available = sum(split_sizes)
-    raw_shares = [remaining * size / total_available for size in split_sizes]
-    base = [int(share) for share in raw_shares]
-    for index, value in enumerate(base):
-        increment = min(value, split_sizes[index] - counts[index])
-        counts[index] += increment
-        remaining -= increment
-
-    if remaining <= 0:
-        return counts
-
-    remainders = sorted(
-        range(len(split_sizes)),
-        key=lambda index: raw_shares[index] - int(raw_shares[index]),
-        reverse=True,
-    )
-    for index in remainders:
-        if remaining == 0:
-            break
-        spare_capacity = split_sizes[index] - counts[index]
-        if spare_capacity <= 0:
-            continue
-        counts[index] += 1
-        remaining -= 1
-
-    return counts
-
-
-def _slice_optional(arr: np.ndarray | None, idx: np.ndarray) -> np.ndarray | None:
-    """Return arr[idx], or None if arr is None."""
-    return None if arr is None else arr[idx]
-
-
-def _sample_canonical_interactions(
-    canonical,
-    sample_interactions: int | None,
-    seed: int,
-    train_ratio: float,
-    val_ratio: float,
-    derived_split_mode: str = "per_user_temporal",
-):
-    """Return a sampled CanonicalInteractions subset for fast preflight runs."""
-    if sample_interactions is None or sample_interactions >= len(canonical):
-        return canonical
-
-    rng = np.random.default_rng(seed)
-    train_mask, val_mask, test_mask = canonical.get_splits(
-        train_ratio,
-        val_ratio,
-        derived_split_mode=derived_split_mode,
-    )
-    split_indices = [
-        np.flatnonzero(train_mask),
-        np.flatnonzero(val_mask),
-        np.flatnonzero(test_mask),
-    ]
-    split_sizes = [len(indices) for indices in split_indices]
-    sample_counts = _select_sample_counts(sample_interactions, split_sizes)
-
-    chosen_parts: list[np.ndarray] = []
-    for indices, count in zip(split_indices, sample_counts, strict=True):
-        if count <= 0:
-            continue
-        chosen = (
-            indices
-            if count >= len(indices)
-            else np.sort(rng.choice(indices, size=count, replace=False))
-        )
-        chosen_parts.append(chosen)
-
-    selected = (
-        np.sort(np.concatenate(chosen_parts)) if chosen_parts else np.array([], dtype=np.int64)
-    )
-    selected_train = np.isin(selected, split_indices[0])
-    selected_val = np.isin(selected, split_indices[1])
-    selected_test = np.isin(selected, split_indices[2])
-
-    selected_users, user_inverse = np.unique(
-        canonical.user_id[selected],
-        return_inverse=True,
-    )
-    selected_items, item_inverse = np.unique(
-        canonical.item_id[selected],
-        return_inverse=True,
-    )
-
-    reverse_user_map = {value: key for key, value in canonical.user_map.items()}
-    reverse_item_map = {value: key for key, value in canonical.item_map.items()}
-    sampled_popularity = compute_normalized_popularity(
-        item_inverse.astype(np.int64, copy=False),
-        len(selected_items),
-    )
-
-    def _slice_metadata(metadata: dict | None) -> dict | None:
-        if metadata is None:
-            return None
-        sliced: dict = {}
-        for key, value in metadata.items():
-            if isinstance(value, np.ndarray):
-                if len(value) == len(canonical):
-                    sliced[key] = value[selected]
-                elif len(value) == canonical.n_users:
-                    sliced[key] = value[selected_users]
-                elif len(value) == canonical.n_items:
-                    sliced[key] = value[selected_items]
-                else:
-                    sliced[key] = value
-            else:
-                sliced[key] = value
-        return sliced
-
-    return dataclasses.replace(
-        canonical,
-        user_id=user_inverse.astype(np.int64, copy=False),
-        item_id=item_inverse.astype(np.int64, copy=False),
-        label=canonical.label[selected],
-        timestamp=canonical.timestamp[selected],
-        sign=canonical.sign[selected],
-        raw_target=_slice_optional(canonical.raw_target, selected),
-        behavior_type=_slice_optional(canonical.behavior_type, selected),
-        exposure_flag=_slice_optional(canonical.exposure_flag, selected),
-        source_domain=_slice_optional(canonical.source_domain, selected),
-        popularity=sampled_popularity,
-        n_users=len(selected_users),
-        n_items=len(selected_items),
-        user_map={
-            reverse_user_map[int(old_id)]: new_id
-            for new_id, old_id in enumerate(selected_users.tolist())
-        },
-        item_map={
-            reverse_item_map[int(old_id)]: new_id
-            for new_id, old_id in enumerate(selected_items.tolist())
-        },
-        user_features=_slice_optional(canonical.user_features, selected_users),
-        item_features=_slice_optional(canonical.item_features, selected_items),
-        train_mask=selected_train,
-        val_mask=selected_val,
-        test_mask=selected_test,
-        metadata=_slice_metadata(canonical.metadata),
-    )
-
-
 def load_runtime_data(config: UCaGNNConfig) -> tuple[Any, Any]:
     """Load canonical interactions and build the matching runtime graph."""
     canonical = load_dataset(
@@ -421,7 +274,7 @@ def load_runtime_data(config: UCaGNNConfig) -> tuple[Any, Any]:
         feature_policy=config.feature_policy,
         preprocessing_preset=config.preprocessing_preset,
     )
-    canonical = _sample_canonical_interactions(
+    canonical = sample_canonical_interactions(
         canonical,
         config.sample_interactions,
         config.seed,
@@ -548,7 +401,7 @@ def _load_checkpoint_metadata(path: Path, device: str) -> dict | None:
     if not path.exists():
         return None
     try:
-        return load_checkpoint_payload(
+        return _load_checkpoint_payload(
             path,
             device,
             require_runtime_keys=True,
@@ -685,25 +538,6 @@ def recoverable_checkpoint_for_config(
     return None
 
 
-def recoverable_checkpoint_path(
-    config: UCaGNNConfig,
-    *,
-    preset: str | None = None,
-    intervention: str | None = None,
-    checkpoint_path: str | Path | None = None,
-) -> Path | None:
-    """Return a compatible checkpoint path that is ready for test re-evaluation."""
-    recovered = recoverable_checkpoint_for_config(
-        config,
-        preset=preset,
-        intervention=intervention,
-        checkpoint_path=checkpoint_path,
-    )
-    if recovered is None:
-        return None
-    return recovered[1]
-
-
 def _log_mlflow_resume_tags(mlflow_module, checkpoint_state: dict | None) -> None:
     """Annotate MLflow runs with resume state when applicable."""
     if mlflow_module is None or checkpoint_state is None:
@@ -819,12 +653,6 @@ def _cuda_memory_snapshot() -> str:
         f"peak_allocated={peak_allocated_mb:.0f}MB "
         f"peak_reserved={peak_reserved_mb:.0f}MB"
     )
-
-
-def _reset_cuda_peak_memory_stats() -> None:
-    """Reset CUDA peak stats when available without disturbing CPU-only tests."""
-    if torch.cuda.is_available():
-        torch.cuda.reset_peak_memory_stats()
 
 
 _AUTO_BATCH_PROBE_STEPS = 3
@@ -1236,7 +1064,7 @@ def _build_mlflow_params(
         params["profile_name"] = profile_name
     if change_note:
         params["change_note"] = change_note
-    params["num_neighbors"] = "-".join(str(value) for value in config.num_neighbors)
+    params["num_neighbors"] = format_num_neighbors_payload(config.num_neighbors) or "-"
     params["batch_size_candidates"] = "-".join(str(value) for value in config.batch_size_candidates)
     return params
 
@@ -1442,100 +1270,6 @@ def build_benchmark_config_inputs(
     )
 
 
-def _normalize_benchmark_lr_scheduler_override(
-    raw_value: object,
-) -> list[str] | str:
-    """Normalize benchmark ``lr_scheduler`` overrides to one string or a sweep list."""
-    if raw_value is None:
-        return "plateau"
-    if isinstance(raw_value, str):
-        values = [part.strip() for part in raw_value.split(",") if part.strip()]
-        return values[0] if len(values) == 1 else values
-    if isinstance(raw_value, (list, tuple)):
-        return [str(value) for value in raw_value]
-    return "plateau"
-
-
-def _normalize_benchmark_graph_policy_override(
-    raw_value: object,
-) -> tuple[str | None, list[str] | None]:
-    """Normalize benchmark ``graph_policy`` overrides to one value or a sweep list."""
-    if raw_value is None:
-        return None, None
-    if isinstance(raw_value, str):
-        if raw_value not in GRAPH_POLICY_CHOICES:
-            raise ValueError(
-                f"graph_policy must be one of {GRAPH_POLICY_CHOICES}, got {raw_value!r}",
-            )
-        return raw_value, None
-    if isinstance(raw_value, (list, tuple)):
-        if not raw_value:
-            raise ValueError("graph_policy sweep must be a non-empty list.")
-        graph_policy_options: list[str] = []
-        for index, value in enumerate(raw_value):
-            graph_policy = str(value)
-            if graph_policy not in GRAPH_POLICY_CHOICES:
-                raise ValueError(
-                    f"graph_policy[{index}] must be one of {GRAPH_POLICY_CHOICES}, "
-                    f"got {graph_policy!r}",
-                )
-            if graph_policy not in graph_policy_options:
-                graph_policy_options.append(graph_policy)
-        return graph_policy_options[0], graph_policy_options
-    raise ValueError(
-        "graph_policy must be a string or a list of graph-policy strings.",
-    )
-
-
-def _normalize_benchmark_preprocessing_override(
-    raw_value: object,
-) -> tuple[str | None, list[str] | None]:
-    """Normalize benchmark preprocessing overrides to one value or a sweep list."""
-    if raw_value is None:
-        return None, None
-    if isinstance(raw_value, str):
-        values = [part.strip() for part in raw_value.split(",") if part.strip()]
-    elif isinstance(raw_value, (list, tuple)):
-        values = [str(value).strip() for value in raw_value if str(value).strip()]
-    else:
-        raise ValueError(
-            "preprocessing_preset must be a string or a list of preprocessing preset names.",
-        )
-    if not values:
-        raise ValueError("preprocessing_preset sweep must be a non-empty string or list.")
-    deduped = list(dict.fromkeys(values))
-    return deduped[0], deduped if len(deduped) > 1 else None
-
-
-def _normalize_benchmark_num_neighbors_override(
-    raw_value: object,
-) -> list[list[int]] | dict[str, list[list[int]]] | None:
-    """Normalize benchmark ``num_neighbors`` overrides for one profile payload."""
-    if raw_value is None:
-        return None
-    if isinstance(raw_value, Mapping):
-        normalized: dict[str, list[list[int]]] = {}
-        for key, value in raw_value.items():
-            if isinstance(value, Mapping):
-                raise ValueError(
-                    f"num_neighbors[{key}] must be a vector or a list of vectors, "
-                    "not a nested mapping.",
-                )
-            resolved = resolve_profile_num_neighbors({"num_neighbors": value})
-            if resolved is None:
-                raise ValueError(
-                    f"num_neighbors[{key}] must be a non-empty fan-out vector "
-                    "or a non-empty list of vectors.",
-                )
-            normalized[str(key)] = resolved
-        return normalized
-
-    resolved = resolve_profile_num_neighbors({"num_neighbors": raw_value})
-    if resolved is None:
-        return None
-    return resolved[0] if len(resolved) == 1 else resolved
-
-
 def normalize_benchmark_config_overrides(
     raw_config: Mapping[str, object],
 ) -> dict[str, object]:
@@ -1568,7 +1302,7 @@ def normalize_benchmark_config_overrides(
     raw_graph_policy = raw_config.get("graph_policy_options")
     if raw_graph_policy is None:
         raw_graph_policy = raw_config.get("graph_policy")
-    graph_policy, graph_policy_options = _normalize_benchmark_graph_policy_override(
+    graph_policy, graph_policy_options = normalize_benchmark_graph_policy_override(
         raw_graph_policy,
     )
     normalized["graph_policy"] = graph_policy
@@ -1576,7 +1310,7 @@ def normalize_benchmark_config_overrides(
     (
         preprocessing_preset,
         preprocessing_preset_options,
-    ) = _normalize_benchmark_preprocessing_override(
+    ) = normalize_benchmark_preprocessing_override(
         raw_config.get("preprocessing_preset"),
     )
     normalized["preprocessing_preset"] = preprocessing_preset
@@ -1604,7 +1338,9 @@ def normalize_benchmark_config_overrides(
     )
     lr_value = raw_config.get("lr")
     normalized["lr"] = float(lr_value) if lr_value is not None else None
-    normalized["lr_scheduler"] = _normalize_benchmark_lr_scheduler_override(
+    weight_decay = raw_config.get("weight_decay")
+    normalized["weight_decay"] = float(weight_decay) if weight_decay is not None else None
+    normalized["lr_scheduler"] = normalize_benchmark_lr_scheduler_override(
         raw_config.get("lr_scheduler"),
     )
     lr_scheduler_factor = raw_config.get("lr_scheduler_factor")
@@ -1615,6 +1351,8 @@ def normalize_benchmark_config_overrides(
     normalized["lr_scheduler_patience"] = (
         int(lr_scheduler_patience) if lr_scheduler_patience is not None else None
     )
+    grad_clip_norm = raw_config.get("grad_clip_norm")
+    normalized["grad_clip_norm"] = float(grad_clip_norm) if grad_clip_norm is not None else None
     single_branch_layers = raw_config.get("single_branch_gnn_layers")
     normalized["single_branch_gnn_layers"] = (
         int(single_branch_layers) if single_branch_layers is not None else None
@@ -1629,9 +1367,22 @@ def normalize_benchmark_config_overrides(
     )
     dropout = raw_config.get("dropout")
     normalized["dropout"] = float(dropout) if dropout is not None else None
-    normalized["num_neighbors"] = _normalize_benchmark_num_neighbors_override(
+    normalized["num_neighbors"] = normalize_benchmark_num_neighbors_override(
         raw_config.get("num_neighbors"),
     )
+    optional_int_fields = (
+        "cagra_k",
+        "cagra_out_degree",
+        "cagra_initial_degree",
+        "cagra_team_size",
+        "cagra_itopk_size",
+        "cagra_candidate_k",
+    )
+    for field_name in optional_int_fields:
+        field_value = raw_config.get(field_name)
+        normalized[field_name] = int(field_value) if field_value is not None else None
+    cagra_metric = raw_config.get("cagra_metric")
+    normalized["cagra_metric"] = str(cagra_metric) if cagra_metric is not None else None
     normalized["hard_negative_ratio"] = float(
         raw_config.get("hard_negative_ratio", default_config.hard_negative_ratio),
     )
@@ -1658,7 +1409,7 @@ def normalize_benchmark_config_overrides(
         field_value = raw_config.get(field_name)
         normalized[field_name] = float(field_value) if field_value is not None else None
 
-    optional_bool_fields = ("use_ipw", "use_conformity_au")
+    optional_bool_fields = ("use_ipw", "use_conformity_au", "use_popularity_head")
     for field_name in optional_bool_fields:
         field_value = raw_config.get(field_name)
         normalized[field_name] = bool(field_value) if field_value is not None else None
@@ -1822,6 +1573,8 @@ def run_experiment(
     auto_resume: bool = True,
     overwrite_checkpoint: bool = False,
     include_refined_diagnostics: bool = True,
+    evaluate_test: bool = True,
+    training_epoch_callback: Callable[[int, Mapping[str, float], float], None] | None = None,
 ) -> dict:
     """Run a single experiment end-to-end.
 
@@ -1855,6 +1608,13 @@ def run_experiment(
             diagnostics during final test evaluation. Quick smoke validation can
             disable this so undefined tiny-slice diagnostics do not mask runtime
             coverage.
+        training_epoch_callback: Optional callback invoked after each validation
+            epoch with ``(epoch, val_metrics, epoch_time_s)``. Search workflows
+            use this for Optuna pruning; normal experiment entry points leave it
+            unset.
+        evaluate_test: If True, run the final test evaluation and log test
+            metrics. Exploratory validation-only workflows can disable this so
+            test data stays reserved for promoted formal runs.
 
     Returns:
         Dict with keys:
@@ -2046,7 +1806,7 @@ def run_experiment(
         should_persist_checkpoint = save_checkpoint or effective_auto_resume
         cuda_ = config.device.startswith("cuda") and torch.cuda.is_available()
         if cuda_:
-            torch.cuda.reset_peak_memory_stats()
+            _reset_cuda_peak_memory_stats()
         train_start_ = time.perf_counter()
         if checkpoint_state is not None:
             model = build_runtime_model(config, canonical, data)
@@ -2135,7 +1895,7 @@ def run_experiment(
                     trainer.evaluation_identity = evaluation_identity
                     trainer.evaluation_hash = evaluation_hash
                     if cuda_:
-                        torch.cuda.reset_peak_memory_stats()
+                        _reset_cuda_peak_memory_stats()
                     candidate_start_epoch = start_epoch
                     candidate_history = history
                     if fallback_checkpoint_path is not None:
@@ -2151,6 +1911,7 @@ def run_experiment(
                             if should_persist_checkpoint
                             else None,
                             checkpoint_every=checkpoint_every,
+                            epoch_callback=training_epoch_callback,
                         )
                         resolved_checkpoint_path = current_checkpoint_path
                         canonical_name = build_canonical_experiment_name(
@@ -2244,6 +2005,7 @@ def run_experiment(
                     history=history,
                     checkpoint_path=resolved_checkpoint_path if should_persist_checkpoint else None,
                     checkpoint_every=checkpoint_every,
+                    epoch_callback=training_epoch_callback,
                 )
         else:
             history = history or {"train_loss": [], "val_metrics": []}
@@ -2291,16 +2053,20 @@ def run_experiment(
                 canonical_name=canonical_name,
             )
 
-        logger.info("Running test evaluation...")
-        test_metrics = trainer._evaluate_split_metrics(
-            data.test_mask,
-            include_refined_diagnostics=include_refined_diagnostics,
-        )
-        for metric, value in sorted(test_metrics.items()):
-            logger.info(f"  {metric}: {value:.4f}")
-            experiment_logger.log_metric(exp_id, metric, value, split="test")
+        test_metrics: dict[str, float] = {}
+        if evaluate_test:
+            logger.info("Running test evaluation...")
+            test_metrics = trainer._evaluate_split_metrics(
+                data.test_mask,
+                include_refined_diagnostics=include_refined_diagnostics,
+            )
+            for metric, value in sorted(test_metrics.items()):
+                logger.info(f"  {metric}: {value:.4f}")
+                experiment_logger.log_metric(exp_id, metric, value, split="test")
+        else:
+            logger.info("Skipping test evaluation for validation-only run.")
 
-        if save_checkpoint or effective_auto_resume:
+        if evaluate_test and (save_checkpoint or effective_auto_resume):
             final_checkpoint_path = resolved_checkpoint_path
             trainer.save_checkpoint(
                 final_checkpoint_path,
@@ -2351,13 +2117,16 @@ def run_experiment(
             "epochs_stopped_at": len(history["train_loss"]) if history is not None else 0,
             "training_time_s": total_training_time_s,
             "train_batches_per_epoch": train_batches_per_epoch,
+            "batch_size": config.batch_size,
+            "auto_batch_size": config.auto_batch_size,
         }
     except Exception as exc:
         is_oom = is_cuda_oom_error(exc)
+        is_pruned = exc.__class__.__name__ == "TrialPruned"
         failure_reason = f"{type(exc).__name__}: {exc}"
         experiment_logger.update_experiment_status(
             exp_id,
-            status="oom" if is_oom else "failed",
+            status="pruned" if is_pruned else ("oom" if is_oom else "failed"),
             failure_reason=failure_reason,
             oom_flag=is_oom,
         )
@@ -2365,7 +2134,7 @@ def run_experiment(
             try:
                 mlflow_module.set_tags(
                     {
-                        "status": "oom" if is_oom else "failed",
+                        "status": "pruned" if is_pruned else ("oom" if is_oom else "failed"),
                         "oom_flag": "true" if is_oom else "false",
                         "failure_reason": failure_reason[:500],
                         "failure_type": failure_reason.split(":", 1)[0],
@@ -2378,6 +2147,8 @@ def run_experiment(
         experiment_logger.close()
         if mlflow_module is not None:
             try:
+                if "is_pruned" in locals() and is_pruned:
+                    mlflow_status = "KILLED"
                 mlflow_module.end_run(status=mlflow_status)
             except Exception as exc:
                 logger.warning("Failed to close MLflow run cleanly: %s", exc)

@@ -11,7 +11,7 @@ from unittest.mock import patch
 import numpy as np
 import torch
 from experiments.run_experiment import build_runtime_model
-from src.data.canonical import CanonicalInteractions
+from src.data.canonical import CanonicalInteractions, sample_canonical_interactions
 from src.data.graph_builder import build_graph
 from src.data.subgraph_sampler import SubgraphBatch
 from src.losses.loss_suite import LossSuite, _bpr_loss
@@ -359,8 +359,8 @@ class SplitSafetyTests(unittest.TestCase):
             np.array([False, False, True, True]),
         )
 
-    def test_build_graph_can_use_time_windowed_train_popularity(self) -> None:
-        """Popularity windows should be computed from the recent train slice only."""
+    def test_build_graph_uses_positive_train_popularity(self) -> None:
+        """Popularity should be computed from positive train interactions only."""
         canonical = CanonicalInteractions(
             user_id=np.array([0, 0, 0], dtype=np.int64),
             item_id=np.array([0, 0, 1], dtype=np.int64),
@@ -470,6 +470,93 @@ class SplitSafetyTests(unittest.TestCase):
         self.assertEqual(data.feedback_type, "multi-behavior")
         self.assertEqual(data.preprocessing_preset, "taobao_multibehavior")
         self.assertEqual(data.metadata, metadata)
+
+    def test_sample_canonical_interactions_slices_extended_fields(self) -> None:
+        """Tiny-run sampling should keep canonical field shapes internally aligned."""
+        canonical = CanonicalInteractions(
+            user_id=np.array([0, 0, 1, 1, 2, 2], dtype=np.int64),
+            item_id=np.array([0, 1, 1, 2, 2, 3], dtype=np.int64),
+            label=np.ones(6, dtype=np.float32),
+            timestamp=np.arange(1, 7, dtype=np.int64),
+            sign=np.ones(6, dtype=np.float32),
+            popularity=np.ones(4, dtype=np.float32),
+            user_features=np.arange(6, dtype=np.float32).reshape(3, 2),
+            item_features=np.arange(8, dtype=np.float32).reshape(4, 2),
+            raw_target=np.arange(6, dtype=np.float32),
+            behavior_type=np.array(["a", "b", "c", "d", "e", "f"]),
+            exposure_flag=np.array([True, False, True, False, True, False]),
+            source_domain=np.array(["s", "s", "r", "r", "s", "r"]),
+            repeat_count=np.arange(10, 16, dtype=np.uint8),
+            repeat_mean_target=np.arange(20, 26, dtype=np.float32),
+            repeat_max_target=np.arange(30, 36, dtype=np.float32),
+            repeat_latest_target=np.arange(40, 46, dtype=np.float32),
+            repeat_first_timestamp=np.arange(50, 56, dtype=np.int64),
+            repeat_last_timestamp=np.arange(60, 66, dtype=np.int64),
+            repeat_behavior_counts=np.arange(12, dtype=np.uint8).reshape(6, 2),
+            repeat_behavior_labels=np.array(["view", "buy"]),
+            item_propensity_targets=np.linspace(0.1, 0.4, 4, dtype=np.float32),
+            feedback_type="synthetic",
+            preprocessing_preset="unit_test",
+            n_users=3,
+            n_items=4,
+            user_map={10: 0, 11: 1, 12: 2},
+            item_map={20: 0, 21: 1, 22: 2, 23: 3},
+            train_mask=np.array([True, True, False, False, False, False]),
+            val_mask=np.array([False, False, True, True, False, False]),
+            test_mask=np.array([False, False, False, False, True, True]),
+            metadata={
+                "interaction_values": np.arange(6),
+                "user_values": np.arange(3),
+                "item_values": np.arange(4),
+                "scalar_value": np.array(1),
+                "unchanged": "keep",
+            },
+        )
+
+        sampled = sample_canonical_interactions(
+            canonical,
+            sample_interactions=3,
+            seed=13,
+            train_ratio=0.8,
+            val_ratio=0.1,
+        )
+
+        self.assertEqual(len(sampled), 3)
+        self.assertEqual(int(sampled.train_mask.sum()), 1)
+        self.assertEqual(int(sampled.val_mask.sum()), 1)
+        self.assertEqual(int(sampled.test_mask.sum()), 1)
+        for field_name in (
+            "raw_target",
+            "behavior_type",
+            "exposure_flag",
+            "source_domain",
+            "repeat_count",
+            "repeat_mean_target",
+            "repeat_max_target",
+            "repeat_latest_target",
+            "repeat_first_timestamp",
+            "repeat_last_timestamp",
+            "repeat_behavior_counts",
+        ):
+            field = getattr(sampled, field_name)
+            assert field is not None
+            self.assertEqual(field.shape[0], len(sampled), field_name)
+        assert sampled.user_features is not None
+        assert sampled.item_features is not None
+        assert sampled.item_propensity_targets is not None
+        self.assertEqual(sampled.user_features.shape[0], sampled.n_users)
+        self.assertEqual(sampled.item_features.shape[0], sampled.n_items)
+        self.assertEqual(sampled.popularity.shape[0], sampled.n_items)
+        self.assertEqual(sampled.item_propensity_targets.shape[0], sampled.n_items)
+        self.assertEqual(sampled.feedback_type, "synthetic")
+        self.assertEqual(sampled.preprocessing_preset, "unit_test")
+        np.testing.assert_array_equal(sampled.repeat_behavior_labels, np.array(["view", "buy"]))
+        assert sampled.metadata is not None
+        self.assertEqual(sampled.metadata["interaction_values"].shape[0], len(sampled))
+        self.assertEqual(sampled.metadata["user_values"].shape[0], sampled.n_users)
+        self.assertEqual(sampled.metadata["item_values"].shape[0], sampled.n_items)
+        np.testing.assert_array_equal(sampled.metadata["scalar_value"], np.array(1))
+        self.assertEqual(sampled.metadata["unchanged"], "keep")
 
     def test_build_graph_copies_read_only_numpy_fields_before_torch_conversion(self) -> None:
         """Graph boundary conversion should not alias read-only NumPy payloads."""

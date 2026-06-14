@@ -76,6 +76,19 @@ Important runtime details:
 - finished-checkpoint recovery is checked before dataset auto-batch probing; when
   `auto_batch_size=True`, the lookup tries the configured candidate batch-size
   identities and binds the saved batch size instead of probing CUDA again,
+- Optuna search can attach a training epoch callback to `MiniBatchTrainer.train()`;
+  the callback reports validation objective values after each epoch and raises
+  `TrialPruned` when the configured Optuna pruner stops an unpromising trial.
+  Normal experiment, formal-run, and baseline paths leave this callback unset,
+- `search-experiments --trials N` targets N fresh informative finished trials by default:
+  fresh `COMPLETE` plus trainer/pruner-generated `PRUNED`, excluding `FAIL`, `RUNNING`,
+  historically imported rows, and duplicate-skip prunes. Imported rows are report-only
+  provenance and never satisfy the fresh local target. Budget accounting is scoped to the
+  study/search objective, so tightening parameter ranges does not erase already-spent fresh
+  informative trials,
+- completed Optuna trials store the dataset-scoped effective resolved config alongside
+  sampled params and runtime attrs. Reports should print this effective-config view for
+  promotion candidates so runtime-only fields such as resolved auto-batch size are visible,
 - validation retries once on CUDA after optimizer-state offload, then falls back to CPU if evaluation still OOMs,
 - a late auto-batch training OOM releases the failed trainer and resumes the next smaller candidate from the latest completed-epoch checkpoint when one exists,
 - auto-batch probe, verification, and training-fallback OOM logs include the original exception summary plus PyTorch CUDA allocated, reserved, peak-allocated, and peak-reserved memory; probe OOMs also annotate the failing stage and sampled-subgraph dimensions when a subgraph had already been prepared,
@@ -131,10 +144,58 @@ Current evaluation rules:
 - do not add custom paper-nonstandard ranking outputs unless a paper-faithful definition is implemented and explicitly justified; default thesis outputs should stay with PyG-standard metrics and easy-to-interpret diagnostics,
 - split-specific ground-truth and exclusion dictionaries are cached by mask identity,
 - `cagra_candidate_k` optionally restricts scoring to ANN candidates on CUDA.
+- If `cagra_candidate_k > 0`, CAGRA is an explicit runtime requirement. The evaluator raises instead of silently falling back to full-catalog scoring, because otherwise the recorded config would claim ANN filtering while the metric was computed without it.
 
 Quick validation uses larger tiny caps for sparse-positive Taobao and KuaiRand slices so label-aware validation/test splits contain positive targets.
 
 `cagra_candidate_k` is evaluation-only. It is separate from `graph_policy="cagra_augmented"`, which changes the training graph itself.
+
+## CRRU reporting utility
+
+CRRU@K means Composite Resource-aware Recommendation Utility at K. It is the thesis-facing ranking utility used to compare completed formal and ablation runs when accuracy, popularity bias, and training resource cost all matter.
+
+CRRU is not a causal-effect estimator. CRRU itself is higher-is-better. Lower-cost raw quantities such as average popularity, VRAM, and seconds per epoch are inverted into higher-is-better sub-scores before the final score is computed.
+VRAM is treated as a capacity/resource footprint, not as an intrinsic reward. Larger batches can still improve CRRU when they reduce seconds per epoch enough to outweigh the higher-VRAM penalty.
+
+For each dataset and report section, metrics are min-max normalized over the rows in that section. Lower-cost quantities are inverted after normalization.
+
+$$
+\operatorname{Accuracy}@K =
+\operatorname{NDCG}@K^{0.50}
+\operatorname{Recall}@K^{0.35}
+\operatorname{Hit}@K^{0.15}
+$$
+
+$$
+\operatorname{Bias}@K =
+\operatorname{Pers}@K^{0.40}
+\left(1 - \operatorname{AvgPop}@K_n\right)^{0.60}
+$$
+
+$$
+\operatorname{Efficiency} =
+\left(1 - \log(1+\operatorname{VRAM})_n\right)^{0.50}
+\left(1 - \log(1+\operatorname{time/epoch})_n\right)^{0.50}
+$$
+
+$$
+\operatorname{CRRU}@K =
+\operatorname{Accuracy}@K^{0.55}
+\operatorname{Bias}@K^{0.30}
+\operatorname{Efficiency}^{0.15}
+$$
+
+The implementation uses dataset-local section-row min-max normalization with $\epsilon = 10^{-8}$:
+
+$$
+x_n = \frac{x - \min(x)}{\max(x) - \min(x) + \epsilon}
+$$
+
+The $\epsilon$ term is not a separate normalization method. It only prevents division by zero when every row in a dataset/report section has the same value and avoids exact zeros before fractional powers in the multiplicative CRRU formula. CRRU uses min-max rather than z-score because every term must stay bounded in `[0, 1]`; z-scores can be negative or greater than one, which makes fractional-power products hard to interpret and sometimes invalid.
+
+For Optuna search, the code uses `ValidationOnlineCRRU@20_40`: an online validation proxy with the same CRRU components and exponent structure, averaged over K=20 and K=40. Future trials also store `ValidationOnlineCRRU@20` and `ValidationOnlineCRRU@40` as dataset-scoped Optuna attributes for reporting. NDCG, Recall, Hit, and Personalization are already bounded validation metrics. Average popularity, peak VRAM, and seconds per epoch use deterministic trial-local lower-cost transforms. Exact report-style validation CRRU is recomputed after completed rows exist and is shown in the Optuna report with time/epoch and peak VRAM columns; it is not used as the live optimization objective.
+
+The canonical Optuna space is a short second-pass screen, not an exhaustive grid. It uses fewer fresh trials, shorter epoch caps, and Hyperband pruning; already-searched datasets can stay focused around completed local evidence, while KuaiRand keeps a coarse low/medium/high regime screen until fresh local runs exist. Four-hop propagation is excluded unless a separate deep-diagnostic run shows it is worth the extra memory, runtime, and over-smoothing risk.
 
 ## Checkpoints and identity
 
@@ -147,7 +208,8 @@ Current rules:
 
 - the default checkpoint filename includes `training_hash`,
 - changing a training-defining field requires a new checkpoint,
-- evaluation-only changes such as `eval_ks` may reuse the same checkpoint,
+- evaluation cutoffs are fixed by `THESIS_EVAL_KS` in `Evaluator`, so checkpoint
+  filenames are keyed by training identity rather than report-display options,
 - an incomplete checkpoint marked `training_finished` or a legacy checkpoint whose
   early-stopping patience already fired is re-evaluated from `best_state` instead
   of continuing training,
@@ -162,8 +224,8 @@ Current rules:
 - **MLflow is secondary.** It mirrors runs and artifacts but is not the source of truth.
 - evaluator diagnostics go through the same metric logging path as thesis metrics; no parallel diagnostics store exists.
 - `formal-run` persists `results/formal_run_state.json` as a strict resume pointer, not as a profile definition. When `--profile` contains a comma-separated list, profiles run sequentially and the state file tracks the active/latest profile.
-- runtime-probe profiles keep `config_overrides.epochs=1` and store their full-run estimate target in profile-level `runtime_probe.target_epochs`; after a probe completes, `experiments/run_benchmark.py` logs estimated full training time, remaining time, seconds per epoch, batches per epoch, and batch/s under the SQLite `approximation` split.
+- runtime-probe profiles keep `config_overrides.epochs=1` and store their full-run estimate target in profile-level `runtime_probe.target_epochs`; after a probe completes, `experiments/run_benchmark.py` logs the canonical `RUNTIME_PROBE_METRIC_NAMES` under the SQLite `approximation` split.
 - Per-epoch training-window resources are logged when available: `gpu_utilization_pct` stores the average training GPU utilization for the epoch, `max_gpu_utilization_pct` stores the peak sampled training utilization, `train_peak_vram_allocated_mb` / `train_peak_vram_reserved_mb` store PyTorch allocator peaks, `train_peak_gpu_memory_used_mb` stores the peak `nvidia-smi memory.used` sample, and legacy `peak_vram_mb` uses the training `nvidia-smi` peak when available with PyTorch allocated peak as fallback.
-- Canonical experiment names are shared by runtime checkpointing and `query-results` through `src/utils/experiment_naming.py`.
+- Canonical experiment and fan-out labels are shared by runtime checkpointing, benchmark summaries, MLflow params, profile slugs, and `query-results` through `src/utils/experiment_naming.py`.
 - Query surfaces are centralized in `ExperimentLogger.VIEW_TABLES`, which powers the `completed`, `attention`, `errors`, and `comparison` views used by `scripts/query_results.py`.
 - The default `query-results` thesis summary keeps CRRU inline: it prints a short Composite Resource-aware Recommendation Utility framing block, reports dataset-local section-row `CRRU@20` and `CRRU@40`, separates final formal thesis profiles from supporting historical/preprocessing-sweep rows, excludes runtime probes from ranking sections, reports currently supported public ablation variants separately, notes that CRRU is not a causal-effect estimator, and does not emit a separate CRRU table.

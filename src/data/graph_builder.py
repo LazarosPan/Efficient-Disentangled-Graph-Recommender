@@ -216,10 +216,9 @@ def build_graph(
         config,
     )
 
-    # Popularity must be derived from the final training split only so held-out
-    # validation/test interactions never leak into training or evaluation.
-    # Both the count-based and time-windowed paths receive item_id[train_mask]
-    # and timestamp[train_mask] respectively — no val/test rows contribute.
+    # Popularity must be derived from positive rows in the final training split
+    # only so held-out validation/test interactions never leak into training or
+    # evaluation.
     popularity = _resolve_training_popularity(
         canonical,
         train_positive_mask,

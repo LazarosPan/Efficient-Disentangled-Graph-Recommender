@@ -42,6 +42,7 @@ dependencies = [
     "numba>=0.65.1",
     "optuna>=4.9.0",
     "optuna-dashboard>=0.20.0",
+    "exa-py>=2.13.2",
 ]
 
 [[tool.uv.index]]
@@ -51,10 +52,14 @@ url = "https://download.pytorch.org/whl/cu131"
 formal-run = "experiments.run_benchmark:formal_main"
 experiment = "experiments.run_experiment:main"
 ablation = "experiments.run_ablation:main"
+search-experiments = "experiments.run_search:main"
 quick-validate = "scripts.quick_validate:main"
 download-datasets = "scripts.download_pyg_datasets:main"
 cleanup-experiment-artifacts = "scripts.cleanup_experiment_artifacts:main"
+prune-checkpoints = "scripts.prune_checkpoints:main"
 query-results = "scripts.query_results:main"
+report-optuna-optimization = "scripts.report_optuna_optimization:main"
+export-optuna-figures = "scripts.export_optuna_figures:main"
 reset-experiment-db = "scripts.reset_experiment_db:main"
 
 [tool.setuptools]
@@ -76,6 +81,7 @@ dev = [
 target-version = "py313"
 line-length = 100
 src = ["src", "experiments", "scripts"]
+exclude = ["external", "data"]
 # FIXED: Moved from [tool.ruff.lint] to [tool.ruff]
 unsafe-fixes = true
 

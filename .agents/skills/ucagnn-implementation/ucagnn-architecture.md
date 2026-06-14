@@ -5,6 +5,7 @@ Use this file for the live model structure: embeddings, propagation, scoring, an
 ## Key files
 
 - `.agents/skills/ucagnn-implementation/ucagnn-architecture.md`
+- `src/models/common.py`
 - `src/models/embeddings.py`
 - `src/models/lightgcn.py`
 - `src/models/baselines/lightgcn.py`
@@ -33,6 +34,7 @@ The diagram shows the runtime path: the embedding layer prepares tables and meta
 | Propagation layer | `DualBranchGCN` | Runs LightGCN propagation with explicit branch depths and optional sign-aware edge weights; U-CaGNN uses uncoalesced CUDA sparse COO matmul or CPU chunked edge-list aggregation while paper baselines may still use prebuilt sparse adjacency helpers. |
 | Scoring layer | `ScoringModule` | Produces pairwise and full-catalog interest, conformity, context, `score_mix_weights`, and fused final scores. |
 | Propensity layer | `PropensityEstimator` | Optional two-layer MLP over propagated item embeddings, clipped to `[propensity_clip_min, propensity_clip_max]`. |
+| Shared model helpers | `src/models/common.py` | Owns cross-model helper functions such as module dtype lookup and the training payload dictionary consumed by `LossSuite`. |
 | Orchestrator | `UCaGNN` | Wires the embedding, propagation, scoring, and optional propensity layers together for subgraph training and full-graph evaluation. |
 | Paper baselines | `PaperLightGCN`, `PaperGCNDICE` | Separate canonical adapters for LightGCN and the DICE paper's GCN-DICE variant. They do not use `EmbeddingModule`, `ScoringModule`, CAGRA augmentation, side features, or U-CaGNN-specific score mixing. |
 
@@ -68,5 +70,5 @@ The diagram shows the runtime path: the embedding layer prepares tables and meta
 | `get_propagated_for_eval(edge_index, edge_sign, edge_norm, ...)` | `Evaluator` | One reusable full-graph propagated state. |
 | `score_users_from_propagated(propagated, user_ids, ...)` | `Evaluator` | Final `(batch_users, n_items)` score matrix. |
 | `get_score_components_from_propagated(propagated, user_ids)` | `Evaluator` diagnostics path | Batched refined scorer outputs from the same propagated evaluation state. |
-| `get_all_score_components(...)` | diagnostics and same-checkpoint evaluation tooling | Full-catalog component scores plus branch embeddings when dual-branch is active. |
-| `build_training_output(...)` | internal training path | Shared payload containing scores, propagated tensors, optional IPW weights, optional DICE negative masks, and optional `propensity_scores`. |
+| `src/models/baselines/common.py` helpers | paper-baseline adapters | Shared channel propagation, pair scoring, full-catalog scoring, and fixed score-mix payloads. |
+| `build_training_output(...)` | internal training path | Routes through `src/models/common.py` to build the shared payload containing scores, propagated tensors, optional IPW weights, optional DICE negative masks, and optional `propensity_scores`. |
