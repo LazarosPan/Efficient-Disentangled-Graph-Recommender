@@ -10,6 +10,7 @@ Database: /home/lazar/Documents/MSc_Data_Science/MSc_Thesis/Causal-Embeddings-fo
 
 CRRU@K — Composite Resource-aware Recommendation Utility at K
   Direction: higher is better; AvgPop, VRAM, and time/epoch are inverted.
+  VRAM is a capacity cost; larger batches help only through lower time/epoch.
   Accuracy@K = NDCG@K^0.50 * Recall@K^0.35 * Hit@K^0.15
   Bias@K     = Pers@K^0.40 * (1-AvgPop@K_n)^0.60
   Efficiency = (1-log(1+VRAM)_n)^0.50 * (1-log(1+time/epoch)_n)^0.50

@@ -200,17 +200,17 @@ Promote dataset-local winners into formal profiles only after checking runtime a
 
 - Direction: `maximize`
 - Objective: `val ValidationOnlineCRRU@20_40`
-- Trials: 84 total, 44 completed, 0 failed, 1 running, 39 pruned
+- Trials: 85 total, 44 completed, 1 failed, 0 running, 40 pruned
 
 ### Trial accounting
 
 | State | Fresh | Imported | Total |
 |---|---:|---:|---:|
 | COMPLETE | 14 | 30 | 44 |
-| PRUNED | 39 | 0 | 39 |
-| RUNNING | 1 | 0 | 1 |
+| PRUNED | 40 | 0 | 40 |
+| FAIL | 1 | 0 | 1 |
 
-- Fresh informative budget count: `53` (fresh COMPLETE + real fresh PRUNED).
+- Fresh informative budget count: `54` (fresh COMPLETE + real fresh PRUNED).
 - Duplicate-skip pruned trials excluded from that budget: `0`.
 
 ### Best study-level trial
@@ -244,6 +244,14 @@ Importances omitted: no completed fresh trials with a stored search_space_revisi
 ### Dashboard-like Optuna importances for `kuairec_v2` objective
 
 Importances omitted: no completed fresh trials with a stored search_space_revision.
+
+### Failed-trial diagnostics
+
+| Count | Example trial | Stored reason |
+|---:|---:|---|
+| 1 | 84 | `failure before stored attrs; exact exception unavailable in Optuna RDB` |
+
+Legacy failures without stored attributes happened before the current failure recorder could write `failure_stage` / `failure_reason`; the old runs cannot be reconstructed from Optuna RDB alone.
 
 ### Top 10 completed trials
 
