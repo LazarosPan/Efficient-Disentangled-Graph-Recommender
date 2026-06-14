@@ -22,9 +22,8 @@ You are working on a thesis project about causal embeddings for recommendation. 
 
 - Touch only what is required for the request.
 - Do not refactor or "clean up" adjacent code unless it is necessary for correctness.
-- Match existing style in the edited area.
-- Remove only the unused code/imports introduced by your own changes.
-- If unrelated dead code is found, mention it but do not remove it unless asked.
+- Read `.agents/skills/python-patterns/SKILL.md`.
+- Remove unused code, do not keep legacy features. Keep the codebase clean.
 
 ### 4. Goal-Driven Execution
 
@@ -94,7 +93,7 @@ Read the SKILL.md files and choose which files that they point to are relevant f
 - `.agents/skills/existing-work/SKILL.md` - prior causal recommendation implementation synthesis.
 - `.agents/skills/optuna/SKILL.md` - key Optuna optimization workflows and their implementation mechanics.
 - `.agents/skills/mlflow/SKILL.md` - MLflow/PyTorch tracking guidance.
-- `.agents/skills/python-pattenrs/SKILL.md` - Python coding patterns.
+- `.agents/skills/python-patterns/SKILL.md` - Python coding patterns.
 - `.agents/skills/project-structure/SKILL.md` - project layout reference.
 - `.agents/skills/pytorch/SKILL.md` - PyTorch module and runtime guide.
 - `.agents/skills/pytorch-geometric/SKILL.md` - PyG reference and performance tips.

@@ -3,7 +3,9 @@
 CRRU is a post-hoc thesis reporting utility, not a causal-effect estimator.
 CRRU itself is higher-is-better. Lower-cost raw quantities such as average
 popularity, VRAM, and time/epoch are inverted into higher-is-better sub-scores
-before the final multiplicative utility is computed.
+before the final multiplicative utility is computed. Higher VRAM use is still a
+resource cost, not a reward; a larger batch can improve CRRU only indirectly
+when its time/epoch reduction outweighs the VRAM penalty.
 
 Report CRRU@K uses dataset-local, section-row min-max normalization:
 
@@ -40,6 +42,7 @@ VALIDATION_ONLINE_CRRU_K_METRICS = {
 CRRU_REPORT_FORMULA_LINES = (
     "CRRU@K — Composite Resource-aware Recommendation Utility at K",
     "  Direction: higher is better; AvgPop, VRAM, and time/epoch are inverted.",
+    "  VRAM is a capacity cost; larger batches help only through lower time/epoch.",
     "  Accuracy@K = NDCG@K^0.50 * Recall@K^0.35 * Hit@K^0.15",
     "  Bias@K     = Pers@K^0.40 * (1-AvgPop@K_n)^0.60",
     "  Efficiency = (1-log(1+VRAM)_n)^0.50 * (1-log(1+time/epoch)_n)^0.50",

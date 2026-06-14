@@ -80,6 +80,15 @@ Important runtime details:
   the callback reports validation objective values after each epoch and raises
   `TrialPruned` when the configured Optuna pruner stops an unpromising trial.
   Normal experiment, formal-run, and baseline paths leave this callback unset,
+- `search-experiments --trials N` targets N fresh informative finished trials by default:
+  fresh `COMPLETE` plus trainer/pruner-generated `PRUNED`, excluding `FAIL`, `RUNNING`,
+  historically imported rows, and duplicate-skip prunes. Imported rows are report-only
+  provenance and never satisfy the fresh local target. Budget accounting is scoped to the
+  study/search objective, so tightening parameter ranges does not erase already-spent fresh
+  informative trials,
+- completed Optuna trials store the dataset-scoped effective resolved config alongside
+  sampled params and runtime attrs. Reports should print this effective-config view for
+  promotion candidates so runtime-only fields such as resolved auto-batch size are visible,
 - validation retries once on CUDA after optimizer-state offload, then falls back to CPU if evaluation still OOMs,
 - a late auto-batch training OOM releases the failed trainer and resumes the next smaller candidate from the latest completed-epoch checkpoint when one exists,
 - auto-batch probe, verification, and training-fallback OOM logs include the original exception summary plus PyTorch CUDA allocated, reserved, peak-allocated, and peak-reserved memory; probe OOMs also annotate the failing stage and sampled-subgraph dimensions when a subgraph had already been prepared,
@@ -146,6 +155,7 @@ Quick validation uses larger tiny caps for sparse-positive Taobao and KuaiRand s
 CRRU@K means Composite Resource-aware Recommendation Utility at K. It is the thesis-facing ranking utility used to compare completed formal and ablation runs when accuracy, popularity bias, and training resource cost all matter.
 
 CRRU is not a causal-effect estimator. CRRU itself is higher-is-better. Lower-cost raw quantities such as average popularity, VRAM, and seconds per epoch are inverted into higher-is-better sub-scores before the final score is computed.
+VRAM is treated as a capacity/resource footprint, not as an intrinsic reward. Larger batches can still improve CRRU when they reduce seconds per epoch enough to outweigh the higher-VRAM penalty.
 
 For each dataset and report section, metrics are min-max normalized over the rows in that section. Lower-cost quantities are inverted after normalization.
 
@@ -183,9 +193,9 @@ $$
 
 The $\epsilon$ term is not a separate normalization method. It only prevents division by zero when every row in a dataset/report section has the same value and avoids exact zeros before fractional powers in the multiplicative CRRU formula. CRRU uses min-max rather than z-score because every term must stay bounded in `[0, 1]`; z-scores can be negative or greater than one, which makes fractional-power products hard to interpret and sometimes invalid.
 
-For Optuna search, the code uses `ValidationOnlineCRRU@20_40`: an online validation proxy with the same CRRU components and exponent structure, averaged over K=20 and K=40. Future trials also store `ValidationOnlineCRRU@20` and `ValidationOnlineCRRU@40` as dataset-scoped Optuna attributes for reporting. NDCG, Recall, Hit, and Personalization are already bounded validation metrics. Average popularity, peak VRAM, and seconds per epoch use deterministic trial-local lower-cost transforms. Exact report-style CRRU is recomputed after completed rows exist.
+For Optuna search, the code uses `ValidationOnlineCRRU@20_40`: an online validation proxy with the same CRRU components and exponent structure, averaged over K=20 and K=40. Future trials also store `ValidationOnlineCRRU@20` and `ValidationOnlineCRRU@40` as dataset-scoped Optuna attributes for reporting. NDCG, Recall, Hit, and Personalization are already bounded validation metrics. Average popularity, peak VRAM, and seconds per epoch use deterministic trial-local lower-cost transforms. Exact report-style validation CRRU is recomputed after completed rows exist and is shown in the Optuna report with time/epoch and peak VRAM columns; it is not used as the live optimization objective.
 
-The canonical Optuna space keeps interest propagation at 1-2 layers and searches conformity propagation at 1-3 layers. Three-hop conformity is included because historical completed trials favored branch depth 3; four-hop propagation is excluded from the canonical 17-18 hour budget until a separate deep-diagnostic run shows it is worth the extra memory, runtime, and over-smoothing risk.
+The canonical Optuna space is a short second-pass screen, not an exhaustive grid. It uses fewer fresh trials, shorter epoch caps, and Hyperband pruning; already-searched datasets can stay focused around completed local evidence, while KuaiRand keeps a coarse low/medium/high regime screen until fresh local runs exist. Four-hop propagation is excluded unless a separate deep-diagnostic run shows it is worth the extra memory, runtime, and over-smoothing risk.
 
 ## Checkpoints and identity
 
