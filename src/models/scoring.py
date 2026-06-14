@@ -7,6 +7,7 @@ from torch import nn
 from torch.nn import functional
 
 from ..utils.config import UCaGNNConfig
+from .common import module_parameter_dtype
 
 
 class ScoringModule(nn.Module):
@@ -61,18 +62,6 @@ class ScoringModule(nn.Module):
             if config.use_popularity_head
             else None
         )
-
-    @staticmethod
-    def _module_dtype(module: nn.Module) -> torch.dtype:
-        """Return the dtype of a module's parameters.
-
-        Args:
-            module: Module to inspect.
-
-        Returns:
-            Parameter dtype.
-        """
-        return next(module.parameters()).dtype
 
     @staticmethod
     def _cast_like(value: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
@@ -258,7 +247,7 @@ class ScoringModule(nn.Module):
             long_term_interest,
         )
         gate_inputs = torch.cat([long_term_interest, short_term_interest], dim=-1)
-        gate_inputs = gate_inputs.to(dtype=self._module_dtype(self.interest_gate_mlp))
+        gate_inputs = gate_inputs.to(dtype=module_parameter_dtype(self.interest_gate_mlp))
         interest_gate = torch.sigmoid(self.interest_gate_mlp(gate_inputs)).to(
             dtype=long_term_interest.dtype,
         )
@@ -367,7 +356,7 @@ class ScoringModule(nn.Module):
             self._get_item_safe_features(propagated, item_ids, item_ref),
         ]
         head_inputs = torch.cat(context_inputs, dim=-1).to(
-            dtype=self._module_dtype(self.context_head),
+            dtype=module_parameter_dtype(self.context_head),
         )
         context_scores = self.context_head(head_inputs).squeeze(-1).to(dtype=item_ref.dtype)
         metadata_present = head_inputs.abs().sum(dim=-1) > 0
@@ -480,7 +469,7 @@ class ScoringModule(nn.Module):
             )
         user_conformity = self._get_user_conformity(propagated)[user_ids]
         alpha_inputs = torch.cat([interest_embedding, user_conformity], dim=-1).to(
-            dtype=self._module_dtype(self.alpha_mlp),
+            dtype=module_parameter_dtype(self.alpha_mlp),
         )
         alpha_logits = self.alpha_mlp(alpha_inputs) + self.alpha_prior_logits.to(
             device=alpha_inputs.device,

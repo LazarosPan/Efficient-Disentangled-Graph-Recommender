@@ -11,6 +11,7 @@ from torch import nn
 from torch_geometric.utils import coalesce, degree
 
 from ...utils.config import UCaGNNConfig
+from ..common import training_output_payload
 from ..lightgcn import DualBranchGCN
 
 
@@ -196,15 +197,12 @@ class CanonicalBaselineRecommender(nn.Module):
         dice_negative_mask: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
         """Return the common training payload consumed by ``LossSuite``."""
-        output: dict[str, torch.Tensor | dict[str, torch.Tensor]] = {
-            "pos_scores": pos_scores,
-            "neg_scores": neg_scores,
-            "embeddings": embeddings,
-            "propagated": propagated,
-            "ipw_weights": torch.ones(user_ids.size(0), device=user_ids.device),
-            "loss_user_ids": user_ids,
-            "loss_neg_item_ids": neg_item_ids,
-        }
-        if dice_negative_mask is not None:
-            output["dice_negative_mask"] = dice_negative_mask
-        return output
+        return training_output_payload(
+            embeddings=embeddings,
+            propagated=propagated,
+            pos_scores=pos_scores,
+            neg_scores=neg_scores,
+            user_ids=user_ids,
+            neg_item_ids=neg_item_ids,
+            dice_negative_mask=dice_negative_mask,
+        )

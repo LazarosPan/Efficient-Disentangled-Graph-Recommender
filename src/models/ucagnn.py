@@ -11,6 +11,7 @@ from torch import nn
 
 from ..data.subgraph_sampler import SubgraphBatch
 from ..utils.config import UCaGNNConfig
+from .common import training_output_payload
 from .embeddings import EmbeddingModule
 from .lightgcn import DualBranchGCN
 from .propensity import PropensityEstimator
@@ -158,22 +159,19 @@ class UCaGNN(nn.Module):
             ipw_weights = 1.0 / propensity
         else:
             propensity = None
-            ipw_weights = torch.ones(user_ids.size(0), device=user_ids.device)
+            ipw_weights = None
 
-        output: dict[str, torch.Tensor | dict[str, torch.Tensor]] = {
-            "pos_scores": pos_scores,
-            "neg_scores": neg_scores,
-            "embeddings": embeddings,
-            "propagated": propagated,
-            "ipw_weights": ipw_weights,
-            "loss_user_ids": user_ids,
-            "loss_neg_item_ids": neg_item_ids,
-        }
-        if dice_negative_mask is not None:
-            output["dice_negative_mask"] = dice_negative_mask
-        if propensity is not None:
-            output["propensity_scores"] = propensity
-        return output
+        return training_output_payload(
+            embeddings=embeddings,
+            propagated=propagated,
+            pos_scores=pos_scores,
+            neg_scores=neg_scores,
+            user_ids=user_ids,
+            neg_item_ids=neg_item_ids,
+            ipw_weights=ipw_weights,
+            dice_negative_mask=dice_negative_mask,
+            propensity_scores=propensity,
+        )
 
     def forward(
         self,

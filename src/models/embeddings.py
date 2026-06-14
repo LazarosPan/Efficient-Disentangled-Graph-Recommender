@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from ..utils.config import UCaGNNConfig
+from .common import module_parameter_dtype
 
 
 def _register_bf16_buffer(
@@ -183,11 +184,6 @@ class EmbeddingModule(nn.Module):
             for key, value in tensors.items()
         }
 
-    @staticmethod
-    def _module_dtype(module: nn.Module) -> torch.dtype:
-        """Return the dtype of the first parameter owned by ``module``."""
-        return next(module.parameters()).dtype
-
     def _build_user_embeddings(
         self,
         user_ids: torch.Tensor | None = None,
@@ -266,8 +262,8 @@ class EmbeddingModule(nn.Module):
         """
         if self._cached_projected_features is not None and not self.training:
             return  # eval-mode cache hit
-        feature_dtype = self._module_dtype(self.item_feature_proj)
-        pop_dtype = self._module_dtype(self.popularity_modulator)
+        feature_dtype = module_parameter_dtype(self.item_feature_proj)
+        pop_dtype = module_parameter_dtype(self.popularity_modulator)
         self._cached_projected_features = self.item_feature_norm(
             self.item_feature_proj(self.item_feature_matrix.to(dtype=feature_dtype)),
         )
@@ -294,8 +290,8 @@ class EmbeddingModule(nn.Module):
             # Training-time subgraph path: project only the needed item subset
             # to avoid O(n_items * feature_dim * D) full-catalog linear map
             # every batch.  Eval uses the full-catalog cache below.
-            feature_dtype = self._module_dtype(self.item_feature_proj)
-            pop_dtype = self._module_dtype(self.popularity_modulator)
+            feature_dtype = module_parameter_dtype(self.item_feature_proj)
+            pop_dtype = module_parameter_dtype(self.popularity_modulator)
             subset = self.item_feature_matrix[item_ids].to(dtype=feature_dtype)
             projected = self.item_feature_norm(self.item_feature_proj(subset))
             pop_gate = self.popularity_modulator(
