@@ -27,7 +27,8 @@ import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from matplotlib.ticker import PercentFormatter
-from src.utils.cli_parsers import BENCHMARK_DATASETS, build_explore_all_datasets_parser
+from src.utils.benchmark_datasets import BENCHMARK_DATASETS
+from src.utils.cli_parsers import build_explore_all_datasets_parser
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:

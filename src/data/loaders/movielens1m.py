@@ -104,23 +104,6 @@ def _parse_movies_dat(
     return features
 
 
-def _resolve_raw_dir(data_dir: str) -> Path:
-    """Resolve the raw ML-1M directory from local repository data only."""
-    raw_base = Path(data_dir) / "MovieLens1M" / "raw"
-    return resolve_local_dataset_dir(
-        candidates=[
-            raw_base,
-            raw_base / "ml-1m",
-            Path(data_dir) / "ml-1m",
-        ],
-        required_files=["ratings.dat", "users.dat", "movies.dat"],
-        missing_message=(
-            "MovieLens1M raw files not found in the local data directory. "
-            f"Checked under {raw_base}."
-        ),
-    )
-
-
 def _parse_ratings_dat(
     raw_dir: Path,
     max_rows: int | None = None,
@@ -191,7 +174,19 @@ def load_movielens1m(
     Label: rating >= 4 -> positive (1.0), else negative (0.0)
     Sign:  rating mapped to [-1, 1] via ``(rating - 3) / 2``
     """
-    raw_dir = _resolve_raw_dir(data_dir)
+    raw_base = Path(data_dir) / "MovieLens1M" / "raw"
+    raw_dir = resolve_local_dataset_dir(
+        candidates=[
+            raw_base,
+            raw_base / "ml-1m",
+            Path(data_dir) / "ml-1m",
+        ],
+        required_files=["ratings.dat", "users.dat", "movies.dat"],
+        missing_message=(
+            "MovieLens1M raw files not found in the local data directory. "
+            f"Checked under {raw_base}."
+        ),
+    )
     raw_users, raw_items, ratings, timestamps = _parse_ratings_dat(
         raw_dir,
         max_rows=max_rows,
