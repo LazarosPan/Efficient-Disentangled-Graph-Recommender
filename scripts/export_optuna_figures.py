@@ -295,16 +295,6 @@ def _fanout_tuple(value: Any) -> tuple[int, ...] | None:
         return None
 
 
-def _finite_values(records: Sequence[Mapping[str, Any]], key: str) -> list[float]:
-    """Return finite numeric values for one record key."""
-    values: list[float] = []
-    for record in records:
-        value = _as_float(record.get(key))
-        if value is not None:
-            values.append(value)
-    return values
-
-
 def _minmax_score(
     values: Sequence[float | None],
     *,

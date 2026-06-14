@@ -169,11 +169,6 @@ def _format_rate(value: float | None) -> str:
     return "-" if value is None else f"{value:.2f}"
 
 
-def _format_vram(value_mb: float | None) -> str:
-    """Return a compact VRAM display string."""
-    return "-" if value_mb is None else f"{value_mb:.0f}MB"
-
-
 def _format_crru_value(value: float | None) -> str:
     """Return a CRRU display string that preserves very small positive values."""
     if value is None:

@@ -13,7 +13,11 @@ from pathlib import Path
 from typing import Any
 
 import optuna
-from experiments.run_search import DEFAULT_STORAGE
+from experiments.run_search import (
+    DEFAULT_STORAGE,
+    is_duplicate_pruned_trial,
+    is_seeded_trial,
+)
 from optuna.importance import FanovaImportanceEvaluator, get_param_importances
 from optuna.trial import FrozenTrial, TrialState
 from src.utils.crru import (
@@ -131,16 +135,6 @@ def completed_trials(study: optuna.Study) -> list[FrozenTrial]:
         and trial.value is not None
         and math.isfinite(float(trial.value))
     ]
-
-
-def is_seeded_trial(trial: FrozenTrial) -> bool:
-    """Return whether a trial was historically imported from another study."""
-    return trial.user_attrs.get("seeded_from_study") is not None
-
-
-def is_duplicate_pruned_trial(trial: FrozenTrial) -> bool:
-    """Return whether a pruned row only records duplicate-parameter avoidance."""
-    return bool(trial.user_attrs.get("duplicate_sampled_params"))
 
 
 def trial_origin(trial: FrozenTrial) -> str:
