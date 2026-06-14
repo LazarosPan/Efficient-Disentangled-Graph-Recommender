@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import typing
 
+from src.utils.benchmark_datasets import BENCHMARK_TIER_CHOICES
 from src.utils.cli_parsers import (
-    BENCHMARK_TIER_CHOICES,
     PRESET_CHOICES,
     add_change_note_arg,
     add_device_and_data_dir_args,
@@ -287,10 +287,6 @@ def build_search_parser() -> argparse.ArgumentParser:
         experiment_name_default="ucagnn-optuna",
         tracking_uri_help="Override MLflow tracking URI for trial runs.",
         experiment_name_help="MLflow experiment name for trial runs.",
-    )
-    add_overwrite_checkpoint_arg(
-        ex,
-        help_text=("Accepted for compatibility; search runs do not save or resume checkpoints."),
     )
     parser.set_defaults(no_mlflow=True)
 

@@ -29,25 +29,21 @@ def load_search_spaces_catalog() -> dict[str, Any]:
         return json.load(handle)
 
 
-def _raw_recipe(recipe_name: str) -> dict[str, Any]:
-    recipes = load_experiment_catalog().get("recipes", {})
-    if recipe_name not in recipes:
-        available = ", ".join(sorted(recipes))
+def _catalog_entry(
+    catalog: Mapping[str, Any],
+    *,
+    section: str,
+    entry_name: str,
+    entry_label: str,
+) -> dict[str, Any]:
+    """Return one named entry from a catalog section with a consistent error."""
+    entries = catalog.get(section, {})
+    if entry_name not in entries:
+        available = ", ".join(sorted(entries))
         raise KeyError(
-            f"Unknown recipe '{recipe_name}'. Available recipes: {available}",
+            f"Unknown {entry_label} '{entry_name}'. Available {entry_label}s: {available}",
         )
-    return recipes[recipe_name]
-
-
-def _raw_search_space(space_name: str) -> dict[str, Any]:
-    """Return one raw Optuna search-space payload from the search catalog."""
-    search_spaces = load_search_spaces_catalog().get("search_spaces", {})
-    if space_name not in search_spaces:
-        available = ", ".join(sorted(search_spaces))
-        raise KeyError(
-            f"Unknown search space '{space_name}'. Available search spaces: {available}",
-        )
-    return search_spaces[space_name]
+    return entries[entry_name]
 
 
 def recipe_names(include_aliases: bool = True) -> list[str]:
@@ -64,12 +60,12 @@ def recipe_names(include_aliases: bool = True) -> list[str]:
     return sorted(name for name, recipe in raw.items() if "alias_for" not in recipe)
 
 
-def _slugify_fragment(raw: object) -> str:
-    """Return a filesystem-safe slug fragment for profile identifiers."""
+def slugify_fragment(raw: object, *, fallback: str = "") -> str:
+    """Return a filesystem-safe slug fragment for generated identifiers."""
     normalized = "".join(
         character.lower() if str(character).isalnum() else "-" for character in str(raw)
     )
-    return "-".join(part for part in normalized.split("-") if part)
+    return "-".join(part for part in normalized.split("-") if part) or fallback
 
 
 def _normalize_num_neighbors_vector(
@@ -210,7 +206,7 @@ def _formal_profile_name(profile: dict[str, Any]) -> str:
     batch_slug = (
         "abauto"
         if overrides.get("auto_batch_size", True)  # True matches UCaGNNConfig default
-        else f"bs{_slugify_fragment(overrides.get('batch_size', 'na'))}"
+        else f"bs{slugify_fragment(overrides.get('batch_size', 'na'))}"
     )
     signature = json.dumps(
         {"matrix": matrix, "config_overrides": overrides},
@@ -219,8 +215,8 @@ def _formal_profile_name(profile: dict[str, Any]) -> str:
     digest = hashlib.sha1(signature.encode("utf-8")).hexdigest()[:8]
     lr_value = str(overrides.get("lr", "na")).replace(".", "p")
     return (
-        f"e{_slugify_fragment(overrides.get('epochs', 'na'))}-lr"
-        f"{_slugify_fragment(lr_value)}-{batch_slug}-n{neighbor_slug}-"
+        f"e{slugify_fragment(overrides.get('epochs', 'na'))}-lr"
+        f"{slugify_fragment(lr_value)}-{batch_slug}-n{neighbor_slug}-"
         f"{digest}"
     )
 
@@ -230,7 +226,7 @@ def _formal_profile_id(profile: dict[str, Any]) -> str:
     explicit_id = profile.get("id")
     if explicit_id is None:
         return _formal_profile_name(profile)
-    return _slugify_fragment(explicit_id)
+    return slugify_fragment(explicit_id)
 
 
 @lru_cache(maxsize=1)
@@ -244,7 +240,7 @@ def _resolved_formal_profiles() -> list[dict[str, Any]]:
         resolved_name = _formal_profile_name(profile)
         aliases = {resolved_id, resolved_name}
         raw_aliases = profile.get("aliases", [])
-        aliases.update(_slugify_fragment(alias) for alias in raw_aliases)
+        aliases.update(slugify_fragment(alias) for alias in raw_aliases)
         resolved_profiles.append(
             {
                 "id": resolved_id,
@@ -292,7 +288,14 @@ def search_space_names() -> list[str]:
 
 def get_search_space(space_name: str) -> dict[str, Any]:
     """Return a named Optuna search-space definition from the search catalog."""
-    space = dict(_raw_search_space(space_name))
+    space = dict(
+        _catalog_entry(
+            load_search_spaces_catalog(),
+            section="search_spaces",
+            entry_name=space_name,
+            entry_label="search space",
+        ),
+    )
     return {
         "name": space_name,
         "description": space.get("description", ""),
@@ -311,7 +314,7 @@ def get_search_space(space_name: str) -> dict[str, Any]:
 
 def get_formal_profile(profile_name: str) -> dict[str, Any]:
     """Return a named formal profile from the experiment catalog."""
-    normalized_name = _slugify_fragment(profile_name.strip())
+    normalized_name = slugify_fragment(profile_name.strip())
     resolved_profile = _formal_profile_alias_index().get(normalized_name)
     if resolved_profile is not None:
         return {
@@ -331,7 +334,14 @@ def get_formal_profile(profile_name: str) -> dict[str, Any]:
 
 def get_recipe(recipe_name: str) -> dict[str, Any]:
     """Resolve a recipe, following aliases to their canonical target."""
-    recipe = dict(_raw_recipe(recipe_name))
+    recipe = dict(
+        _catalog_entry(
+            load_experiment_catalog(),
+            section="recipes",
+            entry_name=recipe_name,
+            entry_label="recipe",
+        ),
+    )
     alias_target = recipe.get("alias_for")
     if alias_target is None:
         return {

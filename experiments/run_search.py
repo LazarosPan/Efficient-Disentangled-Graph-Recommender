@@ -18,8 +18,8 @@ from typing import Any
 
 import optuna
 from scripts._workflow_helpers import configure_cli_logging
-from src.utils.cli_parsers import (
-    benchmark_dataset_lookup_keys,
+from src.training import THESIS_PRIMARY_METRICS
+from src.utils.benchmark_datasets import (
     normalize_benchmark_datasets_arg,
     resolve_benchmark_datasets,
 )
@@ -33,12 +33,19 @@ from src.utils.crru import (
 from src.utils.experiment_logger import ExperimentLogger
 from src.utils.project_paths import THESIS_DB_PATH
 
+from experiments.benchmark_resolvers import (
+    resolve_benchmark_graph_policy_values,
+    resolve_benchmark_lr_scheduler_values,
+    resolve_benchmark_num_neighbor_values,
+    resolve_benchmark_preprocessing_preset_values,
+)
 from experiments.cli_parsers import build_search_parser
 from experiments.recipes import (
     get_formal_profile,
     get_search_space,
     resolve_profile_num_neighbors,
     search_space_names,
+    slugify_fragment,
 )
 from experiments.run_experiment import (
     build_benchmark_config_inputs,
@@ -197,14 +204,6 @@ class SearchSpaceSpec:
 ParameterValidator = Callable[[str, Mapping[str, Any]], None]
 DistributionPayloadBuilder = Callable[[str, Mapping[str, Any], int | None], dict[str, Any]]
 ParameterSuggester = Callable[[optuna.Trial, str, str, Mapping[str, Any]], Any]
-
-
-def _slugify_fragment(raw: object) -> str:
-    """Return a filesystem/identifier-safe fragment for generated batch ids."""
-    normalized = "".join(
-        character.lower() if str(character).isalnum() else "-" for character in str(raw)
-    )
-    return "-".join(part for part in normalized.split("-") if part) or "search"
 
 
 def _json_safe(value: Any) -> Any:
@@ -615,64 +614,18 @@ def _build_base_benchmark_args(
     return benchmark_args
 
 
-def _single_lr_scheduler(benchmark_args: Mapping[str, Any]) -> str:
-    """Return one concrete scheduler for a search trial."""
-    raw_scheduler = benchmark_args.get("lr_scheduler") or UCaGNNConfig().lr_scheduler
-    if isinstance(raw_scheduler, list):
-        if len(raw_scheduler) != 1:
-            raise ValueError("Search spaces must resolve one lr_scheduler per trial.")
-        raw_scheduler = raw_scheduler[0]
-    if raw_scheduler == "all":
-        raise ValueError("Search spaces cannot use lr_scheduler='all'.")
-    return str(raw_scheduler)
+def _single_search_value[T](field_name: str, values: Sequence[T]) -> T:
+    """Return one resolved benchmark value for a search trial."""
+    if len(values) != 1:
+        raise ValueError(f"Search spaces must resolve one {field_name} per trial.")
+    return values[0]
 
 
-def _single_graph_policy(benchmark_args: Mapping[str, Any]) -> str:
-    """Return one concrete graph policy for a search trial."""
-    graph_options = benchmark_args.get("graph_policy_options")
-    if isinstance(graph_options, list) and graph_options:
-        if len(graph_options) != 1:
-            raise ValueError("Search spaces must resolve one graph_policy per trial.")
-        return str(graph_options[0])
-    graph_policy = benchmark_args.get("graph_policy")
-    return str(graph_policy) if graph_policy is not None else UCaGNNConfig().graph_policy
-
-
-def _single_preprocessing_preset(benchmark_args: Mapping[str, Any]) -> str | None:
-    """Return one concrete preprocessing preset for a search trial."""
-    preprocessing_options = benchmark_args.get("preprocessing_preset_options")
-    if isinstance(preprocessing_options, list) and preprocessing_options:
-        if len(preprocessing_options) != 1:
-            raise ValueError("Search spaces must resolve one preprocessing_preset per trial.")
-        return str(preprocessing_options[0])
-    preprocessing_preset = benchmark_args.get("preprocessing_preset")
-    return None if preprocessing_preset is None else str(preprocessing_preset)
-
-
-def _select_num_neighbors(
-    benchmark_args: Mapping[str, Any],
-    *,
-    dataset: str,
-) -> list[int]:
-    """Return one concrete fan-out vector for a dataset-specific search run."""
-    raw_num_neighbors = benchmark_args.get("num_neighbors")
-    if isinstance(raw_num_neighbors, Mapping):
-        for lookup_key in benchmark_dataset_lookup_keys(dataset):
-            selected = raw_num_neighbors.get(lookup_key)
-            if selected is None:
-                continue
-            resolved = resolve_profile_num_neighbors({"num_neighbors": selected})
-            if resolved:
-                return list(resolved[0])
-        available = ", ".join(sorted(str(key) for key in raw_num_neighbors))
-        raise ValueError(
-            f"No num_neighbors entry matches dataset '{dataset}'. Available keys: {available}",
-        )
-
-    resolved = resolve_profile_num_neighbors({"num_neighbors": raw_num_neighbors})
-    if resolved:
-        return list(resolved[0])
-    return list(UCaGNNConfig().num_neighbors)
+def _first_search_value[T](field_name: str, values: Sequence[T]) -> T:
+    """Return the first resolved benchmark value for a search base config."""
+    if not values:
+        raise ValueError(f"Search spaces must resolve at least one {field_name}.")
+    return values[0]
 
 
 def build_search_config_inputs(
@@ -692,14 +645,34 @@ def build_search_config_inputs(
     if sampled_overrides:
         benchmark_args.update(sampled_overrides)
 
+    try:
+        lr_scheduler_values = resolve_benchmark_lr_scheduler_values(
+            benchmark_args,
+            expand_all=False,
+        )
+    except ValueError as exc:
+        if "lr_scheduler='all'" not in str(exc):
+            raise
+        raise ValueError("Search spaces cannot use lr_scheduler='all'.") from exc
+    num_neighbor_values = resolve_benchmark_num_neighbor_values(
+        benchmark_args,
+        dataset=dataset,
+    )
+
     return build_benchmark_config_inputs(
         benchmark_args,
         dataset=dataset,
         preset=SEARCH_PRESET,
-        lr_scheduler=_single_lr_scheduler(benchmark_args),
-        num_neighbors=_select_num_neighbors(benchmark_args, dataset=dataset),
-        preprocessing_preset=_single_preprocessing_preset(benchmark_args),
-        graph_policy=_single_graph_policy(benchmark_args),
+        lr_scheduler=_single_search_value("lr_scheduler", lr_scheduler_values),
+        num_neighbors=list(_first_search_value("num_neighbors", num_neighbor_values)),
+        preprocessing_preset=_single_search_value(
+            "preprocessing_preset",
+            resolve_benchmark_preprocessing_preset_values(benchmark_args),
+        ),
+        graph_policy=_single_search_value(
+            "graph_policy",
+            resolve_benchmark_graph_policy_values(benchmark_args),
+        ),
     )
 
 
@@ -1221,16 +1194,7 @@ def _set_trial_attrs_from_result(
     )
 
     for metric_name in (
-        "NDCG@20",
-        "Recall@20",
-        "HitRatio@20",
-        "Personalization@20",
-        "AveragePopularity@20",
-        "NDCG@40",
-        "Recall@40",
-        "HitRatio@40",
-        "Personalization@40",
-        "AveragePopularity@40",
+        *THESIS_PRIMARY_METRICS,
         *VALIDATION_ONLINE_CRRU_K_METRICS.values(),
         VALIDATION_ONLINE_CRRU_METRIC,
     ):
@@ -1255,7 +1219,8 @@ def _set_trial_attrs_from_result(
 
 def _trial_batch_id(study_name: str, trial_number: int) -> str:
     """Return the SQLite/MLflow batch id for one Optuna trial."""
-    return f"optuna-{_slugify_fragment(study_name)}-trial-{trial_number}"
+    study_slug = slugify_fragment(study_name, fallback="search")
+    return f"optuna-{study_slug}-trial-{trial_number}"
 
 
 def _trial_change_note(
@@ -1304,7 +1269,6 @@ def _objective_factory(
     enable_mlflow: bool,
     mlflow_tracking_uri: str | None,
     mlflow_experiment_name: str,
-    overwrite_checkpoint: bool,
     seen_sampled_param_keys: set[str] | None = None,
 ) -> Any:
     """Build the Optuna objective callable for one resolved search space."""
@@ -1379,7 +1343,6 @@ def _objective_factory(
                     change_note=change_note,
                     checkpoint_every=0,
                     auto_resume=False,
-                    overwrite_checkpoint=overwrite_checkpoint,
                     include_refined_diagnostics=False,
                     evaluate_test=False,
                     training_epoch_callback=_build_pruning_epoch_callback(
@@ -1438,8 +1401,9 @@ def default_study_name(
     base_name = f"{space_name}-{dataset_part}"
     if search_space is None:
         return base_name
-    objective_name = _slugify_fragment(
+    objective_name = slugify_fragment(
         f"{search_space.objective.split}-{search_space.objective.metric}",
+        fallback="search",
     )
     return f"{base_name}-{objective_name}"
 
@@ -1449,12 +1413,12 @@ def _canonical_sampled_params(sampled_params: Mapping[str, Any]) -> str:
     return json.dumps(_json_safe(sampled_params), sort_keys=True, separators=(",", ":"))
 
 
-def _is_seeded_trial(trial: optuna.trial.FrozenTrial) -> bool:
+def is_seeded_trial(trial: optuna.trial.FrozenTrial) -> bool:
     """Return whether a trial was copied from another study instead of run fresh."""
     return trial.user_attrs.get("seeded_from_study") is not None
 
 
-def _is_duplicate_pruned_trial(trial: optuna.trial.FrozenTrial) -> bool:
+def is_duplicate_pruned_trial(trial: optuna.trial.FrozenTrial) -> bool:
     """Return whether a pruned trial only records duplicate-parameter avoidance."""
     return bool(trial.user_attrs.get("duplicate_sampled_params"))
 
@@ -1614,26 +1578,6 @@ def _trial_matches_current_search_space(
     return True
 
 
-def _trial_matches_informative_search_space(
-    trial: optuna.trial.FrozenTrial,
-    search_space: SearchSpaceSpec,
-) -> bool:
-    """Return whether a trial is informative under the current logical search space."""
-    if trial.state not in INFORMATIVE_TRIAL_STATES:
-        return False
-    if _is_duplicate_pruned_trial(trial):
-        return False
-    if trial.state == optuna.trial.TrialState.COMPLETE:
-        return _trial_matches_current_search_space(trial, search_space)
-    if not _trial_matches_current_search_contract(trial, search_space):
-        return False
-    return any(
-        trial.user_attrs.get(f"{dataset}.pruned")
-        or trial.user_attrs.get(f"{dataset}.last_pruning_objective") is not None
-        for dataset in search_space.datasets
-    )
-
-
 def _trial_matches_search_budget_scope(
     trial: optuna.trial.FrozenTrial,
     search_space: SearchSpaceSpec,
@@ -1641,7 +1585,7 @@ def _trial_matches_search_budget_scope(
     """Return whether a fresh finished trial counts against ``--trials``."""
     if trial.state not in INFORMATIVE_TRIAL_STATES:
         return False
-    if _is_duplicate_pruned_trial(trial):
+    if is_duplicate_pruned_trial(trial):
         return False
     if trial.user_attrs.get("search_space") != search_space.name:
         return False
@@ -1676,7 +1620,7 @@ def _budget_informative_trials(
     return [
         trial
         for trial in study.trials
-        if _trial_matches_search_budget_scope(trial, search_space) and not _is_seeded_trial(trial)
+        if _trial_matches_search_budget_scope(trial, search_space) and not is_seeded_trial(trial)
     ]
 
 
@@ -1689,7 +1633,7 @@ def _budget_count_fragment(
     seeded = [
         trial
         for trial in study.trials
-        if _is_seeded_trial(trial) and _trial_matches_search_budget_scope(trial, search_space)
+        if is_seeded_trial(trial) and _trial_matches_search_budget_scope(trial, search_space)
     ]
     fresh_complete = sum(1 for trial in fresh if trial.state == optuna.trial.TrialState.COMPLETE)
     fresh_pruned = sum(1 for trial in fresh if trial.state == optuna.trial.TrialState.PRUNED)
@@ -1831,7 +1775,6 @@ def _run_single_search_study(
         enable_mlflow=not bool(args.no_mlflow),
         mlflow_tracking_uri=args.mlflow_tracking_uri,
         mlflow_experiment_name=args.mlflow_experiment_name,
-        overwrite_checkpoint=bool(args.overwrite_checkpoint),
         seen_sampled_param_keys=seen_sampled_param_keys,
     )
     attempts = 0

@@ -23,7 +23,7 @@ from scripts._workflow_helpers import (
     thesis_metric_values,
 )
 from src.training import THESIS_PRIMARY_METRICS
-from src.utils.cli_parsers import (
+from src.utils.benchmark_datasets import (
     normalize_benchmark_datasets_arg,
     resolve_benchmark_datasets,
 )
@@ -44,28 +44,12 @@ DEFAULT_RUNTIME_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DEFAULT_DATA_DIR = "data"
 
 
-def _resolve_target_datasets(args) -> list[str]:
-    """Resolve the ablation dataset selection from CLI args.
-
-    Args:
-        args: Parsed ablation CLI arguments.
-
-    Returns:
-        Ordered dataset list with benchmark-tier selectors expanded.
-
-    Raises:
-        ValueError: If ``--datasets`` is empty.
-
-    """
-    if not args.datasets:
-        raise ValueError("Pass one or more values to --datasets for the ablation study.")
-    return resolve_benchmark_datasets(normalize_benchmark_datasets_arg(args.datasets))
-
-
 def main() -> int:
     """Parse arguments and run the ablation sweep."""
     args = build_ablation_parser().parse_args()
-    datasets = _resolve_target_datasets(args)
+    if not args.datasets:
+        raise ValueError("Pass one or more values to --datasets for the ablation study.")
+    datasets = resolve_benchmark_datasets(normalize_benchmark_datasets_arg(args.datasets))
 
     configure_cli_logging()
     batch_id = resolve_batch_id(None, prefix="ablation")
