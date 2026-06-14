@@ -1849,6 +1849,13 @@ def run_experiment(
         if not checkpoint_ready_for_eval and start_epoch < config.epochs:
             logger.info(f"Training for {config.epochs} epochs...")
             if config.auto_batch_size and cuda_ and checkpoint_state is None:
+                # The parameter-count model above is only diagnostic on this path.
+                # Release it before constructing candidate trainers so large catalogs
+                # do not pay a transient duplicate-model CUDA footprint.
+                model = None
+                loss_suite = None
+                trainer = None
+                _release_cuda_probe_memory()
                 candidates = _auto_batch_probe_candidates(config)
                 try:
                     start_index = candidates.index(int(config.batch_size))
@@ -1920,6 +1927,17 @@ def run_experiment(
                             intervention,
                         )
                         if candidate != selected_batch_size:
+                            logger.info(
+                                (
+                                    "Auto batch-size training fallback selected %d for %s "
+                                    "after selected batch_size %d failed at runtime; "
+                                    "canonical name now %s."
+                                ),
+                                candidate,
+                                config.dataset,
+                                selected_batch_size,
+                                canonical_name,
+                            )
                             if exp_id is not None:
                                 experiment_logger.conn.execute(
                                     (

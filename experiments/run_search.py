@@ -169,8 +169,8 @@ class SamplerSpec:
     name: str = "tpe"
     seed: int = DEFAULT_SEED
     n_startup_trials: int = 12
-    multivariate: bool = True
-    group: bool = True
+    multivariate: bool = False
+    group: bool = False
     constant_liar: bool = False
 
 
@@ -316,13 +316,16 @@ def _build_sampler(spec: SamplerSpec) -> optuna.samplers.BaseSampler:
     """Instantiate the configured Optuna sampler."""
     if spec.name == "random":
         return optuna.samplers.RandomSampler(seed=spec.seed)
-    return optuna.samplers.TPESampler(
-        seed=spec.seed,
-        n_startup_trials=spec.n_startup_trials,
-        multivariate=spec.multivariate,
-        group=spec.group,
-        constant_liar=spec.constant_liar,
-    )
+    kwargs: dict[str, Any] = {
+        "seed": spec.seed,
+        "n_startup_trials": spec.n_startup_trials,
+        "constant_liar": spec.constant_liar,
+    }
+    if spec.multivariate:
+        kwargs["multivariate"] = True
+        if spec.group:
+            kwargs["group"] = True
+    return optuna.samplers.TPESampler(**kwargs)
 
 
 def _build_pruner(spec: PrunerSpec, *, max_epochs: int) -> optuna.pruners.BasePruner:
@@ -1640,9 +1643,9 @@ def _budget_count_fragment(
     seeded_complete = sum(1 for trial in seeded if trial.state == optuna.trial.TrialState.COMPLETE)
     seeded_pruned = sum(1 for trial in seeded if trial.state == optuna.trial.TrialState.PRUNED)
     return (
-        f"budget_count={len(fresh)} "
-        f"(fresh complete={fresh_complete}, fresh pruned={fresh_pruned}, "
-        f"imported complete={seeded_complete}, imported pruned={seeded_pruned})"
+        f"fresh_budget_count={len(fresh)} "
+        f"(fresh complete={fresh_complete}, fresh pruned={fresh_pruned}); "
+        f"imported_history=(complete={seeded_complete}, pruned={seeded_pruned})"
     )
 
 
@@ -1663,12 +1666,83 @@ def _print_best_trial_summary(
     *,
     objective_metric: str,
 ) -> None:
-    """Print best comparable trial details from logical sampled params."""
+    """Print best comparable trial details from effective config when available."""
     print(
         (f"Best trial: {best_trial.number} | {objective_metric}={float(best_trial.value):.6f}"),
     )
-    print("Best params:")
-    print(json.dumps(_json_safe(best_trial.user_attrs.get("sampled_params", {}))))
+    label, payload = _best_trial_config_payload(best_trial)
+    print(label)
+    print(json.dumps(_json_safe(payload), sort_keys=True))
+
+
+def _trial_dataset_names(trial: optuna.trial.FrozenTrial) -> list[str]:
+    """Return dataset names recorded on a trial."""
+    raw_datasets = trial.user_attrs.get("datasets")
+    if isinstance(raw_datasets, Sequence) and not isinstance(raw_datasets, (str, bytes)):
+        return [str(dataset) for dataset in raw_datasets]
+    return sorted(
+        {
+            key.split(".", 1)[0]
+            for key in trial.user_attrs
+            if key.endswith(".objective") and "." in key
+        },
+    )
+
+
+def _best_trial_config_payload(
+    trial: optuna.trial.FrozenTrial,
+) -> tuple[str, Mapping[str, Any]]:
+    """Return a truthful best-trial config payload for CLI display."""
+    dataset_names = _trial_dataset_names(trial)
+    if len(dataset_names) == 1:
+        dataset = dataset_names[0]
+        effective_config = trial.user_attrs.get(f"{dataset}.effective_config")
+        if isinstance(effective_config, Mapping):
+            return "Best effective config:", effective_config
+
+    payload: dict[str, Any] = {}
+    sampled_params = trial.user_attrs.get("sampled_params")
+    if isinstance(sampled_params, Mapping):
+        payload.update(sampled_params)
+    if len(dataset_names) == 1:
+        dataset = dataset_names[0]
+        for attr_name in (
+            "batch_size",
+            "auto_batch_size",
+            "avg_epoch_time_s",
+            "peak_vram_mb",
+            "epochs_stopped_at",
+            "canonical_name",
+        ):
+            value = trial.user_attrs.get(f"{dataset}.{attr_name}")
+            if value is not None:
+                payload[attr_name] = value
+    return "Best sampled/runtime params (historical trial lacks effective_config):", payload
+
+
+def _print_best_trial_or_note(
+    compatible_completed: Sequence[optuna.trial.FrozenTrial],
+    *,
+    objective_metric: str,
+    direction: str,
+) -> None:
+    """Print a best trial, or explain why no best row can be reused."""
+    best_trial = _best_trial_from_completed(
+        list(compatible_completed),
+        direction=direction,
+    )
+    if best_trial is not None:
+        _print_best_trial_summary(
+            best_trial,
+            objective_metric=objective_metric,
+        )
+        return
+    print(
+        (
+            "No completed trial matches the current logical search-space parameters; "
+            "fresh budget may still be spent by pruned or older incompatible completed trials."
+        ),
+    )
 
 
 def build_dry_run_payload(
@@ -1747,15 +1821,11 @@ def _run_single_search_study(
                 f"informative trial(s); target={n_trials}. Nothing to run."
             ),
         )
-        best_trial = _best_trial_from_completed(
+        _print_best_trial_or_note(
             compatible_completed,
+            objective_metric=search_space.objective.metric,
             direction=search_space.objective.direction,
         )
-        if best_trial is not None:
-            _print_best_trial_summary(
-                best_trial,
-                objective_metric=search_space.objective.metric,
-            )
         return 0
 
     starting_trial_count = len(study.trials)
@@ -1791,15 +1861,11 @@ def _run_single_search_study(
 
     new_trials = study.trials[starting_trial_count:]
     if len(budget_informative) >= target_trials:
-        best_trial = _best_trial_from_completed(
+        _print_best_trial_or_note(
             compatible_completed,
+            objective_metric=search_space.objective.metric,
             direction=search_space.objective.direction,
         )
-        if best_trial is not None:
-            _print_best_trial_summary(
-                best_trial,
-                objective_metric=search_space.objective.metric,
-            )
         return 0
 
     failed_new_trials = [
