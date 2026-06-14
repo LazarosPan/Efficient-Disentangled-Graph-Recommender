@@ -130,15 +130,17 @@ Promote dataset-local winners into formal profiles only after checking runtime a
 
 - Direction: `maximize`
 - Objective: `val ValidationOnlineCRRU@20_40`
-- Trials: 30 total, 30 completed, 0 failed, 0 running, 0 pruned
+- Trials: 32 total, 30 completed, 0 failed, 1 running, 1 pruned
 
 ### Trial accounting
 
 | State | Fresh | Imported | Total |
 |---|---:|---:|---:|
 | COMPLETE | 0 | 30 | 30 |
+| PRUNED | 1 | 0 | 1 |
+| RUNNING | 1 | 0 | 1 |
 
-- Fresh informative budget count: `0` (fresh COMPLETE + real fresh PRUNED).
+- Fresh informative budget count: `1` (fresh COMPLETE + real fresh PRUNED).
 - Duplicate-skip pruned trials excluded from that budget: `0`.
 
 ### Best study-level trial

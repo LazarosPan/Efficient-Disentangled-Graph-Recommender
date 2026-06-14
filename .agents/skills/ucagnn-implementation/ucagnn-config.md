@@ -71,6 +71,7 @@ For paper baselines, `build_config()` re-applies the paper-owned contract after 
 - `use_amp=True` is the default runtime path, and `amp_dtype` is fixed to `bfloat16`.
 - Core Optuna searches use `auto_batch_size=True` with a descending throughput-oriented candidate ladder `[32768, 16384, 8192, 4096, 2048, 1024, 512, 256]`. Batch size is therefore a runtime selection recorded in logs and reports, not a sampled model-selection parameter. Too-large CUDA batches are rejected by the auto-batch probe and retried at smaller candidates; formal recovery uses the same auto-batch checkpoint lookup rules. The resolved config still has a concrete `batch_size` field for trainer/checkpoint identity before probing.
 - The active U-CaGNN search is intentionally coarse-to-focused. Datasets with completed local evidence can use narrow categorical basins, while KuaiRand keeps a small low/medium/high regime screen until it has fresh local trials. Do not replace an untested dataset with a dense grid over a small interval.
+- Search-space TPE uses stable univariate sampling flags (`multivariate=False`, `group=False`) to avoid experimental Optuna API warnings during thesis runs.
 - `loss_weight_propensity_calibration=0.0` is opt-in and stays inactive unless model outputs, dataset targets, and explicit IPW/calibration config exist.
 - `distance_correlation_max_pairs=1024` and `uniformity_max_pairs=2048` cap quadratic auxiliary estimators while preserving deterministic hash-sampled coverage across epochs.
 
