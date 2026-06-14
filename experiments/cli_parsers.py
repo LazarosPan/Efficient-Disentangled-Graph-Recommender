@@ -235,8 +235,10 @@ def build_search_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Target compatible completed Optuna trials per dataset. Existing compatible "
-            "trials count toward this target. Defaults to the search-space value."
+            "Target fresh informative Optuna trials per dataset: COMPLETE plus real "
+            "PRUNED, excluding FAIL/RUNNING, historically imported rows, and "
+            "duplicate-skip prunes. "
+            "Defaults to the search-space value."
         ),
     )
     sel.add_argument(

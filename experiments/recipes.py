@@ -299,6 +299,8 @@ def get_search_space(space_name: str) -> dict[str, Any]:
         "base_profile": space.get("base_profile"),
         "datasets": space.get("datasets"),
         "objective": space.get("objective"),
+        "sampler": space.get("sampler"),
+        "pruner": space.get("pruner"),
         "max_epochs": space.get("max_epochs"),
         "trials": space.get("trials"),
         "config_overrides": dict(space.get("config_overrides", {})),

@@ -80,6 +80,8 @@ DB_PATH = THESIS_DB_PATH
 def _is_optuna_pruned_exception(exc: Exception) -> bool:
     """Return whether an optional Optuna pruning callback stopped training."""
     return exc.__class__.__name__ == "TrialPruned"
+
+
 _CHECKPOINT_IDENTITY_VERSION = 1
 _CHECKPOINT_HASH_LEN = 16
 _TRAINING_IDENTITY_FIELDS = (
@@ -2391,6 +2393,8 @@ def run_experiment(
             "epochs_stopped_at": len(history["train_loss"]) if history is not None else 0,
             "training_time_s": total_training_time_s,
             "train_batches_per_epoch": train_batches_per_epoch,
+            "batch_size": config.batch_size,
+            "auto_batch_size": config.auto_batch_size,
         }
     except Exception as exc:
         is_oom = is_cuda_oom_error(exc)

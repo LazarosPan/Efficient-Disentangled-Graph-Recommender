@@ -11,7 +11,7 @@ import logging
 import math
 import traceback
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -54,6 +54,13 @@ DEFAULT_OBJECTIVE_METRIC = VALIDATION_ONLINE_CRRU_METRIC
 DEFAULT_OBJECTIVE_SPLIT = "val"
 DEFAULT_MAX_EPOCHS = 80
 DEFAULT_TRIALS = 40
+SEARCH_SPACE_REVISION_HASH_LENGTH = 12
+INFORMATIVE_TRIAL_STATES = frozenset(
+    {
+        optuna.trial.TrialState.COMPLETE,
+        optuna.trial.TrialState.PRUNED,
+    },
+)
 SEARCH_PRESET = "ucagnn"
 SEARCH_PARAMETER_FIELDS = frozenset(
     {
@@ -179,12 +186,12 @@ class SearchSpaceSpec:
     base_profile: str
     datasets: tuple[str, ...]
     objective: ObjectiveSpec
-    sampler: SamplerSpec
-    pruner: PrunerSpec
     max_epochs: int
     trials: int
     config_overrides: dict[str, Any]
     parameters: dict[str, dict[str, Any]]
+    sampler: SamplerSpec = field(default_factory=SamplerSpec)
+    pruner: PrunerSpec = field(default_factory=PrunerSpec)
 
 
 ParameterValidator = Callable[[str, Mapping[str, Any]], None]
@@ -839,6 +846,23 @@ def _distribution_fingerprint(payload: Mapping[str, Any]) -> str:
     return hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:8]
 
 
+def search_space_revision(search_space: SearchSpaceSpec) -> str:
+    """Return a stable revision id for the resolved logical search contract."""
+    payload = {
+        "name": search_space.name,
+        "base_profile": search_space.base_profile,
+        "datasets": list(search_space.datasets),
+        "objective": dataclasses.asdict(search_space.objective),
+        "sampler": dataclasses.asdict(search_space.sampler),
+        "pruner": dataclasses.asdict(search_space.pruner),
+        "max_epochs": search_space.max_epochs,
+        "config_overrides": _json_safe(search_space.config_overrides),
+        "parameters": _json_safe(search_space.parameters),
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:SEARCH_SPACE_REVISION_HASH_LENGTH]
+
+
 def _parameter_storage_name(
     field_name: str,
     spec: Mapping[str, Any],
@@ -1161,6 +1185,7 @@ def _set_trial_attrs_from_result(
     trial: optuna.Trial,
     *,
     dataset: str,
+    config: UCaGNNConfig,
     result: Mapping[str, Any],
     objective: ObjectiveSpec,
 ) -> None:
@@ -1184,7 +1209,16 @@ def _set_trial_attrs_from_result(
     trial.set_user_attr(prefix + "checkpoint_path", result.get("checkpoint_path"))
     trial.set_user_attr(prefix + "epochs_stopped_at", result.get("epochs_stopped_at"))
     trial.set_user_attr(prefix + "training_time_s", result.get("training_time_s"))
+    trial.set_user_attr(prefix + "avg_epoch_time_s", _result_epoch_time_s(result))
     trial.set_user_attr(prefix + "peak_vram_mb", result.get("peak_vram_mb"))
+    trial.set_user_attr(prefix + "batch_size", result.get("batch_size"))
+    trial.set_user_attr(prefix + "auto_batch_size", result.get("auto_batch_size"))
+    effective_config = dataclasses.asdict(config)
+    trial.set_user_attr(prefix + "effective_config", _json_safe(effective_config))
+    trial.set_user_attr(
+        prefix + "effective_config_json",
+        json.dumps(_json_safe(effective_config), sort_keys=True, separators=(",", ":")),
+    )
 
     for metric_name in (
         "NDCG@20",
@@ -1235,6 +1269,7 @@ def _trial_change_note(
     return json.dumps(
         {
             "search_space": search_space.name,
+            "search_space_revision": search_space_revision(search_space),
             "study_name": study_name,
             "trial_number": trial_number,
             "sampled_params": _json_safe(sampled_overrides),
@@ -1276,6 +1311,7 @@ def _objective_factory(
 
     def objective(trial: optuna.Trial) -> float:
         trial.set_user_attr("search_space", search_space.name)
+        trial.set_user_attr("search_space_revision", search_space_revision(search_space))
         trial.set_user_attr("study_name", study_name)
         trial.set_user_attr("datasets", list(search_space.datasets))
         trial.set_user_attr("objective_metric", search_space.objective.metric)
@@ -1298,13 +1334,14 @@ def _objective_factory(
             raise
 
         sampled_key = _canonical_sampled_params(sampled_overrides)
+        trial.set_user_attr("sampled_params", _json_safe(sampled_overrides))
+        trial.set_user_attr("sampled_params_json", sampled_key)
         if seen_sampled_param_keys is not None and sampled_key in seen_sampled_param_keys:
             trial.set_user_attr("duplicate_sampled_params", True)
             trial.set_user_attr("duplicate_sampled_params_key", sampled_key)
             raise optuna.TrialPruned(
-                "Duplicate completed compatible sampled_params; skipping training.",
+                "Duplicate fresh sampled_params; skipping training.",
             )
-        trial.set_user_attr("sampled_params", _json_safe(sampled_overrides))
 
         configs_by_dataset: dict[str, UCaGNNConfig] = {}
         for dataset in search_space.datasets:
@@ -1357,6 +1394,7 @@ def _objective_factory(
                 _set_trial_attrs_from_result(
                     trial,
                     dataset=dataset,
+                    config=config,
                     result=result,
                     objective=search_space.objective,
                 )
@@ -1409,6 +1447,16 @@ def default_study_name(
 def _canonical_sampled_params(sampled_params: Mapping[str, Any]) -> str:
     """Return a stable key for duplicate logical hyperparameter detection."""
     return json.dumps(_json_safe(sampled_params), sort_keys=True, separators=(",", ":"))
+
+
+def _is_seeded_trial(trial: optuna.trial.FrozenTrial) -> bool:
+    """Return whether a trial was copied from another study instead of run fresh."""
+    return trial.user_attrs.get("seeded_from_study") is not None
+
+
+def _is_duplicate_pruned_trial(trial: optuna.trial.FrozenTrial) -> bool:
+    """Return whether a pruned trial only records duplicate-parameter avoidance."""
+    return bool(trial.user_attrs.get("duplicate_sampled_params"))
 
 
 def _choice_matches(value: Any, choices: list[Any]) -> bool:
@@ -1500,24 +1548,49 @@ def _sampled_params_match_search_space(
     search_space: SearchSpaceSpec,
 ) -> bool:
     """Return whether a completed logical trial is reusable for current search space."""
+    runtime_only_fields: set[str] = set()
+    if bool(search_space.config_overrides.get("auto_batch_size")) and "batch_size" not in (
+        search_space.parameters
+    ):
+        runtime_only_fields.add("batch_size")
+    logical_sampled_params = {
+        key: value for key, value in sampled_params.items() if key not in runtime_only_fields
+    }
     allowed_keys = set(search_space.parameters)
-    if set(sampled_params) - allowed_keys:
+    if set(logical_sampled_params) - allowed_keys:
         return False
     for field_name, spec in search_space.parameters.items():
         parameter_type = str(spec["type"]).lower()
         if parameter_type == "fanout":
-            if not _sampled_fanout_matches_spec(sampled_params, spec):
+            if not _sampled_fanout_matches_spec(logical_sampled_params, spec):
                 return False
             continue
-        if not _parameter_is_conditionally_active(field_name, sampled_params):
-            if field_name in sampled_params:
+        if not _parameter_is_conditionally_active(field_name, logical_sampled_params):
+            if field_name in logical_sampled_params:
                 return False
             continue
-        if field_name not in sampled_params:
+        if field_name not in logical_sampled_params:
             return False
-        if not _sampled_value_matches_spec(sampled_params[field_name], field_name, spec):
+        if not _sampled_value_matches_spec(logical_sampled_params[field_name], field_name, spec):
             return False
     return True
+
+
+def _trial_matches_current_search_contract(
+    trial: optuna.trial.FrozenTrial,
+    search_space: SearchSpaceSpec,
+) -> bool:
+    """Return whether an Optuna trial belongs to the current logical contract."""
+    if trial.user_attrs.get("search_space") != search_space.name:
+        return False
+    if trial.user_attrs.get("objective_metric") != search_space.objective.metric:
+        return False
+    if trial.user_attrs.get("objective_split") != search_space.objective.split:
+        return False
+    sampled_params = trial.user_attrs.get("sampled_params")
+    if not isinstance(sampled_params, Mapping):
+        return False
+    return _sampled_params_match_search_space(sampled_params, search_space)
 
 
 def _trial_matches_current_search_space(
@@ -1527,14 +1600,7 @@ def _trial_matches_current_search_space(
     """Return whether a completed Optuna trial belongs to the current logical contract."""
     if trial.state != optuna.trial.TrialState.COMPLETE or trial.value is None:
         return False
-    if trial.user_attrs.get("search_space") != search_space.name:
-        return False
-    if trial.user_attrs.get("objective_metric") != search_space.objective.metric:
-        return False
-    if trial.user_attrs.get("objective_split") != search_space.objective.split:
-        return False
-    sampled_params = trial.user_attrs.get("sampled_params")
-    if not isinstance(sampled_params, Mapping):
+    if not _trial_matches_current_search_contract(trial, search_space):
         return False
     for dataset in search_space.datasets:
         value = trial.user_attrs.get(f"{dataset}.objective")
@@ -1545,17 +1611,37 @@ def _trial_matches_current_search_space(
         dataset_value = float(trial.user_attrs[f"{dataset}.objective"])
         if not math.isclose(float(trial.value), dataset_value, rel_tol=0.0, abs_tol=1e-12):
             return False
-    return _sampled_params_match_search_space(sampled_params, search_space)
+    return True
 
 
-def _trial_can_seed_dataset_search(
+def _trial_matches_informative_search_space(
     trial: optuna.trial.FrozenTrial,
     search_space: SearchSpaceSpec,
-    *,
-    dataset: str,
 ) -> bool:
-    """Return whether an existing trial can seed one dataset-local study."""
-    if trial.state != optuna.trial.TrialState.COMPLETE:
+    """Return whether a trial is informative under the current logical search space."""
+    if trial.state not in INFORMATIVE_TRIAL_STATES:
+        return False
+    if _is_duplicate_pruned_trial(trial):
+        return False
+    if trial.state == optuna.trial.TrialState.COMPLETE:
+        return _trial_matches_current_search_space(trial, search_space)
+    if not _trial_matches_current_search_contract(trial, search_space):
+        return False
+    return any(
+        trial.user_attrs.get(f"{dataset}.pruned")
+        or trial.user_attrs.get(f"{dataset}.last_pruning_objective") is not None
+        for dataset in search_space.datasets
+    )
+
+
+def _trial_matches_search_budget_scope(
+    trial: optuna.trial.FrozenTrial,
+    search_space: SearchSpaceSpec,
+) -> bool:
+    """Return whether a fresh finished trial counts against ``--trials``."""
+    if trial.state not in INFORMATIVE_TRIAL_STATES:
+        return False
+    if _is_duplicate_pruned_trial(trial):
         return False
     if trial.user_attrs.get("search_space") != search_space.name:
         return False
@@ -1563,75 +1649,13 @@ def _trial_can_seed_dataset_search(
         return False
     if trial.user_attrs.get("objective_split") != search_space.objective.split:
         return False
-    try:
-        dataset_value = float(trial.user_attrs[f"{dataset}.objective"])
-    except (KeyError, TypeError, ValueError):
-        return False
-    if not math.isfinite(dataset_value):
-        return False
-    sampled_params = trial.user_attrs.get("sampled_params")
-    if not isinstance(sampled_params, Mapping):
-        return False
-    return _sampled_params_match_search_space(sampled_params, search_space)
-
-
-def _seed_dataset_local_study_from_existing_trials(
-    study: optuna.Study,
-    *,
-    storage: str,
-    search_space: SearchSpaceSpec,
-) -> int:
-    """Copy compatible historical trials into a dataset-local study."""
-    if len(search_space.datasets) != 1:
-        return 0
-    dataset = search_space.datasets[0]
-    seen_sampled_keys = {
-        _canonical_sampled_params(trial.user_attrs["sampled_params"])
-        for trial in study.trials
-        if isinstance(trial.user_attrs.get("sampled_params"), Mapping)
-    }
-    seeded = 0
-    for summary in optuna.get_all_study_summaries(storage=storage):
-        if summary.study_name == study.study_name:
-            continue
-        source_study = optuna.load_study(study_name=summary.study_name, storage=storage)
-        for source_trial in source_study.trials:
-            if not _trial_can_seed_dataset_search(
-                source_trial,
-                search_space,
-                dataset=dataset,
-            ):
-                continue
-            sampled_params = source_trial.user_attrs["sampled_params"]
-            sampled_key = _canonical_sampled_params(sampled_params)
-            if sampled_key in seen_sampled_keys:
-                continue
-            dataset_value = float(source_trial.user_attrs[f"{dataset}.objective"])
-            user_attrs = {
-                key: value
-                for key, value in source_trial.user_attrs.items()
-                if not (
-                    "." in str(key)
-                    and str(key).split(".", 1)[0] not in {dataset, "optuna_param_name"}
-                )
-            }
-            user_attrs["study_name"] = study.study_name
-            user_attrs["datasets"] = [dataset]
-            user_attrs["objective_value"] = dataset_value
-            user_attrs["seeded_from_study"] = summary.study_name
-            user_attrs["seeded_from_trial"] = source_trial.number
-            study.add_trial(
-                optuna.trial.create_trial(
-                    value=dataset_value,
-                    params=dict(source_trial.params),
-                    distributions=dict(source_trial.distributions),
-                    user_attrs=user_attrs,
-                    state=optuna.trial.TrialState.COMPLETE,
-                ),
-            )
-            seen_sampled_keys.add(sampled_key)
-            seeded += 1
-    return seeded
+    if trial.state == optuna.trial.TrialState.COMPLETE:
+        return trial.value is not None and math.isfinite(float(trial.value))
+    return any(
+        trial.user_attrs.get(f"{dataset}.pruned")
+        or trial.user_attrs.get(f"{dataset}.last_pruning_objective") is not None
+        for dataset in search_space.datasets
+    )
 
 
 def _compatible_completed_trials(
@@ -1642,6 +1666,40 @@ def _compatible_completed_trials(
     return [
         trial for trial in study.trials if _trial_matches_current_search_space(trial, search_space)
     ]
+
+
+def _budget_informative_trials(
+    study: optuna.Study,
+    search_space: SearchSpaceSpec,
+) -> list[optuna.trial.FrozenTrial]:
+    """Return finished informative trials for the trial-budget contract."""
+    return [
+        trial
+        for trial in study.trials
+        if _trial_matches_search_budget_scope(trial, search_space) and not _is_seeded_trial(trial)
+    ]
+
+
+def _budget_count_fragment(
+    study: optuna.Study,
+    search_space: SearchSpaceSpec,
+) -> str:
+    """Return a compact human-readable budget accounting fragment."""
+    fresh = _budget_informative_trials(study, search_space)
+    seeded = [
+        trial
+        for trial in study.trials
+        if _is_seeded_trial(trial) and _trial_matches_search_budget_scope(trial, search_space)
+    ]
+    fresh_complete = sum(1 for trial in fresh if trial.state == optuna.trial.TrialState.COMPLETE)
+    fresh_pruned = sum(1 for trial in fresh if trial.state == optuna.trial.TrialState.PRUNED)
+    seeded_complete = sum(1 for trial in seeded if trial.state == optuna.trial.TrialState.COMPLETE)
+    seeded_pruned = sum(1 for trial in seeded if trial.state == optuna.trial.TrialState.PRUNED)
+    return (
+        f"budget_count={len(fresh)} "
+        f"(fresh complete={fresh_complete}, fresh pruned={fresh_pruned}, "
+        f"imported complete={seeded_complete}, imported pruned={seeded_pruned})"
+    )
 
 
 def _best_trial_from_completed(
@@ -1701,7 +1759,13 @@ def build_dry_run_payload(
         "sampler": dataclasses.asdict(search_space.sampler),
         "pruner": dataclasses.asdict(search_space.pruner),
         "max_epochs": search_space.max_epochs,
+        "search_space_revision": search_space_revision(search_space),
         "trials": int(trials or search_space.trials),
+        "trial_budget": (
+            "fresh informative finished trials: COMPLETE plus real PRUNED; excludes FAIL, "
+            "RUNNING, historically imported rows, and duplicate-skip prunes; tightening "
+            "parameter ranges does not reset already-spent fresh budget"
+        ),
         "config_overrides": _json_safe(search_space.config_overrides),
         "parameters": _json_safe(search_space.parameters),
         "base_configs": base_configs,
@@ -1725,19 +1789,18 @@ def _run_single_search_study(
         pruner=_build_pruner(search_space.pruner, max_epochs=search_space.max_epochs),
         load_if_exists=True,
     )
-    seeded = _seed_dataset_local_study_from_existing_trials(
-        study,
-        storage=args.storage,
-        search_space=search_space,
-    )
-    if seeded:
-        print(f"Seeded {seeded} completed dataset-local trial(s) into {study_name}.")
     compatible_completed = _compatible_completed_trials(study, search_space)
-    if len(compatible_completed) >= n_trials:
+    budget_informative = _budget_informative_trials(study, search_space)
+    print(
+        f"Study {study_name} trial budget status: "
+        f"{_budget_count_fragment(study, search_space)}; "
+        f"target={n_trials}."
+    )
+    if len(budget_informative) >= n_trials:
         print(
             (
-                f"Study {study_name} already has {len(compatible_completed)} completed "
-                f"compatible trial(s); target={n_trials}. Nothing to run."
+                f"Study {study_name} already has {len(budget_informative)} fresh "
+                f"informative trial(s); target={n_trials}. Nothing to run."
             ),
         )
         best_trial = _best_trial_from_completed(
@@ -1753,11 +1816,11 @@ def _run_single_search_study(
 
     starting_trial_count = len(study.trials)
     target_trials = n_trials
-    remaining = target_trials - len(compatible_completed)
+    remaining = target_trials - len(budget_informative)
     max_attempts = max(remaining, remaining * 4)
     seen_sampled_param_keys = {
         _canonical_sampled_params(trial.user_attrs["sampled_params"])
-        for trial in compatible_completed
+        for trial in _budget_informative_trials(study, search_space)
         if isinstance(trial.user_attrs.get("sampled_params"), Mapping)
     }
     objective = _objective_factory(
@@ -1772,7 +1835,7 @@ def _run_single_search_study(
         seen_sampled_param_keys=seen_sampled_param_keys,
     )
     attempts = 0
-    while len(compatible_completed) < target_trials and attempts < max_attempts:
+    while len(budget_informative) < target_trials and attempts < max_attempts:
         before_trial_count = len(study.trials)
         study.optimize(
             objective,
@@ -1781,9 +1844,10 @@ def _run_single_search_study(
         )
         attempts += max(1, len(study.trials) - before_trial_count)
         compatible_completed = _compatible_completed_trials(study, search_space)
+        budget_informative = _budget_informative_trials(study, search_space)
 
     new_trials = study.trials[starting_trial_count:]
-    if len(compatible_completed) >= target_trials:
+    if len(budget_informative) >= target_trials:
         best_trial = _best_trial_from_completed(
             compatible_completed,
             direction=search_space.objective.direction,
@@ -1800,8 +1864,9 @@ def _run_single_search_study(
     ]
     print(
         (
-            "Optuna search did not reach the requested compatible completed-trial target: "
-            f"{len(compatible_completed)}/{target_trials}."
+            "Optuna search did not reach the requested fresh informative-trial target: "
+            f"{len(budget_informative)}/{target_trials}. "
+            f"{_budget_count_fragment(study, search_space)}."
         ),
     )
     if failed_new_trials:
