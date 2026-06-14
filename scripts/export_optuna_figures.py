@@ -502,7 +502,7 @@ def export_importance_by_dataset(
     ax.set_yticklabels([_dataset_label(dataset) for dataset, _ in rows])
     ax.set_title(
         "Hyperparameter importance by dataset\n"
-        "Target: dataset-local validation CRRU; completed trials only",
+        "Target: dataset-local validation CRRU; fresh homogeneous revisions only",
     )
     for y_index, row in enumerate(matrix):
         for x_index, value in enumerate(row):

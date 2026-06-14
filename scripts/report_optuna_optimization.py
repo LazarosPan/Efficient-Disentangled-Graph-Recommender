@@ -8,6 +8,7 @@ import json
 import math
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -15,12 +16,18 @@ import optuna
 from experiments.run_search import DEFAULT_STORAGE
 from optuna.importance import FanovaImportanceEvaluator, get_param_importances
 from optuna.trial import FrozenTrial, TrialState
-from src.utils.crru import VALIDATION_ONLINE_CRRU_K_METRICS, VALIDATION_ONLINE_CRRU_METRIC
+from src.utils.crru import (
+    VALIDATION_ONLINE_CRRU_K_METRICS,
+    VALIDATION_ONLINE_CRRU_METRIC,
+    compute_crru_efficiency_scores,
+    compute_crru_scores_for_k,
+)
 from src.utils.project_paths import RESULTS_DIR
 
 OPTUNA_OPTIMIZATION_MARKDOWN_PATH = RESULTS_DIR / "optuna_optimization.md"
 OPTUNA_FIGURES_DIR = RESULTS_DIR / "optuna_figures"
 DEFAULT_TOP_N = 10
+MIN_IMPORTANCE_TRIALS = 10
 PAPER_FIGURE_FILENAMES = (
     "optuna_progress_by_dataset.png",
     "optuna_importance_by_dataset.png",
@@ -67,6 +74,27 @@ PARAMETER_PRIORITY = (
     "use_features",
     "use_popularity_head",
 )
+EFFECTIVE_CONFIG_EXTRA_PRIORITY = (
+    "epochs",
+    "patience",
+    "use_early_stopping",
+    "auto_batch_size",
+    "batch_size_candidates",
+    "baseline_family",
+    "preset",
+    "dataset",
+    "preprocessing_preset",
+    "feature_policy",
+    "embedding_dim",
+    "training_graph_mode",
+    "negative_sampling_strategy",
+    "n_negatives",
+    "branch_loss_mode",
+    "use_amp",
+)
+EFFECTIVE_CONFIG_PRIORITY = tuple(
+    dict.fromkeys((*PARAMETER_PRIORITY, *EFFECTIVE_CONFIG_EXTRA_PRIORITY)),
+)
 DATASET_METRICS = (
     "NDCG@20",
     "Recall@20",
@@ -105,6 +133,36 @@ def completed_trials(study: optuna.Study) -> list[FrozenTrial]:
     ]
 
 
+def is_seeded_trial(trial: FrozenTrial) -> bool:
+    """Return whether a trial was historically imported from another study."""
+    return trial.user_attrs.get("seeded_from_study") is not None
+
+
+def is_duplicate_pruned_trial(trial: FrozenTrial) -> bool:
+    """Return whether a pruned row only records duplicate-parameter avoidance."""
+    return bool(trial.user_attrs.get("duplicate_sampled_params"))
+
+
+def trial_origin(trial: FrozenTrial) -> str:
+    """Return a compact report label for trial provenance."""
+    return "imported" if is_seeded_trial(trial) else "fresh"
+
+
+def trial_search_revision(trial: FrozenTrial) -> str | None:
+    """Return the stored search-space revision when available."""
+    revision = trial.user_attrs.get("search_space_revision")
+    if revision is None:
+        return None
+    return str(revision)
+
+
+def format_revision_label(revision: str | None) -> str:
+    """Return a clean report label for a stored search-space revision."""
+    if not revision or revision == "legacy":
+        return "unrevisioned"
+    return revision
+
+
 def trial_sort_key(study: optuna.Study, trial: FrozenTrial) -> tuple[float, int]:
     """Sort trials according to the study direction."""
     value = float(trial.value) if trial.value is not None else float("nan")
@@ -132,6 +190,14 @@ def ordered_params(params: Mapping[str, Any]) -> list[tuple[str, Any]]:
     """Return sampled params in a stable thesis-friendly order."""
     keys = [key for key in PARAMETER_PRIORITY if key in params]
     keys.extend(sorted(key for key in params if key not in set(PARAMETER_PRIORITY)))
+    return [(key, params[key]) for key in keys]
+
+
+def ordered_effective_params(params: Mapping[str, Any]) -> list[tuple[str, Any]]:
+    """Return effective config params in a stable thesis-friendly order."""
+    priority = set(EFFECTIVE_CONFIG_PRIORITY)
+    keys = [key for key in EFFECTIVE_CONFIG_PRIORITY if key in params]
+    keys.extend(sorted(key for key in params if key not in priority))
     return [(key, params[key]) for key in keys]
 
 
@@ -172,6 +238,96 @@ def format_params(params: Mapping[str, Any]) -> str:
     if not params:
         return "-"
     return ", ".join(f"{key}={format_param_value(value)}" for key, value in ordered_params(params))
+
+
+def trial_dataset_names_from_attrs(trial: FrozenTrial) -> list[str]:
+    """Return dataset names visible through any dataset-scoped Optuna attrs."""
+    declared = trial.user_attrs.get("datasets")
+    declared_names = [str(dataset) for dataset in declared] if isinstance(declared, list) else []
+    attr_names = {
+        key.split(".", 1)[0]
+        for key in trial.user_attrs
+        if "." in key and not key.startswith("optuna_param_name.")
+    }
+    names = sorted(set(declared_names) | attr_names)
+    return [name for name in names if name]
+
+
+def trial_effective_config(trial: FrozenTrial, dataset: str) -> Mapping[str, Any]:
+    """Return a stored dataset effective config when future trials provide one."""
+    config = trial.user_attrs.get(f"{dataset}.effective_config")
+    return config if isinstance(config, Mapping) else {}
+
+
+def _shared_dataset_attr(trial: FrozenTrial, suffix: str) -> Any:
+    """Return one dataset-scoped attr when all available values agree."""
+    values = [
+        trial.user_attrs[f"{dataset}.{suffix}"]
+        for dataset in trial_dataset_names_from_attrs(trial)
+        if f"{dataset}.{suffix}" in trial.user_attrs
+    ]
+    if not values:
+        return None
+    first = values[0]
+    return first if all(value == first for value in values) else None
+
+
+def effective_trial_params(
+    trial: FrozenTrial,
+    *,
+    dataset: str | None = None,
+) -> Mapping[str, Any]:
+    """Return report-facing sampled plus resolved runtime/config parameters."""
+    if dataset is not None:
+        config_params = dict(trial_effective_config(trial, dataset))
+    else:
+        dataset_configs = [
+            trial_effective_config(trial, name) for name in trial_dataset_names_from_attrs(trial)
+        ]
+        populated = [config for config in dataset_configs if config]
+        config_params = dict(populated[0]) if len(populated) == 1 else {}
+
+    params = dict(logical_trial_params(trial))
+    if config_params:
+        selected_config = {
+            key: config_params[key] for key in EFFECTIVE_CONFIG_PRIORITY if key in config_params
+        }
+        selected_config.update(params)
+        params = selected_config
+
+    attr_prefix = f"{dataset}." if dataset is not None else ""
+    runtime_batch = (
+        trial.user_attrs.get(f"{attr_prefix}batch_size")
+        if dataset is not None
+        else _shared_dataset_attr(trial, "batch_size")
+    )
+    runtime_auto_batch = (
+        trial.user_attrs.get(f"{attr_prefix}auto_batch_size")
+        if dataset is not None
+        else _shared_dataset_attr(trial, "auto_batch_size")
+    )
+    if runtime_batch is not None:
+        params["batch_size"] = runtime_batch
+    if runtime_auto_batch is not None:
+        params["auto_batch_size"] = runtime_auto_batch
+    if dataset is not None:
+        params["time_per_epoch_s"] = trial_epoch_time_s(trial, dataset)
+        params["peak_vram_mb"] = attr_float(trial, f"{dataset}.peak_vram_mb")
+    return {key: value for key, value in params.items() if value is not None}
+
+
+def format_effective_params(
+    trial: FrozenTrial,
+    *,
+    dataset: str | None = None,
+) -> str:
+    """Return the effective model/runtime params visible for one trial."""
+    params = effective_trial_params(trial, dataset=dataset)
+    if not params:
+        return "-"
+    return ", ".join(
+        f"{key}={format_param_value(value)}" for key, value in ordered_effective_params(params)
+    )
 
 
 def attr_float(trial: FrozenTrial, key: str) -> float | None:
@@ -224,6 +380,75 @@ def average_trial_attr(trial: FrozenTrial, suffix: str) -> float | None:
     return sum(values) / len(values)
 
 
+def trial_epoch_time_s(trial: FrozenTrial, dataset: str) -> float | None:
+    """Return the per-epoch runtime used by post-hoc validation CRRU."""
+    explicit = attr_float(trial, f"{dataset}.avg_epoch_time_s")
+    if explicit is not None and explicit > 0:
+        return explicit
+    training_time_s = attr_float(trial, f"{dataset}.training_time_s")
+    epochs = attr_float(trial, f"{dataset}.epochs_stopped_at")
+    if training_time_s is not None and epochs is not None and epochs > 0:
+        return training_time_s / epochs
+    return None
+
+
+def compute_posthoc_validation_crru(
+    trials: Sequence[FrozenTrial],
+    *,
+    dataset: str,
+) -> dict[int, dict[int, float]]:
+    """Return dataset-local post-hoc validation CRRU keyed by trial number."""
+    dataset_trials = [
+        trial
+        for trial in trials
+        if dataset_metric(trial, dataset, "NDCG@20") is not None
+        and dataset_metric(trial, dataset, "Recall@20") is not None
+        and dataset_metric(trial, dataset, "HitRatio@20") is not None
+        and dataset_metric(trial, dataset, "Personalization@20") is not None
+        and dataset_metric(trial, dataset, "AveragePopularity@20") is not None
+        and dataset_metric(trial, dataset, "NDCG@40") is not None
+        and dataset_metric(trial, dataset, "Recall@40") is not None
+        and dataset_metric(trial, dataset, "HitRatio@40") is not None
+        and dataset_metric(trial, dataset, "Personalization@40") is not None
+        and dataset_metric(trial, dataset, "AveragePopularity@40") is not None
+    ]
+    if not dataset_trials:
+        return {}
+
+    efficiency_scores = compute_crru_efficiency_scores(
+        [attr_float(trial, f"{dataset}.peak_vram_mb") for trial in dataset_trials],
+        [trial_epoch_time_s(trial, dataset) for trial in dataset_trials],
+    )
+    crru_20 = compute_crru_scores_for_k(
+        ndcg=[dataset_metric(trial, dataset, "NDCG@20") for trial in dataset_trials],
+        recall=[dataset_metric(trial, dataset, "Recall@20") for trial in dataset_trials],
+        hit=[dataset_metric(trial, dataset, "HitRatio@20") for trial in dataset_trials],
+        personalization=[
+            dataset_metric(trial, dataset, "Personalization@20") for trial in dataset_trials
+        ],
+        average_popularity=[
+            dataset_metric(trial, dataset, "AveragePopularity@20") for trial in dataset_trials
+        ],
+        efficiency_scores=efficiency_scores,
+    )
+    crru_40 = compute_crru_scores_for_k(
+        ndcg=[dataset_metric(trial, dataset, "NDCG@40") for trial in dataset_trials],
+        recall=[dataset_metric(trial, dataset, "Recall@40") for trial in dataset_trials],
+        hit=[dataset_metric(trial, dataset, "HitRatio@40") for trial in dataset_trials],
+        personalization=[
+            dataset_metric(trial, dataset, "Personalization@40") for trial in dataset_trials
+        ],
+        average_popularity=[
+            dataset_metric(trial, dataset, "AveragePopularity@40") for trial in dataset_trials
+        ],
+        efficiency_scores=efficiency_scores,
+    )
+    return {
+        int(trial.number): {20: value_20, 40: value_40}
+        for trial, value_20, value_40 in zip(dataset_trials, crru_20, crru_40, strict=True)
+    }
+
+
 def format_float(value: float | None, digits: int = 6) -> str:
     """Return a compact numeric string."""
     if value is None:
@@ -231,46 +456,177 @@ def format_float(value: float | None, digits: int = 6) -> str:
     return f"{value:.{digits}f}"
 
 
+@dataclass(frozen=True)
+class ImportanceResult:
+    """One reliable-or-omitted Optuna importance result."""
+
+    importances: dict[str, float]
+    revision: str | None
+    trial_count: int
+    reason: str | None = None
+
+
+def _importance_candidate_trials(
+    study: optuna.Study,
+    *,
+    dataset: str | None = None,
+) -> list[FrozenTrial]:
+    """Return completed fresh trials that can support one importance target."""
+    candidates: list[FrozenTrial] = []
+    for trial in completed_trials(study):
+        if is_seeded_trial(trial):
+            continue
+        revision = trial_search_revision(trial)
+        if not revision or revision == "legacy":
+            continue
+        if dataset is not None and dataset_metric(trial, dataset, "objective") is None:
+            continue
+        candidates.append(trial)
+    return candidates
+
+
+def _varying_logical_param_names(trials: Sequence[FrozenTrial]) -> list[str]:
+    """Return logical sampled parameters with at least two observed values."""
+    names = set().union(*(logical_trial_params(trial) for trial in trials)) if trials else set()
+    varying: list[str] = []
+    missing = {"__missing__": True}
+    for name in sorted(str(value) for value in names):
+        values = {
+            json.dumps(
+                logical_trial_params(trial).get(name, missing),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            for trial in trials
+        }
+        if len(values) > 1:
+            varying.append(name)
+    return varying
+
+
+def _homogeneous_revision_subset(
+    study: optuna.Study,
+    *,
+    dataset: str | None = None,
+) -> tuple[str | None, list[FrozenTrial], str | None]:
+    """Return the largest homogeneous non-imported revision subset for importances."""
+    candidates = _importance_candidate_trials(study, dataset=dataset)
+    if not candidates:
+        return (
+            None,
+            [],
+            "no completed fresh trials with a stored search_space_revision",
+        )
+
+    grouped: dict[str, list[FrozenTrial]] = {}
+    for trial in candidates:
+        revision = trial_search_revision(trial)
+        if revision is None:
+            continue
+        grouped.setdefault(revision, []).append(trial)
+    if not grouped:
+        return None, [], "no homogeneous search_space_revision subset is available"
+
+    revision, trials = sorted(
+        grouped.items(),
+        key=lambda item: (-len(item[1]), item[0]),
+    )[0]
+    if len(trials) < MIN_IMPORTANCE_TRIALS:
+        return (
+            revision,
+            trials,
+            f"only {len(trials)} completed fresh trial(s) in revision {revision}; "
+            f"need at least {MIN_IMPORTANCE_TRIALS}",
+        )
+    varying_params = _varying_logical_param_names(trials)
+    if len(varying_params) < 2:
+        return (
+            revision,
+            trials,
+            (
+                f"only {len(varying_params)} varying logical parameter(s) in revision "
+                f"{revision}; importances would collapse to a one-parameter table"
+            ),
+        )
+    return revision, trials, None
+
+
+def _temporary_study_from_trials(
+    study: optuna.Study,
+    trials: Sequence[FrozenTrial],
+) -> optuna.Study:
+    """Create an in-memory study containing a homogeneous completed-trial subset."""
+    temporary = optuna.create_study(direction=study.direction.name.lower())
+    for trial in trials:
+        temporary.add_trial(trial)
+    return temporary
+
+
 def safe_importances(
     study: optuna.Study,
     *,
     evaluator: object | None = None,
     target: object | None = None,
+    trials: Sequence[FrozenTrial] | None = None,
 ) -> dict[str, float]:
     """Return Optuna parameter importances when enough completed trials exist."""
-    if len(completed_trials(study)) < 2:
+    target_study = study if trials is None else _temporary_study_from_trials(study, trials)
+    if len(completed_trials(target_study)) < 2:
         return {}
     try:
         if evaluator is None:
-            importances = get_param_importances(study, target=target)
+            importances = get_param_importances(target_study, target=target)
         else:
-            importances = get_param_importances(study, evaluator=evaluator, target=target)
+            importances = get_param_importances(
+                target_study,
+                evaluator=evaluator,
+                target=target,
+            )
         return {name: float(value) for name, value in importances.items()}
     except Exception:
         return {}
 
 
+def dashboard_importance_result(study: optuna.Study) -> ImportanceResult:
+    """Return Optuna's default importance view for one homogeneous revision."""
+    revision, trials, reason = _homogeneous_revision_subset(study)
+    if reason is not None or not trials:
+        return ImportanceResult({}, revision, len(trials), reason)
+    importances = logical_importances(safe_importances(study, trials=trials))
+    if not importances:
+        return ImportanceResult(
+            {},
+            revision,
+            len(trials),
+            "Optuna could not compute importances for the homogeneous subset",
+        )
+    return ImportanceResult(importances, revision, len(trials))
+
+
 def dashboard_importances(study: optuna.Study) -> dict[str, float]:
-    """Return Optuna's default importance view, matching dashboard target semantics."""
-    return logical_importances(safe_importances(study))
+    """Return reliable dashboard-like importances for figure exporters."""
+    return dashboard_importance_result(study).importances
 
 
 def fanova_importances(study: optuna.Study) -> dict[str, float]:
     """Return deterministic fANOVA importances for sensitivity checking."""
+    _revision, trials, reason = _homogeneous_revision_subset(study)
+    if reason is not None or not trials:
+        return {}
     return logical_importances(
-        safe_importances(study, evaluator=FanovaImportanceEvaluator(seed=13)),
+        safe_importances(
+            study,
+            evaluator=FanovaImportanceEvaluator(seed=13),
+            trials=trials,
+        ),
     )
 
 
-def dataset_importances(study: optuna.Study, dataset: str) -> dict[str, float]:
-    """Return dashboard-like importances for one dataset-local objective."""
-    trials = [
-        trial
-        for trial in completed_trials(study)
-        if dataset_metric(trial, dataset, "objective") is not None
-    ]
-    if len(trials) < 2:
-        return {}
+def dataset_importance_result(study: optuna.Study, dataset: str) -> ImportanceResult:
+    """Return reliable importances for one dataset-local objective."""
+    revision, trials, reason = _homogeneous_revision_subset(study, dataset=dataset)
+    if reason is not None or not trials:
+        return ImportanceResult({}, revision, len(trials), reason)
 
     def target(trial: FrozenTrial) -> float:
         value = dataset_metric(trial, dataset, "objective")
@@ -278,7 +634,20 @@ def dataset_importances(study: optuna.Study, dataset: str) -> dict[str, float]:
             raise ValueError(f"Trial {trial.number} has no {dataset} objective.")
         return float(value)
 
-    return logical_importances(safe_importances(study, target=target))
+    importances = logical_importances(safe_importances(study, target=target, trials=trials))
+    if not importances:
+        return ImportanceResult(
+            {},
+            revision,
+            len(trials),
+            "Optuna could not compute importances for the homogeneous subset",
+        )
+    return ImportanceResult(importances, revision, len(trials))
+
+
+def dataset_importances(study: optuna.Study, dataset: str) -> dict[str, float]:
+    """Return reliable dashboard-like importances for figure exporters."""
+    return dataset_importance_result(study, dataset).importances
 
 
 def failure_label(trial: FrozenTrial) -> str:
@@ -287,7 +656,7 @@ def failure_label(trial: FrozenTrial) -> str:
     stage = trial.user_attrs.get("failure_stage")
     if reason:
         return f"{stage or 'unknown'}: {reason}"
-    return "legacy failure before stored attrs; exact exception unavailable in Optuna RDB"
+    return "failure before stored attrs; exact exception unavailable in Optuna RDB"
 
 
 def study_report_sort_key(study: optuna.Study) -> tuple[int, str]:
@@ -332,6 +701,78 @@ def render_failure_summary(study: optuna.Study) -> list[str]:
     return lines
 
 
+def render_trial_accounting(study: optuna.Study) -> list[str]:
+    """Render fresh-vs-imported counts by Optuna state."""
+    states = ("COMPLETE", "PRUNED", "FAIL", "RUNNING", "WAITING")
+    counts: dict[str, Counter[str]] = {
+        "fresh": Counter(),
+        "imported": Counter(),
+    }
+    fresh_duplicate_pruned = 0
+    for trial in study.trials:
+        origin = trial_origin(trial)
+        state = trial.state.name
+        counts[origin][state] += 1
+        if (
+            origin == "fresh"
+            and trial.state == TrialState.PRUNED
+            and is_duplicate_pruned_trial(trial)
+        ):
+            fresh_duplicate_pruned += 1
+
+    fresh_informative = counts["fresh"]["COMPLETE"] + max(
+        0,
+        counts["fresh"]["PRUNED"] - fresh_duplicate_pruned,
+    )
+    lines = [
+        "### Trial accounting",
+        "",
+        "| State | Fresh | Imported | Total |",
+        "|---|---:|---:|---:|",
+    ]
+    for state in states:
+        fresh = counts["fresh"][state]
+        imported = counts["imported"][state]
+        total = fresh + imported
+        if total:
+            lines.append(f"| {state} | {fresh} | {imported} | {total} |")
+    lines.extend(
+        [
+            "",
+            f"- Fresh informative budget count: `{fresh_informative}` "
+            "(fresh COMPLETE + real fresh PRUNED).",
+            f"- Duplicate-skip pruned trials excluded from that budget: "
+            f"`{fresh_duplicate_pruned}`.",
+            "",
+        ],
+    )
+    return lines
+
+
+def render_importance_result(title: str, result: ImportanceResult) -> list[str]:
+    """Render a reliable importance table or an explicit omission note."""
+    if not result.importances:
+        return [
+            f"### {title}",
+            "",
+            f"Importances omitted: {result.reason or 'not enough comparable trials'}.",
+            "",
+        ]
+    lines = [
+        f"### {title}",
+        "",
+        f"Subset: `{result.trial_count}` fresh completed trial(s) from "
+        f"search-space revision `{result.revision}`.",
+        "",
+        "| Rank | Parameter | Importance |",
+        "|---:|---|---:|",
+    ]
+    for rank, (name, importance) in enumerate(result.importances.items(), start=1):
+        lines.append(f"| {rank} | `{name}` | {importance:.6f} |")
+    lines.append("")
+    return lines
+
+
 def render_importance_table(title: str, importances: Mapping[str, float]) -> list[str]:
     """Render one importance table."""
     if not importances:
@@ -352,6 +793,7 @@ def render_dataset_best_trials(
     study: optuna.Study,
     *,
     datasets: Sequence[str],
+    posthoc_crru: Mapping[str, Mapping[int, Mapping[int, float]]],
     top_n: int = 3,
 ) -> list[str]:
     """Render dataset-local best configurations."""
@@ -378,19 +820,25 @@ def render_dataset_best_trials(
             [
                 f"#### Dataset: `{dataset}`",
                 "",
-                "| Rank | Trial | Dataset objective | Study objective | Train time (s) | "
-                "Peak VRAM (MB) | Parameters |",
-                "|---:|---:|---:|---:|---:|---:|---|",
+                "| Rank | Trial | Origin | Dataset objective | Study objective | "
+                "PosthocCRRU@20 | PosthocCRRU@40 | Time/epoch (s) | Peak VRAM (MB) | Batch | "
+                "Revision | Effective config |",
+                "|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---|",
             ],
         )
         for rank, trial in enumerate(ranked[:top_n], start=1):
+            trial_crru = posthoc_crru.get(dataset, {}).get(int(trial.number), {})
             lines.append(
-                f"| {rank} | {trial.number} | "
+                f"| {rank} | {trial.number} | {trial_origin(trial)} | "
                 f"{format_float(dataset_metric(trial, dataset, 'objective'))} | "
                 f"{format_float(float(trial.value) if trial.value is not None else None)} | "
-                f"{format_float(attr_float(trial, f'{dataset}.training_time_s'), digits=2)} | "
+                f"{format_float(trial_crru.get(20))} | "
+                f"{format_float(trial_crru.get(40))} | "
+                f"{format_float(trial_epoch_time_s(trial, dataset), digits=2)} | "
                 f"{format_float(attr_float(trial, f'{dataset}.peak_vram_mb'), digits=1)} | "
-                f"`{format_params(logical_trial_params(trial))}` |",
+                f"{format_float(attr_float(trial, f'{dataset}.batch_size'), digits=0)} | "
+                f"`{format_revision_label(trial_search_revision(trial))}` | "
+                f"`{format_effective_params(trial, dataset=dataset)}` |",
             )
         lines.append("")
     return lines
@@ -404,13 +852,11 @@ def render_dataset_importance_tables(
     """Render per-dataset objective importance diagnostics."""
     lines: list[str] = []
     for dataset in datasets:
-        importances = dataset_importances(study, dataset)
-        if not importances:
-            continue
+        result = dataset_importance_result(study, dataset)
         lines.extend(
-            render_importance_table(
+            render_importance_result(
                 f"Dashboard-like Optuna importances for `{dataset}` objective",
-                importances,
+                result,
             ),
         )
     return lines
@@ -436,18 +882,24 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
         f"{state_counts.get('pruned', 0)} pruned",
         "",
     ]
+    lines.extend(render_trial_accounting(study))
     if not trials:
         lines.extend(["No completed trials.", ""])
         return "\n".join(lines)
 
     best_trial = sorted(trials, key=lambda trial: trial_sort_key(study, trial))[0]
+    all_datasets = sorted({dataset for trial in trials for dataset in dataset_names(trial)})
+    posthoc_crru = {
+        dataset: compute_posthoc_validation_crru(trials, dataset=dataset)
+        for dataset in all_datasets
+    }
     lines.extend(
         [
             "### Best study-level trial",
             "",
             f"- Trial: `{best_trial.number}`",
             f"- Objective value: `{format_float(float(best_trial.value))}`",
-            f"- Parameters: `{format_params(logical_trial_params(best_trial))}`",
+            f"- Effective config: `{format_effective_params(best_trial)}`",
             "",
         ],
     )
@@ -460,45 +912,46 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
                 "",
                 "| Dataset | Objective | NDCG@20 | Recall@20 | Hit@20 | Pers@20 | AvgPop@20 | "
                 "NDCG@40 | Recall@40 | Hit@40 | Pers@40 | AvgPop@40 | "
-                "ValCRRU@20 | ValCRRU@40 | ValCRRU@20_40 |",
-                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+                "ValCRRU@20 | ValCRRU@40 | ValCRRU@20_40 | PosthocCRRU@20 | "
+                "PosthocCRRU@40 | Time/epoch (s) | Peak VRAM (MB) | Batch |",
+                "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+                "---:|---:|---:|---:|---:|",
             ],
         )
         for dataset in datasets:
             values = [dataset_metric(best_trial, dataset, metric) for metric in DATASET_METRICS]
+            trial_crru = posthoc_crru.get(dataset, {}).get(int(best_trial.number), {})
             lines.append(
                 f"| {dataset} | {format_float(dataset_metric(best_trial, dataset, 'objective'))} | "
                 + " | ".join(format_float(value) for value in values[:-1])
-                + f" | {format_float(values[-1])} |",
+                + f" | {format_float(values[-1])} | "
+                f"{format_float(trial_crru.get(20))} | "
+                f"{format_float(trial_crru.get(40))} | "
+                f"{format_float(trial_epoch_time_s(best_trial, dataset), digits=2)} | "
+                f"{format_float(attr_float(best_trial, f'{dataset}.peak_vram_mb'), digits=1)} | "
+                f"{format_float(attr_float(best_trial, f'{dataset}.batch_size'), digits=0)} |",
             )
         lines.append("")
 
-    all_datasets = sorted({dataset for trial in trials for dataset in dataset_names(trial)})
     if all_datasets:
-        lines.extend(render_dataset_best_trials(study, datasets=all_datasets, top_n=3))
-
-    default_importances = dashboard_importances(study)
-    if default_importances:
-        if len(trials) < 10:
-            lines.extend(
-                [
-                    "Importance warning: fewer than 10 completed trials are available, "
-                    "so rankings are unstable and should be treated as diagnostic only.",
-                    "",
-                ],
-            )
         lines.extend(
-            render_importance_table(
-                "Dashboard-like Optuna importances",
-                default_importances,
+            render_dataset_best_trials(
+                study,
+                datasets=all_datasets,
+                posthoc_crru=posthoc_crru,
+                top_n=3,
             ),
         )
+
     lines.extend(
-        render_importance_table(
-            "Deterministic fANOVA importance sensitivity",
-            fanova_importances(study),
+        render_importance_result(
+            "Dashboard-like Optuna importances",
+            dashboard_importance_result(study),
         ),
     )
+    fanova = fanova_importances(study)
+    if fanova:
+        lines.extend(render_importance_table("Deterministic fANOVA importance sensitivity", fanova))
     if all_datasets:
         lines.extend(render_dataset_importance_tables(study, datasets=all_datasets))
 
@@ -508,7 +961,8 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
         [
             f"### Top {min(top_n, len(trials))} completed trials",
             "",
-            "| Rank | Trial | Objective | Avg train time (s) | Avg peak VRAM (MB) | Parameters |",
+            "| Rank | Trial | Objective | Avg train time (s) | Avg peak VRAM (MB) | "
+            "Effective config |",
             "|---:|---:|---:|---:|---:|---|",
         ],
     )
@@ -520,7 +974,7 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
             f"| {rank} | {trial.number} | {format_float(float(trial.value))} | "
             f"{format_float(average_trial_attr(trial, 'training_time_s'), digits=2)} | "
             f"{format_float(average_trial_attr(trial, 'peak_vram_mb'), digits=1)} | "
-            f"`{format_params(logical_trial_params(trial))}` |",
+            f"`{format_effective_params(trial)}` |",
         )
     lines.append("")
 
@@ -544,18 +998,27 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
                 key=lambda trial: dataset_trial_sort_key(study, trial, dataset=dataset),
             )
             for trial in ranked[:3]:
+                trial_crru = posthoc_crru.get(dataset, {}).get(int(trial.number), {})
                 lines.append(
                     f"- `{dataset}` trial `{trial.number}`: dataset objective "
                     f"`{format_float(dataset_metric(trial, dataset, 'objective'))}`; "
+                    f"posthoc CRRU@20/40 "
+                    f"`{format_float(trial_crru.get(20))}`/"
+                    f"`{format_float(trial_crru.get(40))}`; "
+                    f"time/epoch `{format_float(trial_epoch_time_s(trial, dataset), digits=2)}`s; "
+                    f"peak VRAM "
+                    f"`{format_float(attr_float(trial, f'{dataset}.peak_vram_mb'), digits=1)}`MB; "
+                    f"batch "
+                    f"`{format_float(attr_float(trial, f'{dataset}.batch_size'), digits=0)}`; "
                     f"study objective "
                     f"`{format_float(float(trial.value) if trial.value is not None else None)}`; "
-                    f"params `{format_params(logical_trial_params(trial))}`",
+                    f"effective config `{format_effective_params(trial, dataset=dataset)}`",
                 )
     else:
         for trial in sorted(trials, key=lambda item: trial_sort_key(study, item))[:3]:
             lines.append(
                 f"- Trial `{trial.number}`: objective `{format_float(float(trial.value))}`; "
-                f"params `{format_params(logical_trial_params(trial))}`",
+                f"effective config `{format_effective_params(trial)}`",
             )
     lines.append("")
     return "\n".join(lines)
@@ -589,11 +1052,21 @@ def render_report(studies: Sequence[optuna.Study], *, storage: str, top_n: int) 
         "database keeps formal experiment and training logs.",
         "- Current default multi-dataset searches expand into one independent study per "
         "dataset; older `*-all-*` studies are historical global-mean screens.",
+        "- `--trials N` now means N fresh informative finished trials by default: "
+        "COMPLETE plus real PRUNED, excluding FAIL/RUNNING, historically imported rows, "
+        "and duplicate-skip prunes. Imported rows are reported separately for provenance.",
+        "- Hyperparameter importances are computed only within one homogeneous, "
+        "non-imported `search_space_revision` subset with enough completed trials. "
+        "Mixed unrevisioned/revision studies are marked unreliable instead of showing a "
+        "misleading one-parameter importance table.",
         "- The current second-pass grid tunes active U-CaGNN loss weights and schedule "
         "knobs only; inactive DirectAU/IPW-only weights remain out of the default "
         "search to avoid changing the thesis model family without a separate ablation.",
         "- Schedule-conditioned parameters are sampled only when they affect the resolved "
         "training config: ramp rates for `linear_ramp`, start epochs for `phased`.",
+        "- Candidate rows print an effective-config view, not just raw Optuna sampled "
+        "parameters. Future trials store the resolved dataset config directly; older "
+        "trials fall back to sampled params plus any runtime attrs present in Optuna.",
         "",
         "## Paper-ready figures",
         "",
