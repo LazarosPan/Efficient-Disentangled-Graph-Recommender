@@ -57,6 +57,8 @@ class SearchSpaceValidationTests(unittest.TestCase):
 
         self.assertEqual(spec.sampler.seed, 42)
         self.assertEqual(spec.sampler.name, "tpe")
+        self.assertFalse(spec.sampler.multivariate)
+        self.assertFalse(spec.sampler.group)
         self.assertEqual(spec.pruner.name, "hyperband")
         self.assertEqual(spec.pruner.min_resource, 6)
 
@@ -200,6 +202,53 @@ class SearchSpaceValidationTests(unittest.TestCase):
         self.assertIn("batch_size_candidates=[32768,16384,8192,4096]", formatted)
         self.assertIn("time_per_epoch_s=12.5", formatted)
         self.assertIn("peak_vram_mb=8192.0", formatted)
+
+    def test_search_cli_best_trial_prefers_effective_config(self) -> None:
+        """CLI best-trial output should show the resolved config when it exists."""
+        trial = optuna.trial.create_trial(
+            state=optuna.trial.TrialState.COMPLETE,
+            value=0.5,
+            params={},
+            distributions={},
+            user_attrs={
+                "datasets": ["kuairand1k"],
+                "sampled_params": {"lr": 0.003},
+                "kuairand1k.effective_config": {
+                    "lr": 0.003,
+                    "batch_size": 8192,
+                    "auto_batch_size": True,
+                },
+            },
+        )
+
+        label, payload = search._best_trial_config_payload(trial)
+
+        self.assertEqual(label, "Best effective config:")
+        self.assertEqual(payload["batch_size"], 8192)
+        self.assertTrue(payload["auto_batch_size"])
+
+    def test_search_cli_best_trial_labels_historical_params(self) -> None:
+        """Old trials without effective config should not be mislabeled as full config."""
+        trial = optuna.trial.create_trial(
+            state=optuna.trial.TrialState.COMPLETE,
+            value=0.5,
+            params={},
+            distributions={},
+            user_attrs={
+                "datasets": ["movielens1m"],
+                "sampled_params": {"lr": 0.003, "batch_size": 32768},
+                "movielens1m.batch_size": 32768,
+                "movielens1m.auto_batch_size": False,
+                "movielens1m.avg_epoch_time_s": 12.5,
+            },
+        )
+
+        label, payload = search._best_trial_config_payload(trial)
+
+        self.assertIn("historical trial lacks effective_config", label)
+        self.assertEqual(payload["batch_size"], 32768)
+        self.assertFalse(payload["auto_batch_size"])
+        self.assertEqual(payload["avg_epoch_time_s"], 12.5)
 
     def test_optuna_report_trial_accounting_tracks_budget_semantics(self) -> None:
         """Trial accounting should share the search controller's budget predicates."""

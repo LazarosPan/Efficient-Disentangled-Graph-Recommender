@@ -79,6 +79,27 @@ class DataContractTests(unittest.TestCase):
         self.assertEqual(canonical.n_users, indexed.n_users)
         self.assertEqual(canonical.n_items, indexed.n_items)
 
+    def test_canonical_repr_formats_user_and_item_counts(self) -> None:
+        """Dataset summaries should show concrete counts, not template placeholders."""
+        canonical = CanonicalInteractions(
+            user_id=np.array([0, 1], dtype=np.int64),
+            item_id=np.array([0, 1], dtype=np.int64),
+            label=np.array([1.0, 0.0], dtype=np.float32),
+            timestamp=np.array([1, 2], dtype=np.int64),
+            sign=np.array([1.0, -1.0], dtype=np.float32),
+            popularity=np.array([1.0, 0.0], dtype=np.float32),
+            n_users=2,
+            n_items=2,
+            user_map={10: 0, 20: 1},
+            item_map={100: 0, 200: 1},
+        )
+
+        summary = repr(canonical)
+
+        self.assertIn("n_users=2", summary)
+        self.assertIn("n_items=2", summary)
+        self.assertNotIn("{self.n_users}", summary)
+
     def test_kuairand_comment_rows_keep_neutral_sign(self) -> None:
         """Comment-only interactions should stay neutral until sentiment is known."""
         with TemporaryDirectory() as tmp_dir:
