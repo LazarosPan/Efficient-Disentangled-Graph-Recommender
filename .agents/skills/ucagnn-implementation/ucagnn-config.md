@@ -56,7 +56,7 @@ Precedence:
 | Eval prefilter | `cagra_candidate_k` | Optional evaluation-only ANN candidate filter; `0` means full-catalog scoring. |
 | Model depth | `single_branch_gnn_layers`, `interest_gnn_layers`, `conformity_gnn_layers`, `num_neighbors` | Couples propagation depth to sampled fan-out. |
 | Score fusion | `score_weight_interest`, `score_weight_conformity`, `score_weight_popularity`, `score_mix_min_weight`, `use_popularity_head` | Sets preset-owned default priors; baselines keep fixed mixing while `preset_full()` keeps learned `score_mix_weights`, and `score_mix_min_weight` applies only to learned components available by the model/data contract. |
-| Loss and schedule | `loss_weight_*`, `branch_loss_mode`, `recommendation_loss_mode`, `auxiliary_loss_schedule`, `auxiliary_ramp_rate`, `independence_ramp_rate`, `distance_correlation_max_pairs`, `contrastive_max_pairs`, `contrastive_temperature`, `uniformity_max_pairs`, `uniformity_temperature`, `use_conformity_au`, `loss_weight_propensity_calibration` | Enables auxiliaries, selects symmetric-vs-DICE branch supervision, caps quadratic auxiliary estimators, and controls how weights activate over time. |
+| Loss and schedule | `loss_weight_*`, `branch_loss_mode`, `dice_mask_reduction`, `recommendation_loss_mode`, `auxiliary_loss_schedule`, `auxiliary_ramp_rate`, `independence_ramp_rate`, `distance_correlation_max_pairs`, `contrastive_max_pairs`, `contrastive_temperature`, `uniformity_max_pairs`, `uniformity_temperature`, `use_conformity_au`, `loss_weight_propensity_calibration` | Enables auxiliaries, selects symmetric-vs-DICE branch supervision, sets masked-DICE reduction scale, caps quadratic auxiliary estimators, and controls how weights activate over time. |
 | Training mode | `training_graph_mode`, `negative_sampling_strategy`, `n_negatives`, `dice_sampler_margin`, `dice_sampler_pool`, `dice_branch_margin`, `dice_loss_decay`, `dice_margin_decay`, `dice_adaptive_decay` | Selects sampled-subgraph vs full-graph training and standard vs DICE popularity-conditioned negative sampling. |
 | Propensity | `use_ipw`, `propensity_hidden`, `propensity_clip_min`, `propensity_clip_max` | Controls the item-side propensity estimator; `use_ipw=True` requires positive `loss_weight_propensity_calibration`. |
 | Runtime | `batch_size`, `auto_batch_size`, `batch_size_candidates`, `epochs`, `patience`, `use_early_stopping`, `use_amp`, `use_torch_compile`, `use_ema`, `lr_scheduler` | Controls optimization and execution behavior. CUDA runs default to `bfloat16` AMP; experiment CLIs do not expose a separate public AMP mode; eval cutoffs come from `Evaluator`. |
@@ -73,6 +73,8 @@ Precedence:
 - `use_features=True` is the dataclass default, but the non-causal presets disable side features.
 - `score_mix_min_weight=0.0` is the dataclass default; `preset_full()` sets it to `0.05` so learned fusion cannot collapse to interest-only when conformity/context are available, even if a current batch gives one component zero-valued scores.
 - `negative_sampling_strategy="standard"` is the dataclass default; `preset_full()` switches to DICE popularity-conditioned negatives with `n_negatives=1` and a stable `dice_branch_margin == dice_sampler_margin`.
+- `dice_mask_reduction="batch_mean"` is the dataclass and paper-DICE default; `preset_full()` uses `active_mean` so DICE branch BPR scale does not vanish when the active mask is sparse.
+- `feature_gate_init=0.0` is the dataclass default; `preset_full()` uses `-4.0` so side features start near zero contribution (`sigmoid(-4) ~= 0.018`).
 - `use_amp=True` is the default runtime path, and `amp_dtype` is fixed to `bfloat16`.
 - Dataclass batch default: `batch_size=4096`, `auto_batch_size=True`, candidates `[16384,8192,4096,2048,1024,512,256]`.
 - Core search overrides candidates to `[32768,16384,8192,4096,2048,1024,512,256]`.
@@ -102,7 +104,7 @@ Precedence:
 
 | Space | Base | Datasets | Objective | Sampler/pruner | Runtime contract |
 | --- | --- | --- | --- | --- | --- |
-| `ucagnn-core-optimization` | `core-ucagnn-mainline` | core 4 | `ValidationOnlineCRRU@20_40` | TPE seed 42, startup 4; Hyperband min 6, factor 3, bootstrap 1 | `max_epochs=60`, `trials=8`, auto-batch runtime-only, 4-hop excluded |
+| `ucagnn-core-optimization` | `core-ucagnn-mainline` | core 4; start diagnostics with MovieLens1M and KuaiRec_v2 | `ValidationOnlineCRRU@20_40` | TPE seed 42, startup 4; Hyperband min 6, factor 3, bootstrap 1 | `max_epochs=60`, `trials=8`, auto-batch runtime-only, tunes `dice_mask_reduction`, `feature_gate_init`, `n_negatives`, branch weights, context/feature shortcuts; `hard_negative_ratio` excluded for DICE |
 | `ucagnn-cagra-ablation` | `core-ucagnn-mainline` | core 4 | `ValidationOnlineCRRU@20_40` | TPE seed 42, startup 8; Hyperband min 15, factor 3, bootstrap 4 | `max_epochs=90`, `trials=16`, exact sampled `batch_size`, CAGRA graph/eval knobs |
 
 ## Experiment-facing contract

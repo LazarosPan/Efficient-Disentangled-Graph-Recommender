@@ -46,6 +46,7 @@ Runtime path: embeddings/metadata -> graph propagation -> refined scorer -> opti
   - condition: `use_features=True` and `item_features` exist,
   - normalize feature columns to `[0,1]`,
   - project item features once,
+  - initialize side-feature gates from `feature_gate_init`,
   - interest input: `item_embed + gate * projected_features`,
   - conformity input: `item_embed + gate * (projected_features * popularity_gate)`.
 - `item_popularity` and `item_recency` are registered once in the embedding layer and reused by both training and evaluation.
@@ -81,6 +82,7 @@ Propagation facts:
 - `final_score` uses norm-invariant branch logits and bounded context logits, not raw dot-product magnitudes.
 - `preset_full()` keeps learned structured mixing active and floors active components so conformity/context cannot silently collapse.
 - `preset_full()` branch losses use DICE-conditioned popularity negatives by default.
+- `preset_full()` initializes item side-feature gates at `feature_gate_init=-4.0`, so feature injection starts near zero and can be learned upward.
 - `preset_lightgcn()` fixes the mixer to interest-only weights for the sampled LightGCN approximation.
 - `preset_lightgcn_paper()` instantiates `PaperLightGCN`, which exposes the shared train/eval payload with interest-only dot-product scores.
 - `preset_dice_like()` fixes the mixer to interest+conformity weights for the legacy DICE-like ablation.

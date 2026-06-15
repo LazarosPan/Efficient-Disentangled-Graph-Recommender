@@ -70,6 +70,7 @@ When `branch_loss_mode="dice"`, the branch terms follow DICE semantics:
 | --- | --- |
 | sampler mask | `dice_negative_mask` marks popularity-dominated negatives |
 | mask consumer | `LossSuite`; fallback reconstructs from train popularity + `dice_branch_margin` |
+| mask reduction | `dice_mask_reduction="batch_mean"` averages masked loss over the full batch; `active_mean` divides by active mask count |
 | margin owner | `dice_paper` and `ucagnn` lock fallback margin to `dice_sampler_margin` |
 | margin decay | only when `dice_adaptive_decay=True` |
 | `L_interest_bpr` | active only on popularity-dominated negatives |
@@ -104,8 +105,8 @@ Ramp rates:
 | `lightgcn` preset (`UCaGNNConfig.preset_lightgcn()`) | `L_rec` |
 | `dice_like` preset (`UCaGNNConfig.preset_dice_like()`) | `L_rec + L_interest_bpr + L_conformity_bpr + L_independence` |
 | `lightgcn_paper` preset (`UCaGNNConfig.preset_lightgcn_paper()`) | `L_rec + explicit ego-embedding L2` with full-graph LightGCN training |
-| `dice_paper` preset (`UCaGNNConfig.preset_dice_paper()`) | DICE total BPR + DICE interest/conformity BPR + distance-correlation discrepancy |
-| `ucagnn` preset (`UCaGNNConfig.preset_full()`) | `L_rec + DICE-style L_interest_bpr + DICE-style L_conformity_bpr + DICE-style L_independence + L_pop`, trained with DICE-conditioned negatives |
+| `dice_paper` preset (`UCaGNNConfig.preset_dice_paper()`) | DICE total BPR + DICE interest/conformity BPR + distance-correlation discrepancy; `dice_mask_reduction="batch_mean"` for paper-faithful scale |
+| `ucagnn` preset (`UCaGNNConfig.preset_full()`) | `L_rec + DICE-style L_interest_bpr + DICE-style L_conformity_bpr + DICE-style L_independence + L_pop`, trained with DICE-conditioned negatives; `dice_mask_reduction="active_mean"` by default |
 
 In `preset_full()`, contrastive, align, uniform, IPW, and propensity calibration remain implemented but disabled until explicitly turned on.
 

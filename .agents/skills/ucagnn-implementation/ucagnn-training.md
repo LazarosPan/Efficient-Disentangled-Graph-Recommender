@@ -97,12 +97,11 @@ Important runtime details:
   the callback reports validation objective values after each epoch and raises
   `TrialPruned` when the configured Optuna pruner stops an unpromising trial.
   Normal experiment, formal-run, and baseline paths leave this callback unset,
-- `search-experiments --trials N` targets N fresh informative finished trials by default:
-  fresh `COMPLETE` plus trainer/pruner-generated `PRUNED`, excluding `FAIL`, `RUNNING`,
-  historically imported rows, and duplicate-skip prunes. Imported rows are report-only
-  provenance and never satisfy the fresh local target. Budget accounting is scoped to the
-  study/search objective, so tightening parameter ranges does not erase already-spent fresh
-  informative trials,
+- `search-experiments --trials N` targets N fresh informative finished trials for the
+  current `search_space_revision`: fresh `COMPLETE` plus trainer/pruner-generated
+  `PRUNED`, excluding `FAIL`, `RUNNING`, historically imported rows, duplicate-skip
+  prunes, and rows from other revision hashes. Imported rows are report-only provenance
+  and never satisfy the fresh local target,
 - completed Optuna trials store sampled params, runtime attrs, and dataset-scoped effective configs,
 - promotion reports should show effective configs so resolved auto-batch size is visible,
 - validation retries once on CUDA after optimizer-state offload, then falls back to CPU if evaluation still OOMs,
