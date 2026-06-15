@@ -46,8 +46,7 @@ Before each implementation iteration read the following files:
 
 After each iteration, update the target system files so they match the code; do not treat them as the primary theory source:
 
-- `.agents/skills/ucagnn-implementation/`
-- `.agents/skills/ucagnn-implementation/ucagnn_full.md`
+- `.agents/skills/ucagnn-implementation/` - These files should contain as much information as possible about the project, with the least amount of words possible.
 - `pyproject.toml` (for dependencies and versioning if applicable)
 
 ## Project Rules
