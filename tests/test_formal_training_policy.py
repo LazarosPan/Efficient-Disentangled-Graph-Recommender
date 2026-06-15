@@ -50,6 +50,7 @@ from src.data.graph_builder import build_graph
 from src.losses.loss_suite import LossSuite
 from src.models.baselines.dice import PaperGCNDICE
 from src.models.baselines.lightgcn import PaperLightGCN
+from src.models.embeddings import EmbeddingModule
 from src.profiling.gpu_profiler import (
     GPUProfiler,
     TrainingResourceStats,
@@ -847,11 +848,28 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertEqual(config.baseline_family, "ucagnn")
         self.assertEqual(config.branch_loss_mode, "dice")
+        self.assertEqual(config.dice_mask_reduction, "active_mean")
+        self.assertEqual(config.feature_gate_init, -4.0)
         self.assertGreater(config.score_mix_min_weight, 0.0)
         self.assertGreater(config.loss_weight_interest_bpr, 0.0)
         self.assertGreater(config.loss_weight_conformity_bpr, 0.0)
         self.assertEqual(config.negative_sampling_strategy, "dice")
         self.assertEqual(config.dice_branch_margin, config.dice_sampler_margin)
+
+    def test_paper_dice_keeps_batch_mean_mask_reduction(self) -> None:
+        """The paper-faithful DICE baseline should retain the old mask scale."""
+        config = build_config(
+            _experiment_args(
+                preset="dice_paper",
+                dice_mask_reduction="active_mean",
+                feature_gate_init=-4.0,
+            ),
+        )
+
+        self.assertEqual(config.baseline_family, "dice_paper")
+        self.assertEqual(config.dice_mask_reduction, "batch_mean")
+        self.assertFalse(config.use_features)
+        self.assertEqual(config.feature_gate_init, -4.0)
 
     def test_ucagnn_linear_ramp_keeps_branch_bpr_active_at_epoch_zero(self) -> None:
         """DICE branch BPR is primary causal supervision, not ramped auxiliary loss."""
@@ -899,17 +917,19 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         mask = torch.tensor([True, False])
         expected_interest = -(
             mask.float() * functional.logsigmoid(pos_interest - neg_interest)
-        ).mean()
-        expected_conformity = (
-            -(mask.float() * functional.logsigmoid(neg_conformity - pos_conformity)).mean()
-            - ((~mask).float() * functional.logsigmoid(pos_conformity - neg_conformity)).mean()
-        )
+        ).sum() / mask.float().sum().clamp_min(1.0)
+        expected_conformity = -(
+            mask.float() * functional.logsigmoid(neg_conformity - pos_conformity)
+        ).sum() / mask.float().sum().clamp_min(1.0) - (
+            (~mask).float() * functional.logsigmoid(pos_conformity - neg_conformity)
+        ).sum() / (~mask).float().sum().clamp_min(1.0)
         expected_total = (
             config.loss_weight_interest_bpr * expected_interest
             + config.loss_weight_conformity_bpr * expected_conformity
         )
 
         self.assertEqual(config.auxiliary_loss_schedule, "linear_ramp")
+        self.assertEqual(config.dice_mask_reduction, "active_mean")
         self.assertGreater(config.loss_weight_interest_bpr, 0.0)
         self.assertGreater(config.loss_weight_conformity_bpr, 0.0)
         self.assertGreater(losses["total"].item(), 0.0)
@@ -920,6 +940,23 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             places=6,
         )
         self.assertAlmostEqual(losses["total"].item(), expected_total.item(), places=6)
+
+    def test_feature_gate_init_controls_initial_side_feature_strength(self) -> None:
+        """Feature gates should start from the configured logit value."""
+        config = UCaGNNConfig(device="cpu", embed_dim=4)
+        config.feature_gate_init = -4.0
+        module = EmbeddingModule(
+            n_users=2,
+            n_items=3,
+            config=config,
+            item_features=torch.ones(3, 2),
+            item_popularity=torch.ones(3),
+        )
+
+        expected = torch.tensor(-4.0)
+        self.assertTrue(torch.equal(module.item_interest_gate.detach(), expected))
+        self.assertTrue(torch.equal(module.item_conformity_gate.detach(), expected))
+        self.assertLess(torch.sigmoid(module.item_interest_gate).item(), 0.02)
 
     def test_ucagnn_sampler_margin_does_not_decay_without_adaptive_dice(self) -> None:
         """U-CaGNN should keep a stable DICE margin unless adaptive decay is explicit."""
@@ -1863,12 +1900,16 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         config = build_config(
             _experiment_args(
                 hard_negative_ratio=0.25,
+                dice_mask_reduction="active_mean",
+                feature_gate_init=-2.0,
                 auxiliary_losses_start_epoch=3,
                 popularity_supervision_start_epoch=7,
             ),
         )
 
         self.assertEqual(config.hard_negative_ratio, 0.25)
+        self.assertEqual(config.dice_mask_reduction, "active_mean")
+        self.assertEqual(config.feature_gate_init, -2.0)
         self.assertEqual(config.auxiliary_losses_start_epoch, 3)
         self.assertEqual(config.popularity_supervision_start_epoch, 7)
 
@@ -1879,6 +1920,8 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 "lr_scheduler": "plateau,cosine",
                 "num_neighbors": [[10, 5], [5, 3]],
                 "hard_negative_ratio": "0.25",
+                "dice_mask_reduction": "active_mean",
+                "feature_gate_init": "-4.0",
             },
         )
 
@@ -1891,6 +1934,8 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertIsNone(normalized["graph_policy"])
         self.assertIsNone(normalized["graph_policy_options"])
         self.assertEqual(normalized["hard_negative_ratio"], 0.25)
+        self.assertEqual(normalized["dice_mask_reduction"], "active_mean")
+        self.assertEqual(normalized["feature_gate_init"], -4.0)
 
     def test_normalize_benchmark_config_overrides_supports_dataset_keyed_neighbor_sweeps(
         self,

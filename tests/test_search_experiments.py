@@ -165,6 +165,10 @@ class SearchSpaceValidationTests(unittest.TestCase):
             [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
         )
         self.assertNotIn("batch_size", payload["parameters"])
+        self.assertNotIn("hard_negative_ratio", payload["parameters"])
+        self.assertIn("dice_mask_reduction", payload["parameters"])
+        self.assertIn("feature_gate_init", payload["parameters"])
+        self.assertIn("n_negatives", payload["parameters"])
 
     def test_optuna_report_effective_params_include_runtime_batch(self) -> None:
         """Promotion candidates should show resolved runtime fields, not only sampled knobs."""
@@ -326,6 +330,18 @@ class SearchSpaceValidationTests(unittest.TestCase):
                     "type": "categorical",
                     "choices": [False],
                 },
+                "dice_mask_reduction": {
+                    "type": "categorical",
+                    "choices": ["active_mean"],
+                },
+                "feature_gate_init": {
+                    "type": "categorical",
+                    "choices": [-2.0],
+                },
+                "n_negatives": {
+                    "type": "categorical",
+                    "choices": [2],
+                },
             },
         )
         base_config = search.build_search_config(
@@ -353,6 +369,18 @@ class SearchSpaceValidationTests(unittest.TestCase):
                     "use_popularity_head",
                     spec.parameters["use_popularity_head"],
                 ): False,
+                search._parameter_storage_name(
+                    "dice_mask_reduction",
+                    spec.parameters["dice_mask_reduction"],
+                ): "active_mean",
+                search._parameter_storage_name(
+                    "feature_gate_init",
+                    spec.parameters["feature_gate_init"],
+                ): -2.0,
+                search._parameter_storage_name(
+                    "n_negatives",
+                    spec.parameters["n_negatives"],
+                ): 2,
             },
         )
 
@@ -373,6 +401,9 @@ class SearchSpaceValidationTests(unittest.TestCase):
         self.assertEqual(config.conformity_gnn_layers, 2)
         self.assertEqual(config.num_neighbors, [6, 3])
         self.assertFalse(config.use_popularity_head)
+        self.assertEqual(config.dice_mask_reduction, "active_mean")
+        self.assertEqual(config.feature_gate_init, -2.0)
+        self.assertEqual(config.n_negatives, 2)
         self.assertEqual(config.sample_interactions, 100)
         self.assertEqual(config.loader_max_rows, 100)
 
@@ -692,6 +723,7 @@ class SearchExecutionTests(unittest.TestCase):
                 storage=storage,
                 direction="maximize",
             )
+            current_revision = search.search_space_revision(spec)
             study.add_trial(
                 optuna.trial.create_trial(
                     value=0.42,
@@ -709,6 +741,7 @@ class SearchExecutionTests(unittest.TestCase):
                     },
                     user_attrs={
                         "search_space": "tiny-search",
+                        "search_space_revision": current_revision,
                         "objective_metric": "NDCG@40",
                         "objective_split": "val",
                         "sampled_params": {"lr_scheduler": "cosine"},
@@ -740,6 +773,61 @@ class SearchExecutionTests(unittest.TestCase):
 
             self.assertEqual(exit_code, 0)
             run_experiment.assert_not_called()
+
+    def test_different_revision_trials_do_not_satisfy_search_budget(self) -> None:
+        """--trials N should target fresh informative trials for this exact hash."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            optuna_db = Path(tmpdir) / "optuna.db"
+            storage = f"sqlite:///{optuna_db}"
+            spec = search.SearchSpaceSpec(
+                name="tiny-search",
+                description="test search space",
+                base_profile="core-ucagnn-mainline",
+                datasets=("amazonbook",),
+                objective=search.ObjectiveSpec(metric="NDCG@40"),
+                max_epochs=1,
+                trials=1,
+                config_overrides={
+                    "sample_interactions": 50,
+                    "loader_max_rows": 50,
+                },
+                parameters={
+                    "lr_scheduler": {
+                        "type": "categorical",
+                        "choices": ["cosine"],
+                    },
+                },
+            )
+            storage_param = search._parameter_storage_name(
+                "lr_scheduler",
+                spec.parameters["lr_scheduler"],
+            )
+            study = optuna.create_study(
+                study_name="existing-study",
+                storage=storage,
+                direction="maximize",
+            )
+            study.add_trial(
+                optuna.trial.create_trial(
+                    value=0.42,
+                    params={storage_param: "cosine"},
+                    distributions={
+                        storage_param: optuna.distributions.CategoricalDistribution(["cosine"]),
+                    },
+                    user_attrs={
+                        "search_space": "tiny-search",
+                        "search_space_revision": "differenthash",
+                        "objective_metric": "NDCG@40",
+                        "objective_split": "val",
+                        "sampled_params": {"lr_scheduler": "cosine"},
+                        "amazonbook.objective": 0.42,
+                    },
+                    state=optuna.trial.TrialState.COMPLETE,
+                ),
+            )
+
+            self.assertEqual(search._budget_informative_trials(study, spec), [])
+            self.assertEqual(search._compatible_completed_trials(study, spec), [study.trials[0]])
 
     def test_real_pruned_trials_count_toward_search_budget(self) -> None:
         """A pruned training trial is informative and should satisfy --trials."""
@@ -774,6 +862,7 @@ class SearchExecutionTests(unittest.TestCase):
                 storage=storage,
                 direction="maximize",
             )
+            current_revision = search.search_space_revision(spec)
             study.add_trial(
                 optuna.trial.create_trial(
                     params={storage_param: "cosine"},
@@ -782,6 +871,7 @@ class SearchExecutionTests(unittest.TestCase):
                     },
                     user_attrs={
                         "search_space": "tiny-search",
+                        "search_space_revision": current_revision,
                         "objective_metric": "NDCG@40",
                         "objective_split": "val",
                         "sampled_params": {"lr_scheduler": "cosine"},
