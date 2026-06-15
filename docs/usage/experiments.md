@@ -38,7 +38,7 @@ uv run optuna-dashboard sqlite:///results/optuna_studies.db
 ```
 
 - `search-experiments` is U-CaGNN-only. It resolves `experiments/search_spaces.json` entries via each `base_profile`, samples existing `UCaGNNConfig` fields, and still executes each trial through `build_config()` and `run_experiment()`.
-- The canonical search space is `ucagnn-core-optimization`. Without `--dataset`, each Optuna trial evaluates every core thesis dataset and averages the validation objective. With `--dataset`, `--trials N` means N independent trials for that dataset, which is the right path for dataset-specific hyperparameters.
+- The canonical search space is `ucagnn-core-optimization`. Without `--dataset`, the controller expands the space into one independent dataset-local study per core thesis dataset. With `--dataset`, it runs only that dataset's study. In both cases, `--trials N` means N fresh informative trials for each selected dataset.
 - The Optuna objective is validation `ValidationOnlineCRRU@20_40` by default. This is an online proxy with the same component/exponent structure as report CRRU, including VRAM and seconds-per-epoch efficiency penalties; exact report CRRU still uses dataset-local section-row min-max after rows exist. Search runs skip final test evaluation; test metrics remain reserved for promoted confirmation profiles.
 - Search runs do not save or resume checkpoints. They also keep MLflow disabled by default to avoid large exploratory artifacts; pass `--mlflow` only when you explicitly want MLflow mirroring for a short search.
 - Optuna search spaces are configured separately from formal profiles: use `experiments/search_spaces.json` for tuning spaces and `experiments/experiment_catalog.json` for deterministic formal profiles/recipes.
