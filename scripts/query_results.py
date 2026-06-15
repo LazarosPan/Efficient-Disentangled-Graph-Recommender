@@ -681,6 +681,7 @@ def _run_detail_cells(
         detail_lines.get("Experiment", canonical_name),
     )
 
+
 def _format_markdown_cell(value: object) -> str:
     """Return one Markdown-safe table cell."""
     text = "-" if value is None else str(value)

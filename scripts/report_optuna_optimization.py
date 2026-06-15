@@ -1046,9 +1046,10 @@ def render_report(studies: Sequence[optuna.Study], *, storage: str, top_n: int) 
         "database keeps formal experiment and training logs.",
         "- Current default multi-dataset searches expand into one independent study per "
         "dataset; older `*-all-*` studies are historical global-mean screens.",
-        "- `--trials N` now means N fresh informative finished trials by default: "
-        "COMPLETE plus real PRUNED, excluding FAIL/RUNNING, historically imported rows, "
-        "and duplicate-skip prunes. Imported rows are reported separately for provenance.",
+        "- `--trials N` means N fresh informative finished trials for the current "
+        "`search_space_revision`: COMPLETE plus real PRUNED, excluding FAIL/RUNNING, "
+        "historically imported rows, duplicate-skip prunes, and other revision hashes. "
+        "Imported rows are reported separately for provenance.",
         "- Hyperparameter importances are computed only within one homogeneous, "
         "non-imported `search_space_revision` subset with enough completed trials. "
         "Mixed unrevisioned/revision studies are marked unreliable instead of showing a "
