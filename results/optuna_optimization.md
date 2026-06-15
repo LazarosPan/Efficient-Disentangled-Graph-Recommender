@@ -130,18 +130,19 @@ Promote dataset-local winners into formal profiles only after checking runtime a
 
 - Direction: `maximize`
 - Objective: `val ValidationOnlineCRRU@20_40`
-- Trials: 32 total, 30 completed, 0 failed, 1 running, 1 pruned
+- Trials: 98 total, 47 completed, 1 failed, 1 running, 49 pruned
 
 ### Trial accounting
 
 | State | Fresh | Imported | Total |
 |---|---:|---:|---:|
-| COMPLETE | 0 | 30 | 30 |
-| PRUNED | 1 | 0 | 1 |
+| COMPLETE | 17 | 30 | 47 |
+| PRUNED | 49 | 0 | 49 |
+| FAIL | 1 | 0 | 1 |
 | RUNNING | 1 | 0 | 1 |
 
-- Fresh informative budget count: `1` (fresh COMPLETE + real fresh PRUNED).
-- Duplicate-skip pruned trials excluded from that budget: `0`.
+- Fresh informative budget count: `60` (fresh COMPLETE + real fresh PRUNED).
+- Duplicate-skip pruned trials excluded from that budget: `6`.
 
 ### Best study-level trial
 
@@ -153,7 +154,7 @@ Promote dataset-local winners into formal profiles only after checking runtime a
 
 | Dataset | Objective | NDCG@20 | Recall@20 | Hit@20 | Pers@20 | AvgPop@20 | NDCG@40 | Recall@40 | Hit@40 | Pers@40 | AvgPop@40 | ValCRRU@20 | ValCRRU@40 | ValCRRU@20_40 | PosthocCRRU@20 | PosthocCRRU@40 | Time/epoch (s) | Peak VRAM (MB) | Batch |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| kuairand1k | 0.057868 | 0.016376 | 0.000903 | 0.241241 | 0.994030 | 0.065064 | 0.014257 | 0.001599 | 0.348348 | 0.992632 | 0.063821 | 0.054914 | 0.060821 | 0.057868 | 0.515882 | 0.529904 | 38.37 | 15050.0 | - |
+| kuairand1k | 0.057868 | 0.016376 | 0.000903 | 0.241241 | 0.994030 | 0.065064 | 0.014257 | 0.001599 | 0.348348 | 0.992632 | 0.063821 | 0.054914 | 0.060821 | 0.057868 | 0.638699 | 0.635763 | 38.37 | 15050.0 | - |
 
 ### Per-dataset best trials
 
@@ -163,17 +164,90 @@ These are the configurations to inspect for formal dataset-specific reruns. For 
 
 | Rank | Trial | Origin | Dataset objective | Study objective | PosthocCRRU@20 | PosthocCRRU@40 | Time/epoch (s) | Peak VRAM (MB) | Batch | Revision | Effective config |
 |---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---|
-| 1 | 2 | imported | 0.057868 | 0.057868 | 0.515882 | 0.529904 | 38.37 | 15050.0 | - | `unrevisioned` | `lr=0.003, weight_decay=3e-08, lr_scheduler=plateau, lr_scheduler_factor=0.7, num_neighbors=[16,8,4], interest_gnn_layers=3, conformity_gnn_layers=2, dropout=0.25, score_mix_min_weight=0.06, loss_weight_independence=0.0025, loss_weight_contrastive=0.05, loss_weight_popularity=0.03, hard_negative_ratio=0.15, dice_sampler_margin=70.0, grad_clip_norm=5.0, peak_vram_mb=15050.0, time_per_epoch_s=38.37220115976743` |
-| 2 | 14 | imported | 0.049902 | 0.049902 | 0.436453 | 0.461240 | 37.55 | 15130.0 | - | `unrevisioned` | `lr=0.0025, weight_decay=1e-08, lr_scheduler=plateau, lr_scheduler_factor=0.7, num_neighbors=[16,8,4], interest_gnn_layers=3, conformity_gnn_layers=2, dropout=0.25, score_mix_min_weight=0.06, loss_weight_independence=0.0, loss_weight_contrastive=0.02, loss_weight_popularity=0.005, hard_negative_ratio=0.15, dice_sampler_margin=70.0, grad_clip_norm=1.0, peak_vram_mb=15130.0, time_per_epoch_s=37.552080419166636` |
-| 3 | 8 | imported | 0.048919 | 0.048919 | 0.486976 | 0.540741 | 18.67 | 13559.0 | - | `unrevisioned` | `lr=0.0008, weight_decay=3e-07, lr_scheduler=plateau, lr_scheduler_factor=0.3, num_neighbors=[8,4,2], interest_gnn_layers=3, conformity_gnn_layers=1, dropout=0.25, score_mix_min_weight=0.06, loss_weight_independence=0.02, loss_weight_contrastive=0.03, loss_weight_popularity=0.015, hard_negative_ratio=0.0, dice_sampler_margin=50.0, grad_clip_norm=4.0, peak_vram_mb=13559.0, time_per_epoch_s=18.668033008587464` |
+| 1 | 2 | imported | 0.057868 | 0.057868 | 0.638699 | 0.635763 | 38.37 | 15050.0 | - | `unrevisioned` | `lr=0.003, weight_decay=3e-08, lr_scheduler=plateau, lr_scheduler_factor=0.7, num_neighbors=[16,8,4], interest_gnn_layers=3, conformity_gnn_layers=2, dropout=0.25, score_mix_min_weight=0.06, loss_weight_independence=0.0025, loss_weight_contrastive=0.05, loss_weight_popularity=0.03, hard_negative_ratio=0.15, dice_sampler_margin=70.0, grad_clip_norm=5.0, peak_vram_mb=15050.0, time_per_epoch_s=38.37220115976743` |
+| 2 | 14 | imported | 0.049902 | 0.049902 | 0.518351 | 0.540925 | 37.55 | 15130.0 | - | `unrevisioned` | `lr=0.0025, weight_decay=1e-08, lr_scheduler=plateau, lr_scheduler_factor=0.7, num_neighbors=[16,8,4], interest_gnn_layers=3, conformity_gnn_layers=2, dropout=0.25, score_mix_min_weight=0.06, loss_weight_independence=0.0, loss_weight_contrastive=0.02, loss_weight_popularity=0.005, hard_negative_ratio=0.15, dice_sampler_margin=70.0, grad_clip_norm=1.0, peak_vram_mb=15130.0, time_per_epoch_s=37.552080419166636` |
+| 3 | 35 | fresh | 0.049225 | 0.049225 | 0.351148 | 0.371385 | 35.68 | 15792.0 | 8192 | `7129c30067fe` | `lr=0.0005, weight_decay=1e-07, batch_size=8192, lr_scheduler=plateau, lr_scheduler_factor=0.7, num_neighbors=[16,8,4], interest_gnn_layers=3, conformity_gnn_layers=1, dropout=0.15, score_mix_min_weight=0.1, loss_weight_interest_bpr=0.01, loss_weight_conformity_bpr=0.03, loss_weight_independence=0.02, loss_weight_contrastive=0.03, loss_weight_popularity=0.015, auxiliary_loss_schedule=linear_ramp, auxiliary_ramp_rate=0.001, independence_ramp_rate=0.000125, auxiliary_losses_start_epoch=15, popularity_supervision_start_epoch=30, graph_policy=observed, cagra_candidate_k=0, cagra_k=32, cagra_out_degree=64, cagra_initial_degree=128, cagra_team_size=0, cagra_metric=inner_product, cagra_itopk_size=64, hard_negative_ratio=0.15, dice_sampler_margin=80.0, grad_clip_norm=5.0, use_features=True, use_popularity_head=True, epochs=60, patience=8, use_early_stopping=True, auto_batch_size=True, batch_size_candidates=[32768,16384,8192,4096,2048,1024,512,256], baseline_family=ucagnn, dataset=kuairand1k, preprocessing_preset=kuairand_causal, feature_policy=thesis_default, training_graph_mode=sampled, negative_sampling_strategy=dice, n_negatives=1, branch_loss_mode=dice, use_amp=True, peak_vram_mb=15792.0, time_per_epoch_s=35.6758402529535` |
 
 ### Dashboard-like Optuna importances
 
-Importances omitted: no completed fresh trials with a stored search_space_revision.
+Subset: `16` fresh completed trial(s) from search-space revision `7129c30067fe`.
+
+| Rank | Parameter | Importance |
+|---:|---|---:|
+| 1 | `loss_weight_interest_bpr` | 0.462102 |
+| 2 | `hard_negative_ratio` | 0.162296 |
+| 3 | `loss_weight_independence` | 0.096694 |
+| 4 | `dice_sampler_margin` | 0.062324 |
+| 5 | `loss_weight_popularity` | 0.057194 |
+| 6 | `interest_gnn_layers` | 0.031683 |
+| 7 | `dropout` | 0.030335 |
+| 8 | `lr` | 0.026312 |
+| 9 | `loss_weight_contrastive` | 0.018160 |
+| 10 | `score_mix_min_weight` | 0.016145 |
+| 11 | `weight_decay` | 0.014663 |
+| 12 | `conformity_gnn_layers` | 0.006206 |
+| 13 | `lr_scheduler` | 0.004859 |
+| 14 | `auxiliary_ramp_rate` | 0.003648 |
+| 15 | `independence_ramp_rate` | 0.003359 |
+| 16 | `loss_weight_conformity_bpr` | 0.002895 |
+| 17 | `grad_clip_norm` | 0.001125 |
+| 18 | `auxiliary_loss_schedule` | 0.000000 |
+
+### Deterministic fANOVA importance sensitivity
+
+| Rank | Parameter | Importance |
+|---:|---|---:|
+| 1 | `loss_weight_interest_bpr` | 0.522837 |
+| 2 | `hard_negative_ratio` | 0.179783 |
+| 3 | `loss_weight_independence` | 0.082260 |
+| 4 | `interest_gnn_layers` | 0.063993 |
+| 5 | `loss_weight_popularity` | 0.047071 |
+| 6 | `lr` | 0.021695 |
+| 7 | `dice_sampler_margin` | 0.021612 |
+| 8 | `auxiliary_ramp_rate` | 0.012269 |
+| 9 | `score_mix_min_weight` | 0.009031 |
+| 10 | `loss_weight_contrastive` | 0.008900 |
+| 11 | `weight_decay` | 0.008217 |
+| 12 | `loss_weight_conformity_bpr` | 0.006462 |
+| 13 | `conformity_gnn_layers` | 0.004451 |
+| 14 | `grad_clip_norm` | 0.004403 |
+| 15 | `dropout` | 0.003741 |
+| 16 | `independence_ramp_rate` | 0.002444 |
+| 17 | `lr_scheduler` | 0.000832 |
+| 18 | `auxiliary_loss_schedule` | 0.000000 |
 
 ### Dashboard-like Optuna importances for `kuairand1k` objective
 
-Importances omitted: no completed fresh trials with a stored search_space_revision.
+Subset: `16` fresh completed trial(s) from search-space revision `7129c30067fe`.
+
+| Rank | Parameter | Importance |
+|---:|---|---:|
+| 1 | `loss_weight_interest_bpr` | 0.448313 |
+| 2 | `hard_negative_ratio` | 0.169951 |
+| 3 | `dice_sampler_margin` | 0.102451 |
+| 4 | `loss_weight_popularity` | 0.068623 |
+| 5 | `loss_weight_independence` | 0.063426 |
+| 6 | `dropout` | 0.052680 |
+| 7 | `interest_gnn_layers` | 0.050300 |
+| 8 | `weight_decay` | 0.009813 |
+| 9 | `loss_weight_contrastive` | 0.008131 |
+| 10 | `lr` | 0.006072 |
+| 11 | `conformity_gnn_layers` | 0.004722 |
+| 12 | `grad_clip_norm` | 0.004710 |
+| 13 | `score_mix_min_weight` | 0.003820 |
+| 14 | `auxiliary_ramp_rate` | 0.002704 |
+| 15 | `loss_weight_conformity_bpr` | 0.002624 |
+| 16 | `independence_ramp_rate` | 0.000944 |
+| 17 | `lr_scheduler` | 0.000715 |
+| 18 | `auxiliary_loss_schedule` | 0.000000 |
+
+### Failed-trial diagnostics
+
+| Count | Example trial | Stored reason |
+|---:|---:|---|
+| 1 | 32 | `failure before stored attrs; exact exception unavailable in Optuna RDB` |
+
+Legacy failures without stored attributes happened before the current failure recorder could write `failure_stage` / `failure_reason`; the old runs cannot be reconstructed from Optuna RDB alone.
 
 ### Top 10 completed trials
 
@@ -181,38 +255,38 @@ Importances omitted: no completed fresh trials with a stored search_space_revisi
 |---:|---:|---:|---:|---:|---|
 | 1 | 2 | 0.057868 | 1650.00 | 15050.0 | `lr=0.003, weight_decay=3e-08, lr_scheduler=plateau, lr_scheduler_factor=0.7, num_neighbors=[16,8,4], interest_gnn_layers=3, conformity_gnn_layers=2, dropout=0.25, score_mix_min_weight=0.06, loss_weight_independence=0.0025, loss_weight_contrastive=0.05, loss_weight_popularity=0.03, hard_negative_ratio=0.15, dice_sampler_margin=70.0, grad_clip_norm=5.0` |
 | 2 | 14 | 0.049902 | 1802.50 | 15130.0 | `lr=0.0025, weight_decay=1e-08, lr_scheduler=plateau, lr_scheduler_factor=0.7, num_neighbors=[16,8,4], interest_gnn_layers=3, conformity_gnn_layers=2, dropout=0.25, score_mix_min_weight=0.06, loss_weight_independence=0.0, loss_weight_contrastive=0.02, loss_weight_popularity=0.005, hard_negative_ratio=0.15, dice_sampler_margin=70.0, grad_clip_norm=1.0` |
-| 3 | 8 | 0.048919 | 1493.44 | 13559.0 | `lr=0.0008, weight_decay=3e-07, lr_scheduler=plateau, lr_scheduler_factor=0.3, num_neighbors=[8,4,2], interest_gnn_layers=3, conformity_gnn_layers=1, dropout=0.25, score_mix_min_weight=0.06, loss_weight_independence=0.02, loss_weight_contrastive=0.03, loss_weight_popularity=0.015, hard_negative_ratio=0.0, dice_sampler_margin=50.0, grad_clip_norm=4.0` |
-| 4 | 4 | 0.047527 | 669.29 | 13300.0 | `lr=0.0045, weight_decay=3e-05, lr_scheduler=cosine, num_neighbors=[8,4], interest_gnn_layers=2, conformity_gnn_layers=1, dropout=0.2, score_mix_min_weight=0.08, loss_weight_independence=0.0075, loss_weight_contrastive=0.035, loss_weight_popularity=0.0, hard_negative_ratio=0.0, dice_sampler_margin=70.0, grad_clip_norm=0.5` |
-| 5 | 11 | 0.047156 | 1651.94 | 15039.0 | `lr=0.003, weight_decay=3e-08, lr_scheduler=plateau, lr_scheduler_factor=0.7, num_neighbors=[16,8,4], interest_gnn_layers=3, conformity_gnn_layers=2, dropout=0.25, score_mix_min_weight=0.09, loss_weight_independence=0.0025, loss_weight_contrastive=0.05, loss_weight_popularity=0.02, hard_negative_ratio=0.25, dice_sampler_margin=70.0, grad_clip_norm=3.5` |
-| 6 | 1 | 0.043718 | 732.82 | 15222.0 | `lr=0.01, weight_decay=0.0, lr_scheduler=plateau, lr_scheduler_factor=0.6, num_neighbors=[8,4], interest_gnn_layers=1, conformity_gnn_layers=2, dropout=0.15, score_mix_min_weight=0.06, loss_weight_independence=0.01, loss_weight_contrastive=0.005, loss_weight_popularity=0.0, hard_negative_ratio=0.15, dice_sampler_margin=60.0, grad_clip_norm=4.0` |
-| 7 | 10 | 0.042357 | 6128.31 | 13257.0 | `lr=0.0075, weight_decay=0.001, lr_scheduler=none, num_neighbors=[16,8], interest_gnn_layers=2, conformity_gnn_layers=2, dropout=0.1, score_mix_min_weight=0.07, loss_weight_independence=0.015, loss_weight_contrastive=0.03, loss_weight_popularity=0.005, hard_negative_ratio=0.2, dice_sampler_margin=80.0, grad_clip_norm=2.5` |
-| 8 | 9 | 0.041631 | 1054.87 | 15127.0 | `lr=0.001, weight_decay=0.0003, lr_scheduler=cosine, num_neighbors=[8,4,2], interest_gnn_layers=3, conformity_gnn_layers=3, dropout=0.2, score_mix_min_weight=0.04, loss_weight_independence=0.005, loss_weight_contrastive=0.035, loss_weight_popularity=0.015, hard_negative_ratio=0.35, dice_sampler_margin=70.0, grad_clip_norm=4.5` |
-| 9 | 3 | 0.039480 | 1233.88 | 15830.0 | `lr=0.0075, weight_decay=0.001, lr_scheduler=plateau, lr_scheduler_factor=0.6, num_neighbors=[10,5,3], interest_gnn_layers=3, conformity_gnn_layers=3, dropout=0.2, score_mix_min_weight=0.06, loss_weight_independence=0.015, loss_weight_contrastive=0.03, loss_weight_popularity=0.005, hard_negative_ratio=0.2, dice_sampler_margin=70.0, grad_clip_norm=2.5` |
-| 10 | 12 | 0.039191 | 1957.88 | 15833.0 | `lr=0.0009, weight_decay=3e-08, lr_scheduler=plateau, lr_scheduler_factor=0.6, num_neighbors=[10,5,3], interest_gnn_layers=3, conformity_gnn_layers=2, dropout=0.3, score_mix_min_weight=0.02, loss_weight_independence=0.015, loss_weight_contrastive=0.05, loss_weight_popularity=0.035, hard_negative_ratio=0.15, dice_sampler_margin=40.0, grad_clip_norm=2.5` |
+| 3 | 35 | 0.049225 | 1534.06 | 15792.0 | `lr=0.0005, weight_decay=1e-07, batch_size=8192, lr_scheduler=plateau, lr_scheduler_factor=0.7, num_neighbors=[16,8,4], interest_gnn_layers=3, conformity_gnn_layers=1, dropout=0.15, score_mix_min_weight=0.1, loss_weight_interest_bpr=0.01, loss_weight_conformity_bpr=0.03, loss_weight_independence=0.02, loss_weight_contrastive=0.03, loss_weight_popularity=0.015, auxiliary_loss_schedule=linear_ramp, auxiliary_ramp_rate=0.001, independence_ramp_rate=0.000125, auxiliary_losses_start_epoch=15, popularity_supervision_start_epoch=30, graph_policy=observed, cagra_candidate_k=0, cagra_k=32, cagra_out_degree=64, cagra_initial_degree=128, cagra_team_size=0, cagra_metric=inner_product, cagra_itopk_size=64, hard_negative_ratio=0.15, dice_sampler_margin=80.0, grad_clip_norm=5.0, use_features=True, use_popularity_head=True, epochs=60, patience=8, use_early_stopping=True, auto_batch_size=True, batch_size_candidates=[32768,16384,8192,4096,2048,1024,512,256], baseline_family=ucagnn, dataset=kuairand1k, preprocessing_preset=kuairand_causal, feature_policy=thesis_default, training_graph_mode=sampled, negative_sampling_strategy=dice, n_negatives=1, branch_loss_mode=dice, use_amp=True` |
+| 4 | 8 | 0.048919 | 1493.44 | 13559.0 | `lr=0.0008, weight_decay=3e-07, lr_scheduler=plateau, lr_scheduler_factor=0.3, num_neighbors=[8,4,2], interest_gnn_layers=3, conformity_gnn_layers=1, dropout=0.25, score_mix_min_weight=0.06, loss_weight_independence=0.02, loss_weight_contrastive=0.03, loss_weight_popularity=0.015, hard_negative_ratio=0.0, dice_sampler_margin=50.0, grad_clip_norm=4.0` |
+| 5 | 62 | 0.048096 | 1272.11 | 13168.0 | `lr=0.001, weight_decay=1e-05, batch_size=8192, lr_scheduler=plateau, lr_scheduler_factor=0.7, num_neighbors=[16,8], interest_gnn_layers=1, conformity_gnn_layers=2, dropout=0.0, score_mix_min_weight=0.05, loss_weight_interest_bpr=0.01, loss_weight_conformity_bpr=0.03, loss_weight_independence=0.0, loss_weight_contrastive=0.05, loss_weight_popularity=0.03, auxiliary_loss_schedule=linear_ramp, auxiliary_ramp_rate=0.001, independence_ramp_rate=0.000125, auxiliary_losses_start_epoch=15, popularity_supervision_start_epoch=30, graph_policy=observed, cagra_candidate_k=0, cagra_k=32, cagra_out_degree=64, cagra_initial_degree=128, cagra_team_size=0, cagra_metric=inner_product, cagra_itopk_size=64, hard_negative_ratio=0.15, dice_sampler_margin=50.0, grad_clip_norm=5.0, use_features=True, use_popularity_head=True, epochs=60, patience=8, use_early_stopping=True, auto_batch_size=True, batch_size_candidates=[32768,16384,8192,4096,2048,1024,512,256], baseline_family=ucagnn, dataset=kuairand1k, preprocessing_preset=kuairand_causal, feature_policy=thesis_default, training_graph_mode=sampled, negative_sampling_strategy=dice, n_negatives=1, branch_loss_mode=dice, use_amp=True` |
+| 6 | 4 | 0.047527 | 669.29 | 13300.0 | `lr=0.0045, weight_decay=3e-05, lr_scheduler=cosine, num_neighbors=[8,4], interest_gnn_layers=2, conformity_gnn_layers=1, dropout=0.2, score_mix_min_weight=0.08, loss_weight_independence=0.0075, loss_weight_contrastive=0.035, loss_weight_popularity=0.0, hard_negative_ratio=0.0, dice_sampler_margin=70.0, grad_clip_norm=0.5` |
+| 7 | 78 | 0.047452 | 1405.42 | 15678.0 | `lr=0.001, weight_decay=1e-05, batch_size=8192, lr_scheduler=none, lr_scheduler_factor=0.5, num_neighbors=[16], interest_gnn_layers=1, conformity_gnn_layers=1, dropout=0.15, score_mix_min_weight=0.05, loss_weight_interest_bpr=0.01, loss_weight_conformity_bpr=0.03, loss_weight_independence=0.0, loss_weight_contrastive=0.03, loss_weight_popularity=0.03, auxiliary_loss_schedule=linear_ramp, auxiliary_ramp_rate=0.001, independence_ramp_rate=0.0005, auxiliary_losses_start_epoch=15, popularity_supervision_start_epoch=30, graph_policy=observed, cagra_candidate_k=0, cagra_k=32, cagra_out_degree=64, cagra_initial_degree=128, cagra_team_size=0, cagra_metric=inner_product, cagra_itopk_size=64, hard_negative_ratio=0.15, dice_sampler_margin=50.0, grad_clip_norm=5.0, use_features=True, use_popularity_head=True, epochs=60, patience=8, use_early_stopping=True, auto_batch_size=True, batch_size_candidates=[32768,16384,8192,4096,2048,1024,512,256], baseline_family=ucagnn, dataset=kuairand1k, preprocessing_preset=kuairand_causal, feature_policy=thesis_default, training_graph_mode=sampled, negative_sampling_strategy=dice, n_negatives=1, branch_loss_mode=dice, use_amp=True` |
+| 8 | 11 | 0.047156 | 1651.94 | 15039.0 | `lr=0.003, weight_decay=3e-08, lr_scheduler=plateau, lr_scheduler_factor=0.7, num_neighbors=[16,8,4], interest_gnn_layers=3, conformity_gnn_layers=2, dropout=0.25, score_mix_min_weight=0.09, loss_weight_independence=0.0025, loss_weight_contrastive=0.05, loss_weight_popularity=0.02, hard_negative_ratio=0.25, dice_sampler_margin=70.0, grad_clip_norm=3.5` |
+| 9 | 1 | 0.043718 | 732.82 | 15222.0 | `lr=0.01, weight_decay=0.0, lr_scheduler=plateau, lr_scheduler_factor=0.6, num_neighbors=[8,4], interest_gnn_layers=1, conformity_gnn_layers=2, dropout=0.15, score_mix_min_weight=0.06, loss_weight_independence=0.01, loss_weight_contrastive=0.005, loss_weight_popularity=0.0, hard_negative_ratio=0.15, dice_sampler_margin=60.0, grad_clip_norm=4.0` |
+| 10 | 10 | 0.042357 | 6128.31 | 13257.0 | `lr=0.0075, weight_decay=0.001, lr_scheduler=none, num_neighbors=[16,8], interest_gnn_layers=2, conformity_gnn_layers=2, dropout=0.1, score_mix_min_weight=0.07, loss_weight_independence=0.015, loss_weight_contrastive=0.03, loss_weight_popularity=0.005, hard_negative_ratio=0.2, dice_sampler_margin=80.0, grad_clip_norm=2.5` |
 
 ### Formal-promotion candidates
 
 Promote dataset-local winners into formal profiles only after checking runtime and whether popularity diagnostics are acceptable.
 
-- `kuairand1k` trial `2`: dataset objective `0.057868`; posthoc CRRU@20/40 `0.515882`/`0.529904`; time/epoch `38.37`s; peak VRAM `15050.0`MB; batch `-`; study objective `0.057868`; effective config `lr=0.003, weight_decay=3e-08, lr_scheduler=plateau, lr_scheduler_factor=0.7, num_neighbors=[16,8,4], interest_gnn_layers=3, conformity_gnn_layers=2, dropout=0.25, score_mix_min_weight=0.06, loss_weight_independence=0.0025, loss_weight_contrastive=0.05, loss_weight_popularity=0.03, hard_negative_ratio=0.15, dice_sampler_margin=70.0, grad_clip_norm=5.0, peak_vram_mb=15050.0, time_per_epoch_s=38.37220115976743`
-- `kuairand1k` trial `14`: dataset objective `0.049902`; posthoc CRRU@20/40 `0.436453`/`0.461240`; time/epoch `37.55`s; peak VRAM `15130.0`MB; batch `-`; study objective `0.049902`; effective config `lr=0.0025, weight_decay=1e-08, lr_scheduler=plateau, lr_scheduler_factor=0.7, num_neighbors=[16,8,4], interest_gnn_layers=3, conformity_gnn_layers=2, dropout=0.25, score_mix_min_weight=0.06, loss_weight_independence=0.0, loss_weight_contrastive=0.02, loss_weight_popularity=0.005, hard_negative_ratio=0.15, dice_sampler_margin=70.0, grad_clip_norm=1.0, peak_vram_mb=15130.0, time_per_epoch_s=37.552080419166636`
-- `kuairand1k` trial `8`: dataset objective `0.048919`; posthoc CRRU@20/40 `0.486976`/`0.540741`; time/epoch `18.67`s; peak VRAM `13559.0`MB; batch `-`; study objective `0.048919`; effective config `lr=0.0008, weight_decay=3e-07, lr_scheduler=plateau, lr_scheduler_factor=0.3, num_neighbors=[8,4,2], interest_gnn_layers=3, conformity_gnn_layers=1, dropout=0.25, score_mix_min_weight=0.06, loss_weight_independence=0.02, loss_weight_contrastive=0.03, loss_weight_popularity=0.015, hard_negative_ratio=0.0, dice_sampler_margin=50.0, grad_clip_norm=4.0, peak_vram_mb=13559.0, time_per_epoch_s=18.668033008587464`
+- `kuairand1k` trial `2`: dataset objective `0.057868`; posthoc CRRU@20/40 `0.638699`/`0.635763`; time/epoch `38.37`s; peak VRAM `15050.0`MB; batch `-`; study objective `0.057868`; effective config `lr=0.003, weight_decay=3e-08, lr_scheduler=plateau, lr_scheduler_factor=0.7, num_neighbors=[16,8,4], interest_gnn_layers=3, conformity_gnn_layers=2, dropout=0.25, score_mix_min_weight=0.06, loss_weight_independence=0.0025, loss_weight_contrastive=0.05, loss_weight_popularity=0.03, hard_negative_ratio=0.15, dice_sampler_margin=70.0, grad_clip_norm=5.0, peak_vram_mb=15050.0, time_per_epoch_s=38.37220115976743`
+- `kuairand1k` trial `14`: dataset objective `0.049902`; posthoc CRRU@20/40 `0.518351`/`0.540925`; time/epoch `37.55`s; peak VRAM `15130.0`MB; batch `-`; study objective `0.049902`; effective config `lr=0.0025, weight_decay=1e-08, lr_scheduler=plateau, lr_scheduler_factor=0.7, num_neighbors=[16,8,4], interest_gnn_layers=3, conformity_gnn_layers=2, dropout=0.25, score_mix_min_weight=0.06, loss_weight_independence=0.0, loss_weight_contrastive=0.02, loss_weight_popularity=0.005, hard_negative_ratio=0.15, dice_sampler_margin=70.0, grad_clip_norm=1.0, peak_vram_mb=15130.0, time_per_epoch_s=37.552080419166636`
+- `kuairand1k` trial `35`: dataset objective `0.049225`; posthoc CRRU@20/40 `0.351148`/`0.371385`; time/epoch `35.68`s; peak VRAM `15792.0`MB; batch `8192`; study objective `0.049225`; effective config `lr=0.0005, weight_decay=1e-07, batch_size=8192, lr_scheduler=plateau, lr_scheduler_factor=0.7, num_neighbors=[16,8,4], interest_gnn_layers=3, conformity_gnn_layers=1, dropout=0.15, score_mix_min_weight=0.1, loss_weight_interest_bpr=0.01, loss_weight_conformity_bpr=0.03, loss_weight_independence=0.02, loss_weight_contrastive=0.03, loss_weight_popularity=0.015, auxiliary_loss_schedule=linear_ramp, auxiliary_ramp_rate=0.001, independence_ramp_rate=0.000125, auxiliary_losses_start_epoch=15, popularity_supervision_start_epoch=30, graph_policy=observed, cagra_candidate_k=0, cagra_k=32, cagra_out_degree=64, cagra_initial_degree=128, cagra_team_size=0, cagra_metric=inner_product, cagra_itopk_size=64, hard_negative_ratio=0.15, dice_sampler_margin=80.0, grad_clip_norm=5.0, use_features=True, use_popularity_head=True, epochs=60, patience=8, use_early_stopping=True, auto_batch_size=True, batch_size_candidates=[32768,16384,8192,4096,2048,1024,512,256], baseline_family=ucagnn, dataset=kuairand1k, preprocessing_preset=kuairand_causal, feature_policy=thesis_default, training_graph_mode=sampled, negative_sampling_strategy=dice, n_negatives=1, branch_loss_mode=dice, use_amp=True, peak_vram_mb=15792.0, time_per_epoch_s=35.6758402529535`
 
 ## Study: `ucagnn-core-optimization-kuairec_v2-val-validationonlinecrru-20-40`
 
 - Direction: `maximize`
 - Objective: `val ValidationOnlineCRRU@20_40`
-- Trials: 85 total, 44 completed, 1 failed, 0 running, 40 pruned
+- Trials: 91 total, 45 completed, 1 failed, 0 running, 45 pruned
 
 ### Trial accounting
 
 | State | Fresh | Imported | Total |
 |---|---:|---:|---:|
-| COMPLETE | 14 | 30 | 44 |
-| PRUNED | 40 | 0 | 40 |
+| COMPLETE | 15 | 30 | 45 |
+| PRUNED | 45 | 0 | 45 |
 | FAIL | 1 | 0 | 1 |
 
-- Fresh informative budget count: `54` (fresh COMPLETE + real fresh PRUNED).
+- Fresh informative budget count: `60` (fresh COMPLETE + real fresh PRUNED).
 - Duplicate-skip pruned trials excluded from that budget: `0`.
 
 ### Best study-level trial
@@ -241,11 +315,11 @@ These are the configurations to inspect for formal dataset-specific reruns. For 
 
 ### Dashboard-like Optuna importances
 
-Importances omitted: no completed fresh trials with a stored search_space_revision.
+Importances omitted: only 1 completed fresh trial(s) in revision 7a124a515d0b; need at least 10.
 
 ### Dashboard-like Optuna importances for `kuairec_v2` objective
 
-Importances omitted: no completed fresh trials with a stored search_space_revision.
+Importances omitted: only 1 completed fresh trial(s) in revision 7a124a515d0b; need at least 10.
 
 ### Failed-trial diagnostics
 
