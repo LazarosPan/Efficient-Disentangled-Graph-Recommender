@@ -12,6 +12,7 @@ DEFAULT_SEED = 13
 GraphPolicy = Literal["observed", "cagra_augmented"]
 TrainingGraphMode = Literal["sampled", "full"]
 BranchLossMode = Literal["symmetric_bpr", "dice"]
+DiceMaskReduction = Literal["batch_mean", "active_mean"]
 RecommendationLossMode = Literal["final", "dice_sum"]
 NegativeSamplingStrategy = Literal["standard", "dice"]
 LRSchedulerName = Literal[
@@ -76,6 +77,7 @@ CONFIG_OVERRIDE_FIELDS = (
     "cagra_candidate_k",
     "training_graph_mode",
     "branch_loss_mode",
+    "dice_mask_reduction",
     "recommendation_loss_mode",
     "negative_sampling_strategy",
     "preprocessing_preset",
@@ -99,6 +101,7 @@ CONFIG_OVERRIDE_FIELDS = (
     "uniformity_max_pairs",
     "uniformity_temperature",
     "use_conformity_au",
+    "feature_gate_init",
     "loss_weight_recommendation",
     "loss_weight_interest_bpr",
     "loss_weight_conformity_bpr",
@@ -140,6 +143,7 @@ _NON_CAUSAL_PRESET_OVERRIDES: PresetOverrides = {
     "recommendation_loss_mode": "final",
     "negative_sampling_strategy": "standard",
     "score_mix_min_weight": 0.0,
+    "dice_mask_reduction": "batch_mean",
     "use_sign_aware": False,
     "use_ipw": False,
     "use_popularity_head": False,
@@ -221,6 +225,7 @@ _DICE_PAPER_PRESET_OVERRIDES: PresetOverrides = _NON_CAUSAL_PRESET_OVERRIDES | {
     "dice_loss_decay": 0.9,
     "dice_margin_decay": 0.9,
     "dice_adaptive_decay": True,
+    "dice_mask_reduction": "batch_mean",
 }
 _LIGHTGCN_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
     key: _LIGHTGCN_PAPER_PRESET_OVERRIDES[key]
@@ -237,6 +242,7 @@ _LIGHTGCN_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
         "use_features",
         "feature_policy",
         "branch_loss_mode",
+        "dice_mask_reduction",
         "recommendation_loss_mode",
         "negative_sampling_strategy",
         "single_branch_gnn_layers",
@@ -286,6 +292,7 @@ _DICE_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
         "dice_loss_decay",
         "dice_margin_decay",
         "dice_adaptive_decay",
+        "dice_mask_reduction",
         "loss_weight_interest_bpr",
         "loss_weight_conformity_bpr",
         "loss_weight_independence",
@@ -328,6 +335,8 @@ _FULL_PRESET_OVERRIDES: PresetOverrides = {
     "dice_sampler_pool": 40,
     "dice_branch_margin": 40.0,
     "propensity_clip_min": 0.1,
+    "dice_mask_reduction": "active_mean",
+    "feature_gate_init": -4.0,
     "use_features": True,
     "feature_policy": DEFAULT_FEATURE_POLICY,
     "score_mix_min_weight": 0.05,
@@ -380,6 +389,7 @@ class UCaGNNConfig:
     loss_weight_uniform: float = 0.02
     loss_weight_popularity: float = 0.02
     branch_loss_mode: BranchLossMode = "symmetric_bpr"
+    dice_mask_reduction: DiceMaskReduction = "batch_mean"
     recommendation_loss_mode: RecommendationLossMode = "final"
     auxiliary_loss_schedule: Literal["phased", "linear_ramp"] = "phased"
     auxiliary_ramp_rate: float = 0.001
@@ -450,6 +460,7 @@ class UCaGNNConfig:
     # ── Side features ─────────────────────────────────────────────────────
     use_features: bool = True  # load and use user/item side features when available
     feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY
+    feature_gate_init: float = 0.0
 
     # ── Data ─────────────────────────────────────────────────────────────
     dataset: str = "movielens1m"
@@ -519,6 +530,8 @@ class UCaGNNConfig:
             raise ValueError("training_graph_mode must be either 'sampled' or 'full'")
         if self.branch_loss_mode not in ("symmetric_bpr", "dice"):
             raise ValueError("branch_loss_mode must be either 'symmetric_bpr' or 'dice'")
+        if self.dice_mask_reduction not in ("batch_mean", "active_mean"):
+            raise ValueError("dice_mask_reduction must be either 'batch_mean' or 'active_mean'")
         if self.recommendation_loss_mode not in ("final", "dice_sum"):
             raise ValueError("recommendation_loss_mode must be either 'final' or 'dice_sum'")
         if self.negative_sampling_strategy not in ("standard", "dice"):

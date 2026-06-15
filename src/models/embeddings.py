@@ -153,8 +153,9 @@ class EmbeddingModule(nn.Module):
             )
             self.item_feature_proj = nn.Linear(item_features.size(-1), d)
             self.item_feature_norm = nn.LayerNorm(d)
-            self.item_interest_gate = nn.Parameter(torch.tensor(0.0))
-            self.item_conformity_gate = nn.Parameter(torch.tensor(0.0))
+            gate_init = float(config.feature_gate_init)
+            self.item_interest_gate = nn.Parameter(torch.tensor(gate_init))
+            self.item_conformity_gate = nn.Parameter(torch.tensor(gate_init))
             self.popularity_modulator = nn.Sequential(
                 nn.Linear(1, d),
                 nn.Sigmoid(),

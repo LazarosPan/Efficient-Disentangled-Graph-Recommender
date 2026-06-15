@@ -8,7 +8,7 @@ import torch
 from torch import nn
 from torch.nn import functional
 
-from ..utils.config import UCaGNNConfig
+from ..utils.config import DiceMaskReduction, UCaGNNConfig
 
 
 def _bpr_loss(
@@ -38,12 +38,16 @@ def _masked_bpr_loss(
     pos_scores: torch.Tensor,
     neg_scores: torch.Tensor,
     mask: torch.Tensor,
+    reduction: DiceMaskReduction,
 ) -> torch.Tensor:
-    """Compute DICE's mask-weighted BPR, averaging over the full batch."""
+    """Compute DICE's mask-weighted BPR with the configured reduction."""
     pos_scores = pos_scores.float()
     neg_scores = neg_scores.float()
     mask = mask.to(device=pos_scores.device, dtype=pos_scores.dtype)
-    return -(mask * functional.logsigmoid(pos_scores - neg_scores)).mean()
+    loss = -(mask * functional.logsigmoid(pos_scores - neg_scores))
+    if reduction == "active_mean":
+        return loss.sum() / mask.sum().clamp_min(1.0)
+    return loss.mean()
 
 
 def _independence_loss(
@@ -553,15 +557,18 @@ class LossSuite(nn.Module):
                 pos_interest_branch,
                 neg_interest_branch,
                 popular_negative_mask,
+                cfg.dice_mask_reduction,
             )
             losses["conformity_bpr"] = _masked_bpr_loss(
                 neg_conformity_branch,
                 pos_conformity_branch,
                 popular_negative_mask,
+                cfg.dice_mask_reduction,
             ) + _masked_bpr_loss(
                 pos_conformity_branch,
                 neg_conformity_branch,
                 ~popular_negative_mask,
+                cfg.dice_mask_reduction,
             )
         else:
             if use_dual_branch and interest_weight > 0:
