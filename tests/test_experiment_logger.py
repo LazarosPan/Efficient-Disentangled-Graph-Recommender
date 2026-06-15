@@ -1043,11 +1043,11 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertNotIn("target_epochs=200", output)
         self.assertNotIn("throughput=2.86 batch/s", output)
         self.assertIn(
-            "Resources:  time=7.9s | epochs=1 | time/epoch=0.4s | peak_vram=1234MB",
+            "Resources:  time=7.9s",
             output,
         )
         self.assertIn(
-            "Resources:  time=12.3s | epochs=1 | time/epoch=0.6s | peak_vram=2345MB",
+            "Resources:  time=12.3s",
             output,
         )
         self.assertIn("Resources:  time=12.3s", output)
@@ -1132,7 +1132,9 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertTrue(output_path.exists())
         markdown_output = output_path.read_text(encoding="utf-8")
         self.assertIn("# Query Results", markdown_output)
-        self.assertIn("```text", markdown_output)
+        self.assertNotIn("```text", markdown_output)
+        self.assertIn("| Run | Dataset | Preset | ScoreMix | Neighbors |", markdown_output)
+        self.assertIn("| ---: | --- | --- | --- | --- |", markdown_output)
         self.assertIn("THESIS TEST RESULTS", markdown_output)
         self.assertIn(
             "Composite Resource-aware Recommendation Utility at K",

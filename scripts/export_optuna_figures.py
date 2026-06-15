@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import textwrap
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +27,7 @@ from scripts.report_optuna_optimization import (
     OPTUNA_FIGURES_DIR,
     attr_float,
     completed_trials,
-    dataset_importances,
+    dataset_importance_result,
     dataset_metric,
     dataset_names,
     load_studies,
@@ -117,6 +119,16 @@ PROFILE_FALLBACK_PARAMS = (
     "dice_sampler_margin",
     "grad_clip_norm",
 )
+
+
+@dataclass(frozen=True)
+class FigureImportanceResult:
+    """Importance result used only for thesis-facing overview figures."""
+
+    importances: dict[str, float]
+    quality: str
+    trial_count: int
+    reason: str | None
 
 
 def _dataset_label(dataset: str) -> str:
@@ -295,6 +307,100 @@ def _fanout_tuple(value: Any) -> tuple[int, ...] | None:
         return None
 
 
+def _stable_param_key(value: Any) -> str:
+    """Return a stable categorical key for a parameter value."""
+    if value is None:
+        return "__missing__"
+    if isinstance(value, dict | list | tuple):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return str(value)
+
+
+def _average_ranks(values: Sequence[float]) -> list[float]:
+    """Return average ranks with ties."""
+    indexed = sorted(enumerate(values), key=lambda item: item[1])
+    ranks = [0.0 for _ in values]
+    index = 0
+    while index < len(indexed):
+        end = index + 1
+        while end < len(indexed) and indexed[end][1] == indexed[index][1]:
+            end += 1
+        average_rank = (index + 1 + end) / 2.0
+        for original_index, _value in indexed[index:end]:
+            ranks[original_index] = average_rank
+        index = end
+    return ranks
+
+
+def _squared_pearson(left: Sequence[float], right: Sequence[float]) -> float:
+    """Return squared Pearson correlation, or zero when undefined."""
+    if len(left) != len(right) or len(left) < 2:
+        return 0.0
+    left_mean = sum(left) / len(left)
+    right_mean = sum(right) / len(right)
+    left_centered = [value - left_mean for value in left]
+    right_centered = [value - right_mean for value in right]
+    numerator = sum(lval * rval for lval, rval in zip(left_centered, right_centered, strict=True))
+    left_ss = sum(value * value for value in left_centered)
+    right_ss = sum(value * value for value in right_centered)
+    if left_ss <= 0.0 or right_ss <= 0.0:
+        return 0.0
+    corr = numerator / math.sqrt(left_ss * right_ss)
+    return max(0.0, min(1.0, corr * corr))
+
+
+def _eta_squared(categories: Sequence[str], targets: Sequence[float]) -> float:
+    """Return between-group variance share for one categorical parameter."""
+    if len(categories) != len(targets) or len(set(categories)) < 2:
+        return 0.0
+    overall_mean = sum(targets) / len(targets)
+    total_ss = sum((value - overall_mean) ** 2 for value in targets)
+    if total_ss <= 0.0:
+        return 0.0
+    grouped: dict[str, list[float]] = defaultdict(list)
+    for category, target in zip(categories, targets, strict=True):
+        grouped[category].append(target)
+    between_ss = 0.0
+    for values in grouped.values():
+        group_mean = sum(values) / len(values)
+        between_ss += len(values) * ((group_mean - overall_mean) ** 2)
+    return max(0.0, min(1.0, between_ss / total_ss))
+
+
+def _exploratory_univariate_importances(
+    trials: Sequence[optuna.trial.FrozenTrial],
+    dataset: str,
+) -> dict[str, float]:
+    """Return normalized univariate association scores for historical trials."""
+    targets = [dataset_metric(trial, dataset, "objective") for trial in trials]
+    if any(value is None for value in targets):
+        return {}
+    target_values = [float(value) for value in targets if value is not None]
+    target_ranks = _average_ranks(target_values)
+    names = sorted({name for trial in trials for name in logical_trial_params(trial)})
+    raw_scores: dict[str, float] = {}
+    for name in names:
+        values = [logical_trial_params(trial).get(name) for trial in trials]
+        categorical_keys = [_stable_param_key(value) for value in values]
+        if len(set(categorical_keys)) < 2:
+            continue
+        numeric_values = [_as_float(value) for value in values]
+        if all(value is not None for value in numeric_values):
+            value_ranks = _average_ranks(
+                [float(value) for value in numeric_values if value is not None]
+            )
+            score = _squared_pearson(value_ranks, target_ranks)
+        else:
+            score = _eta_squared(categorical_keys, target_values)
+        if math.isfinite(score) and score > 0.0:
+            raw_scores[name] = score
+    total = sum(raw_scores.values())
+    if total <= 0.0:
+        return {}
+    normalized = {name: score / total for name, score in raw_scores.items()}
+    return dict(sorted(normalized.items(), key=lambda item: item[1], reverse=True))
+
+
 def _minmax_score(
     values: Sequence[float | None],
     *,
@@ -444,7 +550,8 @@ def _top_importance_params(
     totals: dict[str, float] = {}
     counts: dict[str, int] = {}
     for dataset, study in pairs:
-        for name, importance in dataset_importances(study, dataset).items():
+        result = _figure_importance_result(study, dataset)
+        for name, importance in result.importances.items():
             totals[name] = totals.get(name, 0.0) + float(importance)
             counts[name] = counts.get(name, 0) + 1
     if not totals:
@@ -456,30 +563,80 @@ def _top_importance_params(
     return ranked[:limit]
 
 
+def _figure_importance_result(study: optuna.Study, dataset: str) -> FigureImportanceResult:
+    """Return strict importances or an explicitly exploratory all-completed fallback."""
+    strict = dataset_importance_result(study, dataset)
+    if strict.importances:
+        return FigureImportanceResult(
+            strict.importances,
+            "strict",
+            strict.trial_count,
+            f"fresh revision={strict.revision}, n={strict.trial_count}",
+        )
+
+    fallback_trials = [
+        trial
+        for trial in completed_trials(study)
+        if dataset_metric(trial, dataset, "objective") is not None
+    ]
+    if len(fallback_trials) < 2:
+        return FigureImportanceResult(
+            {},
+            "unavailable",
+            len(fallback_trials),
+            strict.reason or "fewer than two completed dataset-local trials",
+        )
+
+    importances = _exploratory_univariate_importances(fallback_trials, dataset)
+    if not importances:
+        return FigureImportanceResult(
+            {},
+            "unavailable",
+            len(fallback_trials),
+            strict.reason or "Optuna could not compute fallback importances",
+        )
+    return FigureImportanceResult(
+        importances,
+        "exploratory",
+        len(fallback_trials),
+        f"univariate association over all completed dataset-local trials; "
+        f"strict omitted: {strict.reason}",
+    )
+
+
 def export_importance_by_dataset(
     pairs: Sequence[tuple[str, optuna.Study]],
     output_dir: Path,
 ) -> Path | None:
     """Export one dataset-by-parameter importance heatmap."""
-    rows: list[tuple[str, dict[str, float]]] = []
+    rows: list[tuple[str, FigureImportanceResult]] = []
+    has_importance = False
     for dataset, study in pairs:
-        importances = dataset_importances(study, dataset)
-        if importances:
-            rows.append((dataset, importances))
+        result = _figure_importance_result(study, dataset)
+        if result.importances:
+            has_importance = True
+        rows.append((dataset, result))
     if not rows:
         return None
 
     params = _top_importance_params(pairs, limit=11)
-    matrix = np.array(
-        [[importances.get(param, 0.0) for param in params] for _, importances in rows],
-        dtype=float,
+    matrix_values = [
+        [result.importances.get(param, 0.0) if result.importances else np.nan for param in params]
+        for _, result in rows
+    ]
+    matrix = np.ma.masked_invalid(np.array(matrix_values, dtype=float))
+    finite_max = float(np.nanmax(matrix_values)) if has_importance else 0.01
+    cmap = plt.get_cmap("YlGnBu").copy()
+    cmap.set_bad(color="#eeeeee")
+    fig, ax = plt.subplots(
+        figsize=(15.0, max(5.1, 1.05 * len(rows) + 2.2)),
+        constrained_layout=True,
     )
-    fig, ax = plt.subplots(figsize=(15.0, 5.1), constrained_layout=True)
     image = ax.imshow(
         matrix,
         aspect="auto",
-        cmap="YlGnBu",
-        norm=PowerNorm(gamma=0.55, vmin=0.0, vmax=max(0.01, float(matrix.max()))),
+        cmap=cmap,
+        norm=PowerNorm(gamma=0.55, vmin=0.0, vmax=max(0.01, finite_max)),
     )
     ax.set_xticks(range(len(params)))
     ax.set_xticklabels(
@@ -489,16 +646,37 @@ def export_importance_by_dataset(
         rotation_mode="anchor",
     )
     ax.set_yticks(range(len(rows)))
-    ax.set_yticklabels([_dataset_label(dataset) for dataset, _ in rows])
+    ax.set_yticklabels(
+        [
+            (
+                f"{_dataset_label(dataset)}\n({result.quality}, n={result.trial_count})"
+                if result.importances
+                else f"{_dataset_label(dataset)}\n(unavailable)"
+            )
+            for dataset, result in rows
+        ],
+    )
     ax.set_title(
         "Hyperparameter importance by dataset\n"
-        "Target: dataset-local validation CRRU; fresh homogeneous revisions only",
+        "Strict rows are Optuna importances; exploratory rows are normalized "
+        "univariate associations over all completed trials",
     )
-    for y_index, row in enumerate(matrix):
-        for x_index, value in enumerate(row):
-            if value >= 0.03:
+    for y_index, (_dataset, result) in enumerate(rows):
+        if not result.importances:
+            ax.text(
+                (len(params) - 1) / 2,
+                y_index,
+                "unavailable",
+                ha="center",
+                va="center",
+                fontsize=9,
+                color="#555555",
+            )
+            continue
+        for x_index, value in enumerate(matrix_values[y_index]):
+            if math.isfinite(float(value)) and value >= 0.03:
                 ax.text(x_index, y_index, f"{value:.2f}", ha="center", va="center", fontsize=8)
-    fig.colorbar(image, ax=ax, label="Optuna importance share")
+    fig.colorbar(image, ax=ax, label="Normalized importance / association share")
     return _save_figure(fig, output_dir / PAPER_FIGURE_NAMES[1])
 
 

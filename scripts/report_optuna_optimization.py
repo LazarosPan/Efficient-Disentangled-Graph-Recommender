@@ -1068,6 +1068,12 @@ def render_report(studies: Sequence[optuna.Study], *, storage: str, top_n: int) 
         "writes a compact figure set and removes stale per-study PNGs from the figure "
         "directory.",
         "",
+        "The `optuna_importance_by_dataset.png` heatmap is an overview figure: rows marked "
+        "`strict` use the same homogeneous fresh-revision subset as the report tables, while "
+        "rows marked `exploratory` use normalized univariate association scores over all "
+        "completed dataset-local trials so older datasets are still visually inspectable. "
+        "Use only `strict` rows for strong importance claims.",
+        "",
     ]
     for filename in PAPER_FIGURE_FILENAMES:
         lines.append(f"- `{OPTUNA_FIGURES_DIR / filename}`")
