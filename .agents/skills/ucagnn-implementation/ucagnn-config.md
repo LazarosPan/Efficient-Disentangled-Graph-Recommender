@@ -1,6 +1,6 @@
 # U-CaGNN Configuration
 
-Use this file for the config contract: presets, grouped knobs, and how runtime configs are assembled from defaults, recipes, profiles, and explicit overrides.
+Use this file for config ownership: defaults, presets, profiles, search spaces, grouped knobs, and override precedence.
 
 ## Key files
 
@@ -9,6 +9,8 @@ Use this file for the config contract: presets, grouped knobs, and how runtime c
 - `experiments/run_experiment.py`
 - `experiments/recipes.py`
 - `experiments/ablation_configs.py`
+- `experiments/experiment_catalog.json`
+- `experiments/search_spaces.json`
 
 ## Build order
 
@@ -20,9 +22,12 @@ flowchart LR
     D --> E[validate]
 ```
 
-The diagram shows the only supported precedence order. `build_config()` starts from `UCaGNNConfig()` defaults, applies the chosen preset, then recipe-owned overrides, then explicit overrides, and finally calls `validate()`.
+Precedence:
 
-For paper baselines, `build_config()` re-applies the paper-owned contract after recipe and explicit overrides. This prevents shared formal-profile knobs such as `dropout`, `num_neighbors`, `graph_policy`, or `lr_scheduler` from silently changing the LightGCN or DICE paper architecture and optimizer schedule.
+- `build_config()`: defaults -> preset -> recipe overrides -> explicit overrides -> `validate()`.
+- Paper presets re-apply locked fields after shared overrides.
+- Locked paper fields include architecture, sampler, scheduler, optimizer, graph policy, and batch-size contract.
+- Shared U-CaGNN profile knobs must not mutate `lightgcn_paper` or `dice_paper` paper defaults.
 
 ## Preset contract
 
@@ -54,7 +59,7 @@ For paper baselines, `build_config()` re-applies the paper-owned contract after 
 | Loss and schedule | `loss_weight_*`, `branch_loss_mode`, `recommendation_loss_mode`, `auxiliary_loss_schedule`, `auxiliary_ramp_rate`, `independence_ramp_rate`, `distance_correlation_max_pairs`, `contrastive_max_pairs`, `contrastive_temperature`, `uniformity_max_pairs`, `uniformity_temperature`, `use_conformity_au`, `loss_weight_propensity_calibration` | Enables auxiliaries, selects symmetric-vs-DICE branch supervision, caps quadratic auxiliary estimators, and controls how weights activate over time. |
 | Training mode | `training_graph_mode`, `negative_sampling_strategy`, `n_negatives`, `dice_sampler_margin`, `dice_sampler_pool`, `dice_branch_margin`, `dice_loss_decay`, `dice_margin_decay`, `dice_adaptive_decay` | Selects sampled-subgraph vs full-graph training and standard vs DICE popularity-conditioned negative sampling. |
 | Propensity | `use_ipw`, `propensity_hidden`, `propensity_clip_min`, `propensity_clip_max` | Controls the item-side propensity estimator; `use_ipw=True` requires positive `loss_weight_propensity_calibration`. |
-| Runtime | `batch_size`, `auto_batch_size`, `batch_size_candidates`, `epochs`, `patience`, `use_early_stopping`, `use_amp`, `use_torch_compile`, `use_ema`, `lr_scheduler` | Controls optimization and execution behavior. CUDA runs default to `bfloat16` AMP; the experiment CLIs do not expose a separate public AMP mode, and evaluation cutoffs are fixed by `Evaluator`'s thesis metric contract. |
+| Runtime | `batch_size`, `auto_batch_size`, `batch_size_candidates`, `epochs`, `patience`, `use_early_stopping`, `use_amp`, `use_torch_compile`, `use_ema`, `lr_scheduler` | Controls optimization and execution behavior. CUDA runs default to `bfloat16` AMP; experiment CLIs do not expose a separate public AMP mode; eval cutoffs come from `Evaluator`. |
 | Data | `dataset`, `preprocessing_preset`, `feature_policy`, `derived_split_mode`, `sample_interactions`, `loader_max_rows`, `seed` | Controls loader behavior, split derivation, and tiny-run caps. |
 
 ## Defaults worth remembering
@@ -69,11 +74,36 @@ For paper baselines, `build_config()` re-applies the paper-owned contract after 
 - `score_mix_min_weight=0.0` is the dataclass default; `preset_full()` sets it to `0.05` so learned fusion cannot collapse to interest-only when conformity/context are available, even if a current batch gives one component zero-valued scores.
 - `negative_sampling_strategy="standard"` is the dataclass default; `preset_full()` switches to DICE popularity-conditioned negatives with `n_negatives=1` and a stable `dice_branch_margin == dice_sampler_margin`.
 - `use_amp=True` is the default runtime path, and `amp_dtype` is fixed to `bfloat16`.
-- Core Optuna searches use `auto_batch_size=True` with a descending throughput-oriented candidate ladder `[32768, 16384, 8192, 4096, 2048, 1024, 512, 256]`. Batch size is therefore a runtime selection recorded in logs and reports, not a sampled model-selection parameter. Too-large CUDA batches are rejected by the auto-batch probe and retried at smaller candidates; formal recovery uses the same auto-batch checkpoint lookup rules. The resolved config still has a concrete `batch_size` field for trainer/checkpoint identity before probing.
-- The active U-CaGNN search is intentionally coarse-to-focused. Datasets with completed local evidence can use narrow categorical basins, while KuaiRand keeps a small low/medium/high regime screen until it has fresh local trials. Do not replace an untested dataset with a dense grid over a small interval.
-- Search-space TPE uses stable univariate sampling flags (`multivariate=False`, `group=False`) to avoid experimental Optuna API warnings during thesis runs.
+- Dataclass batch default: `batch_size=4096`, `auto_batch_size=True`, candidates `[16384,8192,4096,2048,1024,512,256]`.
+- Core search overrides candidates to `[32768,16384,8192,4096,2048,1024,512,256]`.
+- In `ucagnn-core-optimization`, `batch_size` is runtime metadata when auto-batch is active and `batch_size` is not a sampled parameter.
+- In `ucagnn-cagra-ablation`, `auto_batch_size=false`; `batch_size` is sampled exactly with CAGRA settings.
+- Too-large CUDA batches are rejected by probe/verification/fallback and retried at smaller candidates.
+- Auto-batch recovery checks candidate checkpoint identities before probing CUDA again.
+- U-CaGNN search is coarse-to-focused: completed datasets can narrow basins; KuaiRand stays broader until fresh local evidence exists.
+- Search-space TPE uses stable univariate flags: `multivariate=false`, `group=false`.
 - `loss_weight_propensity_calibration=0.0` is opt-in and stays inactive unless model outputs, dataset targets, and explicit IPW/calibration config exist.
 - `distance_correlation_max_pairs=1024` and `uniformity_max_pairs=2048` cap quadratic auxiliary estimators while preserving deterministic hash-sampled coverage across epochs.
+
+## Formal profile map
+
+| Profile | Purpose | Notes |
+| --- | --- | --- |
+| `dev-ucagnn` | Short U-CaGNN development profile. | Core datasets; observed graph; 60 epochs. |
+| `core-ucagnn-mainline` | Default formal thesis profile. | U-CaGNN only; core datasets; paper baselines split out. |
+| `core-ucagnn-mainline-opposite-fanout-smaller-lr` | Fan-out/LR sanity check. | Small/medium aliases; U-CaGNN only. |
+| `paper-lightgcn-*` | Run-once LightGCN paper baselines/probes. | Full-graph `PaperLightGCN`; fixed paper contract. |
+| `paper-dice-all-runtime-probes` | DICE paper feasibility estimates. | One epoch; logs `approximation` split estimates. |
+| `fast-baseline-tuning` | Fallback sampled non-paper baselines. | Report separately from paper-faithful baselines. |
+| `core-deeper-comparison-i2-c3` | Deeper U-CaGNN branch comparison. | Keeps flat fan-out sweep `[[10,5,3],[5,3,2]]`. |
+| preprocessing sweeps | Dataset-view selection. | Taobao, KuaiRec, KuaiRand explicit profiles only. |
+
+## Optuna search map
+
+| Space | Base | Datasets | Objective | Sampler/pruner | Runtime contract |
+| --- | --- | --- | --- | --- | --- |
+| `ucagnn-core-optimization` | `core-ucagnn-mainline` | core 4 | `ValidationOnlineCRRU@20_40` | TPE seed 42, startup 4; Hyperband min 6, factor 3, bootstrap 1 | `max_epochs=60`, `trials=8`, auto-batch runtime-only, 4-hop excluded |
+| `ucagnn-cagra-ablation` | `core-ucagnn-mainline` | core 4 | `ValidationOnlineCRRU@20_40` | TPE seed 42, startup 8; Hyperband min 15, factor 3, bootstrap 4 | `max_epochs=90`, `trials=16`, exact sampled `batch_size`, CAGRA graph/eval knobs |
 
 ## Experiment-facing contract
 

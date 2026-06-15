@@ -8,6 +8,7 @@ Use this file for the live model structure: embeddings, propagation, scoring, an
 - `src/models/common.py`
 - `src/models/embeddings.py`
 - `src/models/lightgcn.py`
+- `src/models/baselines/common.py`
 - `src/models/baselines/lightgcn.py`
 - `src/models/baselines/dice.py`
 - `src/models/scoring.py`
@@ -24,7 +25,7 @@ flowchart LR
     C --> E[Pairwise or full catalog scores]
 ```
 
-The diagram shows the runtime path: the embedding layer prepares tables and metadata, the propagation layer updates them over the graph, the scoring layer produces ranking scores, and the optional propensity layer produces item-side propensity scores for IPW.
+Runtime path: embeddings/metadata -> graph propagation -> refined scorer -> optional propensity estimator for calibrated IPW.
 
 ## Component responsibilities
 
@@ -41,24 +42,52 @@ The diagram shows the runtime path: the embedding layer prepares tables and meta
 ## Embedding and propagation rules
 
 - `single_branch_gnn_layers` controls the single-branch path. `interest_gnn_layers` and `conformity_gnn_layers` control the dual-branch path.
-- When `use_features=True` and `item_features` exist, `EmbeddingModule` first normalizes feature columns to `[0, 1]`, projects item features once, and builds branch-aware item inputs:
-  - `item_interest = item_embed + gate * projected_features`
-  - `item_conformity = item_embed + gate * (projected_features * popularity_gate)`
+- Feature fusion, when active:
+  - condition: `use_features=True` and `item_features` exist,
+  - normalize feature columns to `[0,1]`,
+  - project item features once,
+  - interest input: `item_embed + gate * projected_features`,
+  - conformity input: `item_embed + gate * (projected_features * popularity_gate)`.
 - `item_popularity` and `item_recency` are registered once in the embedding layer and reused by both training and evaluation.
-- `LightGCNBranch` uses repeated alpha-averaged layer outputs. U-CaGNN builds uncoalesced CUDA sparse COO adjacency from `edge_index`/`edge_weight` to avoid per-batch sparse COO coalescing workspaces, and falls back to chunked `forward_edges()` aggregation on CPU; paper baselines can still call the coalesced sparse-adjacency `forward()` path. Degree normalization comes from precomputed `edge_norm` for U-CaGNN and LightGCN; `PaperGCNDICE` recomputes the self-looped DICE GCN normalization internally.
-- Sign-aware weighting only changes mixed-sign graphs. On all-positive or positive+neutral graphs, weights are constant and do not request sparse edge-value gradients; when negative edges exist, they receive weight `alpha_neg / alpha_pos`, which downweights their propagation effect.
+
+Propagation facts:
+
+| Area | Contract |
+| --- | --- |
+| `LightGCNBranch` | repeated alpha-averaged layer outputs |
+| U-CaGNN CUDA | uncoalesced sparse COO from `edge_index`/`edge_weight` |
+| U-CaGNN CPU | chunked `forward_edges()` aggregation |
+| Paper baseline path | coalesced sparse-adjacency `forward()` allowed |
+| U-CaGNN/LightGCN norm | precomputed `edge_norm` |
+| `PaperGCNDICE` norm | recomputes self-looped DICE GCN normalization |
+| sign-aware no negatives | constant weights; no sparse edge-value gradients |
+| sign-aware negatives | negative edges get `alpha_neg / alpha_pos` |
 
 ## Score fusion
 
-- `ScoringModule` always emits calibrated diagnostic components `interest_score`, `conformity_score`, `context_score`, `score_mix_weights`, and `final_score`, plus raw branch scores as `branch_interest_score`, `branch_conformity_score`, and `raw_context_score`. The context head can use train-derived popularity/recency and safe item features by default; post-treatment propensity targets enter the context input, and count as active context metadata for score mixing, only for explicitly calibrated IPW runs.
-- `final_score` is fused from norm-invariant branch logits and bounded context logits, not raw dot-product magnitudes. This keeps score-mix weights meaningful: a small conformity/context weight cannot dominate ranking only because that branch has larger embedding norms.
-- `preset_full()` keeps the learned structured mixer active and applies `score_mix_min_weight` across available components so conformity/context cannot silently collapse to zero contribution. Availability is determined by the model contract (`use_dual_branch`, context head enabled, and item context metadata present), not by whether a batch's current component scores are nonzero. Its branch losses are fed by DICE-conditioned popularity negatives by default.
+| Item | Contract |
+| --- | --- |
+| Outputs | `interest_score`, `conformity_score`, `context_score`, `score_mix_weights`, `final_score` |
+| Raw diagnostics | `branch_interest_score`, `branch_conformity_score`, `raw_context_score` |
+| Fusion logits | cosine-style interest/conformity + `tanh(raw_context_score)` |
+| Raw branch use | branch BPR and diagnostics |
+| Calibrated use | final ranking fusion |
+| Context inputs | train-derived popularity, train-derived recency, optional calibrated propensity target, item age, safe item features |
+| Context width | `4 + item_features_dim` |
+| Propensity context gate | zero-fill unless `use_ipw=True` and `loss_weight_propensity_calibration > 0` |
+| Active context gate | `use_popularity_head`, context head exists, safe metadata exists or calibrated propensity exists |
+| Mix floor | `score_mix_min_weight` applies across active components by contract, not by current score value |
+
+- `final_score` uses norm-invariant branch logits and bounded context logits, not raw dot-product magnitudes.
+- `preset_full()` keeps learned structured mixing active and floors active components so conformity/context cannot silently collapse.
+- `preset_full()` branch losses use DICE-conditioned popularity negatives by default.
 - `preset_lightgcn()` fixes the mixer to interest-only weights for the sampled LightGCN approximation.
 - `preset_lightgcn_paper()` instantiates `PaperLightGCN`, which exposes the shared train/eval payload with interest-only dot-product scores.
 - `preset_dice_like()` fixes the mixer to interest+conformity weights for the legacy DICE-like ablation.
 - `preset_dice_paper()` instantiates `PaperGCNDICE`, which exposes interest, conformity, and summed final scores for DICE sampler/loss training.
 - The `no_popularity_head` ablation removes only the context head; learned per-user mixing still applies over the active interest and conformity branches.
-- The context head remains item-only. Popularity is now just one context field alongside recency, propensity targets, item age, and bounded safe item features, with zero fill for any missing field.
+- The context head is item-only; no user features enter context scoring.
+- Missing context fields are zero-filled.
 - Fixed-weight normalization stays tensor-native inside the scorer, avoiding `.item()`-style device synchronization during pairwise and full-catalog scoring.
 - `forward_subgraph()` resolves recent-train item histories by global item id before scoring so the short-term branch never indexes user history against a subgraph-local item table.
 

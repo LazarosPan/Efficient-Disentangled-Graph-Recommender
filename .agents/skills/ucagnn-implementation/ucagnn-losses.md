@@ -21,7 +21,7 @@ flowchart LR
     E[Context regression and prop calib] --> T
 ```
 
-The diagram shows the weighted-sum structure only. Whether a term contributes in a given run depends on the preset, the corresponding config weight, and the schedule rules below.
+Diagram scope: weighted-sum structure only. Activation depends on preset, config weight, payload tensors, and schedule.
 
 ## Loss terms
 
@@ -53,28 +53,49 @@ L_total =
   + weight_decay * L_embedding_reg
 ```
 
-`LossSuite` resolves the effective auxiliary weights first, then applies this weighted sum.
+Implementation facts:
 
-`L_rec`, `L_pop`, and `L_prop_calib` are computed in fp32 so AMP does not change the loss scale. For U-CaGNN, `final_score` is fused from calibrated component logits while branch BPR and popularity-context supervision still use raw branch/context scores. Contrastive branches normalize embeddings before their dot products and apply detached row weights after the log-probability.
+| Area | Contract |
+| --- | --- |
+| weight resolution | `LossSuite` resolves effective auxiliary weights before summing |
+| fp32 terms | `L_rec`, `L_pop`, `L_prop_calib` |
+| U-CaGNN recommendation score | calibrated fused `final_score` |
+| branch supervision | raw branch scores |
+| context supervision | raw `raw_context_score` when available |
+| contrastive | normalize branch embeddings; detached row weights after log-probability |
 
 When `branch_loss_mode="dice"`, the branch terms follow DICE semantics:
 
-- the DICE sampler returns a `dice_negative_mask` that marks popularity-dominated negatives; `LossSuite` consumes that mask directly, and only reconstructs it from train-only popularity plus `dice_branch_margin` when a manual/legacy payload omits the sampler metadata,
-- for `dice_paper` and `ucagnn`, the sampler and fallback branch margin are locked to `dice_sampler_margin`, and the margin decays with `dice_margin_decay` only when `dice_adaptive_decay=True`,
-- `L_interest_bpr` is applied only on those popularity-dominated negatives,
-- `L_conformity_bpr` ranks the more popular negative above the positive for popularity-dominated pairs and ranks the positive above less-popular negatives otherwise,
-- `L_independence` uses distance correlation over the unique active users and unique positive/negative items from the batch, matching external DICE's `torch.unique(user)` / `torch.unique(item_p,item_n)` discrepancy scope instead of overweighting repeated negative-expanded rows; this quadratic auxiliary uses a deterministic hash sample capped by `distance_correlation_max_pairs` for users and items so large mini-batches do not allocate full `batch_size^2` distance matrices,
-- `L_uniform` applies DirectAU's `torch.pdist` estimator to deterministic hash-sampled user and item rows capped by `uniformity_max_pairs`, while `L_align` still uses all aligned positive pairs because it is linear in batch size,
-- `dice_paper` uses `recommendation_loss_mode="dice_sum"` so the recommendation BPR is computed on `interest_score + conformity_score`, matching the DICE total score.
+| Item | Contract |
+| --- | --- |
+| sampler mask | `dice_negative_mask` marks popularity-dominated negatives |
+| mask consumer | `LossSuite`; fallback reconstructs from train popularity + `dice_branch_margin` |
+| margin owner | `dice_paper` and `ucagnn` lock fallback margin to `dice_sampler_margin` |
+| margin decay | only when `dice_adaptive_decay=True` |
+| `L_interest_bpr` | active only on popularity-dominated negatives |
+| `L_conformity_bpr` | popular negative above positive; otherwise positive above negative |
+| `L_independence` scope | unique active users + unique positive/negative items |
+| DICE match | mirrors `torch.unique(user)` / `torch.unique(item_p,item_n)` scope |
+| distance cap | deterministic hash sample up to `distance_correlation_max_pairs` |
+| `L_uniform` | `torch.pdist` on hash-sampled rows up to `uniformity_max_pairs` |
+| `L_align` | all aligned positive pairs; linear in batch size |
+| `dice_paper` rec score | `recommendation_loss_mode="dice_sum"` uses `interest_score + conformity_score` |
 
 ## Schedule semantics
 
 | Schedule | Current behavior |
 | --- | --- |
-| `phased` | `L_interest_bpr` and `L_conformity_bpr` are active from epoch 0; `L_independence`, `L_contrastive`, `L_align`, and `L_uniform` wait for `auxiliary_losses_start_epoch`; `L_pop` and `L_prop_calib` wait for `popularity_supervision_start_epoch`. |
-| `linear_ramp` | `L_interest_bpr` and `L_conformity_bpr` stay active at their configured weights from epoch 0. The schedule ramps regularization/side-task auxiliaries from 0 toward their configured max weights: `L_independence` uses `independence_ramp_rate`; `L_contrastive`, `L_align`, `L_uniform`, `L_pop`, and `L_prop_calib` use `auxiliary_ramp_rate`. Under `linear_ramp`, `auxiliary_losses_start_epoch` does **not** delay the ramp itself. |
+| `phased` | Branch BPR active epoch 0; regularizers wait for `auxiliary_losses_start_epoch`; context/calib wait for `popularity_supervision_start_epoch`. |
+| `linear_ramp` | Branch BPR active epoch 0; regularizers/side tasks ramp from 0; `auxiliary_losses_start_epoch` does not delay ramp. |
 
-`preset_full()` uses `linear_ramp`, but DICE branch BPR is primary causal supervision rather than a delayed auxiliary. The non-causal presets keep `phased`, but most auxiliary weights are zero there anyway.
+Ramp rates:
+
+| Term group | Rate |
+| --- | --- |
+| `L_independence` | `independence_ramp_rate` |
+| `L_contrastive`, `L_align`, `L_uniform`, `L_pop`, `L_prop_calib` | `auxiliary_ramp_rate` |
+
+`preset_full()` uses `linear_ramp`; DICE branch BPR is primary supervision, not delayed auxiliary. Non-causal presets keep `phased`; most auxiliary weights are zero.
 
 ## Preset-owned defaults
 

@@ -10,9 +10,13 @@ Use this file for the live runtime path: trainer setup, evaluation, checkpoint i
 - `src/training/evaluator.py`
 - `src/profiling/gpu_profiler.py`
 - `src/utils/experiment_logger.py`
+- `src/utils/crru.py`
 - `experiments/run_experiment.py`
 - `experiments/run_benchmark.py`
+- `experiments/run_search.py`
+- `experiments/search_spaces.json`
 - `experiments/cli_parsers.py`
+- `scripts/query_results.py`
 
 ## Runtime flow
 
@@ -27,7 +31,7 @@ flowchart LR
     D --> H[MLflow optional]
 ```
 
-The diagram shows the single-run path: config resolution, data and graph load, model construction, sampled-subgraph or full-graph training, full-graph evaluation, and tracking. The benchmark and ablation entry points reuse the same runtime pieces.
+Single-run path: config -> data/graph -> model -> sampled/full training -> eval -> checkpoint/logging. Benchmark, ablation, and search reuse this path.
 
 ## Supported entry points
 
@@ -36,26 +40,30 @@ The diagram shows the single-run path: config resolution, data and graph load, m
 | `uv run experiment` | One explicit run. |
 | `uv run ablation` | Thesis-facing ablation sweep over named variants. |
 | `uv run formal-run` | Profile-driven formal matrix with strict resume state; accepts comma-separated profile queues. |
+| `uv run search-experiments` | Optuna U-CaGNN search over declarative search spaces; validation-only by default. |
 | `uv run quick-validate` | Fixed smoke suite over the shared runtime path. |
+| `uv run query-results` | SQLite-first result/report inspection surface. |
 
-The public CLIs are intentionally selection-focused. Recipes, presets, ablation variants, and formal profiles own the training semantics.
+CLI rule: commands select work; recipes, presets, ablation variants, profiles, and search spaces own semantics.
 
 ## Runtime responsibilities
 
-1. `build_config()` resolves one `UCaGNNConfig`.
-2. `load_runtime_data()` loads the canonical dataset and builds the requested graph policy.
-3. `build_runtime_model()` instantiates explicit paper adapters for `lightgcn_paper` and `dice_paper`; otherwise it derives item recency and per-user recent-train histories from `data.train_mask`, converts any canonical propensity targets to tensors, and instantiates `UCaGNN`.
-4. `run_experiment()` attaches optional `data.propensity_targets`, resolves auto batch size, and builds checkpoint identities.
-5. `MiniBatchTrainer.train()` runs sampled-subgraph training from `data.train_positive_mask` when `training_graph_mode="sampled"` and full-graph propagation per optimizer step when `training_graph_mode="full"`.
-6. `Evaluator.evaluate()` runs full-graph evaluation from one propagated full-graph state and treats only `labels > 0` rows as relevant.
-7. `ExperimentLogger` writes SQLite records; MLflow mirrors runs when enabled.
+| Step | Owner | Contract |
+| --- | --- | --- |
+| 1 | `build_config()` | resolve one `UCaGNNConfig` |
+| 2 | `load_runtime_data()` | load canonical data; build requested graph policy |
+| 3 | `build_runtime_model()` | paper adapters for paper presets; else derive recency/history/propensity tensors and instantiate `UCaGNN` |
+| 4 | `run_experiment()` | attach `data.propensity_targets`; resolve auto-batch; build identities |
+| 5 | `MiniBatchTrainer.train()` | sampled mode uses `data.train_positive_mask`; full mode propagates full graph per step |
+| 6 | `Evaluator.evaluate()` | one full-graph propagated state; relevance is `labels > 0` |
+| 7 | `ExperimentLogger` | SQLite source of truth; MLflow mirror when enabled |
 
 ## `TrainerRuntime`
 
 `TrainerRuntime` owns:
 
 - device setup and shared move helpers,
-- optimizer construction: U-CaGNN uses AdamW with fused CUDA kernels when available; `lightgcn_paper` uses Adam plus explicit LightGCN embedding L2 in the loss; `dice_paper` uses Adam with DICE's `(0.5, 0.99)` betas and AMSGrad,
+- optimizer construction,
 - default CUDA AMP (`bfloat16` on CUDA),
 - optional EMA state,
 - scheduler and early-stopping state,
@@ -64,9 +72,18 @@ The public CLIs are intentionally selection-focused. Recipes, presets, ablation 
 - cached raw train-only `popularity_count` for DICE-style branch masks and negative sampling,
 - evaluator construction and shared logging hooks.
 
+Optimizer map:
+
+| Family | Optimizer contract |
+| --- | --- |
+| U-CaGNN | AdamW; fused CUDA kernels when available |
+| `lightgcn_paper` | Adam; explicit ego-embedding L2 handled in loss |
+| `dice_paper` | Adam; DICE betas `(0.5,0.99)`; AMSGrad |
+
 Important runtime details:
 
-- the experiment runner sets `PYTORCH_ALLOC_CONF=expandable_segments:True` before importing `torch` unless the user already configured a CUDA allocator policy, and it accepts the legacy `PYTORCH_CUDA_ALLOC_CONF` alias as the source value when present,
+- experiment runner sets `PYTORCH_ALLOC_CONF=expandable_segments:True` before importing `torch` unless user configured CUDA allocator policy,
+- legacy `PYTORCH_CUDA_ALLOC_CONF` is accepted as source value,
 - sign-aware scalars (`alpha_pos`, `alpha_neg`) live in a zero-weight-decay optimizer group,
 - `use_torch_compile` is opt-in because sampled subgraphs are too dynamic for a default compile win,
 - best validation state is tracked even when `use_early_stopping=False`,
@@ -86,12 +103,12 @@ Important runtime details:
   provenance and never satisfy the fresh local target. Budget accounting is scoped to the
   study/search objective, so tightening parameter ranges does not erase already-spent fresh
   informative trials,
-- completed Optuna trials store the dataset-scoped effective resolved config alongside
-  sampled params and runtime attrs. Reports should print this effective-config view for
-  promotion candidates so runtime-only fields such as resolved auto-batch size are visible,
+- completed Optuna trials store sampled params, runtime attrs, and dataset-scoped effective configs,
+- promotion reports should show effective configs so resolved auto-batch size is visible,
 - validation retries once on CUDA after optimizer-state offload, then falls back to CPU if evaluation still OOMs,
 - a late auto-batch training OOM releases the failed trainer and resumes the next smaller candidate from the latest completed-epoch checkpoint when one exists,
-- auto-batch probe, verification, and training-fallback OOM logs include the original exception summary plus PyTorch CUDA allocated, reserved, peak-allocated, and peak-reserved memory; probe OOMs also annotate the failing stage and sampled-subgraph dimensions when a subgraph had already been prepared,
+- auto-batch OOM logs include exception summary and PyTorch CUDA allocated/reserved/peak stats,
+- probe OOM logs add failing stage and sampled-subgraph dimensions when available,
 - scheduler stepping and early-stopping patience both wait until `max(auxiliary_losses_start_epoch, popularity_supervision_start_epoch)`.
 - training interaction tensors use `data.train_positive_mask` when present, falling back to `train_mask & labels > 0`.
 
@@ -101,13 +118,21 @@ Important runtime details:
 
 - In sampled mode, on CUDA it first tries to stage the full graph into a CUDA-resident `SubgraphSampler`.
 - If sampled graph staging or later batch preparation reports a CUDA OOM, including plain RuntimeError messages from CUDA kernels, it falls back to the CPU sampler path.
-- Sampled BFS uses bounded CSR offset gathers for each hop, so expansion memory scales with `frontier_size * num_neighbors[hop]` instead of the frontier's total incident degree.
-- U-CaGNN sampled-subgraph propagation builds uncoalesced CUDA sparse COO tensors, with CPU chunked edge-list fallback, instead of coalescing a sparse COO tensor every batch; this avoids large temporary sort/workspace allocations while keeping GPU propagation kernelized.
-- In full-graph mode, it bypasses subgraph extraction and calls the model with the full train graph for every optimizer step. This mode is used by `lightgcn_paper` and `dice_paper`.
-- Full-graph mode stages `edge_index`, `edge_sign`, and `edge_norm` once per trainer/device instead of copying graph tensors every batch, then releases the CUDA graph cache before validation to avoid duplicating evaluator graph memory.
-- `lightgcn_paper` is backed by `PaperLightGCN`: no dropout, no side features, no learned score mixer, observed graph only, Adam optimizer, and explicit ego-embedding L2 regularization.
-- `dice_paper` is backed by `PaperGCNDICE`: separate interest/conformity embedding tables, DICE self-looped LightGCN backbone propagation, DICE dropout, and summed interest+conformity final scores.
-- `negative_sampling_strategy="dice"` uses DICE popularity-conditioned negative pools with raw train-only item counts, `dice_sampler_margin`, and `dice_sampler_pool`. `dice_paper` keeps the external-code `n_negatives=4` and exact per-user pool-count correction; `ucagnn` uses `n_negatives=1` plus vectorized known-positive collision filtering to keep sampled-subgraph cost close to standard BPR while still training on DICE-conditioned negatives.
+- Sampled BFS memory scales with `frontier_size * num_neighbors[hop]`, not total incident degree.
+- U-CaGNN sampled propagation uses uncoalesced CUDA sparse COO plus CPU chunked edge-list fallback.
+- Full-graph mode skips subgraph extraction and propagates the full train graph per optimizer step.
+- Full-graph mode is used by `lightgcn_paper` and `dice_paper`.
+- Full-graph mode stages `edge_index`, `edge_sign`, and `edge_norm` once per trainer/device.
+- Full-graph mode releases CUDA graph cache before validation.
+
+Trainer family map:
+
+| Family | Runtime contract |
+| --- | --- |
+| `lightgcn_paper` | `PaperLightGCN`; no dropout/features/mixer; observed graph; Adam; ego L2 |
+| `dice_paper` | `PaperGCNDICE`; separate branches; self-looped DICE LightGCN; dropout; summed final score |
+| U-CaGNN DICE negatives | raw train-only counts; `dice_sampler_margin`; `dice_sampler_pool`; `n_negatives=1`; vectorized known-positive filtering |
+| `dice_paper` negatives | external-code `n_negatives=4`; exact per-user pool-count correction |
 - Sampled and full-graph training both pass the current epoch into the negative sampler. The DICE sampler margin decays only when `dice_adaptive_decay=True`.
 - CPU-prepared `SubgraphBatch` objects are pinned and copied with `non_blocking=True`.
 - Batch-local auxiliary losses operate on the batch users and selected positive items, not the full sampled frontier.
@@ -136,15 +161,28 @@ Current evaluation rules:
 - test excludes both training and validation interactions, including when the caller passes an equivalent copied test mask,
 - full-graph propagation happens once per evaluation call,
 - validation logs only the thesis-primary metrics; refined scorer diagnostics are reserved for the final post-training test pass,
-- evaluator batch sizing keeps the 512 MiB score-matrix cap split-aware and budgets extra headroom when refined-score component export materializes the interest, conformity, context, and final full-catalog views,
-- refined scorer diagnostics reuse the same propagated batch state and top-k recommendations as thesis ranking metrics, and gather native-dtype top-k slices before float accumulation math,
-- diagnostics append `score_mix_*` summary stats, weighted branch contributions at `@20/@40`, interest-vs-conformity cosine checks, and per-component popularity Spearman when the model exports those components on the final test pass,
-- seen-item exclusion is applied to the final ranking score surface and standalone branch-ranking score surfaces; item-only context component diagnostics remain read-only because they are gathered only at already-excluded final top-k recommendations,
-- dual-branch final-test diagnostics also evaluate standalone raw interest/conformity branch rankers with PyG-standard `NDCG`, `Recall`, and `AveragePopularity` at `@20/@40`; these are diagnostic evidence for branch behavior, not extra primary thesis metrics,
-- do not add custom paper-nonstandard ranking outputs unless a paper-faithful definition is implemented and explicitly justified; default thesis outputs should stay with PyG-standard metrics and easy-to-interpret diagnostics,
+- do not reintroduce custom Novelty, TrainPop Avoidance, item-pop IoU, or other paper-nonstandard ranking outputs unless a paper-faithful definition is implemented and justified,
+- default thesis outputs stay PyG-standard plus easy-to-defend diagnostics,
 - split-specific ground-truth and exclusion dictionaries are cached by mask identity,
 - `cagra_candidate_k` optionally restricts scoring to ANN candidates on CUDA.
 - If `cagra_candidate_k > 0`, CAGRA is an explicit runtime requirement. The evaluator raises instead of silently falling back to full-catalog scoring, because otherwise the recorded config would claim ANN filtering while the metric was computed without it.
+
+Diagnostic rules:
+
+| Area | Contract |
+| --- | --- |
+| batch cap | split-aware 512 MiB score-matrix cap |
+| component export | budgets extra headroom for interest/conformity/context/final views |
+| reuse | same propagated state and top-k recommendations as thesis metrics |
+| accumulation | native-dtype top-k slices; float accumulation math |
+| score-mix stats | `score_mix_*` mean/std |
+| contribution stats | weighted branch contributions at `@20/@40` |
+| branch checks | interest-vs-conformity cosine |
+| popularity checks | per-component popularity Spearman |
+| seen masking | final and standalone branch rankers are masked |
+| context diagnostics | read-only at already-excluded final top-k recommendations |
+| branch rankers | raw interest/conformity PyG `NDCG`, `Recall`, `AveragePopularity` |
+| thesis role | diagnostics only; not primary metrics |
 
 Quick validation uses larger tiny caps for sparse-positive Taobao and KuaiRand slices so label-aware validation/test splits contain positive targets.
 
@@ -152,12 +190,17 @@ Quick validation uses larger tiny caps for sparse-positive Taobao and KuaiRand s
 
 ## CRRU reporting utility
 
-CRRU@K means Composite Resource-aware Recommendation Utility at K. It is the thesis-facing ranking utility used to compare completed formal and ablation runs when accuracy, popularity bias, and training resource cost all matter.
+Facts:
 
-CRRU is not a causal-effect estimator. CRRU itself is higher-is-better. Lower-cost raw quantities such as average popularity, VRAM, and seconds per epoch are inverted into higher-is-better sub-scores before the final score is computed.
-VRAM is treated as a capacity/resource footprint, not as an intrinsic reward. Larger batches can still improve CRRU when they reduce seconds per epoch enough to outweigh the higher-VRAM penalty.
-
-For each dataset and report section, metrics are min-max normalized over the rows in that section. Lower-cost quantities are inverted after normalization.
+- `CRRU@K` = Composite Resource-aware Recommendation Utility at K.
+- Use: thesis-facing ranking utility for completed formal/ablation rows.
+- Not: causal-effect estimator.
+- Direction: higher is better.
+- Lower-cost raw quantities are inverted: average popularity, VRAM, seconds/epoch.
+- VRAM is a capacity/resource cost, not a reward.
+- Larger batches can improve CRRU only if time/epoch gains offset VRAM penalty.
+- Normalization scope: dataset-local report section rows.
+- Lower-cost quantities are inverted after min-max normalization.
 
 $$
 \operatorname{Accuracy}@K =
@@ -185,17 +228,28 @@ $$
 \operatorname{Efficiency}^{0.15}
 $$
 
-The implementation uses dataset-local section-row min-max normalization with $\epsilon = 10^{-8}$:
+Implementation normalization:
 
 $$
 x_n = \frac{x - \min(x)}{\max(x) - \min(x) + \epsilon}
 $$
 
-The $\epsilon$ term is not a separate normalization method. It only prevents division by zero when every row in a dataset/report section has the same value and avoids exact zeros before fractional powers in the multiplicative CRRU formula. CRRU uses min-max rather than z-score because every term must stay bounded in `[0, 1]`; z-scores can be negative or greater than one, which makes fractional-power products hard to interpret and sometimes invalid.
+- `epsilon=1e-8` prevents divide-by-zero and exact-zero fractional-power terms.
+- Min-max is used because CRRU terms must stay bounded in `[0,1]`.
+- Z-score is avoided: negative/unbounded values break fractional-power products.
 
-For Optuna search, the code uses `ValidationOnlineCRRU@20_40`: an online validation proxy with the same CRRU components and exponent structure, averaged over K=20 and K=40. Future trials also store `ValidationOnlineCRRU@20` and `ValidationOnlineCRRU@40` as dataset-scoped Optuna attributes for reporting. NDCG, Recall, Hit, and Personalization are already bounded validation metrics. Average popularity, peak VRAM, and seconds per epoch use deterministic trial-local lower-cost transforms. Exact report-style validation CRRU is recomputed after completed rows exist and is shown in the Optuna report with time/epoch and peak VRAM columns; it is not used as the live optimization objective.
+Optuna CRRU:
 
-The canonical Optuna space is a short second-pass screen, not an exhaustive grid. It uses fewer fresh trials, shorter epoch caps, and Hyperband pruning; already-searched datasets can stay focused around completed local evidence, while KuaiRand keeps a coarse low/medium/high regime screen until fresh local runs exist. Four-hop propagation is excluded unless a separate deep-diagnostic run shows it is worth the extra memory, runtime, and over-smoothing risk.
+| Item | Contract |
+| --- | --- |
+| Live objective | `ValidationOnlineCRRU@20_40` |
+| Per-K attrs | `ValidationOnlineCRRU@20`, `ValidationOnlineCRRU@40` |
+| Accuracy/diversity inputs | validation NDCG, Recall, Hit, Personalization |
+| Lower-cost inputs | validation AveragePopularity, peak VRAM, seconds/epoch |
+| Lower-cost transform | deterministic trial-local higher-is-better transform |
+| Report CRRU | recomputed after completed rows exist; not live objective |
+| Search shape | short second-pass screen; Hyperband pruning; no exhaustive grid |
+| Depth guard | four-hop excluded unless separate deep diagnostic justifies cost/risk |
 
 ## Checkpoints and identity
 
@@ -220,12 +274,26 @@ Current rules:
 
 ## Experiment tracking
 
-- **SQLite is primary.** `ExperimentLogger` stores configs, metrics, profiling data, hashes, and provenance in `results/thesis_experiments.db`.
-- **MLflow is secondary.** It mirrors runs and artifacts but is not the source of truth.
-- evaluator diagnostics go through the same metric logging path as thesis metrics; no parallel diagnostics store exists.
-- `formal-run` persists `results/formal_run_state.json` as a strict resume pointer, not as a profile definition. When `--profile` contains a comma-separated list, profiles run sequentially and the state file tracks the active/latest profile.
-- runtime-probe profiles keep `config_overrides.epochs=1` and store their full-run estimate target in profile-level `runtime_probe.target_epochs`; after a probe completes, `experiments/run_benchmark.py` logs the canonical `RUNTIME_PROBE_METRIC_NAMES` under the SQLite `approximation` split.
-- Per-epoch training-window resources are logged when available: `gpu_utilization_pct` stores the average training GPU utilization for the epoch, `max_gpu_utilization_pct` stores the peak sampled training utilization, `train_peak_vram_allocated_mb` / `train_peak_vram_reserved_mb` store PyTorch allocator peaks, `train_peak_gpu_memory_used_mb` stores the peak `nvidia-smi memory.used` sample, and legacy `peak_vram_mb` uses the training `nvidia-smi` peak when available with PyTorch allocated peak as fallback.
-- Canonical experiment and fan-out labels are shared by runtime checkpointing, benchmark summaries, MLflow params, profile slugs, and `query-results` through `src/utils/experiment_naming.py`.
-- Query surfaces are centralized in `ExperimentLogger.VIEW_TABLES`, which powers the `completed`, `attention`, `errors`, and `comparison` views used by `scripts/query_results.py`.
-- The default `query-results` thesis summary keeps CRRU inline: it prints a short Composite Resource-aware Recommendation Utility framing block, reports dataset-local section-row `CRRU@20` and `CRRU@40`, separates final formal thesis profiles from supporting historical/preprocessing-sweep rows, excludes runtime probes from ranking sections, reports currently supported public ablation variants separately, notes that CRRU is not a causal-effect estimator, and does not emit a separate CRRU table.
+- SQLite primary DB: `results/thesis_experiments.db`.
+- `ExperimentLogger` stores configs, metrics, profiling data, hashes, provenance.
+- MLflow is secondary UI/artifact mirror, not source of truth.
+- Evaluator diagnostics use the same metric logging path as thesis metrics.
+- `search-experiments` default Optuna storage: `sqlite:///results/optuna_studies.db`.
+- Search runs use existing runtime; default `evaluate_test=False`; checkpointing and MLflow stay opt-in/lightweight by search config.
+- `formal-run` state file: `results/formal_run_state.json`.
+- Formal state is a strict resume pointer, not a profile definition.
+- Comma-separated `--profile` values run sequentially; state tracks active/latest profile.
+- Runtime-probe profiles: `config_overrides.epochs=1` + profile-level `runtime_probe.target_epochs`.
+- Runtime-probe estimates log canonical `RUNTIME_PROBE_METRIC_NAMES` under SQLite split `approximation`.
+- Resource metrics: `gpu_utilization_pct` avg train GPU utilization; `max_gpu_utilization_pct` peak sampled train utilization.
+- VRAM metrics: `train_peak_vram_allocated_mb`, `train_peak_vram_reserved_mb`, `train_peak_gpu_memory_used_mb`.
+- Legacy `peak_vram_mb`: training `nvidia-smi` peak when available; PyTorch allocated peak fallback.
+- Naming owner: `src/utils/experiment_naming.py`.
+- Shared labels feed checkpointing, benchmark summaries, MLflow params, profile slugs, and `query-results`.
+- Query views owner: `ExperimentLogger.VIEW_TABLES`.
+- Query views: `completed`, `attention`, `errors`, `comparison`.
+- Default `query-results` writes Markdown headings and pipe tables.
+- Report sections: final formal thesis profiles, supporting historical/preprocessing rows, runtime-probe notes, public ablations.
+- Runtime probes are visible but excluded from ranked formal tables.
+- Ranked sections split tables into accuracy, bias/diversity, and composite-resource blocks.
+- `CRRU@20` and `CRRU@40` stay in composite-resource tables and are dataset-local section-row min-max utilities.

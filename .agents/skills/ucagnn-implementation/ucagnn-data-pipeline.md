@@ -27,7 +27,7 @@ flowchart LR
     G --> E
 ```
 
-The diagram shows the runtime boundary: the loader always produces `CanonicalInteractions`, the first graph build always creates the observed train-interaction graph, and the `cagra_augmented` path uses that observed graph only to bootstrap embeddings before rebuilding with added ANN edges.
+Boundary: loaders emit `CanonicalInteractions`; graph build starts from observed train positives; CAGRA augments only after observed-graph bootstrap embeddings exist.
 
 ## Loader boundary
 
@@ -47,7 +47,17 @@ The diagram shows the runtime boundary: the loader always produces `CanonicalInt
 | `amazonbook` | `amazonbook_graph_only` | none |
 | `kuairand1k` | `kuairand_causal` | `kuairand_random_only` |
 
-`kuairec_watchratio` is the default KuaiRec view and uses `big_matrix`. `kuairec_fullobs` remains available as an explicit `small_matrix` comparison path. The preprocessing preset is the semantic source of truth for KuaiRec matrix selection; direct `matrix_variant=...` calls are kept only for loader compatibility and must not conflict with an explicit preset.
+Dataset semantic notes:
+
+| Dataset/view | Live contract |
+| --- | --- |
+| `kuairec_watchratio` | default KuaiRec; `big_matrix`; watch-ratio ranking signal |
+| `kuairec_fullobs` | explicit `small_matrix` comparison; near-full observation; not default ranking story |
+| `kuairand_causal` | default KuaiRand; standard + randomized exposure rows |
+| `kuairand_random_only` | explicit randomized-exposure diagnostic view |
+| `amazonbook_graph_only` | graph-only default; no side-feature thesis story |
+
+KuaiRec matrix owner: preprocessing preset. Direct `matrix_variant=...` exists only for loader compatibility and must not conflict with an explicit preset.
 
 ## `CanonicalInteractions`
 
@@ -61,11 +71,18 @@ The diagram shows the runtime boundary: the loader always produces `CanonicalInt
 | Split metadata | optional `train_mask`, `val_mask`, `test_mask`, plus `metadata` |
 | Propensity supervision | optional `item_propensity_targets` with shape `(n_items,)` |
 
-`get_splits()` prefers predefined loader masks, otherwise derives validation from an existing train/test split, otherwise falls back to the configured derived split mode. `compute_item_recency()` is intended to run on the training split only, and every train-derived runtime summary reuses that same split mask instead of creating category-specific train/test variants.
+Split/repeat/sampling rules:
 
-Repeated raw user-item pairs are collapsed before split derivation for loaders that need one pair to belong to only one split. The retained row is selected by maximum priority with timestamp as a tie-breaker, while `repeat_count`, `repeat_mean_target`, `repeat_max_target`, `repeat_latest_target`, and first/last timestamps preserve the discarded observations in the retained-row encounter order.
-
-`sample_canonical_interactions()` is the canonical owner for tiny-run interaction sampling. It preserves split coverage, remaps sampled user/item IDs, recomputes sampled popularity, and slices every interaction-, user-, and item-aligned canonical field, including repeat summaries, features, metadata arrays, and item-level propensity targets.
+| Owner | Contract |
+| --- | --- |
+| `get_splits()` | prefer loader masks; else derive val from train/test; else configured derived split |
+| `compute_item_recency()` | training split only |
+| train-derived summaries | reuse same final train mask; no category-specific splits |
+| repeat collapse | one raw user-item pair cannot span train/val/test |
+| retained repeat row | max priority, timestamp tie-break |
+| repeat summaries | preserve count, mean, max, latest, first/last timestamps, behavior counts/labels |
+| `sample_canonical_interactions()` | tiny-run sampling owner |
+| tiny samples | preserve split coverage; remap IDs; recompute popularity; slice all aligned fields |
 
 ## Feature policy
 
@@ -75,12 +92,16 @@ Repeated raw user-item pairs are collapsed before split derivation for loaders t
 - Under `thesis_default`, KuaiRand's `video_features_statistic_1k.csv` stays excluded from model features, but its `show_cnt` column is reused separately as a propensity calibration target.
 - Free-text or comment-style columns are not part of the live thesis-default path; the runtime uses only structured numeric, temporal, and categorical-safe features.
 
-`src/utils/csv_features.py` applies one shared encoding policy:
+`src/utils/csv_features.py` encoding policy:
 
-- repeated entity rows are collapsed to the first source row before encoding, so daily feature files cannot let later rows overwrite the thesis-default static item descriptor or influence categorical/min-max scaling,
-- numeric and temporal columns are min-max scaled to `[0, 1]` within the loaded source,
-- categorical-like columns become deterministic codes in `[0, 1]` with `0` reserved for missing values,
-- embedding-time feature buffers are normalized again before the context head, so custom loader features cannot reintroduce raw timestamp or ID scale.
+| Field type | Encoding |
+| --- | --- |
+| repeated entity rows | first source row wins before encoding |
+| numeric/temporal | min-max to `[0,1]` within source |
+| categorical-like | deterministic codes in `[0,1]`; `0` reserved for missing |
+| embedding-time buffers | normalized again before context head |
+
+Purpose: daily files cannot overwrite thesis-default static descriptors or reintroduce raw timestamp/ID scale.
 
 ## Graph construction
 
@@ -105,13 +126,31 @@ Current graph rules:
 - Those buffers are per-user histories: the latest training interactions for each user, never global "recent" or popularity-only items.
 - Subgraph training reuses the same train-derived user history and does not create separate splits for interest, recency, or context.
 
-Only KuaiRand-1K currently populates `item_propensity_targets`, using log1p-normalized `show_cnt` as an exposure proxy. Every other dataset leaves that field as `None`. Because `show_cnt` is a post-treatment aggregate, the context scorer zero-fills the exposure-proxy slot unless calibrated IPW is explicitly enabled (`use_ipw=True` with positive propensity calibration weight). IPW is not enabled by default; it requires an explicit calibrated propensity objective.
+Propensity target contract:
+
+| Dataset | Field | Source | Default scorer use |
+| --- | --- | --- | --- |
+| `kuairand1k` | `item_propensity_targets` | log1p-normalized `show_cnt` | zero-filled unless calibrated IPW active |
+| all others | `None` | none | inactive |
+
+`show_cnt` is post-treatment. It can calibrate explicit IPW, but it must not affect default scoring.
 
 ## Sampling
 
 - `NegativeSampler` is vectorized and mixes uniform and popularity-weighted draws via `hard_negative_ratio`.
 - It receives train-positive `(user, item)` pairs from `TrainerRuntime` and filters sampled negatives against every known positive training item for the same user, not only the current positive item.
-- With `negative_sampling_strategy="dice"`, `sample_with_metadata()` also returns the DICE high-popularity mask aligned to each sampled negative. For large-batch U-CaGNN it applies DICE high/low pool routing first, then uses vectorized collision filtering to reject known train positives; `dice_paper` keeps the exact per-user positive-count correction because its paper-owned batch size is small. The mask is consumed directly by `LossSuite`; threshold reconstruction is only a fallback for older/manual payloads.
+
+DICE sampling:
+
+| Item | Contract |
+| --- | --- |
+| Strategy | `negative_sampling_strategy="dice"` |
+| Metadata | `sample_with_metadata()` returns aligned high-popularity mask |
+| U-CaGNN large batch | DICE high/low routing, then vectorized known-positive filtering |
+| `dice_paper` | exact per-user positive-count correction retained |
+| Consumer | `LossSuite` consumes mask directly |
+| Fallback | threshold reconstruction only for older/manual payloads |
+
 - `SubgraphSampler` extracts sampled k-hop subgraphs with per-hop fan-out limits from `num_neighbors`.
 - `SubgraphBatch` carries:
   - `sub_edge_index`, `sub_edge_sign`, `sub_edge_norm`,

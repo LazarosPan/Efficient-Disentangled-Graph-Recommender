@@ -1,6 +1,6 @@
 # U-CaGNN Implementation Overview
 
-This file is the integration map for the current implementation. It stays intentionally short: use the routed docs for slice-specific detail.
+Integration map only. Use owner docs for details. Keep this file dense and non-duplicative.
 
 ## Reading map
 
@@ -33,15 +33,44 @@ flowchart LR
     K --> N[ExperimentLogger and checkpoints]
 ```
 
-The diagram shows the full runtime join points. Slice-specific rules stay in the owner docs: config precedence in `ucagnn-config.md`, graph policy and propensity-target loading in `ucagnn-data-pipeline.md`, loss activation in `ucagnn-losses.md`, and checkpointing or tracking in `ucagnn-training.md`. The evaluation path keeps thesis metrics on the training-validation loop and runs refined scorer diagnostics only on the final post-training test pass, including standalone raw interest/conformity branch ranking diagnostics for dual-branch models. Finished-run recovery re-evaluates the best validation checkpoint state rather than the latest training epoch, and recovery lookup checks saved auto-batch candidate identities before CUDA probing.
-Auto-batch CUDA OOM decisions are logged with the original exception summary, PyTorch allocator allocated/reserved/peak memory, and probe-stage/subgraph dimensions when available so resource-monitor readings can be compared with actual allocator pressure. Training-window telemetry separately logs PyTorch allocated/reserved peaks, peak `nvidia-smi memory.used`, average training GPU utilization, and max sampled training GPU utilization before validation/test evaluation starts. The experiment runner sets `PYTORCH_ALLOC_CONF=expandable_segments:True` before importing `torch` unless the user already supplied a CUDA allocator policy, and it accepts legacy `PYTORCH_CUDA_ALLOC_CONF` as a source value.
-DICE-style independence remains a distance-correlation auxiliary, but the user and item entity sets are hash-sampled up to `distance_correlation_max_pairs` before quadratic distance matrices are built. DirectAU uniformity similarly hash-samples rows up to `uniformity_max_pairs` before `torch.pdist`. Sampled-BFS fanout uses bounded CSR offset gathers, and U-CaGNN sampled-subgraph propagation uses uncoalesced CUDA sparse COO with CPU chunked edge-list fallback instead of per-batch CUDA sparse COO coalescing. U-CaGNN's DICE sampler uses fast high/low routing plus vectorized known-positive filtering; the paper DICE baseline keeps exact per-user pool-count correction.
+Owner pointers:
+
+| Topic | Owner |
+| --- | --- |
+| config precedence, presets, profiles, search spaces | `ucagnn-config.md` |
+| graph policy, feature policy, propensity target loading | `ucagnn-data-pipeline.md` |
+| scoring modules, score fusion, propensity scorer gates | `ucagnn-architecture.md` |
+| loss activation, DICE losses, IPW/calibration gates | `ucagnn-losses.md` |
+| checkpointing, auto-batch, evaluator, logging, reports | `ucagnn-training.md` |
+
+Runtime invariants:
+
+| Area | Current invariant |
+| --- | --- |
+| validation loop | thesis-primary metrics only; refined diagnostics off |
+| final test | refined scorer diagnostics on when supported |
+| branch diagnostics | standalone raw interest/conformity rankers are diagnostics only |
+| finished recovery | evaluate best validation state, not latest epoch state |
+| auto-batch recovery | check saved candidate identities before CUDA probing |
+| OOM logging | exception summary + allocator stats + probe/subgraph context when available |
+| telemetry window | training-only GPU utilization and VRAM before validation/test |
+| CUDA allocator | set `PYTORCH_ALLOC_CONF=expandable_segments:True` unless user configured it |
+| DICE independence | hash-sample entities up to `distance_correlation_max_pairs` |
+| DirectAU uniformity | hash-sample rows up to `uniformity_max_pairs` |
+| sampled BFS | bounded CSR offset gathers by hop fanout |
+| U-CaGNN propagation | uncoalesced CUDA sparse COO; CPU chunked edge-list fallback |
+| U-CaGNN DICE negatives | fast high/low routing + vectorized known-positive filtering |
+| `dice_paper` negatives | exact per-user pool-count correction retained |
 
 ## Source map
 
 | Path | Responsibility |
 | --- | --- |
 | `src/utils/config.py` | `UCaGNNConfig` defaults, validation, preset overrides |
+| `experiments/experiment_catalog.json` | formal profiles and runtime probes |
+| `experiments/search_spaces.json` | declarative Optuna search spaces |
+| `experiments/recipes.py` | profile/search-space loading and override resolution |
+| `experiments/benchmark_resolvers.py` | formal/search sweep normalization helpers |
 | `src/utils/experiment_naming.py` | shared canonical experiment names for checkpoints and result reports |
 | `src/data/loaders/_registry.py` | dataset registry and default preprocessing presets |
 | `src/data/canonical.py` | canonical interaction schema, split logic, tiny-run sampling, item recency |
@@ -63,6 +92,9 @@ DICE-style independence remains a distance-correlation auxiliary, but the user a
 | `src/training/evaluator.py` | batched full-graph evaluation |
 | `experiments/run_experiment.py` | single-run orchestration and runtime assembly |
 | `experiments/run_benchmark.py` | formal-run orchestration and strict saved-state handling |
+| `experiments/run_search.py` | Optuna search controller |
 | `experiments/ablation_configs.py` | thesis-facing ablation variants |
 | `src/utils/experiment_logger.py` | SQLite experiment store |
+| `src/utils/crru.py` | CRRU and online-validation CRRU utilities |
 | `scripts/query_results.py` | SQLite-first result inspection |
+| `scripts/quick_validate.py` | smoke validation entry point |
