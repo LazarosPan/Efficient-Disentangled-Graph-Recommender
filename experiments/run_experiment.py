@@ -1322,6 +1322,7 @@ def normalize_benchmark_config_overrides(
     for string_field in (
         "training_graph_mode",
         "branch_loss_mode",
+        "dice_mask_reduction",
         "recommendation_loss_mode",
         "negative_sampling_strategy",
     ):
@@ -1404,6 +1405,7 @@ def normalize_benchmark_config_overrides(
         "independence_ramp_rate",
         "contrastive_temperature",
         "uniformity_temperature",
+        "feature_gate_init",
     )
     for field_name in optional_float_fields:
         field_value = raw_config.get(field_name)

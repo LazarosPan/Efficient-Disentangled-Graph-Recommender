@@ -81,6 +81,7 @@ SEARCH_PARAMETER_FIELDS = frozenset(
         "interest_gnn_layers",
         "conformity_gnn_layers",
         "dropout",
+        "n_negatives",
         "score_mix_min_weight",
         "loss_weight_interest_bpr",
         "loss_weight_conformity_bpr",
@@ -102,6 +103,8 @@ SEARCH_PARAMETER_FIELDS = frozenset(
         "cagra_candidate_k",
         "hard_negative_ratio",
         "dice_sampler_margin",
+        "dice_mask_reduction",
+        "feature_gate_init",
         "use_popularity_head",
         "use_features",
     },
@@ -1592,6 +1595,8 @@ def _trial_matches_search_budget_scope(
         return False
     if trial.user_attrs.get("search_space") != search_space.name:
         return False
+    if trial.user_attrs.get("search_space_revision") != search_space_revision(search_space):
+        return False
     if trial.user_attrs.get("objective_metric") != search_space.objective.metric:
         return False
     if trial.user_attrs.get("objective_split") != search_space.objective.split:
@@ -1643,6 +1648,7 @@ def _budget_count_fragment(
     seeded_complete = sum(1 for trial in seeded if trial.state == optuna.trial.TrialState.COMPLETE)
     seeded_pruned = sum(1 for trial in seeded if trial.state == optuna.trial.TrialState.PRUNED)
     return (
+        f"revision={search_space_revision(search_space)} "
         f"fresh_budget_count={len(fresh)} "
         f"(fresh complete={fresh_complete}, fresh pruned={fresh_pruned}); "
         f"imported_history=(complete={seeded_complete}, pruned={seeded_pruned})"
@@ -1780,9 +1786,9 @@ def build_dry_run_payload(
         "search_space_revision": search_space_revision(search_space),
         "trials": int(trials or search_space.trials),
         "trial_budget": (
-            "fresh informative finished trials: COMPLETE plus real PRUNED; excludes FAIL, "
-            "RUNNING, historically imported rows, and duplicate-skip prunes; tightening "
-            "parameter ranges does not reset already-spent fresh budget"
+            "for this search_space_revision only: fresh informative finished trials, "
+            "COMPLETE plus real PRUNED; excludes FAIL, RUNNING, historically imported rows, "
+            "duplicate-skip prunes, and trials from other search-space revisions"
         ),
         "config_overrides": _json_safe(search_space.config_overrides),
         "parameters": _json_safe(search_space.parameters),
