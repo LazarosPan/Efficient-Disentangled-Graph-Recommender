@@ -53,11 +53,15 @@ L_total =
   + weight_decay * L_embedding_reg
 ```
 
+If `loss_normalization="ema_aux"`, the summation shape stays the same but auxiliary terms use `raw_loss / ema.detach().clamp_min(1e-6)`. `L_rec` and `L_embedding_reg` are not EMA-normalized. Default `loss_normalization="none"` keeps the raw weighted formula.
+
 Implementation facts:
 
 | Area | Contract |
 | --- | --- |
 | weight resolution | `LossSuite` resolves effective auxiliary weights before summing |
+| auxiliary EMA | registered buffers; updated only in training; missing buffers are accepted when loading old checkpoints |
+| loss logging | raw auxiliary losses, normalized auxiliary losses when active, and weighted auxiliary contributions are logged through epoch aggregation |
 | fp32 terms | `L_rec`, `L_pop`, `L_prop_calib` |
 | U-CaGNN recommendation score | calibrated fused `final_score` |
 | branch supervision | raw branch scores |

@@ -40,7 +40,7 @@ Single-run path: config -> data/graph -> model -> sampled/full training -> eval 
 | `uv run experiment` | One explicit run. |
 | `uv run ablation` | Thesis-facing ablation sweep over named variants. |
 | `uv run formal-run` | Profile-driven formal matrix with strict resume state; accepts comma-separated profile queues. |
-| `uv run search-experiments` | Optuna U-CaGNN search over declarative search spaces; validation-only by default. |
+| `uv run search-experiments` | Optuna U-CaGNN search over declarative search spaces; validation-only by default; accepts comma-separated search-space queues. |
 | `uv run quick-validate` | Fixed smoke suite over the shared runtime path. |
 | `uv run query-results` | SQLite-first result/report inspection surface. |
 
@@ -97,11 +97,18 @@ Important runtime details:
   the callback reports validation objective values after each epoch and raises
   `TrialPruned` when the configured Optuna pruner stops an unpromising trial.
   Normal experiment, formal-run, and baseline paths leave this callback unset,
+- Optuna objectives are validation-only. `ValidationAccuracy@20_40` is the broad
+  discovery objective for the coarse mechanism search; `ValidationOnlineCRRU@20_40`
+  remains available for CRRU-oriented spaces and trial diagnostics when the full
+  metric family is present,
 - `search-experiments --trials N` targets N fresh informative finished trials for the
   current `search_space_revision`: fresh `COMPLETE` plus trainer/pruner-generated
   `PRUNED`, excluding `FAIL`, `RUNNING`, historically imported rows, duplicate-skip
   prunes, and rows from other revision hashes. Imported rows are report-only provenance
   and never satisfy the fresh local target,
+- `search-experiments --space a,b` runs search spaces sequentially with the same
+  `--dataset` and `--trials` applied to each space; omit `--study-name` for queues
+  so normal per-space/per-dataset study names remain unambiguous,
 - completed Optuna trials store sampled params, runtime attrs, and dataset-scoped effective configs,
 - promotion reports should show effective configs so resolved auto-batch size is visible,
 - validation retries once on CUDA after optimizer-state offload, then falls back to CPU if evaluation still OOMs,
@@ -136,6 +143,7 @@ Trainer family map:
 - CPU-prepared `SubgraphBatch` objects are pinned and copied with `non_blocking=True`.
 - Batch-local auxiliary losses operate on the batch users and selected positive items, not the full sampled frontier.
 - The trainer slices local normalized popularity, local raw branch popularity, and local propensity targets by `sub_batch.item_global_ids` before calling `LossSuite`.
+- Epoch logging cheaply aggregates scalar loss diagnostics emitted by `LossSuite`, including raw recommendation/auxiliary losses, DICE mask rates, score-mix means, normalized auxiliary losses when `loss_normalization="ema_aux"`, and weighted auxiliary contributions.
 - DEBUG logging emits batch loss components plus IPW, propensity-target, and score summaries for the sampled batch.
 
 ## Evaluator

@@ -28,6 +28,11 @@ uv run formal-run --profile <slug-from-list-profiles> --overwrite-checkpoint
 
 ```bash
 uv run search-experiments --list-spaces
+uv run search-experiments --space ucagnn-mechanism-coarse --dataset kuairec_v2 --trials 120
+uv run search-experiments --space ucagnn-mechanism-coarse --dataset movielens1m --trials 50
+uv run search-experiments --space ucagnn-mechanism-coarse --dataset kuairand1k --trials 25
+uv run search-experiments --space ucagnn-cagra-accuracy-ablation --dataset kuairec_v2 --trials 24
+uv run search-experiments --space ucagnn-mechanism-coarse,ucagnn-cagra-accuracy-ablation --dataset kuairec_v2 --trials 24
 uv run search-experiments --space ucagnn-core-optimization --trials 12
 uv run search-experiments --space ucagnn-core-optimization --dataset amazonbook --trials 12
 uv run search-experiments --space ucagnn-core-optimization --trials 1 --dry-run
@@ -38,8 +43,13 @@ uv run optuna-dashboard sqlite:///results/optuna_studies.db
 ```
 
 - `search-experiments` is U-CaGNN-only. It resolves `experiments/search_spaces.json` entries via each `base_profile`, samples existing `UCaGNNConfig` fields, and still executes each trial through `build_config()` and `run_experiment()`.
-- The canonical search space is `ucagnn-core-optimization`. Without `--dataset`, the controller expands the space into one independent dataset-local study per core thesis dataset. With `--dataset`, it runs only that dataset's study. In both cases, `--trials N` means N fresh informative trials for each selected dataset.
-- The Optuna objective is validation `ValidationOnlineCRRU@20_40` by default. This is an online proxy with the same component/exponent structure as report CRRU, including VRAM and seconds-per-epoch efficiency penalties; exact report CRRU still uses dataset-local section-row min-max after rows exist. Search runs skip final test evaluation; test metrics remain reserved for promoted confirmation profiles.
+- `search-experiments --space a,b` runs search spaces sequentially, matching `formal-run` queue syntax. `--dataset` and `--trials` apply to every queued space. Omit `--study-name` for queues so each space keeps its normal study naming.
+- `ucagnn-mechanism-coarse` is the final coarse mechanism discovery space. It samples profile labels for score fusion, item-branch capacity, context/features, loss family, and graph depth; `experiments/search_spaces.json` owns both those labels and the sibling `profile_overrides` mappings to concrete config overrides. Resolved trials log both `sampled_params` and `resolved_config_overrides`. Use KuaiRec_v2 for the main 100-150 trial pass, MovieLens1M for a 40-60 trial sanity pass, and KuaiRand1K only for narrowed transfer checks. Do not spend this broad pass on AmazonBook.
+- `ucagnn-mechanism-coarse` keeps the scalar knobs coarse, with 40 startup TPE trials before exploitation. Dataset-local overrides widen only known useful regions: MovieLens1M adds `lr=0.005`, `score_mix_min_weight=0.1`, and margins `[20,40,80]`; KuaiRand1K uses margins `[50,70,80]`; KuaiRec_v2 keeps margins `[10,20,40]`.
+- `ucagnn-mechanism-coarse` uses validation `ValidationAccuracy@20_40`: `0.50*NDCG@20 + 0.25*Recall@20 + 0.15*NDCG@40 + 0.10*Recall@40`. CRRU remains logged when the full metric family is available, but it is not the broad-discovery objective for this space.
+- `ucagnn-cagra-accuracy-ablation` compares `graph_policy=observed` against `graph_policy=cagra_augmented` and optional CAGRA candidate prefiltering under the same accuracy objective. Keep it separate from the broad mechanism space so CAGRA remains a systems/accuracy ablation, not a default graph path.
+- `ucagnn-core-optimization` remains the older CRRU-oriented tuning space. Without `--dataset`, the controller expands the space into one independent dataset-local study per listed dataset. With `--dataset`, it runs only that dataset's study. In both cases, `--trials N` means N fresh informative trials for each selected dataset.
+- The CRRU objective `ValidationOnlineCRRU@20_40` is an online proxy with the same component/exponent structure as report CRRU, including VRAM and seconds-per-epoch efficiency penalties; exact report CRRU still uses dataset-local section-row min-max after rows exist. Search runs skip final test evaluation; test metrics remain reserved for promoted confirmation profiles.
 - Search runs do not save or resume checkpoints. They also keep MLflow disabled by default to avoid large exploratory artifacts; pass `--mlflow` only when you explicitly want MLflow mirroring for a short search.
 - Optuna search spaces are configured separately from formal profiles: use `experiments/search_spaces.json` for tuning spaces and `experiments/experiment_catalog.json` for deterministic formal profiles/recipes.
 - Trial runs are grouped with `batch_id=optuna-<study>-trial-<number>` and `profile_name=<search-space>`. The sampled values are present in each experiment `config_json`, while trial-level search metadata, importances, and failures are owned by Optuna RDB storage (`results/optuna_studies.db`), not the thesis SQLite database.

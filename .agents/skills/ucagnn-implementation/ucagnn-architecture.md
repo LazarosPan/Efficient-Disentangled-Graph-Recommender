@@ -64,6 +64,12 @@ Propagation facts:
 | sign-aware no negatives | constant weights; no sparse edge-value gradients |
 | sign-aware negatives | negative edges get `alpha_neg / alpha_pos` |
 
+Item branch capacity:
+
+- Default `separate_item_branch_embeddings=False`: one shared `item_embed`; raw embeddings may expose only `"item"`, and dual-branch propagation fans it into `"item_interest"` and `"item_conformity"`.
+- Optional `separate_item_branch_embeddings=True`: dual-branch U-CaGNN creates `item_interest_embed` and `item_conformity_embed`, initializes both like the shared item table, exposes explicit branch item tensors, and keeps `"item"` as a stable fallback.
+- `get_stacked_embeddings()` uses the interest item branch when explicit branch item tables exist, preserving a deterministic CAGRA/bootstrap graph embedding choice.
+
 ## Score fusion
 
 | Item | Contract |
