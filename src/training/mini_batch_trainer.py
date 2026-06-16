@@ -41,6 +41,26 @@ from ..utils.trainer_runtime import (
 
 logger = logging.getLogger(__name__)
 
+_EPOCH_LOSS_METRIC_NAMES = frozenset(
+    {
+        "raw_rec_loss",
+        "raw_interest_bpr",
+        "raw_conformity_bpr",
+        "raw_independence",
+        "raw_contrastive",
+        "raw_popularity",
+        "raw_align",
+        "raw_uniform",
+        "raw_propensity_calibration",
+        "dice_high_mask_rate",
+        "dice_low_mask_rate",
+        "score_mix_interest_mean",
+        "score_mix_conformity_mean",
+        "score_mix_context_mean",
+    },
+)
+_EPOCH_LOSS_METRIC_PREFIXES = ("normalized_", "weighted_")
+
 
 class MiniBatchTrainer(TrainerRuntime):
     """Train U-CaGNN with mini-batch subgraph sampling."""
@@ -88,6 +108,44 @@ class MiniBatchTrainer(TrainerRuntime):
             "mean": float(values.mean().item()),
             "median": float(values.median().item()),
             "max": float(values.max().item()),
+        }
+
+    @staticmethod
+    def _should_log_epoch_loss_metric(metric_name: str) -> bool:
+        """Return whether a loss scalar should be aggregated per epoch."""
+        return metric_name in _EPOCH_LOSS_METRIC_NAMES or metric_name.startswith(
+            _EPOCH_LOSS_METRIC_PREFIXES,
+        )
+
+    @classmethod
+    def _accumulate_epoch_loss_metrics(
+        cls,
+        accumulator: dict[str, torch.Tensor],
+        losses: Mapping[str, torch.Tensor],
+    ) -> None:
+        """Accumulate scalar loss diagnostics without per-batch host sync."""
+        for metric_name, value in losses.items():
+            if not cls._should_log_epoch_loss_metric(metric_name):
+                continue
+            if not torch.is_tensor(value) or value.numel() != 1:
+                continue
+            scalar = value.detach().float()
+            scalar = torch.where(torch.isfinite(scalar), scalar, torch.zeros_like(scalar))
+            accumulator[metric_name] = (
+                accumulator.get(metric_name, torch.zeros_like(scalar)) + scalar
+            )
+
+    @staticmethod
+    def _finalize_epoch_loss_metrics(
+        accumulator: Mapping[str, torch.Tensor],
+        completed_batches: int,
+    ) -> dict[str, float]:
+        """Return host-side mean loss diagnostics after one epoch."""
+        if completed_batches <= 0:
+            return {}
+        return {
+            metric_name: float((value / completed_batches).item())
+            for metric_name, value in sorted(accumulator.items())
         }
 
     def _build_subgraph_sampler(self, data) -> tuple[SubgraphSampler, torch.device]:
@@ -411,7 +469,7 @@ class MiniBatchTrainer(TrainerRuntime):
         n_batches: int,
         progress_bar: tqdm | None,
         n_skipped: int,
-    ) -> torch.Tensor | None:
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]] | None:
         """Run one full-graph training step."""
         total_loss, losses = self._run_full_graph_training_batch(
             batch_users,
@@ -431,7 +489,7 @@ class MiniBatchTrainer(TrainerRuntime):
             progress_bar.update(1)
             if batch_idx + 1 == n_batches or batch_idx % self.config.progress_bar_loss_cadence == 0:
                 progress_bar.set_postfix(loss=f"{float(total_loss.item()):.4f}")
-        return total_loss
+        return total_loss, losses
 
     def _dispatch_batch(
         self,
@@ -442,7 +500,7 @@ class MiniBatchTrainer(TrainerRuntime):
         n_batches: int,
         progress_bar: tqdm | None,
         n_skipped: int,
-    ) -> torch.Tensor | None:
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]] | None:
         """Run one training step; return total_loss or None if the batch was skipped.
 
         Args:
@@ -455,7 +513,7 @@ class MiniBatchTrainer(TrainerRuntime):
             n_skipped: Skipped-batch count before this call (used for display).
 
         Returns:
-            total_loss if the batch was processed, None if skipped due to non-finite loss.
+            ``(total_loss, losses)`` if processed, else None for non-finite loss.
 
         """
         total_loss, losses = self._run_training_batch(sub_batch, popularity, epoch)
@@ -470,7 +528,7 @@ class MiniBatchTrainer(TrainerRuntime):
             progress_bar.update(1)
             if batch_idx + 1 == n_batches or batch_idx % self.config.progress_bar_loss_cadence == 0:
                 progress_bar.set_postfix(loss=f"{float(total_loss.item()):.4f}")
-        return total_loss
+        return total_loss, losses
 
     def _iter_epoch_batches(
         self,
@@ -588,6 +646,7 @@ class MiniBatchTrainer(TrainerRuntime):
             train_items_shuffled = train_items[perm]
 
             epoch_loss_total = torch.zeros((), device=self.device, dtype=torch.bfloat16)
+            epoch_loss_metric_sums: dict[str, torch.Tensor] = {}
             completed_batches = 0
             skipped_batches = 0
             self.model.train()
@@ -616,7 +675,7 @@ class MiniBatchTrainer(TrainerRuntime):
                 if self.config.training_graph_mode == "full":
                     for batch_idx, start in enumerate(starts):
                         end = min(start + batch_sz, n_train)
-                        total_loss = self._dispatch_full_graph_batch(
+                        batch_result = self._dispatch_full_graph_batch(
                             train_users_shuffled[start:end],
                             train_items_shuffled[start:end],
                             popularity,
@@ -627,10 +686,12 @@ class MiniBatchTrainer(TrainerRuntime):
                             progress_bar,
                             skipped_batches,
                         )
-                        if total_loss is None:
+                        if batch_result is None:
                             skipped_batches += 1
                             continue
+                        total_loss, losses = batch_result
                         epoch_loss_total = epoch_loss_total + total_loss.to(torch.bfloat16)
+                        self._accumulate_epoch_loss_metrics(epoch_loss_metric_sums, losses)
                         completed_batches += 1
                 else:
                     for batch_idx, sub_batch in self._iter_epoch_batches(
@@ -642,7 +703,7 @@ class MiniBatchTrainer(TrainerRuntime):
                         epoch,
                         batches_per_epoch,
                     ):
-                        total_loss = self._dispatch_batch(
+                        batch_result = self._dispatch_batch(
                             sub_batch,
                             popularity,
                             epoch,
@@ -651,10 +712,12 @@ class MiniBatchTrainer(TrainerRuntime):
                             progress_bar,
                             skipped_batches,
                         )
-                        if total_loss is None:
+                        if batch_result is None:
                             skipped_batches += 1
                             continue
+                        total_loss, losses = batch_result
                         epoch_loss_total = epoch_loss_total + total_loss.to(torch.bfloat16)
+                        self._accumulate_epoch_loss_metrics(epoch_loss_metric_sums, losses)
                         completed_batches += 1
             finally:
                 resource_stats = resource_monitor.stop()
@@ -666,6 +729,7 @@ class MiniBatchTrainer(TrainerRuntime):
             del perm, train_users_shuffled, train_items_shuffled
             sub_batch = None
             total_loss = None
+            losses = None
             empty_cuda_cache(self.device)
 
             if completed_batches == 0:
@@ -674,8 +738,13 @@ class MiniBatchTrainer(TrainerRuntime):
                 )
 
             avg_loss = float((epoch_loss_total / completed_batches).item())
+            train_metrics = self._finalize_epoch_loss_metrics(
+                epoch_loss_metric_sums,
+                completed_batches,
+            )
 
             history["train_loss"].append(avg_loss)
+            history.setdefault("train_metrics", []).append(train_metrics)
             released_cuda_sampler = False
             if self.config.training_graph_mode == "sampled":
                 released_cuda_sampler = self._release_cuda_sampler_for_eval()
@@ -705,6 +774,7 @@ class MiniBatchTrainer(TrainerRuntime):
                 epoch_time_s,
                 val_metrics,
                 resource_stats=resource_stats,
+                train_metrics=train_metrics,
             )
             self.completed_epoch = epoch
             self.resume_history = history
