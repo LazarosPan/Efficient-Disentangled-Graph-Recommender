@@ -6,11 +6,13 @@ Integration map only. Use owner docs for details. Keep this file dense and non-d
 
 | Need | Open |
 | --- | --- |
+| literature-backed rationale and thesis-safe claims | `ucagnn-literature.md` |
 | model modules and refined scorer | `ucagnn-architecture.md` |
 | loaders, canonical schema, graph build, samplers | `ucagnn-data-pipeline.md` |
 | presets and config rules | `ucagnn-config.md` |
 | objectives and schedule semantics | `ucagnn-losses.md` |
 | runtime flow, evaluator, checkpoints, logging | `ucagnn-training.md` |
+| current accuracy, bias, speed, Optuna, and DICE/LightGCN comparison interpretation | `ucagnn-result-analysis.md` backed by `results/query_results.md` + `results/optuna_optimization.md` |
 
 ## End-to-end flow
 
@@ -37,11 +39,13 @@ Owner pointers:
 
 | Topic | Owner |
 | --- | --- |
+| literature evidence, contribution hypotheses, claim boundaries | `ucagnn-literature.md` |
 | config precedence, presets, profiles, search spaces | `ucagnn-config.md` |
 | graph policy, feature policy, propensity target loading | `ucagnn-data-pipeline.md` |
 | scoring modules, score fusion, propensity scorer gates | `ucagnn-architecture.md` |
 | loss activation, DICE losses, IPW/calibration gates | `ucagnn-losses.md` |
 | checkpointing, auto-batch, evaluator, logging, reports | `ucagnn-training.md` |
+| result interpretation, Optuna evidence, and speed/accuracy trade-off narrative | `ucagnn-result-analysis.md`; refresh from `results/query_results.md` and `results/optuna_optimization.md` |
 
 Runtime invariants:
 
