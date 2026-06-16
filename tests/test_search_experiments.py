@@ -29,6 +29,8 @@ class SearchSpaceValidationTests(unittest.TestCase):
         self.assertNotIn("search_spaces", load_experiment_catalog())
         self.assertIn("search_spaces", load_search_spaces_catalog())
         self.assertIn("ucagnn-core-optimization", search_space_names())
+        self.assertIn("ucagnn-mechanism-coarse", search_space_names())
+        self.assertIn("ucagnn-cagra-accuracy-ablation", search_space_names())
 
     def test_search_spaces_resolve_to_ucagnn_configs(self) -> None:
         """All search spaces should resolve through the shared config builder."""
@@ -47,6 +49,158 @@ class SearchSpaceValidationTests(unittest.TestCase):
             self.assertEqual(config.epochs, spec.max_epochs)
             self.assertEqual(config.device, "cpu")
             self.assertEqual(len(config.num_neighbors), config.max_gnn_layers)
+
+    def test_mechanism_search_space_uses_profile_layer_and_accuracy_objective(self) -> None:
+        """The broad mechanism search should keep profile labels out of model config."""
+        spec = search.resolve_search_space(
+            "ucagnn-mechanism-coarse",
+            dataset="kuairec_v2",
+        )
+        all_dataset_spec = search.resolve_search_space("ucagnn-mechanism-coarse")
+        payload = search.build_dry_run_payload(
+            spec,
+            study_name="mechanism-dry-run",
+            storage="sqlite:///:memory:",
+            device="cpu",
+            data_dir="data",
+        )
+
+        self.assertEqual(spec.datasets, ("kuairec_v2",))
+        self.assertIn("kuairand1k", all_dataset_spec.datasets)
+        self.assertEqual(spec.objective.metric, search.VALIDATION_ACCURACY_METRIC)
+        self.assertEqual(spec.sampler.n_startup_trials, 40)
+        self.assertNotIn("amazonbook", spec.datasets)
+        self.assertIn("score_fusion_profile", payload["parameters"])
+        self.assertIn("score_fusion_profile", payload["profile_overrides"])
+        self.assertEqual(payload["profile_overrides"], spec.profile_overrides)
+        self.assertEqual(
+            spec.profile_overrides["score_fusion_profile"]["fixed_dice_no_context"],
+            {
+                "use_learned_score_mix": False,
+                "score_weight_interest": 0.5,
+                "score_weight_conformity": 0.5,
+                "score_weight_popularity": 0.0,
+            },
+        )
+        self.assertEqual(spec.parameters["dropout"]["choices"], [0.0, 0.1, 0.2, 0.3])
+        self.assertEqual(
+            spec.parameters["dice_sampler_margin"]["choices"],
+            [10.0, 20.0, 40.0],
+        )
+        base_config = payload["base_configs"]["kuairec_v2"]
+        self.assertFalse(base_config["separate_item_branch_embeddings"])
+        self.assertEqual(base_config["loss_normalization"], "none")
+        self.assertTrue(base_config["use_learned_score_mix"])
+
+    def test_mechanism_search_space_applies_dataset_local_scalar_ladders(self) -> None:
+        """Dataset-local scalar choices should cover known useful regions only."""
+        movielens_spec = search.resolve_search_space(
+            "ucagnn-mechanism-coarse",
+            dataset="movielens1m",
+        )
+        kuairand_spec = search.resolve_search_space(
+            "ucagnn-mechanism-coarse",
+            dataset="kuairand1k",
+        )
+
+        self.assertEqual(
+            movielens_spec.parameters["lr"]["choices"],
+            [0.0004, 0.0008, 0.0015, 0.003, 0.005],
+        )
+        self.assertEqual(
+            movielens_spec.parameters["dice_sampler_margin"]["choices"],
+            [20.0, 40.0, 80.0],
+        )
+        self.assertEqual(
+            movielens_spec.parameters["score_mix_min_weight"]["choices"],
+            [0.0, 0.02, 0.05, 0.1],
+        )
+        self.assertEqual(
+            kuairand_spec.parameters["dice_sampler_margin"]["choices"],
+            [50.0, 70.0, 80.0],
+        )
+        self.assertEqual(
+            kuairand_spec.parameters["score_mix_min_weight"]["choices"],
+            [0.0, 0.02, 0.05],
+        )
+
+    def test_cagra_accuracy_ablation_compares_observed_and_augmented_graphs(self) -> None:
+        """CAGRA performance/accuracy checks should remain a separate search space."""
+        spec = search.resolve_search_space(
+            "ucagnn-cagra-accuracy-ablation",
+            dataset="kuairec_v2",
+        )
+        all_dataset_spec = search.resolve_search_space("ucagnn-cagra-accuracy-ablation")
+
+        self.assertEqual(spec.objective.metric, search.VALIDATION_ACCURACY_METRIC)
+        self.assertIn("kuairand1k", all_dataset_spec.datasets)
+        self.assertEqual(
+            spec.parameters["graph_policy"]["choices"],
+            ["observed", "cagra_augmented"],
+        )
+        self.assertIn("cagra_candidate_k", spec.parameters)
+        self.assertNotIn("amazonbook", spec.datasets)
+
+    def test_search_parser_accepts_comma_separated_space_queue(self) -> None:
+        """search-experiments should mirror formal-run's queue syntax."""
+        parser = search.build_search_parser()
+
+        args = parser.parse_args(
+            [
+                "--space",
+                "ucagnn-mechanism-coarse,ucagnn-cagra-accuracy-ablation",
+                "--dry-run",
+            ],
+        )
+
+        self.assertEqual(
+            args.space,
+            "ucagnn-mechanism-coarse,ucagnn-cagra-accuracy-ablation",
+        )
+        self.assertEqual(
+            search._parse_search_space_sequence(args.space),
+            ["ucagnn-mechanism-coarse", "ucagnn-cagra-accuracy-ablation"],
+        )
+
+    def test_search_main_runs_comma_separated_spaces_in_order(self) -> None:
+        """Multiple search spaces should execute sequentially and report aggregate failure."""
+        args = SimpleNamespace(
+            list_spaces=False,
+            space="ucagnn-mechanism-coarse, ucagnn-cagra-accuracy-ablation",
+            dataset="kuairec_v2",
+            study_name=None,
+            dry_run=False,
+        )
+        seen: list[str] = []
+
+        def fake_run_search_space(_args, *, space_name: str) -> int:
+            seen.append(space_name)
+            return 0 if space_name == "ucagnn-mechanism-coarse" else 1
+
+        with patch.object(
+            search,
+            "_run_search_space",
+            side_effect=fake_run_search_space,
+        ):
+            exit_code = search.run_search(args)
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(
+            seen,
+            ["ucagnn-mechanism-coarse", "ucagnn-cagra-accuracy-ablation"],
+        )
+
+    def test_search_space_queue_rejects_ambiguous_explicit_study_name(self) -> None:
+        """One explicit study name should not be reused across queued spaces."""
+        args = SimpleNamespace(
+            list_spaces=False,
+            space="ucagnn-mechanism-coarse,ucagnn-cagra-accuracy-ablation",
+            study_name="shared-study",
+            dry_run=False,
+        )
+
+        with self.assertRaisesRegex(ValueError, "--study-name is ambiguous"):
+            search.run_search(args)
 
     def test_search_space_resolves_sampler_and_pruner_from_catalog(self) -> None:
         """Sampler/pruner blocks in search_spaces.json should not be dropped."""
@@ -136,6 +290,26 @@ class SearchSpaceValidationTests(unittest.TestCase):
             self.assertRaisesRegex(ValueError, "U-CaGNN-only"),
         ):
             search.resolve_search_space("bad-paper-space")
+
+    def test_search_space_validation_requires_json_owned_profile_overrides(self) -> None:
+        """Profile labels should be backed by profile_overrides in search_spaces.json."""
+        bad_space = {
+            "name": "bad-profile-space",
+            "base_profile": "core-ucagnn-mainline",
+            "datasets": ["kuairec_v2"],
+            "parameters": {
+                "score_fusion_profile": {
+                    "type": "categorical",
+                    "choices": ["fixed_dice_no_context"],
+                },
+            },
+        }
+
+        with (
+            patch.object(search, "get_search_space", return_value=bad_space),
+            self.assertRaisesRegex(ValueError, "profile_overrides.score_fusion_profile"),
+        ):
+            search.resolve_search_space("bad-profile-space")
 
     def test_dry_run_resolves_base_config_without_training(self) -> None:
         """Dry-run payloads should build valid configs and avoid run_experiment()."""
@@ -406,6 +580,118 @@ class SearchSpaceValidationTests(unittest.TestCase):
         self.assertEqual(config.n_negatives, 2)
         self.assertEqual(config.sample_interactions, 100)
         self.assertEqual(config.loader_max_rows, 100)
+
+    def test_profile_trial_resolution_records_logical_and_concrete_params(self) -> None:
+        """Profile labels should resolve before UCaGNNConfig construction."""
+        catalog_profile_overrides = search.resolve_search_space(
+            "ucagnn-mechanism-coarse",
+            dataset="kuairec_v2",
+        ).profile_overrides
+        spec = search.SearchSpaceSpec(
+            name="tiny-profile",
+            description="test profile search space",
+            base_profile="core-ucagnn-mainline",
+            datasets=("kuairec_v2",),
+            objective=search.ObjectiveSpec(metric=search.VALIDATION_ACCURACY_METRIC),
+            max_epochs=3,
+            trials=1,
+            config_overrides={
+                "sample_interactions": 100,
+                "loader_max_rows": 100,
+            },
+            parameters={
+                "score_fusion_profile": {
+                    "type": "categorical",
+                    "choices": ["fixed_dice_no_context"],
+                },
+                "item_branch_profile": {
+                    "type": "categorical",
+                    "choices": ["separate_item_branch_embeddings"],
+                },
+                "context_feature_profile": {
+                    "type": "categorical",
+                    "choices": ["features_only"],
+                },
+                "loss_profile": {
+                    "type": "categorical",
+                    "choices": ["dice_asym_conformity"],
+                },
+                "graph_profile": {
+                    "type": "categorical",
+                    "choices": ["deep_asym"],
+                },
+                "loss_normalization": {
+                    "type": "categorical",
+                    "choices": ["ema_aux"],
+                },
+            },
+            profile_overrides=catalog_profile_overrides,
+        )
+        base_config = search.build_search_config(
+            spec,
+            dataset="kuairec_v2",
+            device="cpu",
+            data_dir="data",
+        )
+        fixed_trial = optuna.trial.FixedTrial(
+            {
+                search._parameter_storage_name(
+                    "score_fusion_profile",
+                    spec.parameters["score_fusion_profile"],
+                ): "fixed_dice_no_context",
+                search._parameter_storage_name(
+                    "item_branch_profile",
+                    spec.parameters["item_branch_profile"],
+                ): "separate_item_branch_embeddings",
+                search._parameter_storage_name(
+                    "context_feature_profile",
+                    spec.parameters["context_feature_profile"],
+                ): "features_only",
+                search._parameter_storage_name(
+                    "loss_profile",
+                    spec.parameters["loss_profile"],
+                ): "dice_asym_conformity",
+                search._parameter_storage_name(
+                    "graph_profile",
+                    spec.parameters["graph_profile"],
+                ): "deep_asym",
+                search._parameter_storage_name(
+                    "loss_normalization",
+                    spec.parameters["loss_normalization"],
+                ): "ema_aux",
+            },
+        )
+
+        resolution = search.resolve_trial_parameters(
+            fixed_trial,
+            spec,
+            base_config=base_config,
+        )
+        config = search.build_search_config(
+            spec,
+            dataset="kuairec_v2",
+            sampled_overrides=resolution.config_overrides,
+            device="cpu",
+            data_dir="data",
+        )
+
+        self.assertEqual(
+            resolution.sampled_params["score_fusion_profile"],
+            "fixed_dice_no_context",
+        )
+        self.assertFalse(config.use_learned_score_mix)
+        self.assertEqual(config.score_weight_interest, 0.5)
+        self.assertEqual(config.score_weight_conformity, 0.5)
+        self.assertEqual(config.score_weight_popularity, 0.0)
+        self.assertTrue(config.separate_item_branch_embeddings)
+        self.assertTrue(config.use_features)
+        self.assertFalse(config.use_popularity_head)
+        self.assertEqual(config.feature_gate_init, -4.0)
+        self.assertEqual(config.loss_weight_conformity_bpr, 0.05)
+        self.assertEqual(config.interest_gnn_layers, 2)
+        self.assertEqual(config.conformity_gnn_layers, 3)
+        self.assertEqual(config.num_neighbors, [8, 4, 2])
+        self.assertEqual(config.loss_normalization, "ema_aux")
 
     def test_grid_float_parameter_samples_from_declared_steps(self) -> None:
         """Segmented float grids should keep human-readable search points."""
@@ -688,6 +974,33 @@ class SearchSpaceValidationTests(unittest.TestCase):
                 peak_vram_mb=512.0,
                 epoch_time_s=5.0,
             ),
+        )
+
+    def test_validation_accuracy_objective_uses_validation_metrics_only(self) -> None:
+        """The accuracy-first objective should not read test metrics."""
+        val_metrics = {
+            "NDCG@20": 0.10,
+            "Recall@20": 0.20,
+            "NDCG@40": 0.30,
+            "Recall@40": 0.40,
+        }
+        result = {
+            "history": {"val_metrics": [val_metrics]},
+            "test_metrics": {"NDCG@20": 0.99, "Recall@20": 0.99},
+        }
+
+        objective = search.extract_validation_objective(
+            result,
+            search.ObjectiveSpec(
+                metric=search.VALIDATION_ACCURACY_METRIC,
+                split="val",
+                direction="maximize",
+            ),
+        )
+
+        self.assertAlmostEqual(
+            objective,
+            0.50 * 0.10 + 0.25 * 0.20 + 0.15 * 0.30 + 0.10 * 0.40,
         )
 
 
@@ -1297,7 +1610,7 @@ class SearchExecutionTests(unittest.TestCase):
                 patch.object(search, "resolve_search_space", return_value=spec),
                 patch.object(
                     search,
-                    "suggest_trial_overrides",
+                    "resolve_trial_parameters",
                     side_effect=ValueError("bad search contract"),
                 ),
             ):

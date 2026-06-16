@@ -1470,6 +1470,91 @@ class CausalTrainingContractTests(unittest.TestCase):
             second_layer.weight[0, 0] = 5.0
             second_layer.weight[1, 1] = 5.0
 
+    @staticmethod
+    def _tiny_dual_branch_scoring_config(*, separate_items: bool = False) -> UCaGNNConfig:
+        """Return a tiny deterministic dual-branch scorer config."""
+        config = UCaGNNConfig(device="cpu", embed_dim=4)
+        config.use_dual_branch = True
+        config.use_features = False
+        config.use_popularity_head = False
+        config.use_learned_score_mix = False
+        config.score_weight_interest = 0.5
+        config.score_weight_conformity = 0.5
+        config.score_weight_popularity = 0.0
+        config.score_mix_min_weight = 0.0
+        config.interest_gnn_layers = 1
+        config.conformity_gnn_layers = 1
+        config.num_neighbors = [8]
+        config.separate_item_branch_embeddings = separate_items
+        return config
+
+    @staticmethod
+    def _loss_suite_model_output() -> tuple[
+        dict[str, torch.Tensor | dict[str, torch.Tensor]],
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
+        """Return a finite synthetic LossSuite payload with active auxiliaries."""
+        user_interest = torch.tensor(
+            [[0.1, 0.4], [0.2, 0.3], [0.3, 0.2]],
+            dtype=torch.float32,
+        )
+        user_conformity = torch.tensor(
+            [[0.4, 0.1], [0.3, 0.2], [0.2, 0.3]],
+            dtype=torch.float32,
+        )
+        item_interest = torch.tensor(
+            [[0.5, 0.1], [0.1, 0.5], [0.3, 0.3], [0.2, 0.4]],
+            dtype=torch.float32,
+        )
+        item_conformity = torch.tensor(
+            [[0.2, 0.4], [0.4, 0.2], [0.3, 0.1], [0.5, 0.2]],
+            dtype=torch.float32,
+        )
+        pos_item_ids = torch.tensor([0, 1, 2], dtype=torch.long)
+        neg_item_ids = torch.tensor([1, 2, 3], dtype=torch.long)
+        pos_scores = {
+            "final_score": torch.tensor([0.8, 0.7, 0.6], dtype=torch.float32),
+            "interest_score": torch.tensor([0.7, 0.6, 0.5], dtype=torch.float32),
+            "conformity_score": torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32),
+            "context_score": torch.tensor([0.1, 0.1, 0.1], dtype=torch.float32),
+            "branch_interest_score": torch.tensor([0.75, 0.65, 0.55], dtype=torch.float32),
+            "branch_conformity_score": torch.tensor([0.45, 0.55, 0.65], dtype=torch.float32),
+            "raw_context_score": torch.tensor([0.2, 0.3, 0.4], dtype=torch.float32),
+            "score_mix_weights": torch.tensor(
+                [[0.5, 0.3, 0.2], [0.6, 0.2, 0.2], [0.4, 0.4, 0.2]],
+                dtype=torch.float32,
+            ),
+        }
+        neg_scores = {
+            "final_score": torch.tensor([0.2, 0.3, 0.4], dtype=torch.float32),
+            "interest_score": torch.tensor([0.2, 0.3, 0.4], dtype=torch.float32),
+            "conformity_score": torch.tensor([0.6, 0.5, 0.4], dtype=torch.float32),
+            "context_score": torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32),
+            "branch_interest_score": torch.tensor([0.25, 0.35, 0.45], dtype=torch.float32),
+            "branch_conformity_score": torch.tensor([0.65, 0.55, 0.45], dtype=torch.float32),
+        }
+        propagated = {
+            "user_interest": user_interest,
+            "user_conformity": user_conformity,
+            "item_interest": item_interest,
+            "item_conformity": item_conformity,
+        }
+        model_output: dict[str, torch.Tensor | dict[str, torch.Tensor]] = {
+            "pos_scores": pos_scores,
+            "neg_scores": neg_scores,
+            "propagated": propagated,
+            "embeddings": {"user": user_interest, "item": item_interest},
+            "ipw_weights": torch.ones(3, dtype=torch.float32),
+            "loss_user_ids": torch.tensor([0, 1, 2], dtype=torch.long),
+            "loss_neg_item_ids": neg_item_ids,
+            "propensity_scores": torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32),
+        }
+        item_popularity = torch.tensor([0.1, 0.3, 0.6, 0.9], dtype=torch.float32)
+        propensity_targets = torch.tensor([0.2, 0.4, 0.6, 0.8], dtype=torch.float32)
+        return model_output, item_popularity, pos_item_ids, propensity_targets
+
     def test_presets_pin_expected_scoring_contracts(self) -> None:
         """Preset helpers should expose the thesis scoring contract directly."""
         lightgcn = UCaGNNConfig(device="cuda").preset_lightgcn()
@@ -1487,6 +1572,145 @@ class CausalTrainingContractTests(unittest.TestCase):
         self.assertFalse(hasattr(ucagnn, "train_scoring_mode"))
         self.assertFalse(hasattr(ucagnn, "eval_scoring_mode"))
         self.assertFalse(ucagnn.use_ipw)
+
+    def test_dual_branch_shared_item_embeddings_forward_and_full_catalog_shape(self) -> None:
+        """Shared item embeddings should keep the default branch-scoring path intact."""
+        config = self._tiny_dual_branch_scoring_config(separate_items=False)
+        model = UCaGNN(n_users=2, n_items=3, config=config)
+        edge_index = torch.tensor([[0, 2, 1, 3], [2, 0, 3, 1]], dtype=torch.long)
+        user_ids = torch.tensor([0, 1], dtype=torch.long)
+        pos_item_ids = torch.tensor([0, 1], dtype=torch.long)
+        neg_item_ids = torch.tensor([1, 2], dtype=torch.long)
+
+        embeddings = model.embedding.get_embeddings()
+        output = model(edge_index, user_ids, pos_item_ids, neg_item_ids)
+        propagated = output["propagated"]
+        assert isinstance(propagated, dict)
+        scores = model.score_users_from_propagated(propagated, user_ids)
+
+        self.assertFalse(config.separate_item_branch_embeddings)
+        self.assertEqual(tuple(embeddings["item"].shape), (3, 4))
+        self.assertNotIn("item_interest", embeddings)
+        self.assertEqual(tuple(propagated["item"].shape), (3, 4))
+        self.assertEqual(tuple(propagated["item_interest"].shape), (3, 4))
+        self.assertEqual(tuple(propagated["item_conformity"].shape), (3, 4))
+        self.assertEqual(tuple(scores.shape), (2, 3))
+
+    def test_dual_branch_separate_item_embeddings_forward_and_full_catalog_shape(self) -> None:
+        """Separate item branch embeddings should expose explicit branch tensors."""
+        config = self._tiny_dual_branch_scoring_config(separate_items=True)
+        model = UCaGNN(n_users=2, n_items=3, config=config)
+        edge_index = torch.tensor([[0, 2, 1, 3], [2, 0, 3, 1]], dtype=torch.long)
+        user_ids = torch.tensor([0, 1], dtype=torch.long)
+        pos_item_ids = torch.tensor([0, 1], dtype=torch.long)
+        neg_item_ids = torch.tensor([1, 2], dtype=torch.long)
+
+        embeddings = model.embedding.get_embeddings()
+        output = model(edge_index, user_ids, pos_item_ids, neg_item_ids)
+        propagated = output["propagated"]
+        assert isinstance(propagated, dict)
+        scores = model.score_users_from_propagated(propagated, user_ids)
+
+        self.assertTrue(config.separate_item_branch_embeddings)
+        self.assertEqual(tuple(embeddings["item"].shape), (3, 4))
+        self.assertEqual(tuple(embeddings["item_interest"].shape), (3, 4))
+        self.assertEqual(tuple(embeddings["item_conformity"].shape), (3, 4))
+        self.assertEqual(tuple(model.embedding.get_stacked_embeddings().shape), (5, 4))
+        self.assertEqual(tuple(propagated["item"].shape), (3, 4))
+        self.assertEqual(tuple(propagated["item_interest"].shape), (3, 4))
+        self.assertEqual(tuple(propagated["item_conformity"].shape), (3, 4))
+        self.assertEqual(tuple(scores.shape), (2, 3))
+
+    def test_loss_normalization_none_preserves_raw_weighted_total(self) -> None:
+        """The default loss path should keep the historical weighted raw formula."""
+        config = UCaGNNConfig(device="cpu", embed_dim=2)
+        config.use_dual_branch = True
+        config.branch_loss_mode = "symmetric_bpr"
+        config.loss_weight_interest_bpr = 0.2
+        config.loss_weight_conformity_bpr = 0.3
+        config.loss_weight_independence = 0.4
+        config.loss_weight_contrastive = 0.0
+        config.loss_weight_align = 0.0
+        config.loss_weight_uniform = 0.0
+        config.loss_weight_popularity = 0.0
+        config.loss_weight_propensity_calibration = 0.0
+        config.loss_normalization = "none"
+        config.auxiliary_losses_start_epoch = 0
+        config.popularity_supervision_start_epoch = 0
+        model_output, item_popularity, pos_item_ids, propensity_targets = (
+            self._loss_suite_model_output()
+        )
+
+        losses = LossSuite(config)(
+            model_output,
+            item_popularity=item_popularity,
+            pos_item_ids=pos_item_ids,
+            epoch=1,
+            propensity_targets=propensity_targets,
+        )
+
+        expected = (
+            config.loss_weight_recommendation * losses["rec"]
+            + config.loss_weight_interest_bpr * losses["interest_bpr"]
+            + config.loss_weight_conformity_bpr * losses["conformity_bpr"]
+            + config.loss_weight_independence * losses["independence"]
+        )
+        torch.testing.assert_close(losses["total"], expected)
+        torch.testing.assert_close(losses["raw_rec_loss"], losses["rec"])
+        self.assertNotIn("normalized_interest_bpr", losses)
+
+    def test_loss_normalization_ema_aux_logs_normalized_losses_without_eval_update(
+        self,
+    ) -> None:
+        """EMA normalization should affect auxiliaries only and freeze in eval."""
+        config = UCaGNNConfig(
+            device="cpu",
+            embed_dim=2,
+            use_ipw=True,
+            loss_weight_propensity_calibration=0.1,
+        )
+        config.use_dual_branch = True
+        config.branch_loss_mode = "symmetric_bpr"
+        config.use_popularity_head = True
+        config.loss_weight_interest_bpr = 0.2
+        config.loss_weight_conformity_bpr = 0.3
+        config.loss_weight_independence = 0.4
+        config.loss_weight_contrastive = 0.1
+        config.loss_weight_align = 0.1
+        config.loss_weight_uniform = 0.1
+        config.loss_weight_popularity = 0.1
+        config.loss_normalization = "ema_aux"
+        config.auxiliary_losses_start_epoch = 0
+        config.popularity_supervision_start_epoch = 0
+        model_output, item_popularity, pos_item_ids, propensity_targets = (
+            self._loss_suite_model_output()
+        )
+        loss_suite = LossSuite(config)
+
+        losses = loss_suite(
+            model_output,
+            item_popularity=item_popularity,
+            pos_item_ids=pos_item_ids,
+            epoch=1,
+            propensity_targets=propensity_targets,
+        )
+        ema_after_train = loss_suite._aux_loss_ema.detach().clone()
+        loss_suite.eval()
+        eval_losses = loss_suite(
+            model_output,
+            item_popularity=item_popularity,
+            pos_item_ids=pos_item_ids,
+            epoch=1,
+            propensity_targets=propensity_targets,
+        )
+
+        self.assertTrue(torch.isfinite(losses["total"]))
+        self.assertTrue(torch.isfinite(eval_losses["total"]))
+        self.assertIn("normalized_interest_bpr", losses)
+        self.assertIn("normalized_propensity_calibration", losses)
+        self.assertIn("weighted_interest_bpr", losses)
+        torch.testing.assert_close(losses["raw_rec_loss"], losses["rec"])
+        torch.testing.assert_close(loss_suite._aux_loss_ema, ema_after_train)
 
     def test_ipw_requires_calibrated_propensity_objective(self) -> None:
         """IPW should not use random unsupervised propensity estimates."""

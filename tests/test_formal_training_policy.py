@@ -492,6 +492,17 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 weight_decay=1e-2,
                 batch_size=8192,
                 auto_batch_size=True,
+                use_learned_score_mix=True,
+                score_weight_interest=0.2,
+                score_weight_conformity=0.6,
+                score_weight_popularity=0.2,
+                separate_item_branch_embeddings=True,
+                loss_weight_contrastive=0.03,
+                loss_weight_align=0.04,
+                loss_weight_uniform=0.05,
+                loss_weight_popularity=0.06,
+                loss_weight_propensity_calibration=0.07,
+                loss_normalization="ema_aux",
             ),
         )
 
@@ -502,6 +513,17 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.weight_decay, 1e-4)
         self.assertEqual(config.batch_size, 2048)
         self.assertFalse(config.auto_batch_size)
+        self.assertFalse(config.use_learned_score_mix)
+        self.assertEqual(config.score_weight_interest, 1.0)
+        self.assertEqual(config.score_weight_conformity, 0.0)
+        self.assertEqual(config.score_weight_popularity, 0.0)
+        self.assertFalse(config.separate_item_branch_embeddings)
+        self.assertEqual(config.loss_weight_contrastive, 0.0)
+        self.assertEqual(config.loss_weight_align, 0.0)
+        self.assertEqual(config.loss_weight_uniform, 0.0)
+        self.assertEqual(config.loss_weight_popularity, 0.0)
+        self.assertEqual(config.loss_weight_propensity_calibration, 0.0)
+        self.assertEqual(config.loss_normalization, "none")
 
     def test_lightgcn_paper_propagation_has_no_self_loops(self) -> None:
         """Paper LightGCN should average ego and neighbor layers without self-loops."""
@@ -554,6 +576,17 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 lr_scheduler="cosine",
                 batch_size=8192,
                 auto_batch_size=True,
+                use_learned_score_mix=True,
+                score_weight_interest=0.2,
+                score_weight_conformity=0.6,
+                score_weight_popularity=0.2,
+                separate_item_branch_embeddings=True,
+                loss_weight_contrastive=0.03,
+                loss_weight_align=0.04,
+                loss_weight_uniform=0.05,
+                loss_weight_popularity=0.06,
+                loss_weight_propensity_calibration=0.07,
+                loss_normalization="ema_aux",
             ),
         )
 
@@ -566,6 +599,17 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertFalse(config.auto_batch_size)
         self.assertEqual(config.negative_sampling_strategy, "dice")
         self.assertEqual(config.n_negatives, 4)
+        self.assertFalse(config.use_learned_score_mix)
+        self.assertEqual(config.score_weight_interest, 1.0)
+        self.assertEqual(config.score_weight_conformity, 1.0)
+        self.assertEqual(config.score_weight_popularity, 0.0)
+        self.assertFalse(config.separate_item_branch_embeddings)
+        self.assertEqual(config.loss_weight_contrastive, 0.0)
+        self.assertEqual(config.loss_weight_align, 0.0)
+        self.assertEqual(config.loss_weight_uniform, 0.0)
+        self.assertEqual(config.loss_weight_popularity, 0.0)
+        self.assertEqual(config.loss_weight_propensity_calibration, 0.0)
+        self.assertEqual(config.loss_normalization, "none")
 
     def test_build_runtime_model_uses_explicit_paper_baseline_classes(self) -> None:
         """Paper baselines should not be hidden as UCaGNN config variants."""
@@ -1028,6 +1072,22 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertNotEqual(learned_hash, fixed_hash)
         self.assertNotEqual(learned_identity["config"], fixed_identity["config"])
 
+    def test_training_identity_changes_for_new_branch_and_loss_state(self) -> None:
+        """Resume compatibility should track branch tables and EMA loss state."""
+        base = build_config(_experiment_args(preset="ucagnn"))
+        separate_items = dataclasses.replace(
+            base,
+            separate_item_branch_embeddings=True,
+        )
+        ema_losses = dataclasses.replace(base, loss_normalization="ema_aux")
+
+        _, base_hash = _build_training_identity(base, "ucagnn", None)
+        _, separate_hash = _build_training_identity(separate_items, "ucagnn", None)
+        _, ema_hash = _build_training_identity(ema_losses, "ucagnn", None)
+
+        self.assertNotEqual(base_hash, separate_hash)
+        self.assertNotEqual(base_hash, ema_hash)
+
     def test_training_identity_changes_when_distance_correlation_cap_changes(self) -> None:
         """Resume compatibility should track DICE discrepancy estimator changes."""
         base = build_config(_experiment_args(preset="ucagnn"))
@@ -1176,8 +1236,22 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         """Formal profiles should be able to run causal auxiliary-loss ablations."""
         benchmark_args = normalize_benchmark_config_overrides(
             {
+                "use_learned_score_mix": False,
+                "score_weight_interest": 0.4,
+                "score_weight_conformity": 0.3,
+                "score_weight_popularity": 0.3,
+                "score_mix_min_weight": 0.02,
+                "use_popularity_head": False,
+                "use_features": True,
+                "feature_gate_init": -4.0,
+                "dice_mask_reduction": "active_mean",
+                "separate_item_branch_embeddings": True,
                 "loss_weight_contrastive": 0.03,
                 "loss_weight_propensity_calibration": 0.04,
+                "loss_weight_align": 0.01,
+                "loss_weight_uniform": 0.02,
+                "loss_weight_popularity": 0.05,
+                "loss_normalization": "ema_aux",
                 "use_ipw": True,
                 "auxiliary_loss_schedule": "linear_ramp",
                 "auxiliary_ramp_rate": 0.002,
@@ -1195,8 +1269,22 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         config = build_config(config_inputs)
 
+        self.assertFalse(config.use_learned_score_mix)
+        self.assertEqual(config.score_weight_interest, 0.4)
+        self.assertEqual(config.score_weight_conformity, 0.3)
+        self.assertEqual(config.score_weight_popularity, 0.3)
+        self.assertEqual(config.score_mix_min_weight, 0.02)
+        self.assertFalse(config.use_popularity_head)
+        self.assertTrue(config.use_features)
+        self.assertEqual(config.feature_gate_init, -4.0)
+        self.assertEqual(config.dice_mask_reduction, "active_mean")
+        self.assertTrue(config.separate_item_branch_embeddings)
         self.assertEqual(config.loss_weight_contrastive, 0.03)
         self.assertEqual(config.loss_weight_propensity_calibration, 0.04)
+        self.assertEqual(config.loss_weight_align, 0.01)
+        self.assertEqual(config.loss_weight_uniform, 0.02)
+        self.assertEqual(config.loss_weight_popularity, 0.05)
+        self.assertEqual(config.loss_normalization, "ema_aux")
         self.assertTrue(config.use_ipw)
         self.assertEqual(config.auxiliary_loss_schedule, "linear_ramp")
         self.assertEqual(config.auxiliary_ramp_rate, 0.002)
