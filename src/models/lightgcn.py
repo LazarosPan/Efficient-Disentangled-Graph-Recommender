@@ -272,6 +272,7 @@ class DualBranchGCN(nn.Module):
             )
             out["user_conformity"] = h_conf[:n_users]
             out["item_conformity"] = h_conf[n_users:]
+            out["item"] = 0.5 * (out["item_interest"] + out["item_conformity"])
         else:
             x = torch.cat([embeddings["user"], embeddings["item"]], dim=0)
             h = (

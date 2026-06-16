@@ -135,9 +135,14 @@ class EmbeddingModule(nn.Module):
             self.user_embed = nn.Embedding(n_users, d)
             nn.init.xavier_uniform_(self.user_embed.weight)
 
-        # Item embedding (always single)
+        # Item embedding (always present as the compatibility fallback)
         self.item_embed = nn.Embedding(n_items, d)
         nn.init.xavier_uniform_(self.item_embed.weight)
+        if config.use_dual_branch and config.separate_item_branch_embeddings:
+            self.item_interest_embed = nn.Embedding(n_items, d)
+            self.item_conformity_embed = nn.Embedding(n_items, d)
+            nn.init.xavier_uniform_(self.item_interest_embed.weight)
+            nn.init.xavier_uniform_(self.item_conformity_embed.weight)
 
         # Optional popularity embedding
         if config.use_popularity_emb:
@@ -322,16 +327,41 @@ class EmbeddingModule(nn.Module):
         item_embed, projected_features, pop_gate = self._get_item_base_embeddings(
             item_ids,
         )
+        separate_item_branches = (
+            self.config.use_dual_branch and self.config.separate_item_branch_embeddings
+        )
+        if separate_item_branches:
+            item_interest_base = self._select_embedding_rows(
+                self.item_interest_embed,
+                item_ids,
+            )
+            item_conformity_base = self._select_embedding_rows(
+                self.item_conformity_embed,
+                item_ids,
+            )
+        else:
+            item_interest_base = item_embed
+            item_conformity_base = item_embed
+
         if projected_features is None or pop_gate is None:
+            if separate_item_branches:
+                return {
+                    "item": 0.5 * (item_interest_base + item_conformity_base),
+                    "item_interest": item_interest_base,
+                    "item_conformity": item_conformity_base,
+                }
             return {"item": item_embed}
 
         interest_gate = torch.sigmoid(self.item_interest_gate)
         conformity_gate = torch.sigmoid(self.item_conformity_gate)
 
-        item_interest = item_embed + interest_gate * projected_features
-        item_conformity = item_embed + conformity_gate * (projected_features * pop_gate)
+        item_interest = item_interest_base + interest_gate * projected_features
+        item_conformity = item_conformity_base + conformity_gate * (projected_features * pop_gate)
+        item_fallback = (
+            0.5 * (item_interest + item_conformity) if separate_item_branches else item_embed
+        )
         return {
-            "item": item_embed,
+            "item": item_fallback,
             "item_interest": item_interest,
             "item_conformity": item_conformity,
         }
