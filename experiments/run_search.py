@@ -25,8 +25,10 @@ from src.utils.benchmark_datasets import (
 )
 from src.utils.config import BENCHMARK_CONFIG_FIELDS, DEFAULT_SEED, UCaGNNConfig
 from src.utils.crru import (
+    VALIDATION_ACCURACY_METRIC,
     VALIDATION_ONLINE_CRRU_K_METRICS,
     VALIDATION_ONLINE_CRRU_METRIC,
+    compute_validation_accuracy_objective,
     compute_validation_online_crru_for_k,
     compute_validation_online_crru_objective,
 )
@@ -83,11 +85,25 @@ SEARCH_PARAMETER_FIELDS = frozenset(
         "dropout",
         "n_negatives",
         "score_mix_min_weight",
+        "score_fusion_profile",
+        "item_branch_profile",
+        "context_feature_profile",
+        "loss_profile",
+        "graph_profile",
+        "use_learned_score_mix",
+        "score_weight_interest",
+        "score_weight_conformity",
+        "score_weight_popularity",
+        "separate_item_branch_embeddings",
         "loss_weight_interest_bpr",
         "loss_weight_conformity_bpr",
         "loss_weight_independence",
         "loss_weight_contrastive",
+        "loss_weight_align",
+        "loss_weight_uniform",
         "loss_weight_popularity",
+        "loss_weight_propensity_calibration",
+        "loss_normalization",
         "auxiliary_loss_schedule",
         "auxiliary_ramp_rate",
         "independence_ramp_rate",
@@ -200,13 +216,33 @@ class SearchSpaceSpec:
     trials: int
     config_overrides: dict[str, Any]
     parameters: dict[str, dict[str, Any]]
+    profile_overrides: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
     sampler: SamplerSpec = field(default_factory=SamplerSpec)
     pruner: PrunerSpec = field(default_factory=PrunerSpec)
+
+
+@dataclass(frozen=True)
+class TrialParameterResolution:
+    """Logical sampled params plus concrete config overrides for one trial."""
+
+    sampled_params: dict[str, Any]
+    config_overrides: dict[str, Any]
 
 
 ParameterValidator = Callable[[str, Mapping[str, Any]], None]
 DistributionPayloadBuilder = Callable[[str, Mapping[str, Any], int | None], dict[str, Any]]
 ParameterSuggester = Callable[[optuna.Trial, str, str, Mapping[str, Any]], Any]
+ProfileOverrides = Mapping[str, Mapping[str, Mapping[str, Any]]]
+
+_PROFILE_PARAMETER_FIELDS = frozenset(
+    {
+        "score_fusion_profile",
+        "item_branch_profile",
+        "context_feature_profile",
+        "loss_profile",
+        "graph_profile",
+    },
+)
 
 
 def _json_safe(value: Any) -> Any:
@@ -428,6 +464,63 @@ def _validate_categorical_parameter(field_name: str, spec: Mapping[str, Any]) ->
         raise ValueError(f"parameters.{field_name}.choices contains duplicate values.")
 
 
+def _normalize_profile_overrides(
+    raw_space: Mapping[str, Any],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Return validated search-layer profile-to-config mappings."""
+    raw_overrides = _require_mapping(
+        raw_space.get("profile_overrides", {}),
+        field_name="profile_overrides",
+    )
+    _validate_catalog_fields(
+        raw_overrides,
+        field_name="profile_overrides",
+        allowed_fields=set(_PROFILE_PARAMETER_FIELDS),
+    )
+    normalized: dict[str, dict[str, dict[str, Any]]] = {}
+    for field_name, raw_profiles in raw_overrides.items():
+        profiles = _require_mapping(raw_profiles, field_name=f"profile_overrides.{field_name}")
+        if not profiles:
+            raise ValueError(f"profile_overrides.{field_name} must define at least one profile.")
+        normalized[field_name] = {}
+        for profile_name, raw_config_overrides in profiles.items():
+            config_overrides = dict(
+                _require_mapping(
+                    raw_config_overrides,
+                    field_name=f"profile_overrides.{field_name}.{profile_name}",
+                ),
+            )
+            _validate_catalog_fields(
+                config_overrides,
+                field_name=f"profile_overrides.{field_name}.{profile_name}",
+                allowed_fields=set(BENCHMARK_CONFIG_FIELDS),
+            )
+            normalized[field_name][str(profile_name)] = config_overrides
+    return normalized
+
+
+def _validate_search_profile_parameter(
+    field_name: str,
+    spec: Mapping[str, Any],
+    *,
+    profile_overrides: ProfileOverrides,
+) -> None:
+    """Validate a search-layer mechanism profile parameter."""
+    if field_name not in _PROFILE_PARAMETER_FIELDS:
+        return
+    if str(spec.get("type", "")).lower() != "categorical":
+        raise ValueError(f"parameters.{field_name} must be a categorical profile.")
+    choices = spec.get("choices", [])
+    if field_name not in profile_overrides:
+        raise ValueError(f"profile_overrides.{field_name} must define profile choices.")
+    allowed = set(profile_overrides[field_name])
+    unsupported = sorted(str(choice) for choice in choices if str(choice) not in allowed)
+    if unsupported:
+        raise ValueError(
+            f"parameters.{field_name} contains unknown profile choices: {', '.join(unsupported)}.",
+        )
+
+
 def _validate_fanout_parameter(field_name: str, spec: Mapping[str, Any]) -> None:
     """Validate a depth-keyed ``num_neighbors`` search parameter."""
     if field_name != "num_neighbors":
@@ -459,13 +552,18 @@ _PARAMETER_VALIDATORS: dict[str, ParameterValidator] = {
 SUPPORTED_PARAMETER_TYPES = frozenset(_PARAMETER_VALIDATORS)
 
 
-def _validate_parameter_specs(parameters: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+def _validate_parameter_specs(
+    parameters: Mapping[str, Any],
+    *,
+    profile_overrides: ProfileOverrides | None = None,
+) -> dict[str, dict[str, Any]]:
     """Validate search parameter specs and return a plain dict copy."""
     _validate_catalog_fields(
         parameters,
         field_name="parameters",
         allowed_fields=set(SEARCH_PARAMETER_FIELDS),
     )
+    profile_overrides = profile_overrides or {}
     normalized: dict[str, dict[str, Any]] = {}
     for field_name, raw_spec in parameters.items():
         spec = dict(_require_mapping(raw_spec, field_name=f"parameters.{field_name}"))
@@ -479,6 +577,11 @@ def _validate_parameter_specs(parameters: Mapping[str, Any]) -> dict[str, dict[s
                 ),
             )
         validator(field_name, spec)
+        _validate_search_profile_parameter(
+            field_name,
+            spec,
+            profile_overrides=profile_overrides,
+        )
         normalized[field_name] = spec
     return normalized
 
@@ -488,6 +591,7 @@ def _resolve_parameter_specs(
     *,
     all_datasets: Sequence[str],
     active_dataset: str | None,
+    profile_overrides: ProfileOverrides,
 ) -> dict[str, dict[str, Any]]:
     """Resolve base plus optional dataset-local parameter overrides.
 
@@ -516,10 +620,16 @@ def _resolve_parameter_specs(
                 field_name=f"parameters_by_dataset.{dataset}",
             ),
         )
-        _validate_parameter_specs({**base_parameters, **overrides})
+        _validate_parameter_specs(
+            {**base_parameters, **overrides},
+            profile_overrides=profile_overrides,
+        )
 
     if active_dataset is None:
-        return _validate_parameter_specs(base_parameters)
+        return _validate_parameter_specs(
+            base_parameters,
+            profile_overrides=profile_overrides,
+        )
 
     dataset_overrides = dict(
         _require_mapping(
@@ -527,7 +637,10 @@ def _resolve_parameter_specs(
             field_name=f"parameters_by_dataset.{active_dataset}",
         ),
     )
-    return _validate_parameter_specs({**base_parameters, **dataset_overrides})
+    return _validate_parameter_specs(
+        {**base_parameters, **dataset_overrides},
+        profile_overrides=profile_overrides,
+    )
 
 
 def resolve_search_space(
@@ -579,10 +692,12 @@ def resolve_search_space(
         field_name="config_overrides",
         allowed_fields=set(BENCHMARK_CONFIG_FIELDS),
     )
+    profile_overrides = _normalize_profile_overrides(raw_space)
     parameters = _resolve_parameter_specs(
         raw_space,
         all_datasets=all_datasets,
         active_dataset=dataset,
+        profile_overrides=profile_overrides,
     )
     if not parameters:
         raise ValueError(f"search space '{space_name}' must define at least one parameter.")
@@ -599,6 +714,7 @@ def resolve_search_space(
         trials=trials,
         config_overrides=config_overrides,
         parameters=parameters,
+        profile_overrides=profile_overrides,
     )
 
 
@@ -838,6 +954,8 @@ def search_space_revision(search_space: SearchSpaceSpec) -> str:
         "config_overrides": _json_safe(search_space.config_overrides),
         "parameters": _json_safe(search_space.parameters),
     }
+    if search_space.profile_overrides:
+        payload["profile_overrides"] = _json_safe(search_space.profile_overrides)
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:SEARCH_SPACE_REVISION_HASH_LENGTH]
 
@@ -1009,30 +1127,103 @@ def _parameter_is_conditionally_active(
     return True
 
 
+def _profile_config_overrides(
+    profile_overrides: ProfileOverrides,
+    field_name: str,
+    profile_name: Any,
+) -> dict[str, Any]:
+    """Return concrete config overrides for one search-layer profile choice."""
+    try:
+        return dict(profile_overrides[field_name][str(profile_name)])
+    except KeyError as exc:
+        raise ValueError(f"Unknown {field_name} profile: {profile_name!r}") from exc
+
+
+def _resolved_config_overrides_from_sampled_params(
+    sampled_params: Mapping[str, Any],
+    *,
+    profile_overrides: ProfileOverrides,
+) -> dict[str, Any]:
+    """Resolve logical sampled params into concrete config overrides."""
+    resolved: dict[str, Any] = {}
+    for field_name in _PROFILE_PARAMETER_FIELDS:
+        if field_name in sampled_params:
+            resolved.update(
+                _profile_config_overrides(
+                    profile_overrides,
+                    field_name,
+                    sampled_params[field_name],
+                ),
+            )
+    for field_name, value in sampled_params.items():
+        if field_name not in _PROFILE_PARAMETER_FIELDS:
+            resolved[field_name] = value
+    return resolved
+
+
+def resolve_trial_parameters(
+    trial: optuna.Trial,
+    search_space: SearchSpaceSpec,
+    *,
+    base_config: UCaGNNConfig,
+) -> TrialParameterResolution:
+    """Suggest logical trial params and resolve them to config overrides."""
+    sampled_params: dict[str, Any] = {}
+    config_overrides: dict[str, Any] = {}
+
+    for field_name, spec in search_space.parameters.items():
+        if field_name not in _PROFILE_PARAMETER_FIELDS:
+            continue
+        value = _suggest_parameter_value(trial, field_name, spec)
+        sampled_params[field_name] = value
+        config_overrides.update(
+            _profile_config_overrides(search_space.profile_overrides, field_name, value),
+        )
+
+    for field_name, spec in search_space.parameters.items():
+        if field_name in _PROFILE_PARAMETER_FIELDS:
+            continue
+        if str(spec["type"]).lower() == "fanout":
+            continue
+        active_context = {**config_overrides, **sampled_params}
+        if not _parameter_is_conditionally_active(field_name, active_context):
+            continue
+        value = _suggest_parameter_value(trial, field_name, spec)
+        sampled_params[field_name] = value
+        config_overrides[field_name] = value
+
+    for field_name, spec in search_space.parameters.items():
+        if str(spec["type"]).lower() != "fanout":
+            continue
+        active_context = {**config_overrides, **sampled_params}
+        if not _parameter_is_conditionally_active(field_name, active_context):
+            continue
+        value = _suggest_fanout_value(
+            trial,
+            spec,
+            base_config=base_config,
+            sampled_overrides=config_overrides,
+        )
+        sampled_params[field_name] = value
+        config_overrides[field_name] = value
+    return TrialParameterResolution(
+        sampled_params=sampled_params,
+        config_overrides=config_overrides,
+    )
+
+
 def suggest_trial_overrides(
     trial: optuna.Trial,
     search_space: SearchSpaceSpec,
     *,
     base_config: UCaGNNConfig,
 ) -> dict[str, Any]:
-    """Suggest one trial override dict over existing ``UCaGNNConfig`` fields."""
-    sampled: dict[str, Any] = {}
-    for field_name, spec in search_space.parameters.items():
-        if str(spec["type"]).lower() == "fanout":
-            continue
-        if not _parameter_is_conditionally_active(field_name, sampled):
-            continue
-        sampled[field_name] = _suggest_parameter_value(trial, field_name, spec)
-    for field_name, spec in search_space.parameters.items():
-        if str(spec["type"]).lower() != "fanout":
-            continue
-        sampled[field_name] = _suggest_fanout_value(
-            trial,
-            spec,
-            base_config=base_config,
-            sampled_overrides=sampled,
-        )
-    return sampled
+    """Suggest one concrete trial override dict over ``UCaGNNConfig`` fields."""
+    return resolve_trial_parameters(
+        trial,
+        search_space,
+        base_config=base_config,
+    ).config_overrides
 
 
 def _result_epoch_time_s(result: Mapping[str, Any]) -> float | None:
@@ -1061,6 +1252,8 @@ def _objective_metric_value(
             peak_vram_mb=result.get("peak_vram_mb"),
             epoch_time_s=_result_epoch_time_s(result),
         )
+    if metric_name == VALIDATION_ACCURACY_METRIC:
+        return compute_validation_accuracy_objective(metrics)
     if metric_name not in metrics:
         raise ValueError(f"Validation metrics did not include {metric_name}.")
     return float(metrics[metric_name])
@@ -1174,7 +1367,7 @@ def _set_trial_attrs_from_result(
         metric_name=objective.metric,
         direction=objective.direction,
     )
-    if objective.metric == VALIDATION_ONLINE_CRRU_METRIC:
+    try:
         for k, metric_name in VALIDATION_ONLINE_CRRU_K_METRICS.items():
             best_val_metrics[metric_name] = compute_validation_online_crru_for_k(
                 best_val_metrics,
@@ -1182,6 +1375,13 @@ def _set_trial_attrs_from_result(
                 peak_vram_mb=result.get("peak_vram_mb"),
                 epoch_time_s=_result_epoch_time_s(result),
             )
+        best_val_metrics[VALIDATION_ONLINE_CRRU_METRIC] = compute_validation_online_crru_objective(
+            best_val_metrics,
+            peak_vram_mb=result.get("peak_vram_mb"),
+            epoch_time_s=_result_epoch_time_s(result),
+        )
+    except ValueError:
+        logger.debug("Skipping CRRU trial attrs because validation metrics are incomplete.")
     prefix = f"{dataset}."
     trial.set_user_attr(prefix + "exp_id", result.get("exp_id"))
     trial.set_user_attr(prefix + "canonical_name", result.get("canonical_name"))
@@ -1203,6 +1403,7 @@ def _set_trial_attrs_from_result(
         *THESIS_PRIMARY_METRICS,
         *VALIDATION_ONLINE_CRRU_K_METRICS.values(),
         VALIDATION_ONLINE_CRRU_METRIC,
+        VALIDATION_ACCURACY_METRIC,
     ):
         if metric_name in best_val_metrics:
             trial.set_user_attr(prefix + f"val.{metric_name}", best_val_metrics[metric_name])
@@ -1234,7 +1435,8 @@ def _trial_change_note(
     search_space: SearchSpaceSpec,
     study_name: str,
     trial_number: int,
-    sampled_overrides: Mapping[str, Any],
+    sampled_params: Mapping[str, Any],
+    resolved_config_overrides: Mapping[str, Any],
 ) -> str:
     """Return compact trial metadata for the existing change_note field."""
     return json.dumps(
@@ -1243,7 +1445,8 @@ def _trial_change_note(
             "search_space_revision": search_space_revision(search_space),
             "study_name": study_name,
             "trial_number": trial_number,
-            "sampled_params": _json_safe(sampled_overrides),
+            "sampled_params": _json_safe(sampled_params),
+            "resolved_config_overrides": _json_safe(resolved_config_overrides),
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -1294,7 +1497,7 @@ def _objective_factory(
                 device=device,
                 data_dir=data_dir,
             )
-            sampled_overrides = suggest_trial_overrides(
+            resolution = resolve_trial_parameters(
                 trial,
                 search_space,
                 base_config=base_config,
@@ -1303,9 +1506,21 @@ def _objective_factory(
             _record_trial_failure(trial, stage="suggest_overrides", exc=exc)
             raise
 
-        sampled_key = _canonical_sampled_params(sampled_overrides)
-        trial.set_user_attr("sampled_params", _json_safe(sampled_overrides))
+        sampled_key = _canonical_sampled_params(resolution.sampled_params)
+        trial.set_user_attr("sampled_params", _json_safe(resolution.sampled_params))
         trial.set_user_attr("sampled_params_json", sampled_key)
+        trial.set_user_attr(
+            "resolved_config_overrides",
+            _json_safe(resolution.config_overrides),
+        )
+        trial.set_user_attr(
+            "resolved_config_overrides_json",
+            json.dumps(
+                _json_safe(resolution.config_overrides),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
         if seen_sampled_param_keys is not None and sampled_key in seen_sampled_param_keys:
             trial.set_user_attr("duplicate_sampled_params", True)
             trial.set_user_attr("duplicate_sampled_params_key", sampled_key)
@@ -1319,7 +1534,7 @@ def _objective_factory(
                 configs_by_dataset[dataset] = build_search_config(
                     search_space,
                     dataset=dataset,
-                    sampled_overrides=sampled_overrides,
+                    sampled_overrides=resolution.config_overrides,
                     device=device,
                     data_dir=data_dir,
                 )
@@ -1333,7 +1548,8 @@ def _objective_factory(
             search_space=search_space,
             study_name=study_name,
             trial_number=trial.number,
-            sampled_overrides=sampled_overrides,
+            sampled_params=resolution.sampled_params,
+            resolved_config_overrides=resolution.config_overrides,
         )
         for dataset_index, (dataset, config) in enumerate(configs_by_dataset.items()):
             try:
@@ -1489,14 +1705,20 @@ def _sampled_value_matches_spec(value: Any, field_name: str, spec: Mapping[str, 
 def _sampled_fanout_matches_spec(
     sampled_params: Mapping[str, Any],
     spec: Mapping[str, Any],
+    *,
+    profile_overrides: ProfileOverrides,
 ) -> bool:
     """Return whether sampled ``num_neighbors`` is valid for current branch depth."""
-    raw_value = sampled_params.get("num_neighbors")
+    resolved_params = _resolved_config_overrides_from_sampled_params(
+        sampled_params,
+        profile_overrides=profile_overrides,
+    )
+    raw_value = resolved_params.get("num_neighbors")
     if not isinstance(raw_value, list):
         return False
     try:
-        interest_layers = int(sampled_params["interest_gnn_layers"])
-        conformity_layers = int(sampled_params["conformity_gnn_layers"])
+        interest_layers = int(resolved_params["interest_gnn_layers"])
+        conformity_layers = int(resolved_params["conformity_gnn_layers"])
     except (KeyError, TypeError, ValueError):
         return False
     depth = max(interest_layers, conformity_layers)
@@ -1526,16 +1748,32 @@ def _sampled_params_match_search_space(
     logical_sampled_params = {
         key: value for key, value in sampled_params.items() if key not in runtime_only_fields
     }
+    try:
+        resolved_logical_params = _resolved_config_overrides_from_sampled_params(
+            logical_sampled_params,
+            profile_overrides=search_space.profile_overrides,
+        )
+    except ValueError:
+        return False
     allowed_keys = set(search_space.parameters)
     if set(logical_sampled_params) - allowed_keys:
         return False
     for field_name, spec in search_space.parameters.items():
         parameter_type = str(spec["type"]).lower()
+        active_context = {**resolved_logical_params, **logical_sampled_params}
         if parameter_type == "fanout":
-            if not _sampled_fanout_matches_spec(logical_sampled_params, spec):
+            if not _parameter_is_conditionally_active(field_name, active_context):
+                if field_name in logical_sampled_params:
+                    return False
+                continue
+            if not _sampled_fanout_matches_spec(
+                logical_sampled_params,
+                spec,
+                profile_overrides=search_space.profile_overrides,
+            ):
                 return False
             continue
-        if not _parameter_is_conditionally_active(field_name, logical_sampled_params):
+        if not _parameter_is_conditionally_active(field_name, active_context):
             if field_name in logical_sampled_params:
                 return False
             continue
@@ -1771,6 +2009,11 @@ def build_dry_run_payload(
             data_dir=data_dir,
         )
         base_configs[dataset] = dataclasses.asdict(config)
+    profile_overrides = {
+        field_name: search_space.profile_overrides[field_name]
+        for field_name in search_space.parameters
+        if field_name in _PROFILE_PARAMETER_FIELDS
+    }
 
     return {
         "search_space": search_space.name,
@@ -1792,6 +2035,7 @@ def build_dry_run_payload(
         ),
         "config_overrides": _json_safe(search_space.config_overrides),
         "parameters": _json_safe(search_space.parameters),
+        "profile_overrides": _json_safe(profile_overrides),
         "base_configs": base_configs,
     }
 
@@ -1905,16 +2149,17 @@ def _dataset_study_name(
 def _build_per_dataset_dry_run_payload(
     args: argparse.Namespace,
     *,
+    space_name: str,
     search_space: SearchSpaceSpec,
     n_trials: int,
 ) -> dict[str, Any]:
     """Return dry-run details for the default dataset-local search expansion."""
     payloads: dict[str, Any] = {}
     for dataset in search_space.datasets:
-        dataset_space = resolve_search_space(args.space, dataset=dataset)
+        dataset_space = resolve_search_space(space_name, dataset=dataset)
         study_name = _dataset_study_name(
             args.study_name,
-            space_name=args.space,
+            space_name=space_name,
             dataset_space=dataset_space,
         )
         payloads[dataset] = build_dry_run_payload(
@@ -1935,19 +2180,81 @@ def _build_per_dataset_dry_run_payload(
     }
 
 
-def run_search(args: argparse.Namespace) -> int:
-    """Execute a resolved Optuna search from parsed CLI args."""
-    if args.list_spaces:
-        print("Available search spaces:")
-        for space_name in search_space_names():
-            space = get_search_space(space_name)
-            description = space.get("description", "")
-            print(f"  {space_name}: {description}")
-        return 0
-    if args.space is None:
-        raise ValueError("--space is required unless --list-spaces is used.")
+def _parse_search_space_sequence(raw_space: str | None) -> list[str]:
+    """Return one or more search-space identifiers from CLI input."""
+    if raw_space is None:
+        return []
+    space_names = [part.strip() for part in raw_space.split(",") if part.strip()]
+    if not space_names:
+        raise ValueError("--space must name at least one search space.")
+    return space_names
 
-    search_space = resolve_search_space(args.space, dataset=args.dataset)
+
+def _build_single_space_dry_run_payload(
+    args: argparse.Namespace,
+    *,
+    space_name: str,
+) -> dict[str, Any]:
+    """Return dry-run details for one queued search-space entry."""
+    search_space = resolve_search_space(space_name, dataset=args.dataset)
+    n_trials = int(args.trials or search_space.trials)
+    if n_trials < 1:
+        raise ValueError("--trials must be >= 1.")
+
+    if args.dataset is None and len(search_space.datasets) > 1:
+        return _build_per_dataset_dry_run_payload(
+            args,
+            space_name=space_name,
+            search_space=search_space,
+            n_trials=n_trials,
+        )
+
+    study_name = args.study_name or default_study_name(
+        space_name,
+        search_space.datasets,
+        search_space=search_space,
+    )
+    return build_dry_run_payload(
+        search_space,
+        study_name=study_name,
+        storage=args.storage,
+        trials=n_trials,
+        device=args.device,
+        data_dir=args.data_dir,
+    )
+
+
+def _build_search_space_queue_dry_run_payload(
+    args: argparse.Namespace,
+    *,
+    space_names: Sequence[str],
+) -> dict[str, Any]:
+    """Return one dry-run payload for a sequential search-space queue."""
+    return {
+        "search_mode": "search_space_queue",
+        "search_spaces": list(space_names),
+        "dataset": args.dataset,
+        "storage": args.storage,
+        "space_payloads": {
+            space_name: _build_single_space_dry_run_payload(args, space_name=space_name)
+            for space_name in space_names
+        },
+    }
+
+
+def _validate_search_space_queue(
+    args: argparse.Namespace,
+    *,
+    space_names: Sequence[str],
+) -> None:
+    """Validate every queued search-space entry before training starts."""
+    for space_name in space_names:
+        resolve_search_space(space_name, dataset=args.dataset)
+
+
+def _run_search_space(args: argparse.Namespace, *, space_name: str) -> int:
+    """Execute one resolved Optuna search-space entry from parsed CLI args."""
+    search_space = resolve_search_space(space_name, dataset=args.dataset)
     n_trials = int(args.trials or search_space.trials)
     if n_trials < 1:
         raise ValueError("--trials must be >= 1.")
@@ -1958,6 +2265,7 @@ def run_search(args: argparse.Namespace) -> int:
                 json.dumps(
                     _build_per_dataset_dry_run_payload(
                         args,
+                        space_name=space_name,
                         search_space=search_space,
                         n_trials=n_trials,
                     ),
@@ -1969,10 +2277,10 @@ def run_search(args: argparse.Namespace) -> int:
 
         exit_codes: list[int] = []
         for dataset in search_space.datasets:
-            dataset_space = resolve_search_space(args.space, dataset=dataset)
+            dataset_space = resolve_search_space(space_name, dataset=dataset)
             study_name = _dataset_study_name(
                 args.study_name,
-                space_name=args.space,
+                space_name=space_name,
                 dataset_space=dataset_space,
             )
             print(f"Dataset-local Optuna search: {dataset} -> {study_name}")
@@ -1987,7 +2295,7 @@ def run_search(args: argparse.Namespace) -> int:
         return 0 if all(code == 0 for code in exit_codes) else 1
 
     study_name = args.study_name or default_study_name(
-        args.space,
+        space_name,
         search_space.datasets,
         search_space=search_space,
     )
@@ -2013,6 +2321,48 @@ def run_search(args: argparse.Namespace) -> int:
         study_name=study_name,
         n_trials=n_trials,
     )
+
+
+def run_search(args: argparse.Namespace) -> int:
+    """Execute one or more Optuna searches from parsed CLI args."""
+    if args.list_spaces:
+        print("Available search spaces:")
+        for space_name in search_space_names():
+            space = get_search_space(space_name)
+            description = space.get("description", "")
+            print(f"  {space_name}: {description}")
+        return 0
+
+    space_names = _parse_search_space_sequence(args.space)
+    if not space_names:
+        raise ValueError("--space is required unless --list-spaces is used.")
+
+    if len(space_names) == 1:
+        return _run_search_space(args, space_name=space_names[0])
+
+    if args.study_name:
+        raise ValueError("--study-name is ambiguous with multiple --space entries.")
+
+    _validate_search_space_queue(args, space_names=space_names)
+
+    if args.dry_run:
+        print(
+            json.dumps(
+                _build_search_space_queue_dry_run_payload(args, space_names=space_names),
+                indent=2,
+                sort_keys=True,
+            ),
+        )
+        return 0
+
+    print("=" * 70)
+    print("OPTUNA SEARCH SPACE QUEUE")
+    for index, space_name in enumerate(space_names, 1):
+        print(f"  {index}. {space_name}")
+    print("=" * 70)
+
+    exit_codes = [_run_search_space(args, space_name=space_name) for space_name in space_names]
+    return 0 if all(exit_code == 0 for exit_code in exit_codes) else 1
 
 
 def main() -> int:

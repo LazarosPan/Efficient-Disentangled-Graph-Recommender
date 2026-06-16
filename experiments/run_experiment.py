@@ -117,6 +117,7 @@ _TRAINING_IDENTITY_FIELDS = (
     "grad_clip_norm",
     "hard_negative_ratio",
     "score_mix_min_weight",
+    "separate_item_branch_embeddings",
     "training_graph_mode",
     "branch_loss_mode",
     "recommendation_loss_mode",
@@ -137,6 +138,7 @@ _TRAINING_IDENTITY_FIELDS = (
     "loss_weight_popularity",
     "loss_weight_recommendation",
     "loss_weight_uniform",
+    "loss_normalization",
     "loader_max_rows",
     "loss_schedule",
     "lr",
@@ -1325,6 +1327,7 @@ def normalize_benchmark_config_overrides(
         "dice_mask_reduction",
         "recommendation_loss_mode",
         "negative_sampling_strategy",
+        "loss_normalization",
     ):
         value = raw_config.get(string_field)
         normalized[string_field] = str(value) if value is not None else None
@@ -1411,7 +1414,13 @@ def normalize_benchmark_config_overrides(
         field_value = raw_config.get(field_name)
         normalized[field_name] = float(field_value) if field_value is not None else None
 
-    optional_bool_fields = ("use_ipw", "use_conformity_au", "use_popularity_head")
+    optional_bool_fields = (
+        "use_ipw",
+        "use_conformity_au",
+        "use_popularity_head",
+        "use_learned_score_mix",
+        "separate_item_branch_embeddings",
+    )
     for field_name in optional_bool_fields:
         field_value = raw_config.get(field_name)
         normalized[field_name] = bool(field_value) if field_value is not None else None

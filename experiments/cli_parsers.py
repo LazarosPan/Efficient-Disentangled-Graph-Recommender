@@ -222,8 +222,11 @@ def build_search_parser() -> argparse.ArgumentParser:
     sel = parser.add_argument_group("search selection")
     sel.add_argument(
         "--space",
-        choices=spaces,
-        help="Search-space id from experiments/search_spaces.json.",
+        metavar="SPACE[,SPACE...]",
+        help=(
+            "Search-space id from experiments/search_spaces.json, or a comma-separated "
+            "queue of ids to run sequentially. Supported spaces: " + ", ".join(spaces) + "."
+        ),
     )
     sel.add_argument(
         "--dataset",
