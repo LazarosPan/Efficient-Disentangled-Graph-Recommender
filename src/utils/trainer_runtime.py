@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import Any
@@ -39,6 +39,21 @@ logger = logging.getLogger(__name__)
 _STATE_KEY_MIGRATIONS: dict[str, str] = {
     "propensity.mlp": "_propensity_mlp",
 }
+_OPTIONAL_LOSS_SUITE_STATE_KEYS = frozenset(
+    {
+        "_aux_loss_ema",
+        "_aux_loss_ema_initialized",
+    },
+)
+
+
+def _state_dict_key_set(raw_keys: object) -> set[str]:
+    """Return a key set from PyTorch incompatible-key lists."""
+    if isinstance(raw_keys, (list, tuple, set)):
+        return {str(key) for key in raw_keys}
+    return set()
+
+
 REQUIRED_CHECKPOINT_KEYS = frozenset(
     {
         "model_state",
@@ -718,6 +733,7 @@ class TrainerRuntime:
         epoch_time_s: float,
         val_metrics: dict[str, float],
         resource_stats: TrainingResourceStats | None = None,
+        train_metrics: Mapping[str, float] | None = None,
     ) -> None:
         """Persist epoch metrics, GPU utilization, and peak VRAM through the experiment logger."""
         resource_stats = resource_stats or TrainingResourceStats.from_current_cuda_peaks(
@@ -740,6 +756,14 @@ class TrainerRuntime:
                 [],
                 self.model,
             )
+            for metric_name, metric_value in (train_metrics or {}).items():
+                self.experiment_logger.log_metric(
+                    self.exp_id,
+                    metric_name,
+                    metric_value,
+                    epoch=epoch,
+                    split="train",
+                )
             for metric_name, metric_value in _training_resource_metric_values(
                 resource_stats,
                 peak_vram_mb,
@@ -756,6 +780,12 @@ class TrainerRuntime:
                 f"val_{m}".replace("@", "_at_"): float(v) for m, v in val_metrics.items()
             }
             mlflow_metrics["train_loss"] = avg_loss
+            mlflow_metrics.update(
+                {
+                    f"train_{metric_name}".replace("@", "_at_"): float(metric_value)
+                    for metric_name, metric_value in (train_metrics or {}).items()
+                },
+            )
             mlflow_metrics.update(
                 _training_resource_metric_values(
                     resource_stats,
@@ -898,7 +928,23 @@ class TrainerRuntime:
         )
         model_state = _migrate_model_state(raw_model_state)
         self.model.load_state_dict(model_state)
-        self.loss_suite.load_state_dict(ckpt["loss_suite_state"])
+        incompatible_loss_keys = self.loss_suite.load_state_dict(
+            ckpt["loss_suite_state"],
+            strict=False,
+        )
+        unexpected_loss_keys = _state_dict_key_set(
+            getattr(incompatible_loss_keys, "unexpected_keys", ()),
+        )
+        missing_loss_keys = _state_dict_key_set(
+            getattr(incompatible_loss_keys, "missing_keys", ()),
+        )
+        unsupported_missing = missing_loss_keys - _OPTIONAL_LOSS_SUITE_STATE_KEYS
+        if unexpected_loss_keys or unsupported_missing:
+            raise RuntimeError(
+                "LossSuite checkpoint state mismatch: "
+                f"missing={sorted(unsupported_missing)}, "
+                f"unexpected={sorted(unexpected_loss_keys)}",
+            )
         self.optimizer.load_state_dict(ckpt["optimizer_state"])
         scheduler_state = ckpt.get("scheduler_state")
         if scheduler_state is not None and self.scheduler is not None:

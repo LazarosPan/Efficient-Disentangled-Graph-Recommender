@@ -35,6 +35,7 @@ from collections.abc import Mapping, Sequence
 
 CRRU_EPSILON = 1e-8
 VALIDATION_ONLINE_CRRU_METRIC = "ValidationOnlineCRRU@20_40"
+VALIDATION_ACCURACY_METRIC = "ValidationAccuracy@20_40"
 VALIDATION_ONLINE_CRRU_K_METRICS = {
     20: "ValidationOnlineCRRU@20",
     40: "ValidationOnlineCRRU@40",
@@ -191,3 +192,13 @@ def compute_validation_online_crru_objective(
         for k in ks
     ]
     return float(sum(values) / len(values))
+
+
+def compute_validation_accuracy_objective(metrics: Mapping[str, float]) -> float:
+    """Return the validation-only broad-discovery accuracy objective."""
+    return (
+        0.50 * _finite_metric(metrics, "NDCG@20")
+        + 0.25 * _finite_metric(metrics, "Recall@20")
+        + 0.15 * _finite_metric(metrics, "NDCG@40")
+        + 0.10 * _finite_metric(metrics, "Recall@40")
+    )

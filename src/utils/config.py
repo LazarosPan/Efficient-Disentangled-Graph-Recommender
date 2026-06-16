@@ -15,6 +15,7 @@ BranchLossMode = Literal["symmetric_bpr", "dice"]
 DiceMaskReduction = Literal["batch_mean", "active_mean"]
 RecommendationLossMode = Literal["final", "dice_sum"]
 NegativeSamplingStrategy = Literal["standard", "dice"]
+LossNormalization = Literal["none", "ema_aux"]
 LRSchedulerName = Literal[
     "none",
     "plateau",
@@ -66,6 +67,8 @@ CONFIG_OVERRIDE_FIELDS = (
     "patience",
     "use_features",
     "use_popularity_head",
+    "use_learned_score_mix",
+    "separate_item_branch_embeddings",
     "feature_policy",
     "graph_policy",
     "cagra_k",
@@ -111,6 +114,7 @@ CONFIG_OVERRIDE_FIELDS = (
     "loss_weight_uniform",
     "loss_weight_popularity",
     "loss_weight_propensity_calibration",
+    "loss_normalization",
     "use_ipw",
     "auxiliary_loss_schedule",
     "auxiliary_ramp_rate",
@@ -149,10 +153,14 @@ _NON_CAUSAL_PRESET_OVERRIDES: PresetOverrides = {
     "use_popularity_head": False,
     "use_popularity_emb": False,
     "use_learned_score_mix": False,
+    "separate_item_branch_embeddings": False,
+    "loss_normalization": "none",
+    "loss_weight_recommendation": 1.0,
     "loss_weight_contrastive": 0.0,
     "loss_weight_align": 0.0,
     "loss_weight_uniform": 0.0,
     "loss_weight_popularity": 0.0,
+    "loss_weight_propensity_calibration": 0.0,
     "auxiliary_loss_schedule": "phased",
     "score_weight_popularity": 0.0,
     "use_features": False,
@@ -179,6 +187,9 @@ _LIGHTGCN_PAPER_PRESET_OVERRIDES: PresetOverrides = _LIGHTGCN_PRESET_OVERRIDES |
     "weight_decay": 1e-4,
     "batch_size": 2048,
     "auto_batch_size": False,
+    "score_weight_interest": 1.0,
+    "score_weight_conformity": 0.0,
+    "score_weight_popularity": 0.0,
 }
 _DICE_LIKE_PRESET_OVERRIDES: PresetOverrides = _NON_CAUSAL_PRESET_OVERRIDES | {
     "baseline_family": "dice_like_ablation",
@@ -239,6 +250,7 @@ _LIGHTGCN_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
         "use_popularity_head",
         "use_popularity_emb",
         "use_learned_score_mix",
+        "separate_item_branch_embeddings",
         "use_features",
         "feature_policy",
         "branch_loss_mode",
@@ -253,9 +265,19 @@ _LIGHTGCN_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
         "weight_decay",
         "batch_size",
         "auto_batch_size",
+        "loss_weight_recommendation",
         "loss_weight_interest_bpr",
         "loss_weight_conformity_bpr",
         "loss_weight_independence",
+        "loss_weight_contrastive",
+        "loss_weight_align",
+        "loss_weight_uniform",
+        "loss_weight_popularity",
+        "loss_weight_propensity_calibration",
+        "loss_normalization",
+        "score_weight_interest",
+        "score_weight_conformity",
+        "score_weight_popularity",
     )
 }
 _DICE_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
@@ -270,6 +292,7 @@ _DICE_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
         "use_popularity_head",
         "use_popularity_emb",
         "use_learned_score_mix",
+        "separate_item_branch_embeddings",
         "use_features",
         "feature_policy",
         "branch_loss_mode",
@@ -293,9 +316,16 @@ _DICE_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
         "dice_margin_decay",
         "dice_adaptive_decay",
         "dice_mask_reduction",
+        "loss_weight_recommendation",
         "loss_weight_interest_bpr",
         "loss_weight_conformity_bpr",
         "loss_weight_independence",
+        "loss_weight_contrastive",
+        "loss_weight_align",
+        "loss_weight_uniform",
+        "loss_weight_popularity",
+        "loss_weight_propensity_calibration",
+        "loss_normalization",
         "score_weight_interest",
         "score_weight_conformity",
         "score_weight_popularity",
@@ -352,6 +382,7 @@ class UCaGNNConfig:
     use_popularity_head: bool = True
     use_popularity_emb: bool = True
     use_learned_score_mix: bool = True
+    separate_item_branch_embeddings: bool = False
     baseline_family: str = "ucagnn"
     training_graph_mode: TrainingGraphMode = "sampled"
 
@@ -400,6 +431,7 @@ class UCaGNNConfig:
     uniformity_max_pairs: int = 2048
     uniformity_temperature: float = 2.0
     use_conformity_au: bool = False
+    loss_normalization: LossNormalization = "none"
 
     # ── Propensity (IPW) ─────────────────────────────────────────────────
     propensity_hidden: int = 128
@@ -536,6 +568,8 @@ class UCaGNNConfig:
             raise ValueError("recommendation_loss_mode must be either 'final' or 'dice_sum'")
         if self.negative_sampling_strategy not in ("standard", "dice"):
             raise ValueError("negative_sampling_strategy must be either 'standard' or 'dice'")
+        if self.loss_normalization not in ("none", "ema_aux"):
+            raise ValueError("loss_normalization must be either 'none' or 'ema_aux'")
         if self.amp_dtype != "bfloat16":
             raise ValueError("amp_dtype is fixed to 'bfloat16'")
         if self.propensity_clip_min <= 0 or self.propensity_clip_min >= 1:
