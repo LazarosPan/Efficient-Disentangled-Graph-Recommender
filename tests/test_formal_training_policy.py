@@ -57,8 +57,9 @@ from src.profiling.gpu_profiler import (
     sample_gpu_resource_snapshot,
 )
 from src.training.mini_batch_trainer import MiniBatchTrainer
-from src.utils.config import SUPPORTED_LR_SCHEDULERS, UCaGNNConfig
+from src.utils.config import SUPPORTED_LR_SCHEDULERS, EDGRecConfig
 from src.utils.experiment_naming import build_canonical_experiment_name
+from src.utils.method_naming import EDGREC_LEGACY_PRESET
 from src.utils.reproducibility import build_torch_generator
 from src.utils.trainer_runtime import TrainerRuntime
 from torch.nn import functional
@@ -152,18 +153,18 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
     def test_loss_schedule_defaults_to_baseline(self) -> None:
         """loss_schedule must default to baseline so existing runs are unaffected."""
-        config = UCaGNNConfig()
+        config = EDGRecConfig()
         self.assertEqual(config.loss_schedule, "baseline")
 
     def test_mini_batch_runtime_defaults_keep_torch_compile_opt_in(self) -> None:
         """Dynamic mini-batch subgraphs should not default to torch.compile."""
-        config = UCaGNNConfig(device="cuda")
+        config = EDGRecConfig(device="cuda")
 
         self.assertFalse(config.use_torch_compile)
 
     def test_mini_batch_runtime_defaults_keep_the_two_hop_shape_valid(self) -> None:
         """Default mini-batch settings should keep the 1/2-hop fan-out valid."""
-        config = UCaGNNConfig(device="cuda")
+        config = EDGRecConfig(device="cuda")
 
         self.assertEqual(config.batch_size, 4096)
         self.assertEqual(config.single_branch_gnn_layers, 2)
@@ -176,7 +177,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
     def test_curriculum_aliases_match_threshold_fields(self) -> None:
         """Semantic curriculum aliases should mirror the underlying thresholds."""
-        config = UCaGNNConfig()
+        config = EDGRecConfig()
 
         self.assertEqual(config.auxiliary_losses_start_epoch, config.auxiliary_losses_start_epoch)
         self.assertEqual(
@@ -191,10 +192,29 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
     def test_build_config_accepts_mapping_inputs(self) -> None:
         """Non-CLI callers should be able to pass plain mappings into build_config."""
-        config = build_config(vars(_experiment_args(dropout=0.25, preset="ucagnn")))
+        config = build_config(vars(_experiment_args(dropout=0.25, preset="edgrec")))
 
         self.assertEqual(config.dropout, 0.25)
         self.assertFalse(hasattr(config, "scoring_weight_mode"))
+
+    def test_edgrec_public_preset_keeps_legacy_training_hash(self) -> None:
+        """Renaming the public preset must not invalidate old checkpoints."""
+        public_config = build_config(_experiment_args(preset="edgrec"))
+        legacy_config = build_config(_experiment_args(preset=EDGREC_LEGACY_PRESET))
+
+        public_identity, public_hash = _build_training_identity(
+            public_config,
+            "edgrec",
+            None,
+        )
+        legacy_identity, legacy_hash = _build_training_identity(
+            legacy_config,
+            EDGREC_LEGACY_PRESET,
+            None,
+        )
+
+        self.assertEqual(public_identity, legacy_identity)
+        self.assertEqual(public_hash, legacy_hash)
 
     def test_build_config_resolves_kuairec_default_preprocessing_preset(self) -> None:
         """Default config assembly should pin the causal-ready KuaiRec view."""
@@ -210,7 +230,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         """CLI/config plumbing should allow scheduler selection."""
         config = build_config(
             _experiment_args(
-                preset="ucagnn",
+                preset="edgrec",
                 lr_scheduler="cosine",
                 lr_scheduler_factor=0.9,
                 lr_scheduler_patience=3,
@@ -225,11 +245,11 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         """The canonical checkpoint name should expose the selected LR scheduler."""
         config = build_config(
             _experiment_args(
-                preset="ucagnn",
+                preset="edgrec",
                 lr_scheduler="cosine",
             ),
         )
-        canonical = build_canonical_experiment_name(config, "ucagnn", None)
+        canonical = build_canonical_experiment_name(config, "edgrec", None)
 
         self.assertIn("lr-cosine", canonical)
 
@@ -237,7 +257,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         """Stored configs should render the same canonical label as live runs."""
         config = build_config(
             _experiment_args(
-                preset="ucagnn",
+                preset="edgrec",
                 graph_policy="cagra_augmented",
                 sample_interactions=500,
                 loader_max_rows=1000,
@@ -246,13 +266,13 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         stored_config = dataclasses.asdict(config)
 
         self.assertEqual(
-            build_canonical_experiment_name(stored_config, "ucagnn", None),
-            build_canonical_experiment_name(config, "ucagnn", None),
+            build_canonical_experiment_name(stored_config, "edgrec", None),
+            build_canonical_experiment_name(config, "edgrec", None),
         )
 
     def test_query_results_scoremix_uses_current_config_field(self) -> None:
-        """Result tables should not label learned UCaGNN score fusion as fixed."""
-        learned = dataclasses.asdict(build_config(_experiment_args(preset="ucagnn")))
+        """Result tables should not label learned EDGRec score fusion as fixed."""
+        learned = dataclasses.asdict(build_config(_experiment_args(preset="edgrec")))
         fixed = learned | {"use_learned_score_mix": False}
 
         self.assertEqual(_format_scoremix(learned), "learned")
@@ -264,15 +284,15 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_config(
                 _experiment_args(
-                    preset="ucagnn",
+                    preset="edgrec",
                     lr_scheduler="invalid_scheduler",
                 ),
             )
 
     def test_auto_batch_probe_candidates_follow_configured_ladder(self) -> None:
         """Auto batch-size probing should use the configured candidate ladder."""
-        ml1m = UCaGNNConfig(dataset="movielens1m", device="cuda", auto_batch_size=True)
-        kuairand = UCaGNNConfig(dataset="kuairand1k", device="cuda", auto_batch_size=True)
+        ml1m = EDGRecConfig(dataset="movielens1m", device="cuda", auto_batch_size=True)
+        kuairand = EDGRecConfig(dataset="kuairand1k", device="cuda", auto_batch_size=True)
 
         expected = [16384, 8192, 4096, 2048, 1024, 512, 256]
         self.assertEqual(_auto_batch_probe_candidates(ml1m), expected)
@@ -280,7 +300,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
     def test_auto_batch_probe_interactions_match_epoch_zero_shuffle(self) -> None:
         """Auto-batch probing should mirror the epoch-0 training shuffle."""
-        config = UCaGNNConfig(seed=13)
+        config = EDGRecConfig(seed=13)
         train_users = torch.arange(8, dtype=torch.long)
         train_items = torch.arange(100, 108, dtype=torch.long)
 
@@ -379,9 +399,9 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertIn(("max_gpu_utilization_pct", 66.0), logged)
         self.assertIn(("peak_vram_mb", 3072.0), logged)
 
-    def test_ucagnn_preset_applies_fused_scoring_defaults(self) -> None:
-        """The ucagnn preset should target the fused-score contract."""
-        config = build_config(_experiment_args(preset="ucagnn"))
+    def test_edgrec_preset_applies_fused_scoring_defaults(self) -> None:
+        """The edgrec preset should target the fused-score contract."""
+        config = build_config(_experiment_args(preset="edgrec"))
 
         self.assertFalse(hasattr(config, "scoring_weight_mode"))
         self.assertFalse(hasattr(config, "train_scoring_mode"))
@@ -401,11 +421,11 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.dice_branch_margin, config.dice_sampler_margin)
         self.assertFalse(config.dice_adaptive_decay)
 
-    def test_ucagnn_preset_keeps_explicit_branch_depth_and_neighbor_overrides(self) -> None:
+    def test_edgrec_preset_keeps_explicit_branch_depth_and_neighbor_overrides(self) -> None:
         """Explicit depth overrides must survive preset application for checkpoint identity."""
         config = build_config(
             _experiment_args(
-                preset="ucagnn",
+                preset="edgrec",
                 interest_gnn_layers=2,
                 conformity_gnn_layers=3,
                 num_neighbors=[10, 5, 3],
@@ -417,12 +437,12 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.max_gnn_layers, 3)
         self.assertEqual(config.num_neighbors, [10, 5, 3])
 
-    def test_ucagnn_preset_rejects_short_neighbor_lists_after_depth_override(self) -> None:
+    def test_edgrec_preset_rejects_short_neighbor_lists_after_depth_override(self) -> None:
         """Invalid fan-out shapes should fail loudly instead of falling back to preset depths."""
         with self.assertRaises(ValueError):
             build_config(
                 _experiment_args(
-                    preset="ucagnn",
+                    preset="edgrec",
                     interest_gnn_layers=2,
                     conformity_gnn_layers=3,
                     num_neighbors=[10, 5],
@@ -431,7 +451,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
     def test_removed_full_alias_is_rejected(self) -> None:
         """The public preset surface should no longer accept the removed full alias."""
-        self.assertEqual(get_recipe("ucagnn")["preset"], "ucagnn")
+        self.assertEqual(get_recipe("edgrec")["preset"], "edgrec")
         with self.assertRaises(KeyError):
             get_recipe("full")
         with self.assertRaises(ValueError):
@@ -527,7 +547,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
     def test_lightgcn_paper_propagation_has_no_self_loops(self) -> None:
         """Paper LightGCN should average ego and neighbor layers without self-loops."""
-        config = UCaGNNConfig(device="cpu", embed_dim=1).preset_lightgcn_paper()
+        config = EDGRecConfig(device="cpu", embed_dim=1).preset_lightgcn_paper()
         config.single_branch_gnn_layers = 1
         model = PaperLightGCN(n_users=1, n_items=1, config=config)
         with torch.no_grad():
@@ -612,7 +632,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.loss_normalization, "none")
 
     def test_build_runtime_model_uses_explicit_paper_baseline_classes(self) -> None:
-        """Paper baselines should not be hidden as UCaGNN config variants."""
+        """Paper baselines should not be hidden as EDGRec config variants."""
         canonical = _tiny_canonical()
 
         lightgcn_config = build_config(_experiment_args(preset="lightgcn_paper", device="cpu"))
@@ -648,7 +668,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         )
 
     def test_paper_baselines_use_paper_optimizer_families(self) -> None:
-        """Paper adapters should not inherit U-CaGNN's AdamW optimizer."""
+        """Paper adapters should not inherit EDGRec's AdamW optimizer."""
         canonical = _tiny_canonical()
 
         lightgcn_config = build_config(_experiment_args(preset="lightgcn_paper", device="cpu"))
@@ -669,13 +689,13 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             config=dice_config,
         )
 
-        ucagnn_config = build_config(_experiment_args(preset="ucagnn", device="cpu"))
-        ucagnn_graph = build_graph(canonical, ucagnn_config)
-        ucagnn_trainer = MiniBatchTrainer(
-            model=build_runtime_model(ucagnn_config, canonical, ucagnn_graph),
-            loss_suite=LossSuite(ucagnn_config),
-            data=ucagnn_graph,
-            config=ucagnn_config,
+        edgrec_config = build_config(_experiment_args(preset="edgrec", device="cpu"))
+        edgrec_graph = build_graph(canonical, edgrec_config)
+        edgrec_trainer = MiniBatchTrainer(
+            model=build_runtime_model(edgrec_config, canonical, edgrec_graph),
+            loss_suite=LossSuite(edgrec_config),
+            data=edgrec_graph,
+            config=edgrec_config,
         )
 
         self.assertIsInstance(lightgcn_trainer.optimizer, torch.optim.Adam)
@@ -688,11 +708,11 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertTrue(dice_trainer.optimizer.defaults["amsgrad"])
         self.assertEqual(dice_trainer.optimizer.param_groups[0]["weight_decay"], 5e-8)
 
-        self.assertIsInstance(ucagnn_trainer.optimizer, torch.optim.AdamW)
+        self.assertIsInstance(edgrec_trainer.optimizer, torch.optim.AdamW)
 
     def test_lightgcn_paper_loss_includes_embedding_l2_regularization(self) -> None:
         """Paper LightGCN should use explicit ego-embedding L2 regularization."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_lightgcn_paper()
+        config = EDGRecConfig(device="cpu", embed_dim=2).preset_lightgcn_paper()
         config.weight_decay = 0.1
         loss_suite = LossSuite(config)
         pos_scores = {
@@ -737,7 +757,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
     def test_dice_paper_loss_matches_external_branch_objective(self) -> None:
         """Paper DICE should train on summed branches and masked DICE auxiliaries."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_dice_paper()
+        config = EDGRecConfig(device="cpu", embed_dim=2).preset_dice_paper()
         loss_suite = LossSuite(config)
         pos_interest = torch.tensor([1.8, 0.2])
         neg_interest = torch.tensor([0.1, 1.0])
@@ -824,7 +844,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
     def test_dice_paper_discrepancy_uses_unique_users_like_external_code(self) -> None:
         """DICE discrepancy should not overweight users repeated by multiple negatives."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_dice_paper()
+        config = EDGRecConfig(device="cpu", embed_dim=2).preset_dice_paper()
         config.loss_weight_recommendation = 0.0
         config.loss_weight_interest_bpr = 0.0
         config.loss_weight_conformity_bpr = 0.0
@@ -886,11 +906,11 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertAlmostEqual(losses["independence"].item(), expected.item(), places=6)
         self.assertAlmostEqual(losses["total"].item(), expected.item(), places=6)
 
-    def test_ucagnn_preset_keeps_causal_branches_active(self) -> None:
-        """Main U-CaGNN should train causal branches instead of allowing collapse."""
-        config = build_config(_experiment_args(preset="ucagnn"))
+    def test_edgrec_preset_keeps_causal_branches_active(self) -> None:
+        """Main EDGRec should train causal branches instead of allowing collapse."""
+        config = build_config(_experiment_args(preset="edgrec"))
 
-        self.assertEqual(config.baseline_family, "ucagnn")
+        self.assertEqual(config.baseline_family, "edgrec")
         self.assertEqual(config.branch_loss_mode, "dice")
         self.assertEqual(config.dice_mask_reduction, "active_mean")
         self.assertEqual(config.feature_gate_init, -4.0)
@@ -915,9 +935,9 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertFalse(config.use_features)
         self.assertEqual(config.feature_gate_init, -4.0)
 
-    def test_ucagnn_linear_ramp_keeps_branch_bpr_active_at_epoch_zero(self) -> None:
+    def test_edgrec_linear_ramp_keeps_branch_bpr_active_at_epoch_zero(self) -> None:
         """DICE branch BPR is primary causal supervision, not ramped auxiliary loss."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_full()
+        config = EDGRecConfig(device="cpu", embed_dim=2).preset_full()
         config.loss_weight_recommendation = 0.0
         config.loss_weight_independence = 0.0
         config.loss_weight_contrastive = 0.0
@@ -987,7 +1007,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
     def test_feature_gate_init_controls_initial_side_feature_strength(self) -> None:
         """Feature gates should start from the configured logit value."""
-        config = UCaGNNConfig(device="cpu", embed_dim=4)
+        config = EDGRecConfig(device="cpu", embed_dim=4)
         config.feature_gate_init = -4.0
         module = EmbeddingModule(
             n_users=2,
@@ -1002,10 +1022,10 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertTrue(torch.equal(module.item_conformity_gate.detach(), expected))
         self.assertLess(torch.sigmoid(module.item_interest_gate).item(), 0.02)
 
-    def test_ucagnn_sampler_margin_does_not_decay_without_adaptive_dice(self) -> None:
-        """U-CaGNN should keep a stable DICE margin unless adaptive decay is explicit."""
+    def test_edgrec_sampler_margin_does_not_decay_without_adaptive_dice(self) -> None:
+        """EDGRec should keep a stable DICE margin unless adaptive decay is explicit."""
         canonical = _tiny_canonical()
-        config = UCaGNNConfig(device="cpu").preset_full()
+        config = EDGRecConfig(device="cpu").preset_full()
         graph = build_graph(canonical, config)
         model = build_runtime_model(config, canonical, graph)
         trainer = MiniBatchTrainer(
@@ -1042,30 +1062,30 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
     def test_training_identity_changes_when_training_config_changes(self) -> None:
         """Resume compatibility should change with training-defining config fields."""
-        base = build_config(_experiment_args(preset="ucagnn"))
+        base = build_config(_experiment_args(preset="edgrec"))
         changed = build_config(
             _experiment_args(
-                preset="ucagnn",
+                preset="edgrec",
                 graph_policy="cagra_augmented",
             ),
         )
 
-        _, base_hash = _build_training_identity(base, "ucagnn", None)
-        _, changed_hash = _build_training_identity(changed, "ucagnn", None)
+        _, base_hash = _build_training_identity(base, "edgrec", None)
+        _, changed_hash = _build_training_identity(changed, "edgrec", None)
 
         self.assertNotEqual(base_hash, changed_hash)
 
     def test_training_identity_changes_when_score_mix_behavior_changes(self) -> None:
         """Resume compatibility should change when score mixing switches modes."""
-        learned_mix = build_config(_experiment_args(preset="ucagnn"))
+        learned_mix = build_config(_experiment_args(preset="edgrec"))
         fixed_mix = dataclasses.replace(learned_mix, use_learned_score_mix=False)
 
         learned_identity, learned_hash = _build_training_identity(
             learned_mix,
-            "ucagnn",
+            "edgrec",
             None,
         )
-        fixed_identity, fixed_hash = _build_training_identity(fixed_mix, "ucagnn", None)
+        fixed_identity, fixed_hash = _build_training_identity(fixed_mix, "edgrec", None)
 
         self.assertTrue(learned_mix.use_learned_score_mix)
         self.assertFalse(fixed_mix.use_learned_score_mix)
@@ -1074,47 +1094,47 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
     def test_training_identity_changes_for_new_branch_and_loss_state(self) -> None:
         """Resume compatibility should track branch tables and EMA loss state."""
-        base = build_config(_experiment_args(preset="ucagnn"))
+        base = build_config(_experiment_args(preset="edgrec"))
         separate_items = dataclasses.replace(
             base,
             separate_item_branch_embeddings=True,
         )
         ema_losses = dataclasses.replace(base, loss_normalization="ema_aux")
 
-        _, base_hash = _build_training_identity(base, "ucagnn", None)
-        _, separate_hash = _build_training_identity(separate_items, "ucagnn", None)
-        _, ema_hash = _build_training_identity(ema_losses, "ucagnn", None)
+        _, base_hash = _build_training_identity(base, "edgrec", None)
+        _, separate_hash = _build_training_identity(separate_items, "edgrec", None)
+        _, ema_hash = _build_training_identity(ema_losses, "edgrec", None)
 
         self.assertNotEqual(base_hash, separate_hash)
         self.assertNotEqual(base_hash, ema_hash)
 
     def test_training_identity_changes_when_distance_correlation_cap_changes(self) -> None:
         """Resume compatibility should track DICE discrepancy estimator changes."""
-        base = build_config(_experiment_args(preset="ucagnn"))
+        base = build_config(_experiment_args(preset="edgrec"))
         changed = dataclasses.replace(
             base,
             distance_correlation_max_pairs=base.distance_correlation_max_pairs * 2,
         )
 
-        _, base_hash = _build_training_identity(base, "ucagnn", None)
-        _, changed_hash = _build_training_identity(changed, "ucagnn", None)
+        _, base_hash = _build_training_identity(base, "edgrec", None)
+        _, changed_hash = _build_training_identity(changed, "edgrec", None)
 
         self.assertNotEqual(base_hash, changed_hash)
 
     def test_training_identity_changes_when_uniformity_cap_changes(self) -> None:
         """Resume compatibility should track DirectAU uniformity estimator changes."""
-        base = build_config(_experiment_args(preset="ucagnn"))
+        base = build_config(_experiment_args(preset="edgrec"))
         changed = dataclasses.replace(
             base,
             uniformity_max_pairs=base.uniformity_max_pairs * 2,
         )
 
-        _, base_hash = _build_training_identity(base, "ucagnn", None)
-        _, changed_hash = _build_training_identity(changed, "ucagnn", None)
+        _, base_hash = _build_training_identity(base, "edgrec", None)
+        _, changed_hash = _build_training_identity(changed, "edgrec", None)
 
         self.assertNotEqual(base_hash, changed_hash)
 
-    def test_default_formal_profile_is_core_ucagnn_mainline(self) -> None:
+    def test_default_formal_profile_is_core_edgrec_mainline(self) -> None:
         """The default formal profile should target the thesis mainline."""
         profile_name = default_formal_profile_name()
         profile = get_formal_profile(profile_name)
@@ -1125,14 +1145,14 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertTrue(profile["config_overrides"]["use_early_stopping"])
         self.assertEqual(profile["config_overrides"]["patience"], 10)
-        self.assertEqual(profile["id"], "core-ucagnn-mainline")
+        self.assertEqual(profile["id"], "core-edgrec-mainline")
         self.assertEqual(
             profile["matrix"]["datasets"],
             ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
         )
         self.assertNotIn("taobao", profile["matrix"]["datasets"])
         self.assertNotIn("movielens20m", profile["matrix"]["datasets"])
-        self.assertEqual(profile["matrix"]["presets"], ["ucagnn"])
+        self.assertEqual(profile["matrix"]["presets"], ["edgrec"])
         self.assertNotIn("scoring_weight_modes", profile["matrix"])
         self.assertNotIn("batch_size", profile["config_overrides"])
         self.assertNotIn("auto_batch_size", profile["config_overrides"])
@@ -1159,7 +1179,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             benchmark_args["datasets"],
             ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
         )
-        self.assertEqual(benchmark_args["presets"], ["ucagnn"])
+        self.assertEqual(benchmark_args["presets"], ["edgrec"])
         self.assertNotIn("scoring_weight_modes", benchmark_args)
         self.assertEqual(benchmark_args["batch_size"], 4096)
         self.assertTrue(benchmark_args["auto_batch_size"])
@@ -1208,14 +1228,14 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         config_inputs = build_benchmark_config_inputs(
             benchmark_args,
             dataset="movielens1m",
-            preset="ucagnn",
+            preset="edgrec",
             lr_scheduler="plateau",
             num_neighbors=[10, 5],
             graph_policy="cagra_augmented",
         )
 
         self.assertEqual(config_inputs["dataset"], "movielens1m")
-        self.assertEqual(config_inputs["preset"], "ucagnn")
+        self.assertEqual(config_inputs["preset"], "edgrec")
         self.assertEqual(config_inputs["device"], "cuda")
         self.assertEqual(config_inputs["data_dir"], "data")
         self.assertNotIn("num_neighbors_options", config_inputs)
@@ -1262,7 +1282,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         config_inputs = build_benchmark_config_inputs(
             benchmark_args,
             dataset="kuairand1k",
-            preset="ucagnn",
+            preset="edgrec",
             lr_scheduler="cosine",
             num_neighbors=[10, 5],
         )
@@ -1296,7 +1316,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         config = build_config(
             build_runtime_config_inputs(
                 dataset="movielens1m",
-                preset="ucagnn",
+                preset="edgrec",
                 data_dir="data",
                 device="cpu",
                 epochs=2,
@@ -1337,7 +1357,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             "combines CAGRA edges with the observed train-interaction graph",
         ):
             _bootstrap_cagra_embeddings(
-                UCaGNNConfig(device="cpu"),
+                EDGRecConfig(device="cpu"),
                 canonical=SimpleNamespace(),
                 observed_data=SimpleNamespace(item_features=None),
             )
@@ -1347,13 +1367,13 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         default_profile = get_formal_profile("DEFAULT")
 
         self.assertEqual(default_profile["id"], default_formal_profile_name())
-        self.assertEqual(default_profile["id"], "core-ucagnn-mainline")
+        self.assertEqual(default_profile["id"], "core-edgrec-mainline")
         self.assertIn("abauto", default_profile["name"])
-        self.assertEqual(get_formal_profile("latest")["id"], "core-ucagnn-mainline")
-        self.assertEqual(get_formal_profile("development")["id"], "dev-ucagnn")
-        self.assertEqual(get_formal_profile("dev-ucagnn")["id"], "dev-ucagnn")
+        self.assertEqual(get_formal_profile("latest")["id"], "core-edgrec-mainline")
+        self.assertEqual(get_formal_profile("development")["id"], "dev-edgrec")
+        self.assertEqual(get_formal_profile("dev-edgrec")["id"], "dev-edgrec")
 
-    def test_second_formal_profile_is_ucagnn_mainline_only(self) -> None:
+    def test_second_formal_profile_is_edgrec_mainline_only(self) -> None:
         """The main thesis profile should not rerun fixed paper baselines."""
         profile_name = formal_profile_names()[1]
         profile = get_formal_profile(profile_name)
@@ -1364,7 +1384,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertEqual(
             profile["matrix"]["presets"],
-            ["ucagnn"],
+            ["edgrec"],
         )
         self.assertEqual(
             profile["matrix"]["datasets"],
@@ -1372,11 +1392,11 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         )
         self.assertEqual(
             profile["id"],
-            "core-ucagnn-mainline",
+            "core-edgrec-mainline",
         )
         self.assertEqual(
             get_formal_profile("core-paper-architecture-comparison")["id"],
-            "core-ucagnn-mainline",
+            "core-edgrec-mainline",
         )
         self.assertEqual(
             get_formal_profile("paper-lightgcn-small-baselines")["matrix"]["presets"],
@@ -1535,7 +1555,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         saved_state = {
             "profile_name": saved_profile_name,
             "profile_slug": "development-signature",
-            "benchmark_args": {"datasets": ["small"], "presets": ["ucagnn"]},
+            "benchmark_args": {"datasets": ["small"], "presets": ["edgrec"]},
         }
 
         with (
@@ -1712,7 +1732,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             "description": "diagnostic profile",
             "matrix": {
                 "datasets": ["movielens1m"],
-                "presets": ["ucagnn"],
+                "presets": ["edgrec"],
             },
             "config_overrides": {
                 "epochs": 5,
@@ -1733,7 +1753,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             formal_main._normalize_benchmark_args(
                 {
                     "tier": "small",
-                    "presets": ["ucagnn"],
+                    "presets": ["edgrec"],
                     "epochs": 60,
                     "batch_size": 4096,
                     "lr": 1e-3,
@@ -1743,7 +1763,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                     "data_dir": "data",
                     "no_mlflow": False,
                     "mlflow_tracking_uri": None,
-                    "mlflow_experiment_name": "ucagnn-formal",
+                    "mlflow_experiment_name": "edgrec-formal",
                     "batch_id": "formal-dev-batch",
                     "resume_batch": True,
                     "dry_run": False,
@@ -1757,7 +1777,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             formal_main._normalize_benchmark_args(
                 {
                     "tier": "small",
-                    "presets": ["ucagnn"],
+                    "presets": ["edgrec"],
                     "graph_method": "cagra",
                     "epochs": 60,
                     "batch_size": 4096,
@@ -1767,7 +1787,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                     "data_dir": "data",
                     "no_mlflow": False,
                     "mlflow_tracking_uri": None,
-                    "mlflow_experiment_name": "ucagnn-formal",
+                    "mlflow_experiment_name": "edgrec-formal",
                     "batch_id": "formal-dev-batch",
                     "resume_batch": True,
                     "dry_run": False,
@@ -1781,7 +1801,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             formal_main._normalize_benchmark_args(
                 {
                     "datasets": ["small"],
-                    "presets": ["ucagnn"],
+                    "presets": ["edgrec"],
                     "epochs": 60,
                     "batch_size": 4096,
                     "lr": 1e-3,
@@ -1791,7 +1811,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                     "data_dir": "data",
                     "no_mlflow": False,
                     "mlflow_tracking_uri": None,
-                    "mlflow_experiment_name": "ucagnn-formal",
+                    "mlflow_experiment_name": "edgrec-formal",
                     "batch_id": "formal-dev-batch",
                     "resume_batch": True,
                     "dry_run": False,
@@ -1805,7 +1825,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             formal_main._normalize_benchmark_args(
                 {
                     "datasets": ["small"],
-                    "presets": ["ucagnn"],
+                    "presets": ["edgrec"],
                     "epochs": 60,
                     "batch_size": 4096,
                     "lr": 1e-3,
@@ -1815,7 +1835,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                     "data_dir": "data",
                     "no_mlflow": False,
                     "mlflow_tracking_uri": None,
-                    "mlflow_experiment_name": "ucagnn-formal",
+                    "mlflow_experiment_name": "edgrec-formal",
                     "batch_id": "formal-dev-batch",
                     "resume_batch": True,
                     "dry_run": False,
@@ -1828,7 +1848,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         cli_args = SimpleNamespace(overwrite_checkpoint=True)
         saved_args = {
             "datasets": ["small"],
-            "presets": ["ucagnn"],
+            "presets": ["edgrec"],
             "profile_name": "development",
             "profile_slug": "development-signature",
             "epochs": 60,
@@ -1852,7 +1872,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             "data_dir": "data",
             "no_mlflow": False,
             "mlflow_tracking_uri": None,
-            "mlflow_experiment_name": "ucagnn-formal",
+            "mlflow_experiment_name": "edgrec-formal",
             "batch_id": "formal-dev-a",
             "resume_batch": False,
             "dry_run": True,
@@ -1886,7 +1906,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         cli_args = SimpleNamespace(overwrite_checkpoint=False)
         saved_args = {
             "datasets": ["small"],
-            "presets": ["ucagnn"],
+            "presets": ["edgrec"],
             "profile_name": "development",
             "profile_slug": "development-signature",
             "epochs": 59,
@@ -1910,7 +1930,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             "data_dir": "data",
             "no_mlflow": False,
             "mlflow_tracking_uri": None,
-            "mlflow_experiment_name": "ucagnn-formal",
+            "mlflow_experiment_name": "edgrec-formal",
             "batch_id": "formal-dev-a",
             "resume_batch": True,
             "dry_run": False,
@@ -1937,7 +1957,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         """Resume matching should compare the semantic plan, not runtime routing flags."""
         base_args = argparse.Namespace(
             datasets=["small"],
-            presets=["ucagnn"],
+            presets=["edgrec"],
             profile_name="development",
             epochs=60,
             use_early_stopping=False,
@@ -1960,7 +1980,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             data_dir="data",
             no_mlflow=False,
             mlflow_tracking_uri=None,
-            mlflow_experiment_name="ucagnn-formal",
+            mlflow_experiment_name="edgrec-formal",
             batch_id="formal-dev-a",
             resume_batch=True,
             dry_run=False,
@@ -2015,10 +2035,10 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertEqual(normalized["lr_scheduler"], ["plateau", "cosine"])
         self.assertEqual(normalized["num_neighbors"], [[10, 5], [5, 3]])
-        self.assertEqual(normalized["batch_size"], UCaGNNConfig().batch_size)
+        self.assertEqual(normalized["batch_size"], EDGRecConfig().batch_size)
         self.assertTrue(normalized["auto_batch_size"])
-        self.assertEqual(normalized["use_early_stopping"], UCaGNNConfig().use_early_stopping)
-        self.assertEqual(normalized["patience"], UCaGNNConfig().patience)
+        self.assertEqual(normalized["use_early_stopping"], EDGRecConfig().use_early_stopping)
+        self.assertEqual(normalized["patience"], EDGRecConfig().patience)
         self.assertIsNone(normalized["graph_policy"])
         self.assertIsNone(normalized["graph_policy_options"])
         self.assertEqual(normalized["hard_negative_ratio"], 0.25)
@@ -2105,10 +2125,10 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
     def test_checkpoint_eval_loads_best_state_not_latest_state(self) -> None:
         """Recovery evaluation should use the best validation model state."""
-        config = UCaGNNConfig(device="cpu")
+        config = EDGRecConfig(device="cpu")
         training_identity, training_hash = _build_training_identity(
             config,
-            "ucagnn",
+            "edgrec",
             None,
         )
         model = torch.nn.Linear(1, 1, bias=False)
@@ -2177,7 +2197,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self,
     ) -> None:
         """Older failed checkpoints should recover when patience already fired."""
-        config = UCaGNNConfig(device="cpu")
+        config = EDGRecConfig(device="cpu")
         config.epochs = 200
         config.use_early_stopping = True
         config.patience = 10
@@ -2191,10 +2211,10 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
     def test_recoverable_checkpoint_requires_finished_training_state(self) -> None:
         """Formal recovery should only re-enter rows with finished checkpoints."""
-        config = UCaGNNConfig(device="cpu")
+        config = EDGRecConfig(device="cpu")
         training_identity, training_hash = _build_training_identity(
             config,
-            "ucagnn",
+            "edgrec",
             None,
         )
         model = torch.nn.Linear(1, 1, bias=False)
@@ -2223,7 +2243,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             self.assertIsNone(
                 recoverable_checkpoint_for_config(
                     config,
-                    preset="ucagnn",
+                    preset="edgrec",
                     checkpoint_path=checkpoint_path,
                 ),
             )
@@ -2236,7 +2256,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
             recovered = recoverable_checkpoint_for_config(
                 config,
-                preset="ucagnn",
+                preset="edgrec",
                 checkpoint_path=checkpoint_path,
             )
             self.assertIsNotNone(recovered)
@@ -2245,14 +2265,14 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
     def test_recoverable_checkpoint_searches_auto_batch_candidates(self) -> None:
         """Recovery lookup should find saved auto-selected batch-size checkpoints."""
-        config = UCaGNNConfig(device="cpu")
+        config = EDGRecConfig(device="cpu")
         config.batch_size = 4096
         config.auto_batch_size = True
         config.batch_size_candidates = [32768, 8192, 4096]
         checkpoint_config = dataclasses.replace(config, batch_size=8192)
         training_identity, training_hash = _build_training_identity(
             checkpoint_config,
-            "ucagnn",
+            "edgrec",
             None,
         )
         model = torch.nn.Linear(1, 1, bias=False)
@@ -2284,7 +2304,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         ):
             checkpoint_path = _default_checkpoint_path(
                 checkpoint_config,
-                "ucagnn",
+                "edgrec",
                 None,
                 training_hash,
             )
@@ -2296,7 +2316,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
             recovered = recoverable_checkpoint_for_config(
                 config,
-                preset="ucagnn",
+                preset="edgrec",
             )
 
             self.assertIsNotNone(recovered)
@@ -2308,14 +2328,14 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self,
     ) -> None:
         """A finished checkpoint should be loaded before auto-batch probing starts."""
-        config = UCaGNNConfig(device="cpu")
+        config = EDGRecConfig(device="cpu")
         config.batch_size = 4096
         config.auto_batch_size = True
         config.batch_size_candidates = [32768, 8192, 4096]
         checkpoint_config = dataclasses.replace(config, batch_size=8192)
         training_identity, training_hash = _build_training_identity(
             checkpoint_config,
-            "ucagnn",
+            "edgrec",
             None,
         )
         model = torch.nn.Linear(1, 1, bias=False)
@@ -2355,7 +2375,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         ):
             checkpoint_path = _default_checkpoint_path(
                 checkpoint_config,
-                "ucagnn",
+                "edgrec",
                 None,
                 training_hash,
             )
@@ -2387,7 +2407,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             ):
                 result = formal_main.run_experiment(
                     config,
-                    preset="ucagnn",
+                    preset="edgrec",
                     enable_mlflow=False,
                 )
 
@@ -2607,7 +2627,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(trainer.sampler_device, torch.device("cpu"))
 
     def test_sampled_batch_preparation_passes_epoch_to_negative_sampler(self) -> None:
-        """Sampled U-CaGNN should apply epoch-aware DICE sampling like full-graph DICE."""
+        """Sampled EDGRec should apply epoch-aware DICE sampling like full-graph DICE."""
 
         class RecordingSampler:
             def __init__(self) -> None:
@@ -2645,7 +2665,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 return object()
 
         trainer = MiniBatchTrainer.__new__(MiniBatchTrainer)
-        trainer.config = UCaGNNConfig(device="cpu", n_negatives=1)
+        trainer.config = EDGRecConfig(device="cpu", n_negatives=1)
         trainer.sampler_device = torch.device("cpu")
         trainer.device = torch.device("cpu")
         trainer.sampler = RecordingSampler()
@@ -2727,7 +2747,7 @@ class BenchmarkPlanTests(unittest.TestCase):
         """Benchmark defaults should not duplicate the removed full alias."""
         args = build_benchmark_parser().parse_args([])
 
-        self.assertEqual(args.presets, ["ucagnn", "lightgcn_paper", "dice_paper"])
+        self.assertEqual(args.presets, ["edgrec", "lightgcn_paper", "dice_paper"])
         self.assertFalse(hasattr(args, "scoring_weight_modes"))
 
     def test_benchmark_parser_exposes_only_canonical_preset_names(self) -> None:
@@ -2738,7 +2758,7 @@ class BenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(
             list(preset_action.choices),
             [
-                "ucagnn",
+                "edgrec",
                 "lightgcn",
                 "lightgcn_paper",
                 "dice_paper",
@@ -2752,7 +2772,7 @@ class BenchmarkPlanTests(unittest.TestCase):
         args = formal_main._normalize_benchmark_args(
             SimpleNamespace(
                 datasets=["movielens1m"],
-                presets=["ucagnn", "lightgcn_paper", "dice_paper"],
+                presets=["edgrec", "lightgcn_paper", "dice_paper"],
                 num_neighbors=[10, 5],
             ),
         )
@@ -2761,7 +2781,7 @@ class BenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(
             build_benchmark_plan(args),
             [
-                ("movielens1m", "ucagnn", "plateau", None, "observed", (10, 5)),
+                ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5)),
                 ("movielens1m", "lightgcn_paper", "none", None, "observed", (10, 5)),
                 ("movielens1m", "dice_paper", "none", None, "observed", (10, 5)),
             ],
@@ -2792,7 +2812,7 @@ class BenchmarkPlanTests(unittest.TestCase):
             formal_main._normalize_benchmark_args(
                 {
                     "datasets": ["movielens1m"],
-                    "presets": ["ucagnn"],
+                    "presets": ["edgrec"],
                     "num_neighbors": [10, 5],
                     "scoring_weight_modes": ["fixed", "learned"],
                 },
@@ -2804,17 +2824,17 @@ class BenchmarkPlanTests(unittest.TestCase):
 
         args = SimpleNamespace(
             datasets=["small"],
-            presets=["ucagnn", "lightgcn"],
+            presets=["edgrec", "lightgcn"],
             num_neighbors=[[10, 5], [5, 3]],
         )
 
         plan = build_benchmark_plan(args)
 
         expected_prefix = [
-            ("amazonbook", "ucagnn", "plateau", None, "observed", (10, 5)),
-            ("amazonbook", "ucagnn", "plateau", None, "observed", (5, 3)),
-            ("movielens1m", "ucagnn", "plateau", None, "observed", (10, 5)),
-            ("movielens1m", "ucagnn", "plateau", None, "observed", (5, 3)),
+            ("amazonbook", "edgrec", "plateau", None, "observed", (10, 5)),
+            ("amazonbook", "edgrec", "plateau", None, "observed", (5, 3)),
+            ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5)),
+            ("movielens1m", "edgrec", "plateau", None, "observed", (5, 3)),
             ("amazonbook", "lightgcn", "plateau", None, "observed", (10, 5)),
             ("amazonbook", "lightgcn", "plateau", None, "observed", (5, 3)),
         ]
@@ -2826,7 +2846,7 @@ class BenchmarkPlanTests(unittest.TestCase):
         """Benchmark planning should expand graph-policy sweeps into separate runs."""
         args = SimpleNamespace(
             datasets=["movielens1m"],
-            presets=["ucagnn"],
+            presets=["edgrec"],
             graph_policy="observed",
             graph_policy_options=["observed", "cagra_augmented"],
             num_neighbors=[10, 5],
@@ -2838,10 +2858,10 @@ class BenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(
             plan,
             [
-                ("movielens1m", "ucagnn", "plateau", None, "observed", (10, 5)),
+                ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5)),
                 (
                     "movielens1m",
-                    "ucagnn",
+                    "edgrec",
                     "plateau",
                     None,
                     "cagra_augmented",
@@ -2855,7 +2875,7 @@ class BenchmarkPlanTests(unittest.TestCase):
         args = formal_main._normalize_benchmark_args(
             SimpleNamespace(
                 datasets=["kuairec_v2"],
-                presets=["ucagnn"],
+                presets=["edgrec"],
                 preprocessing_preset=["kuairec_fullobs", "kuairec_watchratio"],
                 num_neighbors=[10, 5],
                 lr_scheduler="plateau",
@@ -2869,7 +2889,7 @@ class BenchmarkPlanTests(unittest.TestCase):
             [
                 (
                     "kuairec_v2",
-                    "ucagnn",
+                    "edgrec",
                     "plateau",
                     "kuairec_fullobs",
                     "observed",
@@ -2877,7 +2897,7 @@ class BenchmarkPlanTests(unittest.TestCase):
                 ),
                 (
                     "kuairec_v2",
-                    "ucagnn",
+                    "edgrec",
                     "plateau",
                     "kuairec_watchratio",
                     "observed",
@@ -2890,7 +2910,7 @@ class BenchmarkPlanTests(unittest.TestCase):
         """Benchmark plan should accept explicit dataset names alongside tier labels."""
         args = SimpleNamespace(
             datasets=["movielens1m", "small"],
-            presets=["ucagnn"],
+            presets=["edgrec"],
             num_neighbors=[10, 5],
             lr_scheduler="cosine",
         )
@@ -2898,11 +2918,11 @@ class BenchmarkPlanTests(unittest.TestCase):
         plan = build_benchmark_plan(args)
 
         self.assertIn(
-            ("movielens1m", "ucagnn", "cosine", None, "observed", (10, 5)),
+            ("movielens1m", "edgrec", "cosine", None, "observed", (10, 5)),
             plan,
         )
         self.assertIn(
-            ("amazonbook", "ucagnn", "cosine", None, "observed", (10, 5)),
+            ("amazonbook", "edgrec", "cosine", None, "observed", (10, 5)),
             plan,
         )
 
@@ -2910,7 +2930,7 @@ class BenchmarkPlanTests(unittest.TestCase):
         """Benchmark planning should resolve per-tier neighbor sweeps before expansion."""
         args = SimpleNamespace(
             datasets=["small", "medium"],
-            presets=["ucagnn"],
+            presets=["edgrec"],
             num_neighbors={
                 "small": [[6, 3], [4, 2]],
                 "medium": [[10, 5], [16, 8]],
@@ -2923,18 +2943,18 @@ class BenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(
             plan[:4],
             [
-                ("amazonbook", "ucagnn", "plateau", None, "observed", (6, 3)),
-                ("amazonbook", "ucagnn", "plateau", None, "observed", (4, 2)),
-                ("movielens1m", "ucagnn", "plateau", None, "observed", (6, 3)),
-                ("movielens1m", "ucagnn", "plateau", None, "observed", (4, 2)),
+                ("amazonbook", "edgrec", "plateau", None, "observed", (6, 3)),
+                ("amazonbook", "edgrec", "plateau", None, "observed", (4, 2)),
+                ("movielens1m", "edgrec", "plateau", None, "observed", (6, 3)),
+                ("movielens1m", "edgrec", "plateau", None, "observed", (4, 2)),
             ],
         )
         self.assertIn(
-            ("kuairec_v2", "ucagnn", "plateau", None, "observed", (10, 5)),
+            ("kuairec_v2", "edgrec", "plateau", None, "observed", (10, 5)),
             plan,
         )
         self.assertIn(
-            ("kuairand1k", "ucagnn", "plateau", None, "observed", (16, 8)),
+            ("kuairand1k", "edgrec", "plateau", None, "observed", (16, 8)),
             plan,
         )
         self.assertEqual(len(plan), 8)
@@ -2943,7 +2963,7 @@ class BenchmarkPlanTests(unittest.TestCase):
         """The lr_scheduler='all' shorthand should expand to all supported schedulers."""
         args = SimpleNamespace(
             datasets=["movielens1m"],
-            presets=["ucagnn"],
+            presets=["edgrec"],
             num_neighbors=[10, 5],
             lr_scheduler="all",
         )
@@ -2958,7 +2978,7 @@ class BenchmarkPlanTests(unittest.TestCase):
         normalized_args = formal_main._normalize_benchmark_args(
             SimpleNamespace(
                 datasets=["movielens1m"],
-                presets=["ucagnn"],
+                presets=["edgrec"],
                 num_neighbors=[10, 5],
                 dry_run=True,
             ),
@@ -2978,7 +2998,7 @@ class BenchmarkPlanTests(unittest.TestCase):
         normalized_args = formal_main._normalize_benchmark_args(
             SimpleNamespace(
                 datasets=["movielens1m"],
-                presets=["ucagnn"],
+                presets=["edgrec"],
                 num_neighbors=[10, 5],
                 lr_scheduler="plateau",
                 batch_id="batch-a",
@@ -2986,7 +3006,7 @@ class BenchmarkPlanTests(unittest.TestCase):
                 dry_run=False,
                 no_mlflow=True,
                 mlflow_tracking_uri=None,
-                mlflow_experiment_name="ucagnn-formal",
+                mlflow_experiment_name="edgrec-formal",
                 profile_name="test-profile",
                 profile_slug="test-profile",
                 overwrite_checkpoint=False,
@@ -3009,7 +3029,7 @@ class BenchmarkPlanTests(unittest.TestCase):
             patch.object(
                 formal_main,
                 "recoverable_checkpoint_for_config",
-                return_value=(UCaGNNConfig(), Path("/tmp/recoverable.pt")),
+                return_value=(EDGRecConfig(), Path("/tmp/recoverable.pt")),
             ) as recoverable_checkpoint,
             patch.object(
                 formal_main,
@@ -3044,7 +3064,7 @@ class BenchmarkPlanTests(unittest.TestCase):
         normalized_args = formal_main._normalize_benchmark_args(
             SimpleNamespace(
                 datasets=["movielens1m"],
-                presets=["ucagnn"],
+                presets=["edgrec"],
                 num_neighbors=[10, 5],
                 lr_scheduler="plateau",
                 batch_id="batch-a",
@@ -3052,7 +3072,7 @@ class BenchmarkPlanTests(unittest.TestCase):
                 dry_run=False,
                 no_mlflow=True,
                 mlflow_tracking_uri=None,
-                mlflow_experiment_name="ucagnn-formal",
+                mlflow_experiment_name="edgrec-formal",
                 profile_name="test-profile",
                 profile_slug="test-profile",
                 overwrite_checkpoint=False,

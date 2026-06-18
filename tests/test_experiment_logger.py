@@ -172,7 +172,7 @@ class ExperimentLoggerTests(unittest.TestCase):
         exp_id = self.logger.log_experiment(
             dataset="movielens1m",
             config=_DummyConfig(seed=7),
-            profile_name="dev-ucagnn",
+            profile_name="dev-edgrec",
             project_version="1.2.3",
             git_commit="abc1234",
             training_hash="trainhash",
@@ -191,7 +191,7 @@ class ExperimentLoggerTests(unittest.TestCase):
         ).fetchone()
         assert row is not None
 
-        self.assertEqual(row["profile_name"], "dev-ucagnn")
+        self.assertEqual(row["profile_name"], "dev-edgrec")
         self.assertEqual(row["project_version"], "1.2.3")
         self.assertEqual(row["git_commit"], "abc1234")
         self.assertEqual(row["training_hash"], "trainhash")
@@ -398,7 +398,7 @@ class ExperimentLoggerTests(unittest.TestCase):
         first_exp = self.logger.log_experiment(
             dataset="movielens1m",
             config=_DummyConfig(seed=7),
-            preset="ucagnn",
+            preset="edgrec",
             training_hash="trainhash",
             evaluation_hash="evalhash",
             git_commit="abc1234",
@@ -412,7 +412,7 @@ class ExperimentLoggerTests(unittest.TestCase):
         second_exp = self.logger.log_experiment(
             dataset="movielens1m",
             config=_DummyConfig(seed=7),
-            preset="ucagnn",
+            preset="edgrec",
             training_hash="trainhash",
             evaluation_hash="evalhash",
             git_commit="def5678",
@@ -908,7 +908,7 @@ class ExperimentLoggerTests(unittest.TestCase):
                 "lr_scheduler": "cosine",
                 "seed": 13,
             },
-            preset="ucagnn",
+            preset="edgrec",
             intervention="no_independence",
             batch_id="ablation-20260515T000000Z",
             training_hash="ablationhash",
@@ -951,7 +951,7 @@ class ExperimentLoggerTests(unittest.TestCase):
                 "lr_scheduler": "cosine",
                 "seed": 13,
             },
-            preset="ucagnn",
+            preset="edgrec",
             intervention="no_ipw",
             batch_id="ablation-legacy-20260515T000000Z",
         )
@@ -980,7 +980,7 @@ class ExperimentLoggerTests(unittest.TestCase):
                 "lr_scheduler": "plateau",
                 "seed": 13,
             },
-            preset="ucagnn",
+            preset="edgrec",
         )
         self.logger.log_metric(ad_hoc_exp, "NDCG@20", 0.9, split="test")
         self.logger.update_experiment_status(ad_hoc_exp, status="completed")
@@ -1021,6 +1021,8 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertIn("CRRU is not a causal-effect estimator", output)
         self.assertIn("section-row min-max", output)
         self.assertNotIn("report-row min-max", output)
+        self.assertIn("PopularityDiversity@K", output)
+        self.assertNotIn("Bias@K", output)
         self.assertIn("CRRU@20", output)
         self.assertIn("CRRU@40", output)
         self.assertIn("(1-log(1+time/epoch)_n)^0.50", output)
@@ -1056,7 +1058,7 @@ class ExperimentLoggerTests(unittest.TestCase):
             output,
         )
         self.assertIn(
-            "amazonbook_ucagnn_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_no_independence_seed13",
+            "amazonbook_edgrec_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_no_independence_seed13",
             output,
         )
         self.assertNotIn("_train-formalhash", output)
@@ -1065,7 +1067,7 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertNotIn("no_ipw", output)
         self.assertNotIn("smoke-profile", output)
         self.assertNotIn(
-            "amazonbook_ucagnn_ep100_bs1024_dim64_layers2_nbr10-5_lr-plateau_seed13",
+            "amazonbook_edgrec_ep100_bs1024_dim64_layers2_nbr10-5_lr-plateau_seed13",
             output,
         )
 
@@ -1141,10 +1143,12 @@ class ExperimentLoggerTests(unittest.TestCase):
             markdown_output,
         )
         self.assertIn("CRRU is not a causal-effect estimator", markdown_output)
+        self.assertIn("PopularityDiversity@K", markdown_output)
+        self.assertNotIn("Bias@K", markdown_output)
         self.assertIn("CRRU@20", markdown_output)
         self.assertIn("CRRU@40", markdown_output)
         self.assertIn("dev-profile", markdown_output)
-        self.assertIn("OPTUNA U-CaGNN SEARCH REPORT", markdown_output)
+        self.assertIn("OPTUNA EDGRec SEARCH REPORT", markdown_output)
         self.assertIn("optuna_optimization.md", markdown_output)
         self.assertIn(
             "amazonbook_lightgcn_ep100_bs4096_dim64_layers2_nbr10-5_lr-plateau_seed13",

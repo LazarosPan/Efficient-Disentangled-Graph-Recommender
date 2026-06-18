@@ -27,7 +27,7 @@ from src.data.loaders.movielens20m import load_movielens20m
 from src.data.loaders.taobao import load_taobao
 from src.data.negative_sampler import NegativeSampler
 from src.data.subgraph_sampler import SubgraphSampler
-from src.data_exploration.data_exploration import _derive_ucagnn_requirements
+from src.data_exploration.data_exploration import _derive_edgrec_requirements
 from src.data_exploration.explore_all_datasets import (
     build_dataset_summary_payload,
 )
@@ -427,7 +427,7 @@ class DataContractTests(unittest.TestCase):
     def test_dice_negative_sampler_fast_pool_routing_still_filters_known_positives(
         self,
     ) -> None:
-        """Fast U-CaGNN DICE routing should rely on vectorized positive filtering."""
+        """Fast EDGRec DICE routing should rely on vectorized positive filtering."""
         popularity = torch.tensor([1.0, 2.0, 3.0, 4.0, 10.0, 11.0, 12.0, 13.0])
         sampler = NegativeSampler(
             n_items=8,
@@ -819,9 +819,9 @@ class DataContractTests(unittest.TestCase):
             ),
         )
 
-    def test_ucagnn_requirements_track_predefined_splits_separately(self) -> None:
+    def test_edgrec_requirements_track_predefined_splits_separately(self) -> None:
         """Train/test files should not be mistaken for real timestamp support."""
-        requirements = _derive_ucagnn_requirements(
+        requirements = _derive_edgrec_requirements(
             {
                 "name": "AmazonBook",
                 "kind": "interaction_lists",
