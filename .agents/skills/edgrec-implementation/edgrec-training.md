@@ -1,10 +1,10 @@
-# U-CaGNN Training
+# EDGRec Training
 
 Use this file for the live runtime path: trainer setup, evaluation, checkpoint identity, and experiment tracking.
 
 ## Key files
 
-- `.agents/skills/ucagnn-implementation/ucagnn-training.md`
+- `.agents/skills/edgrec-implementation/edgrec-training.md`
 - `src/utils/trainer_runtime.py`
 - `src/training/mini_batch_trainer.py`
 - `src/training/evaluator.py`
@@ -40,7 +40,7 @@ Single-run path: config -> data/graph -> model -> sampled/full training -> eval 
 | `uv run experiment` | One explicit run. |
 | `uv run ablation` | Thesis-facing ablation sweep over named variants. |
 | `uv run formal-run` | Profile-driven formal matrix with strict resume state; accepts comma-separated profile queues. |
-| `uv run search-experiments` | Optuna U-CaGNN search over declarative search spaces; validation-only by default; accepts comma-separated search-space queues. |
+| `uv run search-experiments` | Optuna EDGRec search over declarative search spaces; validation-only by default; accepts comma-separated search-space queues. |
 | `uv run quick-validate` | Fixed smoke suite over the shared runtime path. |
 | `uv run query-results` | SQLite-first result/report inspection surface. |
 
@@ -50,9 +50,9 @@ CLI rule: commands select work; recipes, presets, ablation variants, profiles, a
 
 | Step | Owner | Contract |
 | --- | --- | --- |
-| 1 | `build_config()` | resolve one `UCaGNNConfig` |
+| 1 | `build_config()` | resolve one `EDGRecConfig` |
 | 2 | `load_runtime_data()` | load canonical data; build requested graph policy |
-| 3 | `build_runtime_model()` | paper adapters for paper presets; else derive recency/history/propensity tensors and instantiate `UCaGNN` |
+| 3 | `build_runtime_model()` | paper adapters for paper presets; else derive recency/history/propensity tensors and instantiate `EDGRec` |
 | 4 | `run_experiment()` | attach `data.propensity_targets`; resolve auto-batch; build identities |
 | 5 | `MiniBatchTrainer.train()` | sampled mode uses `data.train_positive_mask`; full mode propagates full graph per step |
 | 6 | `Evaluator.evaluate()` | one full-graph propagated state; relevance is `labels > 0` |
@@ -76,7 +76,7 @@ Optimizer map:
 
 | Family | Optimizer contract |
 | --- | --- |
-| U-CaGNN | AdamW; fused CUDA kernels when available |
+| EDGRec | AdamW; fused CUDA kernels when available |
 | `lightgcn_paper` | Adam; explicit ego-embedding L2 handled in loss |
 | `dice_paper` | Adam; DICE betas `(0.5,0.99)`; AMSGrad |
 
@@ -125,7 +125,7 @@ Important runtime details:
 - In sampled mode, on CUDA it first tries to stage the full graph into a CUDA-resident `SubgraphSampler`.
 - If sampled graph staging or later batch preparation reports a CUDA OOM, including plain RuntimeError messages from CUDA kernels, it falls back to the CPU sampler path.
 - Sampled BFS memory scales with `frontier_size * num_neighbors[hop]`, not total incident degree.
-- U-CaGNN sampled propagation uses uncoalesced CUDA sparse COO plus CPU chunked edge-list fallback.
+- EDGRec sampled propagation uses uncoalesced CUDA sparse COO plus CPU chunked edge-list fallback.
 - Full-graph mode skips subgraph extraction and propagates the full train graph per optimizer step.
 - Full-graph mode is used by `lightgcn_paper` and `dice_paper`.
 - Full-graph mode stages `edge_index`, `edge_sign`, and `edge_norm` once per trainer/device.
@@ -137,7 +137,7 @@ Trainer family map:
 | --- | --- |
 | `lightgcn_paper` | `PaperLightGCN`; no dropout/features/mixer; observed graph; Adam; ego L2 |
 | `dice_paper` | `PaperGCNDICE`; separate branches; self-looped DICE LightGCN; dropout; summed final score |
-| U-CaGNN DICE negatives | raw train-only counts; `dice_sampler_margin`; `dice_sampler_pool`; `n_negatives=1`; vectorized known-positive filtering |
+| EDGRec DICE negatives | raw train-only counts; `dice_sampler_margin`; `dice_sampler_pool`; `n_negatives=1`; vectorized known-positive filtering |
 | `dice_paper` negatives | external-code `n_negatives=4`; exact per-user pool-count correction |
 - Sampled and full-graph training both pass the current epoch into the negative sampler. The DICE sampler margin decays only when `dice_adaptive_decay=True`.
 - CPU-prepared `SubgraphBatch` objects are pinned and copied with `non_blocking=True`.
@@ -171,7 +171,7 @@ Current evaluation rules:
 - do not reintroduce custom Novelty, TrainPop Avoidance, item-pop IoU, or other paper-nonstandard ranking outputs unless a paper-faithful definition is implemented and justified,
 - default thesis outputs stay PyG-standard plus easy-to-defend diagnostics,
 - split-specific ground-truth and exclusion dictionaries are cached by mask identity,
-- `cagra_candidate_k` optionally restricts scoring to ANN candidates on CUDA.
+- `cagra_candidate_k` optionally restricts scoring to ANN candidates on CUDA; cuVS neighbor IDs are normalized to `torch.long`, invalid unsigned sentinels are filtered before CUDA indexing, and empty ANN rows fall back to full-catalog scoring.
 - If `cagra_candidate_k > 0`, CAGRA is an explicit runtime requirement. The evaluator raises instead of silently falling back to full-catalog scoring, because otherwise the recorded config would claim ANN filtering while the metric was computed without it.
 
 Diagnostic rules:
@@ -200,14 +200,18 @@ Quick validation uses larger tiny caps for sparse-positive Taobao and KuaiRand s
 Facts:
 
 - `CRRU@K` = Composite Resource-aware Recommendation Utility at K.
-- Use: thesis-facing ranking utility for completed formal/ablation rows.
+- Use: thesis-facing ranking utility family for completed formal/ablation rows.
 - Not: causal-effect estimator.
+- Not: universal recommender metric.
 - Direction: higher is better.
+- Parameterization: `CRRU@K(m; theta)`; weights encode task/stakeholder preference.
 - Lower-cost raw quantities are inverted: average popularity, VRAM, seconds/epoch.
 - VRAM is a capacity/resource cost, not a reward.
 - Larger batches can improve CRRU only if time/epoch gains offset VRAM penalty.
 - Normalization scope: dataset-local report section rows.
 - Lower-cost quantities are inverted after min-max normalization.
+- Interpretation scope: relative within a dataset/report section; adding/removing rows can change values.
+- Inverse AvgPop measures lower popularity concentration, not causal fairness.
 
 $$
 \operatorname{Accuracy}@K =
@@ -217,7 +221,7 @@ $$
 $$
 
 $$
-\operatorname{Bias}@K =
+\operatorname{PopularityDiversity}@K =
 \operatorname{Pers}@K^{0.40}
 \left(1 - \operatorname{AvgPop}@K_n\right)^{0.60}
 $$
@@ -231,9 +235,18 @@ $$
 $$
 \operatorname{CRRU}@K =
 \operatorname{Accuracy}@K^{0.55}
-\operatorname{Bias}@K^{0.30}
+\operatorname{PopularityDiversity}@K^{0.30}
 \operatorname{Efficiency}^{0.15}
 $$
+
+Thesis default `theta`:
+
+| Component | Weight |
+| --- | ---: |
+| Accuracy `NDCG/Recall/Hit` | `0.50 / 0.35 / 0.15` |
+| Popularity-Diversity `Personalization/inverse AvgPop` | `0.40 / 0.60` |
+| Efficiency `inverse log VRAM/inverse log time per epoch` | `0.50 / 0.50` |
+| Final `Accuracy/Popularity-Diversity/Efficiency` | `0.55 / 0.30 / 0.15` |
 
 Implementation normalization:
 
@@ -251,7 +264,7 @@ Optuna CRRU:
 | --- | --- |
 | Live objective | `ValidationOnlineCRRU@20_40` |
 | Per-K attrs | `ValidationOnlineCRRU@20`, `ValidationOnlineCRRU@40` |
-| Accuracy/diversity inputs | validation NDCG, Recall, Hit, Personalization |
+| Accuracy/popularity-diversity inputs | validation NDCG, Recall, Hit, Personalization |
 | Lower-cost inputs | validation AveragePopularity, peak VRAM, seconds/epoch |
 | Lower-cost transform | deterministic trial-local higher-is-better transform |
 | Report CRRU | recomputed after completed rows exist; not live objective |
@@ -302,5 +315,5 @@ Current rules:
 - Default `query-results` writes Markdown headings and pipe tables.
 - Report sections: final formal thesis profiles, supporting historical/preprocessing rows, runtime-probe notes, public ablations.
 - Runtime probes are visible but excluded from ranked formal tables.
-- Ranked sections split tables into accuracy, bias/diversity, and composite-resource blocks.
+- Ranked sections split tables into accuracy, popularity-diversity, and composite-resource blocks.
 - `CRRU@20` and `CRRU@40` stay in composite-resource tables and are dataset-local section-row min-max utilities.

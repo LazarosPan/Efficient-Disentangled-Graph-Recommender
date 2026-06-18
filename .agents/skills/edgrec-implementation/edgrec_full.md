@@ -1,4 +1,4 @@
-# U-CaGNN Implementation Overview
+# EDGRec Implementation Overview
 
 Integration map only. Use owner docs for details. Keep this file dense and non-duplicative.
 
@@ -6,13 +6,13 @@ Integration map only. Use owner docs for details. Keep this file dense and non-d
 
 | Need | Open |
 | --- | --- |
-| literature-backed rationale and thesis-safe claims | `ucagnn-literature.md` |
-| model modules and refined scorer | `ucagnn-architecture.md` |
-| loaders, canonical schema, graph build, samplers | `ucagnn-data-pipeline.md` |
-| presets and config rules | `ucagnn-config.md` |
-| objectives and schedule semantics | `ucagnn-losses.md` |
-| runtime flow, evaluator, checkpoints, logging | `ucagnn-training.md` |
-| current accuracy, bias, speed, Optuna, and DICE/LightGCN comparison interpretation | `ucagnn-result-analysis.md` backed by `results/query_results.md` + `results/optuna_optimization.md` |
+| literature-backed rationale and thesis-safe claims | `edgrec-literature.md` |
+| model modules and refined scorer | `edgrec-architecture.md` |
+| loaders, canonical schema, graph build, samplers | `edgrec-data-pipeline.md` |
+| presets and config rules | `edgrec-config.md` |
+| objectives and schedule semantics | `edgrec-losses.md` |
+| runtime flow, evaluator, checkpoints, logging | `edgrec-training.md` |
+| current accuracy, bias, speed, Optuna, and DICE/LightGCN comparison interpretation | `edgrec-result-analysis.md` backed by `results/query_results.md` + `results/optuna_optimization.md` |
 
 ## End-to-end flow
 
@@ -39,13 +39,13 @@ Owner pointers:
 
 | Topic | Owner |
 | --- | --- |
-| literature evidence, contribution hypotheses, claim boundaries | `ucagnn-literature.md` |
-| config precedence, presets, profiles, search spaces | `ucagnn-config.md` |
-| graph policy, feature policy, propensity target loading | `ucagnn-data-pipeline.md` |
-| scoring modules, score fusion, propensity scorer gates | `ucagnn-architecture.md` |
-| loss activation, DICE losses, IPW/calibration gates | `ucagnn-losses.md` |
-| checkpointing, auto-batch, evaluator, logging, reports | `ucagnn-training.md` |
-| result interpretation, Optuna evidence, and speed/accuracy trade-off narrative | `ucagnn-result-analysis.md`; refresh from `results/query_results.md` and `results/optuna_optimization.md` |
+| literature evidence, contribution hypotheses, claim boundaries | `edgrec-literature.md` |
+| config precedence, presets, profiles, search spaces | `edgrec-config.md` |
+| graph policy, feature policy, propensity target loading | `edgrec-data-pipeline.md` |
+| scoring modules, score fusion, propensity scorer gates | `edgrec-architecture.md` |
+| loss activation, DICE losses, IPW/calibration gates | `edgrec-losses.md` |
+| checkpointing, auto-batch, evaluator, logging, reports | `edgrec-training.md` |
+| result interpretation, Optuna evidence, and speed/accuracy trade-off narrative | `edgrec-result-analysis.md`; refresh from `results/query_results.md` and `results/optuna_optimization.md` |
 
 Runtime invariants:
 
@@ -62,15 +62,15 @@ Runtime invariants:
 | DICE independence | hash-sample entities up to `distance_correlation_max_pairs` |
 | DirectAU uniformity | hash-sample rows up to `uniformity_max_pairs` |
 | sampled BFS | bounded CSR offset gathers by hop fanout |
-| U-CaGNN propagation | uncoalesced CUDA sparse COO; CPU chunked edge-list fallback |
-| U-CaGNN DICE negatives | fast high/low routing + vectorized known-positive filtering |
+| EDGRec propagation | uncoalesced CUDA sparse COO; CPU chunked edge-list fallback |
+| EDGRec DICE negatives | fast high/low routing + vectorized known-positive filtering |
 | `dice_paper` negatives | exact per-user pool-count correction retained |
 
 ## Source map
 
 | Path | Responsibility |
 | --- | --- |
-| `src/utils/config.py` | `UCaGNNConfig` defaults, validation, preset overrides |
+| `src/utils/config.py` | `EDGRecConfig` defaults, validation, preset overrides |
 | `experiments/experiment_catalog.json` | formal profiles and runtime probes |
 | `experiments/search_spaces.json` | declarative Optuna search spaces |
 | `experiments/recipes.py` | profile/search-space loading and override resolution |
@@ -89,7 +89,7 @@ Runtime invariants:
 | `src/models/baselines/dice.py` | canonical paper GCN-DICE adapter |
 | `src/models/scoring.py` | scoring layer |
 | `src/models/propensity.py` | propensity layer |
-| `src/models/ucagnn.py` | model orchestration and public train/eval surfaces |
+| `src/models/edgrec.py` | model orchestration and public train/eval surfaces |
 | `src/losses/loss_suite.py` | total objective assembly |
 | `src/utils/trainer_runtime.py` | shared runtime, optimizer, scheduler, checkpointing |
 | `src/training/mini_batch_trainer.py` | sole trainer |

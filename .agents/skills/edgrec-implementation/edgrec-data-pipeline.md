@@ -1,10 +1,10 @@
-# U-CaGNN Data Pipeline
+# EDGRec Data Pipeline
 
 Use this file for the live data contract: loader registry, canonical interactions, feature policy, graph construction, and sampling.
 
 ## Key files
 
-- `.agents/skills/ucagnn-implementation/ucagnn-data-pipeline.md`
+- `.agents/skills/edgrec-implementation/edgrec-data-pipeline.md`
 - `src/data/loaders/_registry.py`
 - `src/data/canonical.py`
 - `src/data/feature_policy.py`
@@ -146,7 +146,7 @@ DICE sampling:
 | --- | --- |
 | Strategy | `negative_sampling_strategy="dice"` |
 | Metadata | `sample_with_metadata()` returns aligned high-popularity mask |
-| U-CaGNN large batch | DICE high/low routing, then vectorized known-positive filtering |
+| EDGRec large batch | DICE high/low routing, then vectorized known-positive filtering |
 | `dice_paper` | exact per-user positive-count correction retained |
 | Consumer | `LossSuite` consumes mask directly |
 | Fallback | threshold reconstruction only for older/manual payloads |

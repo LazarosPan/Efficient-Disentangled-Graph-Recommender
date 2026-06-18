@@ -105,9 +105,9 @@
 │   │   ├── manus_research_report.md
 │   │   ├── progress_ideas.md
 │   │   ├── recsys_improvements.md
-│   │   ├── ucagnn_consolidated_recommendations.md
-│   │   ├── UCaGNN_updates_implementation_focused.md
-│   │   ├── UCaGNN_updates.md
+│   │   ├── edgrec_consolidated_recommendations.md
+│   │   ├── EDGRec_updates_implementation_focused.md
+│   │   ├── EDGRec_updates.md
 │   │   └── useful_commands.md
 │   ├── paper_summaries
 │   │   ├── full_summary_detailed.md
@@ -229,7 +229,7 @@
 │   │   ├── lightgcn.py
 │   │   ├── propensity.py
 │   │   ├── scoring.py
-│   │   └── ucagnn.py
+│   │   └── edgrec.py
 │   ├── profiling
 │   │   ├── gpu_profiler.py
 │   │   └── __init__.py

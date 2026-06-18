@@ -1,12 +1,12 @@
-# U-CaGNN Losses
+# EDGRec Losses
 
 Use this file for the live objective contract. `LossSuite` is the only public loss-layer surface.
 
 ## Key files
 
-- `.agents/skills/ucagnn-implementation/ucagnn-losses.md`
+- `.agents/skills/edgrec-implementation/edgrec-losses.md`
 - `src/losses/loss_suite.py`
-- `src/models/ucagnn.py`
+- `src/models/edgrec.py`
 - `src/training/mini_batch_trainer.py`
 - `experiments/ablation_configs.py`
 
@@ -28,9 +28,9 @@ Diagram scope: weighted-sum structure only. Activation depends on preset, config
 | Term | Source tensors | Base weight | Enabled when |
 | --- | --- | --- | --- |
 | `L_rec` | Calibrated `final_score(pos)` vs `final_score(neg)`, or raw branch `interest+conformity` when `recommendation_loss_mode="dice_sum"` | `loss_weight_recommendation = 1.0` | Always on; IPW-reweighted only when `use_ipw=True`, propensity calibration is weighted, and batch propensity targets exist |
-| `L_interest_bpr` | Raw `branch_interest_score` when present, otherwise `interest_score`; symmetric branch BPR, or DICE popular-negative masked BPR when `branch_loss_mode="dice"` | `0.02` for U-CaGNN, `0.1` for GCN-DICE | Dual-branch only |
-| `L_conformity_bpr` | Raw `branch_conformity_score` when present, otherwise `conformity_score`; symmetric branch BPR, or DICE popularity BPR with reversed direction for popular negatives when `branch_loss_mode="dice"` | `0.02` for U-CaGNN, `0.1` for GCN-DICE | Dual-branch only |
-| `L_independence` | Cosine-squared branch decorrelation, or distance-correlation discrepancy when `branch_loss_mode="dice"` | `0.005` for U-CaGNN, `0.01` for GCN-DICE | Dual-branch only |
+| `L_interest_bpr` | Raw `branch_interest_score` when present, otherwise `interest_score`; symmetric branch BPR, or DICE popular-negative masked BPR when `branch_loss_mode="dice"` | `0.02` for EDGRec, `0.1` for GCN-DICE | Dual-branch only |
+| `L_conformity_bpr` | Raw `branch_conformity_score` when present, otherwise `conformity_score`; symmetric branch BPR, or DICE popularity BPR with reversed direction for popular negatives when `branch_loss_mode="dice"` | `0.02` for EDGRec, `0.1` for GCN-DICE | Dual-branch only |
+| `L_independence` | Cosine-squared branch decorrelation, or distance-correlation discrepancy when `branch_loss_mode="dice"` | `0.005` for EDGRec, `0.01` for GCN-DICE | Dual-branch only |
 | `L_contrastive` | Branch-local positive-pair contrastive terms | `0.02` | Dual-branch only and weight > 0; weights are applied outside the log-probability |
 | `L_align` / `L_uniform` | DirectAU-style branch geometry | `0.02` | Dual-branch only and weight > 0 |
 | `L_pop` | Raw `raw_context_score(pos)` when present, otherwise `context_score(pos)`, vs train-split item popularity target | `0.02` | Dual branch + context head + weight > 0 |
@@ -63,7 +63,7 @@ Implementation facts:
 | auxiliary EMA | registered buffers; updated only in training; missing buffers are accepted when loading old checkpoints |
 | loss logging | raw auxiliary losses, normalized auxiliary losses when active, and weighted auxiliary contributions are logged through epoch aggregation |
 | fp32 terms | `L_rec`, `L_pop`, `L_prop_calib` |
-| U-CaGNN recommendation score | calibrated fused `final_score` |
+| EDGRec recommendation score | calibrated fused `final_score` |
 | branch supervision | raw branch scores |
 | context supervision | raw `raw_context_score` when available |
 | contrastive | normalize branch embeddings; detached row weights after log-probability |
@@ -75,7 +75,7 @@ When `branch_loss_mode="dice"`, the branch terms follow DICE semantics:
 | sampler mask | `dice_negative_mask` marks popularity-dominated negatives |
 | mask consumer | `LossSuite`; fallback reconstructs from train popularity + `dice_branch_margin` |
 | mask reduction | `dice_mask_reduction="batch_mean"` averages masked loss over the full batch; `active_mean` divides by active mask count |
-| margin owner | `dice_paper` and `ucagnn` lock fallback margin to `dice_sampler_margin` |
+| margin owner | `dice_paper` and `edgrec` lock fallback margin to `dice_sampler_margin` |
 | margin decay | only when `dice_adaptive_decay=True` |
 | `L_interest_bpr` | active only on popularity-dominated negatives |
 | `L_conformity_bpr` | popular negative above positive; otherwise positive above negative |
@@ -106,11 +106,11 @@ Ramp rates:
 
 | Preset | Active losses by default |
 | --- | --- |
-| `lightgcn` preset (`UCaGNNConfig.preset_lightgcn()`) | `L_rec` |
-| `dice_like` preset (`UCaGNNConfig.preset_dice_like()`) | `L_rec + L_interest_bpr + L_conformity_bpr + L_independence` |
-| `lightgcn_paper` preset (`UCaGNNConfig.preset_lightgcn_paper()`) | `L_rec + explicit ego-embedding L2` with full-graph LightGCN training |
-| `dice_paper` preset (`UCaGNNConfig.preset_dice_paper()`) | DICE total BPR + DICE interest/conformity BPR + distance-correlation discrepancy; `dice_mask_reduction="batch_mean"` for paper-faithful scale |
-| `ucagnn` preset (`UCaGNNConfig.preset_full()`) | `L_rec + DICE-style L_interest_bpr + DICE-style L_conformity_bpr + DICE-style L_independence + L_pop`, trained with DICE-conditioned negatives; `dice_mask_reduction="active_mean"` by default |
+| `lightgcn` preset (`EDGRecConfig.preset_lightgcn()`) | `L_rec` |
+| `dice_like` preset (`EDGRecConfig.preset_dice_like()`) | `L_rec + L_interest_bpr + L_conformity_bpr + L_independence` |
+| `lightgcn_paper` preset (`EDGRecConfig.preset_lightgcn_paper()`) | `L_rec + explicit ego-embedding L2` with full-graph LightGCN training |
+| `dice_paper` preset (`EDGRecConfig.preset_dice_paper()`) | DICE total BPR + DICE interest/conformity BPR + distance-correlation discrepancy; `dice_mask_reduction="batch_mean"` for paper-faithful scale |
+| `edgrec` preset (`EDGRecConfig.preset_full()`) | `L_rec + DICE-style L_interest_bpr + DICE-style L_conformity_bpr + DICE-style L_independence + L_pop`, trained with DICE-conditioned negatives; `dice_mask_reduction="active_mean"` by default |
 
 In `preset_full()`, contrastive, align, uniform, IPW, and propensity calibration remain implemented but disabled until explicitly turned on.
 
@@ -122,6 +122,6 @@ In `preset_full()`, contrastive, align, uniform, IPW, and propensity calibration
 2. the model output contains `propensity_scores`,
 3. the current batch provides `propensity_targets`.
 
-The data path that supplies those targets is owned by `ucagnn-data-pipeline.md`, while the runtime move and batch slicing are owned by `ucagnn-training.md`.
+The data path that supplies those targets is owned by `edgrec-data-pipeline.md`, while the runtime move and batch slicing are owned by `edgrec-training.md`.
 
 IPW weights are also gated by the same target availability. This prevents the recommendation loss from using random inverse-propensity weights from an uncalibrated MLP.

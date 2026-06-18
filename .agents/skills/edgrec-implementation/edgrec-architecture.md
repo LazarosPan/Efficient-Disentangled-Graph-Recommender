@@ -1,10 +1,10 @@
-# U-CaGNN Architecture
+# EDGRec Architecture
 
-Use this file for the live model structure: embeddings, propagation, scoring, and the public `UCaGNN` surfaces used by training and evaluation.
+Use this file for the live model structure: embeddings, propagation, scoring, and the public `EDGRec` surfaces used by training and evaluation.
 
 ## Key files
 
-- `.agents/skills/ucagnn-implementation/ucagnn-architecture.md`
+- `.agents/skills/edgrec-implementation/edgrec-architecture.md`
 - `src/models/common.py`
 - `src/models/embeddings.py`
 - `src/models/lightgcn.py`
@@ -13,7 +13,7 @@ Use this file for the live model structure: embeddings, propagation, scoring, an
 - `src/models/baselines/dice.py`
 - `src/models/scoring.py`
 - `src/models/propensity.py`
-- `src/models/ucagnn.py`
+- `src/models/edgrec.py`
 
 ## Model path
 
@@ -32,12 +32,12 @@ Runtime path: embeddings/metadata -> graph propagation -> refined scorer -> opti
 | Layer | Owner | Current contract |
 | --- | --- | --- |
 | Embedding layer | `EmbeddingModule` | Builds user and item embeddings, optional popularity embeddings, train-split metadata buffers, optional item-feature fusion inputs, and recent-history item-interest lookups for subgraph training. |
-| Propagation layer | `DualBranchGCN` | Runs LightGCN propagation with explicit branch depths and optional sign-aware edge weights; U-CaGNN uses uncoalesced CUDA sparse COO matmul or CPU chunked edge-list aggregation while paper baselines may still use prebuilt sparse adjacency helpers. |
+| Propagation layer | `DualBranchGCN` | Runs LightGCN propagation with explicit branch depths and optional sign-aware edge weights; EDGRec uses uncoalesced CUDA sparse COO matmul or CPU chunked edge-list aggregation while paper baselines may still use prebuilt sparse adjacency helpers. |
 | Scoring layer | `ScoringModule` | Produces pairwise and full-catalog interest, conformity, context, `score_mix_weights`, and fused final scores. |
 | Propensity layer | `PropensityEstimator` | Optional two-layer MLP over propagated item embeddings, clipped to `[propensity_clip_min, propensity_clip_max]`. |
 | Shared model helpers | `src/models/common.py` | Owns cross-model helper functions such as module dtype lookup and the training payload dictionary consumed by `LossSuite`. |
-| Orchestrator | `UCaGNN` | Wires the embedding, propagation, scoring, and optional propensity layers together for subgraph training and full-graph evaluation. |
-| Paper baselines | `PaperLightGCN`, `PaperGCNDICE` | Separate canonical adapters for LightGCN and the DICE paper's GCN-DICE variant. They do not use `EmbeddingModule`, `ScoringModule`, CAGRA augmentation, side features, or U-CaGNN-specific score mixing. |
+| Orchestrator | `EDGRec` | Wires the embedding, propagation, scoring, and optional propensity layers together for subgraph training and full-graph evaluation. |
+| Paper baselines | `PaperLightGCN`, `PaperGCNDICE` | Separate canonical adapters for LightGCN and the DICE paper's GCN-DICE variant. They do not use `EmbeddingModule`, `ScoringModule`, CAGRA augmentation, side features, or EDGRec-specific score mixing. |
 
 ## Embedding and propagation rules
 
@@ -56,10 +56,10 @@ Propagation facts:
 | Area | Contract |
 | --- | --- |
 | `LightGCNBranch` | repeated alpha-averaged layer outputs |
-| U-CaGNN CUDA | uncoalesced sparse COO from `edge_index`/`edge_weight` |
-| U-CaGNN CPU | chunked `forward_edges()` aggregation |
+| EDGRec CUDA | uncoalesced sparse COO from `edge_index`/`edge_weight` |
+| EDGRec CPU | chunked `forward_edges()` aggregation |
 | Paper baseline path | coalesced sparse-adjacency `forward()` allowed |
-| U-CaGNN/LightGCN norm | precomputed `edge_norm` |
+| EDGRec/LightGCN norm | precomputed `edge_norm` |
 | `PaperGCNDICE` norm | recomputes self-looped DICE GCN normalization |
 | sign-aware no negatives | constant weights; no sparse edge-value gradients |
 | sign-aware negatives | negative edges get `alpha_neg / alpha_pos` |
@@ -67,7 +67,7 @@ Propagation facts:
 Item branch capacity:
 
 - Default `separate_item_branch_embeddings=False`: one shared `item_embed`; raw embeddings may expose only `"item"`, and dual-branch propagation fans it into `"item_interest"` and `"item_conformity"`.
-- Optional `separate_item_branch_embeddings=True`: dual-branch U-CaGNN creates `item_interest_embed` and `item_conformity_embed`, initializes both like the shared item table, exposes explicit branch item tensors, and keeps `"item"` as a stable fallback.
+- Optional `separate_item_branch_embeddings=True`: dual-branch EDGRec creates `item_interest_embed` and `item_conformity_embed`, initializes both like the shared item table, exposes explicit branch item tensors, and keeps `"item"` as a stable fallback.
 - `get_stacked_embeddings()` uses the interest item branch when explicit branch item tables exist, preserving a deterministic CAGRA/bootstrap graph embedding choice.
 
 ## Score fusion
@@ -99,7 +99,7 @@ Item branch capacity:
 - Fixed-weight normalization stays tensor-native inside the scorer, avoiding `.item()`-style device synchronization during pairwise and full-catalog scoring.
 - `forward_subgraph()` resolves recent-train item histories by global item id before scoring so the short-term branch never indexes user history against a subgraph-local item table.
 
-## Public `UCaGNN` surfaces
+## Public `EDGRec` surfaces
 
 | Method | Used by | Returns |
 | --- | --- | --- |

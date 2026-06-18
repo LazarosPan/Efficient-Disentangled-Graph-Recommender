@@ -36,7 +36,7 @@ wheels/
 /results/*
 !/results/query_results.md
 !/results/optuna_optimization.md
-!
+!/results/optuna_figures/
 
 # MLFlow
 /mlruns/*
