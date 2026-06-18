@@ -426,7 +426,7 @@ Architectural constants vs dataset-specific:
 
 ---
 
-## 5) U-CaGNN Integration Interface
+## 5) EDGRec Integration Interface
 
 ### 5.1 Minimal Viable Code (MVC): three functions to replicate causal effect
 
@@ -547,9 +547,9 @@ loss_out: {
 
 ---
 
-## 6) Explicit GNN Gap for U-CaGNN Planning
+## 6) Explicit GNN Gap for EDGRec Planning
 
-Repository has no native GNN module. For U-CaGNN integration:
+Repository has no native GNN module. For EDGRec integration:
 - Keep CausE logic as a **causal regularization head** over item/user embeddings.
 - Feed this head from your GNN encoder output instead of raw lookup embeddings.
 
@@ -572,4 +572,4 @@ Evidence basis for compatibility: causal loss consumes only vector pairs and doe
 4. Keep batch schema fixed: `user_id`, `item_id`, `label`, optional `pair_item_id`.
 5. Train with minibatches; evaluate pointwise; bootstrap optional.
 6. Do not assume negative sampling/hard negatives; they are absent in this implementation.
-7. Treat graph propagation as external (to be supplied by U-CaGNN backbone).
+7. Treat graph propagation as external (to be supplied by EDGRec backbone).

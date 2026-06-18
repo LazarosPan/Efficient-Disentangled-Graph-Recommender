@@ -420,7 +420,7 @@ item_control_counterfactual = self.items_treatment[item_all]
 
 ---
 
-## 5) U-CaGNN Integration Interface
+## 5) EDGRec Integration Interface
 
 ## 5.1 Minimal Viable Code (exactly 3 extracted functions)
 
@@ -559,12 +559,12 @@ def dcor(self, x, y):
 ```
 [Ref: `src/model.py` ~L355-371]
 
-## 5.2 U-CaGNN wrapper module API (recommended)
+## 5.2 EDGRec wrapper module API (recommended)
 
 ### Interface definition
 
 ```python
-class UCaGNNCausalHead(nn.Module):
+class EDGRecCausalHead(nn.Module):
     def __init__(self, d, dis_loss: str, dis_pen: float,
                  int_weight: float, pop_weight: float):
         ...
@@ -630,4 +630,4 @@ batch = {
 8. Apply history filter before metrics.
 9. Keep same hyperparameters first; optimize only after parity checks.
 
-This blueprint contains all required mechanics to reconstruct DICE-family causal embedding generation and integrate it into a unified U-CaGNN implementation stack.
+This blueprint contains all required mechanics to reconstruct DICE-family causal embedding generation and integrate it into a unified EDGRec implementation stack.

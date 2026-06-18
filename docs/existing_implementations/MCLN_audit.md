@@ -171,7 +171,7 @@ def sample_u(self):
 - **“Causal Factors” mapping to requested shape:**
   - Repository does **not** keep an explicit factor axis `[N_Factors, B, Cluster_Dim]`; factors are flattened in concat (`[B, 3D]` or `[B, 2D]` Taobao).  
     Evidence: `external/MCLN/Model-art/model-art.py:L103-L105`, `external/MCLN/Model-taobao/model-taobao.py:L95-L97`.
-  - Porting equivalent factorized view for U-CaGNN: reshape concat as `[M, B, D]` where `M=3` (Art/Beauty) or `M=2` (Taobao).
+  - Porting equivalent factorized view for EDGRec: reshape concat as `[M, B, D]` where `M=3` (Art/Beauty) or `M=2` (Taobao).
 
 ### 1.5 Single-point scoring path
 
@@ -228,7 +228,7 @@ def causal_difference_1(self, cd_inputs_embedding, cd_inputs_embedding_int):
     return cd_outputs
 ```
 
-**Contract for U-CaGNN (ported):**
+**Contract for EDGRec (ported):**
 - **Input:**
   - `x_pos`: `[B, M*D]` (interacted item multimodal concat)
   - `x_int`: `[B, M*D]` (uninteracted sampled item multimodal concat)
@@ -361,7 +361,7 @@ else:
 
 ---
 
-## 5) U-CaGNN Integration Blueprint (Minimal Viable Code)
+## 5) EDGRec Integration Blueprint (Minimal Viable Code)
 
 ### 5.1 If copying only three functions for causal effect
 
@@ -386,7 +386,7 @@ for _ in range(n_mca):
     x_neg = feed_forward_layer(counterfactual_learning_layer_2(x_neg, x_neg), activation=relu)
 ```
 
-### 5.2 Required interface for U-CaGNN (PyTorch/DGL)
+### 5.2 Required interface for EDGRec (PyTorch/DGL)
 
 **Inputs:**
 - `user_emb`: `[U, D]`
@@ -410,7 +410,7 @@ for _ in range(n_mca):
   - Out: scalar logits `[B]`
   - Source mechanics: `external/MCLN/Model-art/model-art.py:L113-L117`, `L276-L289`.
 
-### 5.3 Complexity Summary for U-CaGNN port
+### 5.3 Complexity Summary for EDGRec port
 
 - **Graph construction (offline):** $O(|E|)$ to read interactions + $O(|E|)$ to build bipartite adjacency; normalization sparse operations over nonzeros.  
   Source analog: `external/MCLN/Model-art/load_data.py:L36-L55`, `L158-L196`.

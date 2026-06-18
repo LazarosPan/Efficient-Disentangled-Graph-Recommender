@@ -1,4 +1,4 @@
-# CaDSI Developer Blueprint (Standalone Code-First, U-CaGNN Integration Ready)
+# CaDSI Developer Blueprint (Standalone Code-First, EDGRec Integration Ready)
 
 ## Mechanical Summary Table
 
@@ -488,7 +488,7 @@ Let $L$ layers, $T$ routing iterations, $F$ factors, $d$ dim, batch size $B$, co
 
 ---
 
-## 5) U-CaGNN Integration Interface
+## 5) EDGRec Integration Interface
 
 ## 5.1 Minimal Viable Code (MVC): 3 Functions to Replicate Core Causal Effect
 
@@ -508,7 +508,7 @@ Let $L$ layers, $T$ routing iterations, $F$ factors, $d$ dim, batch size $B$, co
 
 ## 5.2 Unified Module API (PyTorch/DGL/PyG wrapper contract)
 
-### `UCaGNNDataAdapter`
+### `EDGRecDataAdapter`
 - **Input**: raw paths (`train`, `test`, optional side embeddings)
 - **Output state**:
   - `num_users`, `num_items`
@@ -558,4 +558,4 @@ Let $L$ layers, $T$ routing iterations, $F$ factors, $d$ dim, batch size $B$, co
 8. Remove all global module state; pass explicit objects/configs only.
 9. Validate shape lineage at each stage using the shape ledger in Section 1.4.
 
-This checklist is the independent reconstruction path for U-CaGNN integration.
+This checklist is the independent reconstruction path for EDGRec integration.

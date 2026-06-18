@@ -540,7 +540,7 @@ References:
 
 ---
 
-## 5) U-CaGNN Integration Interface
+## 5) EDGRec Integration Interface
 
 ## 5.1 Minimal Viable Code (exactly three functions)
 
@@ -641,7 +641,7 @@ These three functions cover:
 - causal discrepancy pressure,
 - exact scalar objective assembly.
 
-## 5.2 Module API contract for U-CaGNN wrapper
+## 5.2 Module API contract for EDGRec wrapper
 
 ### Inputs
 - `edge_index` / sparse adjacency (pre-normalized variants for base/int/con)

@@ -370,7 +370,7 @@ The safest replication sequence is:
 4. verify outputs on synthetic toy data and on one cached PropCare dataframe,
 5. only then port the secondary metrics.
 
-## 7. Comparison with the Current U-CaGNN Evaluator
+## 7. Comparison with the Current EDGRec Evaluator
 
 The current repository’s evaluator has a completely different contract:
 
