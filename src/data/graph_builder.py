@@ -14,7 +14,7 @@ import torch
 from torch_geometric.data import Data
 from torch_geometric.utils import coalesce, degree
 
-from ..utils.config import UCaGNNConfig
+from ..utils.config import EDGRecConfig
 from ..utils.interaction_indexing import compute_normalized_popularity
 from .canonical import CanonicalInteractions
 from .interaction_masks import positive_interaction_mask
@@ -161,7 +161,7 @@ def _attach_optional_canonical_fields(
 
 def build_graph(
     canonical: CanonicalInteractions,
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     embeddings: torch.Tensor | None = None,
 ) -> Data:
     """Convert canonical interactions into a PyG Data object.
@@ -395,7 +395,7 @@ def _build_cagra(
     train_mask: torch.Tensor,
     all_signs: torch.Tensor,
     embeddings: torch.Tensor | None,
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Bipartite edges + CAGRA GPU-accelerated ANN graph.
 

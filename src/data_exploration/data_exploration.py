@@ -1,6 +1,6 @@
-"""Dataset exploration helpers for U-CaGNN planning.
+"""Dataset exploration helpers for EDGRec planning.
 
-This module inspects candidate datasets with the future U-CaGNN ingestion
+This module inspects candidate datasets with the future EDGRec ingestion
 contract in mind: user-item interaction schema, timestamp support, sign-aware
 edge construction, side features, and preprocessing cost.
 """
@@ -584,7 +584,7 @@ def schema_overview(inspection: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _infer_ucagnn_fields(columns: list[str]) -> dict[str, Any]:
+def _infer_edgrec_fields(columns: list[str]) -> dict[str, Any]:
     lowered = {column.lower(): column for column in columns}
 
     def find(*keywords: str) -> str | None:
@@ -604,8 +604,8 @@ def _infer_ucagnn_fields(columns: list[str]) -> dict[str, Any]:
     }
 
 
-def _derive_ucagnn_requirements(summary: dict[str, Any]) -> dict[str, Any]:
-    """Infer U-CaGNN readiness signals from dataset file inspections.
+def _derive_edgrec_requirements(summary: dict[str, Any]) -> dict[str, Any]:
+    """Infer EDGRec readiness signals from dataset file inspections.
 
     Args:
         summary: Dataset summary produced by ``summarize_dataset``.
@@ -619,7 +619,7 @@ def _derive_ucagnn_requirements(summary: dict[str, Any]) -> dict[str, Any]:
     for inspection in file_inspections:
         text_columns.extend(inspection.get("columns", []))
 
-    fields = _infer_ucagnn_fields(text_columns)
+    fields = _infer_edgrec_fields(text_columns)
     lower_columns = [column.lower() for column in text_columns]
     lower_present_files = [str(file_name).lower() for file_name in summary["present_files"]]
 
@@ -701,7 +701,7 @@ def _dataset_note(name: str, requirements: dict[str, Any]) -> str:
     if name == "KuaiRec_v2":
         return (
             "Strong candidate for richer feedback and side features; likely "
-            "easiest Kuai dataset to adapt to U-CaGNN."
+            "easiest Kuai dataset to adapt to EDGRec."
         )
     if name == "KuaiRand-1K":
         return (
@@ -711,14 +711,14 @@ def _dataset_note(name: str, requirements: dict[str, Any]) -> str:
     if name == "KuaiSAR_v2":
         return (
             "Rich dataset, but search and recommendation are mixed, which "
-            "makes it less aligned with the first U-CaGNN benchmark phase."
+            "makes it less aligned with the first EDGRec benchmark phase."
         )
     if requirements["preprocessing_cost"] == "high":
         return (
             "Likely off-scope for phase 1 because the structure is not a "
             "simple user-item recommendation table."
         )
-    return "Potentially usable if transformed into the unified U-CaGNN ingestion contract."
+    return "Potentially usable if transformed into the unified EDGRec ingestion contract."
 
 
 def summarize_dataset(name: str) -> dict[str, Any]:
@@ -759,8 +759,8 @@ def summarize_dataset(name: str) -> dict[str, Any]:
         "file_errors": file_errors,
         "files": files,
     }
-    requirements = _derive_ucagnn_requirements(summary)
-    summary["ucagnn_requirements"] = requirements
+    requirements = _derive_edgrec_requirements(summary)
+    summary["edgrec_requirements"] = requirements
     summary["note"] = _dataset_note(resolved_name, requirements)
     return summary
 
@@ -778,7 +778,7 @@ def candidate_verdict_table(dataset_names: list[str] | None = None) -> pl.DataFr
     summaries = summarize_candidates(dataset_names)
     rows = []
     for summary in summaries:
-        requirements = summary["ucagnn_requirements"]
+        requirements = summary["edgrec_requirements"]
         fields = requirements["fields"]
         rows.append(
             {
