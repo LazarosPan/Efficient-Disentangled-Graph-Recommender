@@ -26,6 +26,11 @@ from src.utils.crru import (
     compute_crru_efficiency_scores,
     compute_crru_scores_for_k,
 )
+from src.utils.method_naming import (
+    display_method_label,
+    method_identifier_aliases,
+    public_method_identifier,
+)
 from src.utils.project_paths import RESULTS_DIR
 
 OPTUNA_OPTIMIZATION_MARKDOWN_PATH = RESULTS_DIR / "optuna_optimization.md"
@@ -119,7 +124,14 @@ DATASET_METRICS = (
 def load_studies(storage: str, study_name: str | None = None) -> list[optuna.Study]:
     """Load one or all studies from Optuna RDB storage."""
     if study_name:
-        return [optuna.load_study(study_name=study_name, storage=storage)]
+        existing = {
+            summary.study_name for summary in optuna.get_all_study_summaries(storage=storage)
+        }
+        resolved_name = next(
+            (alias for alias in method_identifier_aliases(study_name) if alias in existing),
+            study_name,
+        )
+        return [optuna.load_study(study_name=resolved_name, storage=storage)]
     return [
         optuna.load_study(study_name=summary.study_name, storage=storage)
         for summary in optuna.get_all_study_summaries(storage=storage)
@@ -204,7 +216,7 @@ def logical_param_name(param_name: str) -> str:
 
 
 def logical_trial_params(trial: FrozenTrial) -> Mapping[str, Any]:
-    """Return logical sampled params, preferring stored U-CaGNN config fields."""
+    """Return logical sampled params, preferring stored EDGRec config fields."""
     sampled_params = trial.user_attrs.get("sampled_params")
     if isinstance(sampled_params, Mapping):
         return sampled_params
@@ -225,6 +237,13 @@ def format_param_value(value: Any) -> str:
     if isinstance(value, dict | list | tuple):
         return json.dumps(value, sort_keys=True, separators=(",", ":"))
     return str(value)
+
+
+def format_effective_param_value(key: str, value: Any) -> str:
+    """Return a public report value for one effective config parameter."""
+    if key in {"baseline_family", "preset"}:
+        return display_method_label(value)
+    return format_param_value(value)
 
 
 def format_params(params: Mapping[str, Any]) -> str:
@@ -320,7 +339,8 @@ def format_effective_params(
     if not params:
         return "-"
     return ", ".join(
-        f"{key}={format_param_value(value)}" for key, value in ordered_effective_params(params)
+        f"{key}={format_effective_param_value(key, value)}"
+        for key, value in ordered_effective_params(params)
     )
 
 
@@ -658,11 +678,12 @@ def study_report_sort_key(study: optuna.Study) -> tuple[int, str]:
     trials = completed_trials(study)
     datasets = sorted({dataset for trial in trials for dataset in dataset_names(trial)})
     objective_metric = str(trials[0].user_attrs.get("objective_metric", "")) if trials else ""
+    display_name = public_method_identifier(study.study_name) or study.study_name
     if objective_metric == VALIDATION_ONLINE_CRRU_METRIC and len(datasets) == 1:
-        return (0, study.study_name)
+        return (0, display_name)
     if objective_metric == VALIDATION_ONLINE_CRRU_METRIC:
-        return (1, study.study_name)
-    return (2, study.study_name)
+        return (1, display_name)
+    return (2, display_name)
 
 
 def render_failure_summary(study: optuna.Study) -> list[str]:
@@ -866,8 +887,9 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
         objective_metric = str(trials[0].user_attrs.get("objective_metric", "-"))
         objective_split = str(trials[0].user_attrs.get("objective_split", "-"))
 
+    display_study_name = public_method_identifier(study.study_name) or study.study_name
     lines = [
-        f"## Study: `{study.study_name}`",
+        f"## Study: `{display_study_name}`",
         "",
         f"- Direction: `{study.direction.name.lower()}`",
         f"- Objective: `{objective_split} {objective_metric}`",
@@ -1054,7 +1076,7 @@ def render_report(studies: Sequence[optuna.Study], *, storage: str, top_n: int) 
         "non-imported `search_space_revision` subset with enough completed trials. "
         "Mixed unrevisioned/revision studies are marked unreliable instead of showing a "
         "misleading one-parameter importance table.",
-        "- The current second-pass grid tunes active U-CaGNN loss weights and schedule "
+        "- The current second-pass grid tunes active EDGRec loss weights and schedule "
         "knobs only; inactive DirectAU/IPW-only weights remain out of the default "
         "search to avoid changing the thesis model family without a separate ablation.",
         "- Schedule-conditioned parameters are sampled only when they affect the resolved "
@@ -1092,8 +1114,8 @@ def render_report(studies: Sequence[optuna.Study], *, storage: str, top_n: int) 
             "colored by validation CRRU, one panel per dataset.",
             "- Schedule ablation strip: `linear_ramp` vs `phased`, with active ramp/start "
             "knobs annotated beside each dataset's best trial.",
-            "- CRRU frontier plot: accuracy component vs bias/diversity component, bubble "
-            "size for efficiency and star markers for promotion candidates.",
+            "- CRRU frontier plot: accuracy component vs popularity-diversity component, "
+            "bubble size for efficiency and star markers for promotion candidates.",
             "",
         ],
     )

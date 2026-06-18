@@ -22,6 +22,7 @@ import numpy as np
 import optuna
 from experiments.run_search import DEFAULT_STORAGE, default_study_name, resolve_search_space
 from matplotlib.colors import PowerNorm
+from src.utils.method_naming import method_identifier_aliases
 
 from scripts.report_optuna_optimization import (
     OPTUNA_FIGURES_DIR,
@@ -34,7 +35,7 @@ from scripts.report_optuna_optimization import (
     logical_trial_params,
 )
 
-DEFAULT_SPACE_NAME = "ucagnn-core-optimization"
+DEFAULT_SPACE_NAME = "edgrec-core-optimization"
 PAPER_FIGURE_NAMES = (
     "optuna_progress_by_dataset.png",
     "optuna_importance_by_dataset.png",
@@ -168,10 +169,12 @@ def _load_default_dataset_studies(storage: str, space_name: str) -> list[optuna.
             dataset_space.datasets,
             search_space=dataset_space,
         )
-        try:
-            studies.append(optuna.load_study(study_name=study_name, storage=storage))
-        except (KeyError, ValueError):
-            continue
+        for study_alias in method_identifier_aliases(study_name):
+            try:
+                studies.append(optuna.load_study(study_name=study_alias, storage=storage))
+                break
+            except (KeyError, ValueError):
+                continue
     return studies
 
 
@@ -687,7 +690,10 @@ def export_crru_components_by_dataset(
     """Export CRRU component-vs-objective diagnostics."""
     component_specs = (
         ("accuracy_component", "Accuracy component\nNDCG/Recall/Hit"),
-        ("bias_component", "Bias/diversity component\nPersonalization + low popularity"),
+        (
+            "bias_component",
+            "Popularity-diversity component\nPersonalization + low popularity",
+        ),
         ("resource_efficiency_score", "Efficiency component\nlower epoch time + lower VRAM"),
     )
     if not records:
@@ -745,7 +751,7 @@ def export_crru_components_by_dataset(
         0.02,
         0.54,
         "Accuracy has the largest final weight.\n"
-        "Bias/diversity rewards personalization and\n"
+        "Popularity-diversity rewards personalization and\n"
         "lower popularity. Efficiency rewards lower\n"
         "time/epoch and lower VRAM.\n\n"
         "Star = best trial for that dataset.",
@@ -757,7 +763,9 @@ def export_crru_components_by_dataset(
     handles, labels = axes.flat[0].get_legend_handles_labels()
     if handles:
         axes.flat[3].legend(handles, labels, loc="lower left", fontsize=9, frameon=False)
-    fig.suptitle("How the validation CRRU objective relates to accuracy, bias, and efficiency")
+    fig.suptitle(
+        "How validation CRRU relates to accuracy, popularity-diversity, and efficiency",
+    )
     return _save_figure(fig, output_dir / PAPER_FIGURE_NAMES[2]) if plotted_any else None
 
 
@@ -926,7 +934,7 @@ def export_branch_depth_heatmaps(
                         fontsize=8,
                     )
         fig.colorbar(image, ax=ax, shrink=0.82)
-    fig.suptitle("U-CaGNN branch-depth effects; deeper is not automatically better")
+    fig.suptitle("EDGRec branch-depth effects; deeper is not automatically better")
     return _save_figure(fig, output_dir / PAPER_FIGURE_NAMES[4])
 
 

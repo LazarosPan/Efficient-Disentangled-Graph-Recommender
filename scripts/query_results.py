@@ -34,6 +34,11 @@ from src.utils.experiment_naming import (
     build_canonical_experiment_name,
     format_num_neighbors_payload,
 )
+from src.utils.method_naming import (
+    display_method_label,
+    public_method_identifier,
+    public_preset_name,
+)
 from src.utils.project_paths import RESULTS_DIR, THESIS_DB_PATH
 
 DB_PATH = Path(os.environ.get("THESIS_DB_PATH_OVERRIDE", str(THESIS_DB_PATH)))
@@ -47,7 +52,7 @@ ABLATION_VARIANT_ORDER = {
 }
 FINAL_FORMAL_PROFILE_NAMES = frozenset(
     {
-        "core-ucagnn-mainline",
+        "core-edgrec-mainline",
         "core-paper-architecture-comparison",
         "paper-lightgcn-small-baselines",
         "paper-lightgcn-baselines",
@@ -55,6 +60,18 @@ FINAL_FORMAL_PROFILE_NAMES = frozenset(
 )
 RUNTIME_PROBE_COLUMNS = RUNTIME_PROBE_METRIC_NAMES
 PAPER_BASELINE_PRESETS = frozenset({"lightgcn_paper", "dice_paper"})
+
+
+def _display_preset(preset: object | None) -> str:
+    """Return the public report label for a stored preset token."""
+    return display_method_label(preset)
+
+
+def _display_profile(profile_name: object | None) -> str:
+    """Return the public report label for a stored formal profile token."""
+    if profile_name is None:
+        return "-"
+    return public_method_identifier(str(profile_name)) or str(profile_name)
 
 
 def connect() -> sqlite3.Connection:
@@ -127,12 +144,12 @@ def list_experiments(
     print("-" * (135 + profile_width - 8))
     for row in rows:
         batch_label = row["batch_id"] or "-"
-        profile_label = row["profile_name"] or "-"
+        profile_label = _display_profile(row["profile_name"])
         status_label = row["status"] or ("oom" if row["oom_flag"] else "unknown")
         print(
             (
                 f"{row['id']:>4} | {status_label:<10} | {row['dataset'] or '-':<14} | "
-                f"{row['preset'] or '-':<12} | {profile_label:<{profile_width}} | "
+                f"{_display_preset(row['preset']):<12} | {profile_label:<{profile_width}} | "
                 f"{row['training_mode'] or '-':<18} | {batch_label:<22} | "
                 f"{row['seed'] or '-'}"
             ),
@@ -334,10 +351,13 @@ def _is_reportable_formal_row(row: sqlite3.Row) -> bool:
 def _is_final_formal_row(row: sqlite3.Row) -> bool:
     """Return whether a formal row belongs in final thesis metric rankings."""
     profile_name = row["profile_name"]
+    public_profile_name = (
+        public_method_identifier(profile_name) if isinstance(profile_name, str) else None
+    )
     return (
         _is_reportable_formal_row(row)
         and isinstance(profile_name, str)
-        and profile_name in FINAL_FORMAL_PROFILE_NAMES
+        and public_profile_name in FINAL_FORMAL_PROFILE_NAMES
     )
 
 
@@ -631,10 +651,11 @@ def _run_detail_cells(
     """Collect one Markdown-safe run details table row."""
     config = _load_config_json(row["config_json"])
     intervention = intervention_for_row(row)
-    canonical_name = build_canonical_experiment_name(config, row["preset"], intervention)
+    preset_name = public_preset_name(row["preset"])
+    canonical_name = build_canonical_experiment_name(config, preset_name, intervention)
     dataset = row["dataset"] or "-"
     label = label_for_row(row)
-    profile_name = row["profile_name"] or "-"
+    profile_name = _display_profile(row["profile_name"])
 
     capture = StringIO()
     with redirect_stdout(capture):
@@ -740,7 +761,7 @@ def _print_split_result_tables(
     label_width: int,
     label_for_row: Callable[[sqlite3.Row], str],
 ) -> None:
-    """Print result rows as separate accuracy, bias, and resource tables."""
+    """Print result rows as accuracy, popularity-diversity, and resource tables."""
     common_columns = (
         ("Run", 4, ">"),
         ("Dataset", 14, "<"),
@@ -757,7 +778,7 @@ def _print_split_result_tables(
         ("Recall@40", 10, ">"),
         ("Hit@40", 8, ">"),
     )
-    bias_columns = (
+    popularity_diversity_columns = (
         *common_columns,
         ("Pers@20", 9, ">"),
         ("AvgPop@20", 10, ">"),
@@ -774,7 +795,7 @@ def _print_split_result_tables(
     )
 
     accuracy_rows: list[tuple[object, ...]] = []
-    bias_rows: list[tuple[object, ...]] = []
+    popularity_diversity_rows: list[tuple[object, ...]] = []
     resource_rows: list[tuple[object, ...]] = []
     for run_index, row in enumerate(rows, start=1):
         dataset = row["dataset"] or "-"
@@ -793,7 +814,7 @@ def _print_split_result_tables(
                 _format_metric_value(row["test_hit_ratio_40"]),
             ),
         )
-        bias_rows.append(
+        popularity_diversity_rows.append(
             (
                 *base,
                 _format_metric_value(row["test_personalization_20"]),
@@ -815,9 +836,9 @@ def _print_split_result_tables(
 
     _print_metric_table("Accuracy metrics", accuracy_columns, accuracy_rows)
     _print_metric_table(
-        "Bias and diversity diagnostics (AvgPop is lower-is-better)",
-        bias_columns,
-        bias_rows,
+        "Popularity-diversity diagnostics (AvgPop lower means lower popularity concentration)",
+        popularity_diversity_columns,
+        popularity_diversity_rows,
     )
     _print_metric_table("Composite utility and resource use", resource_columns, resource_rows)
 
@@ -1024,11 +1045,11 @@ def _print_formal_rows(
         crru_scores=crru_scores,
         label_header="Preset",
         label_width=12,
-        label_for_row=lambda row: row["preset"] or "-",
+        label_for_row=lambda row: _display_preset(row["preset"]),
     )
     _print_run_details(
         rows,
-        label_for_row=lambda row: row["preset"] or "-",
+        label_for_row=lambda row: _display_preset(row["preset"]),
         intervention_for_row=lambda _row: None,
     )
 
@@ -1064,7 +1085,7 @@ def _print_ablation_rows(
 
 def _print_optuna_report_pointer() -> None:
     """Print where the dedicated Optuna report lives."""
-    print("## OPTUNA U-CaGNN SEARCH REPORT")
+    print("## OPTUNA EDGRec SEARCH REPORT")
     print(
         "Optuna search trials are reported from the Optuna RDB storage, not mirrored "
         "through the thesis experiment database."
@@ -1098,13 +1119,13 @@ def show_experiment(conn: sqlite3.Connection, exp_id: int) -> None:
     print(f"Database:     {THESIS_DB_PATH.resolve()}")
     print(f"Timestamp:    {row['timestamp']}")
     print(f"Dataset:      {row['dataset']}")
-    print(f"Preset:       {row['preset'] or '-'}")
+    print(f"Preset:       {_display_preset(row['preset'])}")
     print(f"Intervention: {row['intervention'] or '-'}")
     print(f"Seed:         {row['seed'] or '-'}")
     print(f"Status:       {row['status'] or '-'}")
     print(f"Training:     {row['training_mode'] or '-'}")
     print(f"Batch ID:     {row['batch_id'] or '-'}")
-    print(f"Profile:      {row['profile_name'] or '-'}")
+    print(f"Profile:      {_display_profile(row['profile_name'])}")
     print(f"GPU:          {row['gpu_name'] or '-'}")
     print(
         f"VRAM (GiB):   {row['gpu_vram_gb'] if row['gpu_vram_gb'] is not None else '-'}",
