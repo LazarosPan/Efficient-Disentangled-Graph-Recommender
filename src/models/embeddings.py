@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from ..utils.config import UCaGNNConfig
+from ..utils.config import EDGRecConfig
 from .common import module_parameter_dtype
 
 
@@ -80,7 +80,7 @@ class EmbeddingModule(nn.Module):
         self,
         n_users: int,
         n_items: int,
-        config: UCaGNNConfig,
+        config: EDGRecConfig,
         item_features: torch.Tensor | None = None,
         item_popularity: torch.Tensor | None = None,
         item_recency: torch.Tensor | None = None,

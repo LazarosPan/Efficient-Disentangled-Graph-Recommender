@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from ..utils.config import UCaGNNConfig
+from ..utils.config import EDGRecConfig
 
 
 class PropensityEstimator(nn.Sequential):
@@ -15,7 +15,7 @@ class PropensityEstimator(nn.Sequential):
     Output clipped to [clip_min, clip_max] for numerical stability.
     """
 
-    def __init__(self, config: UCaGNNConfig) -> None:
+    def __init__(self, config: EDGRecConfig) -> None:
         super().__init__(
             nn.Linear(config.embed_dim, config.propensity_hidden),
             nn.ReLU(),

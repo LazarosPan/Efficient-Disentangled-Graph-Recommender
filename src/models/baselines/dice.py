@@ -7,7 +7,7 @@ import math
 import torch
 from torch import nn
 
-from ...utils.config import UCaGNNConfig
+from ...utils.config import EDGRecConfig
 from ..lightgcn import LightGCNBranch
 from .common import (
     CanonicalBaselineRecommender,
@@ -31,7 +31,7 @@ class PaperGCNDICE(CanonicalBaselineRecommender):
         self,
         n_users: int,
         n_items: int,
-        config: UCaGNNConfig,
+        config: EDGRecConfig,
     ) -> None:
         super().__init__(n_users, n_items, config)
         self.embeddings_int = nn.Parameter(

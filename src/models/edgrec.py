@@ -1,7 +1,7 @@
-"""U-CaGNN: Unified Causal Graph Neural Network for recommendations.
+"""EDGRec: efficient disentangled graph recommender.
 
 Orchestrates the embedding, propagation, scoring, and optional propensity layers.
-Every component is toggleable via UCaGNNConfig.
+Every component is toggleable via EDGRecConfig.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import torch
 from torch import nn
 
 from ..data.subgraph_sampler import SubgraphBatch
-from ..utils.config import UCaGNNConfig
+from ..utils.config import EDGRecConfig
 from .common import training_output_payload
 from .embeddings import EmbeddingModule
 from .lightgcn import DualBranchGCN
@@ -18,20 +18,20 @@ from .propensity import PropensityEstimator
 from .scoring import ScoringModule
 
 
-class UCaGNN(nn.Module):
+class EDGRec(nn.Module):
     """Main model: forward = embed → propagate → score.
 
     Different configs produce different model variants:
-    - Non-causal LightGCN: ``use_dual_branch=False``
+    - Sampled LightGCN: ``use_dual_branch=False``
     - DICE-like: ``use_dual_branch=True``, only L_rec + L_ortho
-    - Full U-CaGNN: all toggles enabled
+    - Full EDGRec: all toggles enabled
     """
 
     def __init__(
         self,
         n_users: int,
         n_items: int,
-        config: UCaGNNConfig,
+        config: EDGRecConfig,
         item_features: torch.Tensor | None = None,
         item_popularity: torch.Tensor | None = None,
         item_recency: torch.Tensor | None = None,

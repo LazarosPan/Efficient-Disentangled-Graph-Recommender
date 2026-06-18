@@ -1,3 +1,3 @@
-from .ucagnn import UCaGNN
+from .edgrec import EDGRec
 
-__all__ = ["UCaGNN"]
+__all__ = ["EDGRec"]
