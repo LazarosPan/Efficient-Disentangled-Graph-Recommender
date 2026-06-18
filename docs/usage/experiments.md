@@ -21,34 +21,34 @@ uv run formal-run --profile <slug-from-list-profiles> --overwrite-checkpoint
 - Formal profiles may set `config_overrides.graph_policy` to either one value or a list like `["observed", "cagra_augmented"]`; a list expands into separate runs, and each concrete run still uses exactly one graph policy.
 - Formal profiles may also set `config_overrides.preprocessing_preset` to either one preset or a list. The benchmark planner expands that sweep internally so each concrete run still carries one preprocessing preset.
 - Formal runs always use the full datasets and keep OOM rows as thesis evidence while continuing to the next item. Smoke-only caps such as `sample_interactions` and `loader_max_rows` are ignored by `formal-run` even if they appear in a profile override block.
-- The current default formal profile is `core-ucagnn-mainline`: it runs only the `ucagnn` preset, uses early stopping with `patience=10`, keeps the 200-epoch budget, uses learned fused scoring, and makes the mainline branch asymmetry explicit with `interest_gnn_layers=1`, `conformity_gnn_layers=2`, and `num_neighbors={"small": [[6, 3], [4, 2]], "medium": [[10, 5], [16, 8]]}` while leaving `loss_schedule` at the baseline default so BPR is active from the start.
-- A second formal profile is reserved for the final matched comparison pass, where `lightgcn_paper` and `dice_paper` run beside U-CaGNN under the same canonical data and evaluation pipeline. The sampled `lightgcn` and legacy `dice_like` presets remain ablations, not paper-default baselines.
+- The current default formal profile is `core-edgrec-mainline`: it runs only the `edgrec` preset, uses early stopping with `patience=10`, keeps the 200-epoch budget, uses learned fused scoring, and makes the mainline branch asymmetry explicit with `interest_gnn_layers=1`, `conformity_gnn_layers=2`, and `num_neighbors={"small": [[6, 3], [4, 2]], "medium": [[10, 5], [16, 8]]}` while leaving `loss_schedule` at the baseline default so BPR is active from the start.
+- A second formal profile is reserved for the final matched comparison pass, where `lightgcn_paper` and `dice_paper` run beside EDGRec under the same canonical data and evaluation pipeline. The sampled `lightgcn` and legacy `dice_like` presets remain ablations, not paper-default baselines.
 
 ## Optuna Search
 
 ```bash
 uv run search-experiments --list-spaces
-uv run search-experiments --space ucagnn-mechanism-coarse --dataset kuairec_v2 --trials 120
-uv run search-experiments --space ucagnn-mechanism-coarse --dataset movielens1m --trials 50
-uv run search-experiments --space ucagnn-mechanism-coarse --dataset kuairand1k --trials 25
-uv run search-experiments --space ucagnn-cagra-accuracy-ablation --dataset kuairec_v2 --trials 24
-uv run search-experiments --space ucagnn-mechanism-coarse,ucagnn-cagra-accuracy-ablation --dataset kuairec_v2 --trials 24
-uv run search-experiments --space ucagnn-core-optimization --trials 12
-uv run search-experiments --space ucagnn-core-optimization --dataset amazonbook --trials 12
-uv run search-experiments --space ucagnn-core-optimization --trials 1 --dry-run
-uv run search-experiments --space ucagnn-core-optimization --dataset amazonbook --trials 5 --mlflow
+uv run search-experiments --space edgrec-mechanism-coarse --dataset kuairec_v2 --trials 120
+uv run search-experiments --space edgrec-mechanism-coarse --dataset movielens1m --trials 50
+uv run search-experiments --space edgrec-mechanism-coarse --dataset kuairand1k --trials 25
+uv run search-experiments --space edgrec-cagra-accuracy-ablation --dataset kuairec_v2 --trials 24
+uv run search-experiments --space edgrec-mechanism-coarse,edgrec-cagra-accuracy-ablation --dataset kuairec_v2 --trials 24
+uv run search-experiments --space edgrec-core-optimization --trials 12
+uv run search-experiments --space edgrec-core-optimization --dataset amazonbook --trials 12
+uv run search-experiments --space edgrec-core-optimization --trials 1 --dry-run
+uv run search-experiments --space edgrec-core-optimization --dataset amazonbook --trials 5 --mlflow
 uv run report-optuna-optimization
 uv run export-optuna-figures
 uv run optuna-dashboard sqlite:///results/optuna_studies.db
 ```
 
-- `search-experiments` is U-CaGNN-only. It resolves `experiments/search_spaces.json` entries via each `base_profile`, samples existing `UCaGNNConfig` fields, and still executes each trial through `build_config()` and `run_experiment()`.
+- `search-experiments` is EDGRec-only. It resolves `experiments/search_spaces.json` entries via each `base_profile`, samples existing `EDGRecConfig` fields, and still executes each trial through `build_config()` and `run_experiment()`.
 - `search-experiments --space a,b` runs search spaces sequentially, matching `formal-run` queue syntax. `--dataset` and `--trials` apply to every queued space. Omit `--study-name` for queues so each space keeps its normal study naming.
-- `ucagnn-mechanism-coarse` is the final coarse mechanism discovery space. It samples profile labels for score fusion, item-branch capacity, context/features, loss family, and graph depth; `experiments/search_spaces.json` owns both those labels and the sibling `profile_overrides` mappings to concrete config overrides. Resolved trials log both `sampled_params` and `resolved_config_overrides`. Use KuaiRec_v2 for the main 100-150 trial pass, MovieLens1M for a 40-60 trial sanity pass, and KuaiRand1K only for narrowed transfer checks. Do not spend this broad pass on AmazonBook.
-- `ucagnn-mechanism-coarse` keeps the scalar knobs coarse, with 40 startup TPE trials before exploitation. Dataset-local overrides widen only known useful regions: MovieLens1M adds `lr=0.005`, `score_mix_min_weight=0.1`, and margins `[20,40,80]`; KuaiRand1K uses margins `[50,70,80]`; KuaiRec_v2 keeps margins `[10,20,40]`.
-- `ucagnn-mechanism-coarse` uses validation `ValidationAccuracy@20_40`: `0.50*NDCG@20 + 0.25*Recall@20 + 0.15*NDCG@40 + 0.10*Recall@40`. CRRU remains logged when the full metric family is available, but it is not the broad-discovery objective for this space.
-- `ucagnn-cagra-accuracy-ablation` compares `graph_policy=observed` against `graph_policy=cagra_augmented` and optional CAGRA candidate prefiltering under the same accuracy objective. Keep it separate from the broad mechanism space so CAGRA remains a systems/accuracy ablation, not a default graph path.
-- `ucagnn-core-optimization` remains the older CRRU-oriented tuning space. Without `--dataset`, the controller expands the space into one independent dataset-local study per listed dataset. With `--dataset`, it runs only that dataset's study. In both cases, `--trials N` means N fresh informative trials for each selected dataset.
+- `edgrec-mechanism-coarse` is the final coarse mechanism discovery space. It samples profile labels for score fusion, item-branch capacity, context/features, loss family, and graph depth; `experiments/search_spaces.json` owns both those labels and the sibling `profile_overrides` mappings to concrete config overrides. Resolved trials log both `sampled_params` and `resolved_config_overrides`. Use KuaiRec_v2 for the main 100-150 trial pass, MovieLens1M for a 40-60 trial sanity pass, and KuaiRand1K only for narrowed transfer checks. Do not spend this broad pass on AmazonBook.
+- `edgrec-mechanism-coarse` keeps the scalar knobs coarse, with 40 startup TPE trials before exploitation. Dataset-local overrides widen only known useful regions: MovieLens1M adds `lr=0.005`, `score_mix_min_weight=0.1`, and margins `[20,40,80]`; KuaiRand1K uses margins `[50,70,80]`; KuaiRec_v2 keeps margins `[10,20,40]`.
+- `edgrec-mechanism-coarse` uses validation `ValidationAccuracy@20_40`: `0.50*NDCG@20 + 0.25*Recall@20 + 0.15*NDCG@40 + 0.10*Recall@40`. CRRU remains logged when the full metric family is available, but it is not the broad-discovery objective for this space.
+- `edgrec-cagra-accuracy-ablation` compares `graph_policy=observed` against `graph_policy=cagra_augmented` and optional CAGRA candidate prefiltering under the same accuracy objective. Keep it separate from the broad mechanism space so CAGRA remains a systems/accuracy ablation, not a default graph path.
+- `edgrec-core-optimization` remains the older CRRU-oriented tuning space. Without `--dataset`, the controller expands the space into one independent dataset-local study per listed dataset. With `--dataset`, it runs only that dataset's study. In both cases, `--trials N` means N fresh informative trials for each selected dataset.
 - The CRRU objective `ValidationOnlineCRRU@20_40` is an online proxy with the same component/exponent structure as report CRRU, including VRAM and seconds-per-epoch efficiency penalties; exact report CRRU still uses dataset-local section-row min-max after rows exist. Search runs skip final test evaluation; test metrics remain reserved for promoted confirmation profiles.
 - Search runs do not save or resume checkpoints. They also keep MLflow disabled by default to avoid large exploratory artifacts; pass `--mlflow` only when you explicitly want MLflow mirroring for a short search.
 - Optuna search spaces are configured separately from formal profiles: use `experiments/search_spaces.json` for tuning spaces and `experiments/experiment_catalog.json` for deterministic formal profiles/recipes.
@@ -63,7 +63,7 @@ uv run prune-checkpoints
 uv run prune-checkpoints --keep 3 --execute
 ```
 
-- `prune-checkpoints` ranks mapped checkpoints from `results/thesis_experiments.db` and keeps the top N per dataset and model family (`ucagnn`, `dice`, `lightgcn`).
+- `prune-checkpoints` ranks mapped checkpoints from `results/thesis_experiments.db` and keeps the top N per dataset and model family (`edgrec`, `dice`, `lightgcn`).
 - The command defaults to a dry run. Add `--execute` only after reviewing the deletion plan.
 - Existing Optuna-search checkpoints are deletion candidates by default because search results and parameters live in SQLite, not checkpoint files.
 
@@ -71,13 +71,13 @@ uv run prune-checkpoints --keep 3 --execute
 
 ```bash
 uv run experiment --list-recipes
-uv run experiment --dataset movielens1m --recipe ucagnn
-uv run experiment --dataset amazonbook --recipe ucagnn --overwrite-checkpoint
-uv run experiment --dataset kuairec_v2 --preset ucagnn
+uv run experiment --dataset movielens1m --recipe edgrec
+uv run experiment --dataset amazonbook --recipe edgrec --overwrite-checkpoint
+uv run experiment --dataset kuairec_v2 --preset edgrec
 ```
 
 - `--recipe` is the normal way to choose a known experiment path.
-- Use `ucagnn` as the main preset/recipe name for the thesis model.
+- Use `edgrec` as the main preset/recipe name for the thesis model.
 - Recipes and presets own the training semantics they declare.
 - The single-run CLI is intentionally selection-focused: dataset, recipe/preset, checkpointing, and lightweight tracking metadata stay public; training/runtime overrides stay inside presets, recipes, and catalog-owned profiles.
 - In the current runtime, `cagra_augmented` means **observed train-interaction graph plus ANN edges**. It is not just a cuVS speed toggle over the same exact graph semantics.
