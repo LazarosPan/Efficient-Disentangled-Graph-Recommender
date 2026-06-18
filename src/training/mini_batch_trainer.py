@@ -26,9 +26,9 @@ from tqdm.auto import tqdm
 
 from ..data.subgraph_sampler import SubgraphBatch, SubgraphSampler
 from ..losses.loss_suite import LossSuite
-from ..models.ucagnn import UCaGNN
+from ..models.edgrec import EDGRec
 from ..profiling.gpu_profiler import GPUProfiler, TrainingResourceMonitor
-from ..utils.config import UCaGNNConfig
+from ..utils.config import EDGRecConfig
 from ..utils.reproducibility import build_torch_generator
 from ..utils.trainer_runtime import (
     TrainerRuntime,
@@ -63,14 +63,14 @@ _EPOCH_LOSS_METRIC_PREFIXES = ("normalized_", "weighted_")
 
 
 class MiniBatchTrainer(TrainerRuntime):
-    """Train U-CaGNN with mini-batch subgraph sampling."""
+    """Train EDGRec with mini-batch subgraph sampling."""
 
     def __init__(
         self,
-        model: UCaGNN,
+        model: EDGRec,
         loss_suite: LossSuite,
         data,
-        config: UCaGNNConfig,
+        config: EDGRecConfig,
         profiler: GPUProfiler | None = None,
         experiment_logger=None,
         exp_id: int | None = None,

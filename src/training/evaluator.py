@@ -15,7 +15,7 @@ from torch_geometric.metrics import (
 )
 
 from ..data.interaction_masks import positive_interaction_mask
-from ..utils.config import UCaGNNConfig
+from ..utils.config import EDGRecConfig
 from ..utils.trainer_runtime import (
     autocast_context,
     model_device,
@@ -109,6 +109,38 @@ def _rowwise_spearman(values: torch.Tensor, popularity: torch.Tensor) -> torch.T
         numerator / denominator,
         torch.zeros_like(numerator),
     )
+
+
+def _cagra_neighbors_to_scatter_index(neighbors: object, device: torch.device) -> torch.Tensor:
+    """Return CAGRA neighbor IDs as an index tensor accepted by ``scatter_``."""
+    return torch.as_tensor(neighbors, device=device).to(dtype=torch.long)
+
+
+def _cagra_neighbors_to_candidate_mask(
+    neighbors: object,
+    *,
+    n_items: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Return a range-safe item-candidate mask from CAGRA neighbor IDs."""
+    neighbor_indices = _cagra_neighbors_to_scatter_index(neighbors, device)
+    if neighbor_indices.ndim != 2:
+        raise ValueError(
+            f"CAGRA neighbors must be a 2D matrix; got shape={tuple(neighbor_indices.shape)}."
+        )
+    valid_neighbors = (neighbor_indices >= 0) & (neighbor_indices < n_items)
+    candidate_mask = torch.zeros(
+        neighbor_indices.size(0),
+        n_items,
+        dtype=torch.bool,
+        device=device,
+    )
+    row_indices = torch.arange(neighbor_indices.size(0), device=device).unsqueeze(1)
+    row_indices = row_indices.expand_as(neighbor_indices)
+    candidate_mask[row_indices[valid_neighbors], neighbor_indices[valid_neighbors]] = True
+    empty_rows = ~candidate_mask.any(dim=1)
+    candidate_mask[empty_rows] = True
+    return candidate_mask
 
 
 class _EvaluatorDiagnosticsAccumulator:
@@ -260,7 +292,7 @@ class Evaluator:
     D2H transfers.
     """
 
-    def __init__(self, config: UCaGNNConfig) -> None:
+    def __init__(self, config: EDGRecConfig) -> None:
         self.config = config
         # Cache keyed by mask tensor identity (id()) to avoid rebuilding per epoch.
         self._split_cache: dict[int, dict] = {}
@@ -597,12 +629,13 @@ class Evaluator:
                     _, neighbors_cp = cuvs_cagra.search(
                         search_params, cagra_index, user_cp, cagra_candidate_k
                     )
-                    # neighbors_cp: (B, cagra_candidate_k) cupy int64
-                    neighbors_t = torch.as_tensor(neighbors_cp, device=device)
-                    candidate_mask = torch.zeros(
-                        scores.size(0), n_items, dtype=torch.bool, device=device
+                    # cuVS can return unsigned sentinel IDs for missing neighbors.
+                    # Filter before indexing so CUDA never sees an out-of-range ID.
+                    candidate_mask = _cagra_neighbors_to_candidate_mask(
+                        neighbors_cp,
+                        n_items=n_items,
+                        device=device,
                     )
-                    candidate_mask.scatter_(1, neighbors_t, True)
                     scores[~candidate_mask] = float("-inf")
                 except Exception as exc:
                     raise RuntimeError("CAGRA candidate search failed.") from exc

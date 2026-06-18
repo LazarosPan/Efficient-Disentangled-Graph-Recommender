@@ -1,4 +1,4 @@
-"""LossSuite: fused BPR plus branch-local auxiliaries for U-CaGNN."""
+"""LossSuite: fused BPR plus branch-local auxiliaries for EDGRec."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import torch
 from torch import nn
 from torch.nn import functional
 
-from ..utils.config import DiceMaskReduction, UCaGNNConfig
+from ..utils.config import DiceMaskReduction, EDGRecConfig
 
 _AUXILIARY_LOSS_KEYS = (
     "interest_bpr",
@@ -384,7 +384,7 @@ def _au_branch_contrib(
 class LossSuite(nn.Module):
     """Combine fused ranking loss with branch-local auxiliary objectives."""
 
-    def __init__(self, config: UCaGNNConfig) -> None:
+    def __init__(self, config: EDGRecConfig) -> None:
         super().__init__()
         self.config = config
         self._auxiliary_loss_index = {
@@ -500,7 +500,7 @@ class LossSuite(nn.Module):
         """Compute all active losses.
 
         Args:
-            model_output: Output from UCaGNN.forward().
+            model_output: Output from EDGRec.forward().
             item_popularity: (I,) normalized popularity array.
             pos_item_ids: (B,) positive item indices (for popularity lookup).
             epoch: Current epoch (for curriculum scheduling).

@@ -1,1 +1,1 @@
-"""Core source package for U-CaGNN thesis code."""
+"""Core source package for EDGRec thesis code."""
