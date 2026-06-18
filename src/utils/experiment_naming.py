@@ -102,7 +102,7 @@ def build_canonical_experiment_name(
 ) -> str:
     """Build a descriptive canonical experiment name from an effective config.
 
-    The function accepts both live ``UCaGNNConfig`` objects and stored
+    The function accepts both live ``EDGRecConfig`` objects and stored
     ``config_json`` dictionaries so checkpoint names and result-table labels
     cannot drift apart.
     """

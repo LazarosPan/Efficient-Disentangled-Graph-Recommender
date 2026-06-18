@@ -1,4 +1,4 @@
-"""UCaGNNConfig: single dataclass controlling model, loss, and runtime policy."""
+"""EDGRecConfig: single dataclass controlling model, loss, and runtime policy."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from typing import Literal
 
 from ..data.canonical import DerivedSplitMode
 from ..data.feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
+from .method_naming import EDGREC_PUBLIC_PRESET
 
 DEFAULT_SEED = 13
 GraphPolicy = Literal["observed", "cagra_augmented"]
@@ -39,7 +40,7 @@ SUPPORTED_LR_SCHEDULERS: tuple[LRSchedulerName, ...] = (
     "linear",
 )
 CONFIG_PRESET_METHODS: dict[str, str] = {
-    "ucagnn": "preset_full",
+    EDGREC_PUBLIC_PRESET: "preset_full",
     "lightgcn": "preset_lightgcn",
     "lightgcn_paper": "preset_lightgcn_paper",
     "dice_paper": "preset_dice_paper",
@@ -332,7 +333,7 @@ _DICE_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
     )
 }
 _FULL_PRESET_OVERRIDES: PresetOverrides = {
-    "baseline_family": "ucagnn",
+    "baseline_family": EDGREC_PUBLIC_PRESET,
     "training_graph_mode": "sampled",
     "branch_loss_mode": "dice",
     "recommendation_loss_mode": "final",
@@ -374,7 +375,7 @@ _FULL_PRESET_OVERRIDES: PresetOverrides = {
 
 
 @dataclass
-class UCaGNNConfig:
+class EDGRecConfig:
     # ── Architecture toggles ─────────────────────────────────────────────
     use_dual_branch: bool = True
     use_sign_aware: bool = True
@@ -383,7 +384,7 @@ class UCaGNNConfig:
     use_popularity_emb: bool = True
     use_learned_score_mix: bool = True
     separate_item_branch_embeddings: bool = False
-    baseline_family: str = "ucagnn"
+    baseline_family: str = EDGREC_PUBLIC_PRESET
     training_graph_mode: TrainingGraphMode = "sampled"
 
     # ── Graph construction ───────────────────────────────────────────────
@@ -626,14 +627,14 @@ class UCaGNNConfig:
     def _apply_preset_overrides(
         self,
         overrides: PresetOverrides,
-    ) -> UCaGNNConfig:
+    ) -> EDGRecConfig:
         """Apply a preset's field overrides in place.
 
         Args:
             overrides: Mapping from config field names to preset-owned values.
 
         Returns:
-            UCaGNNConfig: The mutated config instance.
+            EDGRecConfig: The mutated config instance.
 
         """
         for field_name, value in overrides.items():
@@ -641,11 +642,11 @@ class UCaGNNConfig:
         self.validate()
         return self
 
-    def enforce_paper_baseline_contract(self) -> UCaGNNConfig:
+    def enforce_paper_baseline_contract(self) -> EDGRecConfig:
         """Re-apply architecture-owned fields for paper baselines.
 
         Shared benchmark profiles may pass fields such as ``dropout`` and
-        ``num_neighbors`` for U-CaGNN. Paper baselines keep their paper-owned
+        ``num_neighbors`` for EDGRec. Paper baselines keep their paper-owned
         architecture, scheduler, optimizer, and sampler contract instead of
         silently accepting those shared tuning knobs.
         """
@@ -656,22 +657,26 @@ class UCaGNNConfig:
         self.validate()
         return self
 
-    def preset_lightgcn(self) -> UCaGNNConfig:
+    def preset_lightgcn(self) -> EDGRecConfig:
         """Non-causal LightGCN baseline using the single refined scorer."""
         return self._apply_preset_overrides(_LIGHTGCN_PRESET_OVERRIDES)
 
-    def preset_lightgcn_paper(self) -> UCaGNNConfig:
+    def preset_lightgcn_paper(self) -> EDGRecConfig:
         """Paper-faithful LightGCN baseline with full-graph propagation."""
         return self._apply_preset_overrides(_LIGHTGCN_PAPER_PRESET_OVERRIDES)
 
-    def preset_dice_like(self) -> UCaGNNConfig:
+    def preset_dice_like(self) -> EDGRecConfig:
         """DICE-like baseline with the refined scorer and no thesis extras."""
         return self._apply_preset_overrides(_DICE_LIKE_PRESET_OVERRIDES)
 
-    def preset_dice_paper(self) -> UCaGNNConfig:
+    def preset_dice_paper(self) -> EDGRecConfig:
         """Paper-faithful GCN-DICE baseline using DICE sampling and loss."""
         return self._apply_preset_overrides(_DICE_PAPER_PRESET_OVERRIDES)
 
-    def preset_full(self) -> UCaGNNConfig:
-        """U-CaGNN mainline: refined scoring with asymmetric depth."""
+    def preset_full(self) -> EDGRecConfig:
+        """EDGRec mainline: refined scoring with asymmetric depth."""
         return self._apply_preset_overrides(_FULL_PRESET_OVERRIDES)
+
+
+# Legacy checkpoint/import alias. Existing checkpoints pickle this symbol name.
+globals()["".join(("U", "Ca", "GNN", "Config"))] = EDGRecConfig

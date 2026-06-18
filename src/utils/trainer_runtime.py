@@ -24,13 +24,13 @@ from torch.optim.lr_scheduler import (
 from ..data.interaction_masks import positive_interaction_mask
 from ..data.negative_sampler import NegativeSampler
 from ..losses.loss_suite import LossSuite
-from ..models.ucagnn import UCaGNN
+from ..models.edgrec import EDGRec
 from ..profiling.gpu_profiler import (
     GPUProfiler,
     TrainingResourceStats,
     reset_cuda_peak_memory_stats,
 )
-from .config import UCaGNNConfig
+from .config import EDGRecConfig
 from .reproducibility import configure_torch_runtime
 
 logger = logging.getLogger(__name__)
@@ -229,10 +229,10 @@ class TrainerRuntime:
 
     def __init__(
         self,
-        model: UCaGNN,
+        model: EDGRec,
         loss_suite: LossSuite,
         data: Any,
-        config: UCaGNNConfig,
+        config: EDGRecConfig,
         profiler: GPUProfiler | None = None,
         experiment_logger: Any = None,
         exp_id: int | None = None,
