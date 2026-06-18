@@ -1,8 +1,8 @@
 {
     "search_spaces": {
-        "ucagnn-mechanism-coarse": {
-            "description": "Final coarse mechanism-level U-CaGNN discovery search. Profile parameters are Optuna/search-layer labels that resolve to concrete UCaGNNConfig overrides before the model config is built; they are also recorded in sampled_params and resolved_config_overrides for reproducibility. Use --dataset kuairec_v2 for the main broad search, --dataset movielens1m for the secondary sanity search, and --dataset kuairand1k only after narrowing to the top design families. AmazonBook is intentionally excluded from this broad pass.",
-            "base_profile": "core-ucagnn-mainline",
+        "edgrec-mechanism-coarse": {
+            "description": "Final coarse mechanism-level EDGRec discovery search. Profile parameters are Optuna/search-layer labels that resolve to concrete EDGRecConfig overrides before the model config is built; they are also recorded in sampled_params and resolved_config_overrides for reproducibility. Use --dataset kuairec_v2 for the main broad search, --dataset movielens1m for the secondary sanity search, and --dataset kuairand1k only after narrowing to the top design families. AmazonBook is intentionally excluded from this broad pass.",
+            "base_profile": "core-edgrec-mainline",
             "datasets": ["movielens1m", "kuairec_v2", "kuairand1k"],
             "config_overrides": {
                 "use_early_stopping": true,
@@ -239,10 +239,10 @@
                 }
             }
         },
-        "ucagnn-cagra-accuracy-ablation": {
-            "description": "Accuracy-first CAGRA systems ablation for U-CaGNN. This space compares the observed training graph against CAGRA-augmented graph construction and optional ANN candidate prefiltering while recording runtime metadata. It is intentionally separate from the broad mechanism search so CAGRA does not become the default model path.",
-            "base_profile": "core-ucagnn-mainline",
-            "datasets": ["kuairec_v2", "movielens1m", "kuairand1k"],
+        "edgrec-cagra-accuracy-ablation": {
+            "description": "Accuracy-first CAGRA systems ablation for EDGRec. This space compares the observed training graph against CAGRA-augmented graph construction and optional ANN candidate prefiltering while recording runtime metadata. It is intentionally separate from the broad mechanism search so CAGRA does not become the default model path.",
+            "base_profile": "core-edgrec-mainline",
+            "datasets": ["movielens1m", "kuairec_v2", "kuairand1k"],
             "config_overrides": {
                 "use_early_stopping": true,
                 "patience": 8,
@@ -285,9 +285,9 @@
                 "loss_normalization": {"type": "categorical", "choices": ["none", "ema_aux"]}
             }
         },
-        "ucagnn-core-optimization": {
-            "description": "Small dataset-local Optuna screen for U-CaGNN. Without --dataset, the runner creates one independent study per core thesis dataset, so --trials N means target N fresh informative finished trials for the current search_space_revision per dataset: COMPLETE plus real PRUNED, excluding FAIL/RUNNING, historically imported rows, duplicate-skip prunes, and other revision hashes. For the current causal-stability pass, start with --dataset movielens1m and --dataset kuairec_v2 before promoting a configuration to expensive datasets. The core search uses automatic largest-feasible batch-size probing from a descending throughput-oriented candidate ladder instead of sampling batch_size as a model-selection parameter; the selected batch size remains logged as runtime metadata. This pass tunes the effective DICE branch-loss scale, feature-gate initialization, negative count, score-mix floor, branch-supervision weights, and context/feature shortcuts. hard_negative_ratio is intentionally excluded because DICE sampling owns the high/low-popularity negative route. Four-hop GNN depth remains excluded: current evidence does not justify extra over-smoothing and compute risk for the thesis budget.",
-            "base_profile": "core-ucagnn-mainline",
+        "edgrec-core-optimization": {
+            "description": "Small dataset-local Optuna screen for EDGRec. Without --dataset, the runner creates one independent study per core thesis dataset, so --trials N means target N fresh informative finished trials for the current search_space_revision per dataset: COMPLETE plus real PRUNED, excluding FAIL/RUNNING, historically imported rows, duplicate-skip prunes, and other revision hashes. For the current causal-stability pass, start with --dataset movielens1m and --dataset kuairec_v2 before promoting a configuration to expensive datasets. The core search uses automatic largest-feasible batch-size probing from a descending throughput-oriented candidate ladder instead of sampling batch_size as a model-selection parameter; the selected batch size remains logged as runtime metadata. This pass tunes the effective DICE branch-loss scale, feature-gate initialization, negative count, score-mix floor, branch-supervision weights, and context/feature shortcuts. hard_negative_ratio is intentionally excluded because DICE sampling owns the high/low-popularity negative route. Four-hop GNN depth remains excluded: current evidence does not justify extra over-smoothing and compute risk for the thesis budget.",
+            "base_profile": "core-edgrec-mainline",
             "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
             "config_overrides": {
                 "use_early_stopping": true,
@@ -411,9 +411,9 @@
                 }
             }
         },
-        "ucagnn-cagra-ablation": {
-            "description": "Separate systems ablation for CAGRA rather than the default U-CaGNN accuracy search. This space tests whether ANN graph augmentation or evaluation candidate prefiltering improves the validation CRRU trade-off. Keep full-catalog formal evaluation (`cagra_candidate_k=0`) as the baseline row; nonzero `cagra_candidate_k` changes candidate coverage and must be reported as an ANN retrieval/runtime ablation, not as the default ranking protocol. This space uses the same fixed early-stopping policy as the core search but a lower epoch cap because CAGRA trials add systems overhead.",
-            "base_profile": "core-ucagnn-mainline",
+        "edgrec-cagra-ablation": {
+            "description": "Separate systems ablation for CAGRA rather than the default EDGRec accuracy search. This space tests whether ANN graph augmentation or evaluation candidate prefiltering improves the validation CRRU trade-off. Keep full-catalog formal evaluation (`cagra_candidate_k=0`) as the baseline row; nonzero `cagra_candidate_k` changes candidate coverage and must be reported as an ANN retrieval/runtime ablation, not as the default ranking protocol. This space uses the same fixed early-stopping policy as the core search but a lower epoch cap because CAGRA trials add systems overhead.",
+            "base_profile": "core-edgrec-mainline",
             "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
             "config_overrides": {
                 "use_early_stopping": true,

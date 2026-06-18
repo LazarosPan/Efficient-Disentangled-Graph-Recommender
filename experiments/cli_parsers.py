@@ -1,4 +1,4 @@
-"""CLI parser builders for U-CaGNN experiment entry points."""
+"""CLI parser builders for EDGRec experiment entry points."""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ def build_run_experiment_parser() -> argparse.ArgumentParser:
             message += _formal_run_profile_hint(message)
             super().error(message)
 
-    parser = ExperimentArgumentParser(description="Run a U-CaGNN experiment")
+    parser = ExperimentArgumentParser(description="Run an EDGRec experiment")
 
     sel = parser.add_argument_group("experiment selection")
     sel.add_argument("--dataset", default="movielens1m", help="Dataset name")
@@ -105,7 +105,7 @@ def build_run_experiment_parser() -> argparse.ArgumentParser:
         data_dir="data",
         device="cuda",
         mlflow_tracking_uri=None,
-        mlflow_experiment_name="ucagnn-thesis",
+        mlflow_experiment_name="edgrec-thesis",
     )
     return parser
 
@@ -117,7 +117,7 @@ def build_benchmark_parser() -> argparse.ArgumentParser:
         Configured parser for ``experiments/run_benchmark.py``.
 
     """
-    parser = argparse.ArgumentParser(description="Run U-CaGNN benchmark matrix")
+    parser = argparse.ArgumentParser(description="Run EDGRec benchmark matrix")
 
     mx = parser.add_argument_group("benchmark matrix")
     mx.add_argument(
@@ -132,13 +132,13 @@ def build_benchmark_parser() -> argparse.ArgumentParser:
     mx.add_argument(
         "--presets",
         nargs="*",
-        default=["ucagnn", "lightgcn_paper", "dice_paper"],
+        default=["edgrec", "lightgcn_paper", "dice_paper"],
         choices=PRESET_CHOICES,
         help="Presets to run",
     )
     ex = add_execution_tracking_group(
         parser,
-        experiment_name_default="ucagnn-benchmark",
+        experiment_name_default="edgrec-benchmark",
         no_mlflow_help="Disable MLflow tracking for all benchmark runs",
         tracking_uri_help="Override MLflow tracking URI for all benchmark runs",
         experiment_name_help="MLflow experiment name for benchmark runs",
@@ -178,9 +178,7 @@ def build_formal_run_parser() -> argparse.ArgumentParser:
     """
     profiles = formal_profile_names()
     parser = argparse.ArgumentParser(
-        description=(
-            "Run the formal U-CaGNN experiment matrix with semantic profile-based resume."
-        ),
+        description=("Run the formal EDGRec experiment matrix with semantic profile-based resume."),
     )
     parser.add_argument(
         "--profile",
@@ -216,7 +214,7 @@ def build_search_parser() -> argparse.ArgumentParser:
     """
     spaces = search_space_names()
     parser = argparse.ArgumentParser(
-        description="Run Optuna searches over configured U-CaGNN search spaces.",
+        description="Run Optuna searches over configured EDGRec search spaces.",
     )
 
     sel = parser.add_argument_group("search selection")
@@ -287,7 +285,7 @@ def build_search_parser() -> argparse.ArgumentParser:
     )
     add_mlflow_destination_args(
         ex,
-        experiment_name_default="ucagnn-optuna",
+        experiment_name_default="edgrec-optuna",
         tracking_uri_help="Override MLflow tracking URI for trial runs.",
         experiment_name_help="MLflow experiment name for trial runs.",
     )
@@ -304,7 +302,7 @@ def build_ablation_parser() -> argparse.ArgumentParser:
 
     """
     variant_names = list(ABLATION_VARIANTS.keys())
-    parser = argparse.ArgumentParser(description="Run U-CaGNN ablation study")
+    parser = argparse.ArgumentParser(description="Run EDGRec ablation study")
 
     sel = parser.add_argument_group("ablation selection")
     sel.add_argument(

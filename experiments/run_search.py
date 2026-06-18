@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Optuna search controller for configured U-CaGNN spaces."""
+"""Optuna search controller for configured EDGRec spaces."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from src.utils.benchmark_datasets import (
     normalize_benchmark_datasets_arg,
     resolve_benchmark_datasets,
 )
-from src.utils.config import BENCHMARK_CONFIG_FIELDS, DEFAULT_SEED, UCaGNNConfig
+from src.utils.config import BENCHMARK_CONFIG_FIELDS, DEFAULT_SEED, EDGRecConfig
 from src.utils.crru import (
     VALIDATION_ACCURACY_METRIC,
     VALIDATION_ONLINE_CRRU_K_METRICS,
@@ -33,6 +33,14 @@ from src.utils.crru import (
     compute_validation_online_crru_objective,
 )
 from src.utils.experiment_logger import ExperimentLogger
+from src.utils.method_naming import (
+    EDGREC_DISPLAY_NAME,
+    EDGREC_PUBLIC_PRESET,
+    is_edgrec_token,
+    legacy_method_identifier,
+    method_identifier_aliases,
+    public_method_identifier,
+)
 from src.utils.project_paths import THESIS_DB_PATH
 
 from experiments.benchmark_resolvers import (
@@ -56,7 +64,7 @@ from experiments.run_experiment import (
     run_experiment,
 )
 
-logger = logging.getLogger("ucagnn.search")
+logger = logging.getLogger("edgrec.search")
 
 DEFAULT_STORAGE = "sqlite:///results/optuna_studies.db"
 DEFAULT_OBJECTIVE_METRIC = VALIDATION_ONLINE_CRRU_METRIC
@@ -70,7 +78,11 @@ INFORMATIVE_TRIAL_STATES = frozenset(
         optuna.trial.TrialState.PRUNED,
     },
 )
-SEARCH_PRESET = "ucagnn"
+CUDA_CONTEXT_POISONED_MARKERS = (
+    "CUDA error: device-side assert triggered",
+    "cudaErrorAssert",
+)
+SEARCH_PRESET = EDGREC_PUBLIC_PRESET
 SEARCH_PARAMETER_FIELDS = frozenset(
     {
         "lr",
@@ -596,7 +608,7 @@ def _resolve_parameter_specs(
     """Resolve base plus optional dataset-local parameter overrides.
 
     The study name remains stable across search-space edits. Dataset-local
-    overrides keep one command (`--space ucagnn-core-optimization`) while
+    overrides keep one command (`--space edgrec-core-optimization`) while
     avoiding a single compromise grid for datasets with different Optuna basins.
     """
     raw_parameters = _require_mapping(raw_space.get("parameters", {}), field_name="parameters")
@@ -656,10 +668,11 @@ def resolve_search_space(
 
     base_profile = get_formal_profile(base_profile_name)
     presets = list(base_profile["matrix"]["presets"])
-    if presets != [SEARCH_PRESET]:
+    if len(presets) != 1 or not is_edgrec_token(presets[0]):
         raise ValueError(
             (
-                f"search space '{space_name}' must use a U-CaGNN-only base profile; "
+                f"search space '{space_name}' must use an {EDGREC_DISPLAY_NAME}-only base "
+                "profile; "
                 f"got presets={presets!r}."
             ),
         )
@@ -703,7 +716,7 @@ def resolve_search_space(
         raise ValueError(f"search space '{space_name}' must define at least one parameter.")
 
     return SearchSpaceSpec(
-        name=space_name,
+        name=str(raw_space["name"]),
         description=str(raw_space.get("description", "")),
         base_profile=base_profile_name,
         datasets=tuple(datasets),
@@ -805,8 +818,8 @@ def build_search_config(
     sampled_overrides: Mapping[str, Any] | None = None,
     device: str,
     data_dir: str,
-) -> UCaGNNConfig:
-    """Resolve one concrete U-CaGNN config for a search trial."""
+) -> EDGRecConfig:
+    """Resolve one concrete EDGRec config for a search trial."""
     return build_config(
         build_search_config_inputs(
             search_space,
@@ -944,8 +957,9 @@ def _distribution_fingerprint(payload: Mapping[str, Any]) -> str:
 def search_space_revision(search_space: SearchSpaceSpec) -> str:
     """Return a stable revision id for the resolved logical search contract."""
     payload = {
-        "name": search_space.name,
-        "base_profile": search_space.base_profile,
+        "name": legacy_method_identifier(search_space.name) or search_space.name,
+        "base_profile": legacy_method_identifier(search_space.base_profile)
+        or search_space.base_profile,
         "datasets": list(search_space.datasets),
         "objective": dataclasses.asdict(search_space.objective),
         "sampler": dataclasses.asdict(search_space.sampler),
@@ -1069,7 +1083,7 @@ def _suggest_fanout_value(
     trial: optuna.Trial,
     spec: Mapping[str, Any],
     *,
-    base_config: UCaGNNConfig,
+    base_config: EDGRecConfig,
     sampled_overrides: Mapping[str, Any],
 ) -> list[int]:
     """Suggest ``num_neighbors`` for the active sampled branch depth.
@@ -1165,7 +1179,7 @@ def resolve_trial_parameters(
     trial: optuna.Trial,
     search_space: SearchSpaceSpec,
     *,
-    base_config: UCaGNNConfig,
+    base_config: EDGRecConfig,
 ) -> TrialParameterResolution:
     """Suggest logical trial params and resolve them to config overrides."""
     sampled_params: dict[str, Any] = {}
@@ -1216,9 +1230,9 @@ def suggest_trial_overrides(
     trial: optuna.Trial,
     search_space: SearchSpaceSpec,
     *,
-    base_config: UCaGNNConfig,
+    base_config: EDGRecConfig,
 ) -> dict[str, Any]:
-    """Suggest one concrete trial override dict over ``UCaGNNConfig`` fields."""
+    """Suggest one concrete trial override dict over ``EDGRecConfig`` fields."""
     return resolve_trial_parameters(
         trial,
         search_space,
@@ -1357,7 +1371,7 @@ def _set_trial_attrs_from_result(
     trial: optuna.Trial,
     *,
     dataset: str,
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     result: Mapping[str, Any],
     objective: ObjectiveSpec,
 ) -> None:
@@ -1453,6 +1467,27 @@ def _trial_change_note(
     )
 
 
+def _is_cuda_context_poisoned_exception(exc: BaseException) -> bool:
+    """Return whether an exception indicates a process-local CUDA assert state."""
+    messages: list[str] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        messages.append(f"{type(current).__name__}: {current}")
+        current = current.__cause__ or current.__context__
+    combined = "\n".join(messages)
+    return any(marker in combined for marker in CUDA_CONTEXT_POISONED_MARKERS)
+
+
+def _trial_has_poisoned_cuda_context_failure(trial: optuna.trial.FrozenTrial) -> bool:
+    """Return whether a stored trial failure should abort this Python process."""
+    if trial.user_attrs.get("fatal_failure") == "cuda_context_poisoned":
+        return True
+    failure_reason = str(trial.user_attrs.get("failure_reason", ""))
+    return any(marker in failure_reason for marker in CUDA_CONTEXT_POISONED_MARKERS)
+
+
 def _record_trial_failure(
     trial: optuna.Trial,
     *,
@@ -1464,6 +1499,8 @@ def _record_trial_failure(
     failure_reason = f"{type(exc).__name__}: {exc}"
     trial.set_user_attr("failure_stage", stage)
     trial.set_user_attr("failure_reason", failure_reason)
+    if _is_cuda_context_poisoned_exception(exc):
+        trial.set_user_attr("fatal_failure", "cuda_context_poisoned")
     if dataset is not None:
         trial.set_user_attr(f"{dataset}.failure_stage", stage)
         trial.set_user_attr(f"{dataset}.failure_reason", failure_reason)
@@ -1528,7 +1565,7 @@ def _objective_factory(
                 "Duplicate fresh sampled_params; skipping training.",
             )
 
-        configs_by_dataset: dict[str, UCaGNNConfig] = {}
+        configs_by_dataset: dict[str, EDGRecConfig] = {}
         for dataset in search_space.datasets:
             try:
                 configs_by_dataset[dataset] = build_search_config(
@@ -1620,7 +1657,8 @@ def default_study_name(
 ) -> str:
     """Return the default study name for a space/dataset selection."""
     dataset_part = datasets[0] if len(datasets) == 1 else "all"
-    base_name = f"{space_name}-{dataset_part}"
+    public_space_name = public_method_identifier(space_name) or space_name
+    base_name = f"{public_space_name}-{dataset_part}"
     if search_space is None:
         return base_name
     objective_name = slugify_fragment(
@@ -1628,6 +1666,22 @@ def default_study_name(
         fallback="search",
     )
     return f"{base_name}-{objective_name}"
+
+
+def _storage_study_names(storage: str) -> set[str]:
+    """Return existing study names in one Optuna storage."""
+    return {summary.study_name for summary in optuna.get_all_study_summaries(storage=storage)}
+
+
+def _resolve_existing_study_name(storage: str, study_name: str) -> str:
+    """Reuse an existing public or legacy EDGRec study instead of starting over."""
+    existing_names = _storage_study_names(storage)
+    if study_name in existing_names:
+        return study_name
+    for alias in method_identifier_aliases(study_name):
+        if alias in existing_names:
+            return alias
+    return study_name
 
 
 def _canonical_sampled_params(sampled_params: Mapping[str, Any]) -> str:
@@ -1789,7 +1843,9 @@ def _trial_matches_current_search_contract(
     search_space: SearchSpaceSpec,
 ) -> bool:
     """Return whether an Optuna trial belongs to the current logical contract."""
-    if trial.user_attrs.get("search_space") != search_space.name:
+    if str(trial.user_attrs.get("search_space")) not in method_identifier_aliases(
+        search_space.name,
+    ):
         return False
     if trial.user_attrs.get("objective_metric") != search_space.objective.metric:
         return False
@@ -1831,7 +1887,9 @@ def _trial_matches_search_budget_scope(
         return False
     if is_duplicate_pruned_trial(trial):
         return False
-    if trial.user_attrs.get("search_space") != search_space.name:
+    if str(trial.user_attrs.get("search_space")) not in method_identifier_aliases(
+        search_space.name,
+    ):
         return False
     if trial.user_attrs.get("search_space_revision") != search_space_revision(search_space):
         return False
@@ -2049,8 +2107,12 @@ def _run_single_search_study(
 ) -> int:
     """Run one Optuna study for one resolved search-space dataset selection."""
     _ensure_storage_parent(args.storage)
+    public_study_name = study_name
+    storage_study_name = _resolve_existing_study_name(args.storage, public_study_name)
+    if storage_study_name != public_study_name:
+        print(f"Reusing legacy Optuna study {storage_study_name} for {public_study_name}.")
     study = optuna.create_study(
-        study_name=study_name,
+        study_name=storage_study_name,
         storage=args.storage,
         direction=search_space.objective.direction,
         sampler=_build_sampler(search_space.sampler),
@@ -2060,14 +2122,14 @@ def _run_single_search_study(
     compatible_completed = _compatible_completed_trials(study, search_space)
     budget_informative = _budget_informative_trials(study, search_space)
     print(
-        f"Study {study_name} trial budget status: "
+        f"Study {public_study_name} trial budget status: "
         f"{_budget_count_fragment(study, search_space)}; "
         f"target={n_trials}."
     )
     if len(budget_informative) >= n_trials:
         print(
             (
-                f"Study {study_name} already has {len(budget_informative)} fresh "
+                f"Study {public_study_name} already has {len(budget_informative)} fresh "
                 f"informative trial(s); target={n_trials}. Nothing to run."
             ),
         )
@@ -2089,7 +2151,7 @@ def _run_single_search_study(
     }
     objective = _objective_factory(
         search_space,
-        study_name=study_name,
+        study_name=public_study_name,
         device=args.device,
         data_dir=args.data_dir,
         enable_mlflow=not bool(args.no_mlflow),
@@ -2105,9 +2167,18 @@ def _run_single_search_study(
             n_trials=1,
             catch=(Exception,),
         )
+        attempted_trials = study.trials[before_trial_count:]
         attempts += max(1, len(study.trials) - before_trial_count)
         compatible_completed = _compatible_completed_trials(study, search_space)
         budget_informative = _budget_informative_trials(study, search_space)
+        if any(_trial_has_poisoned_cuda_context_failure(trial) for trial in attempted_trials):
+            print(
+                (
+                    "Aborting Optuna search after CUDA device-side assert. "
+                    "CUDA context is poisoned in this Python process; restart before retrying."
+                ),
+            )
+            break
 
     new_trials = study.trials[starting_trial_count:]
     if len(budget_informative) >= target_trials:

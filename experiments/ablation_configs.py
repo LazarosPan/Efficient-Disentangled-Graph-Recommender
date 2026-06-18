@@ -1,4 +1,4 @@
-"""Thesis-facing ablation variants for U-CaGNN component analysis.
+"""Thesis-facing ablation variants for EDGRec component analysis.
 
 Each variant starts from ``preset_full()`` and removes one reviewer-relevant
 component from the mainline configuration, or enables one implemented
@@ -8,7 +8,7 @@ intentionally small so ablation runs remain interpretable and compute-bounded.
 
 from __future__ import annotations
 
-from src.utils.config import DEFAULT_SEED, UCaGNNConfig
+from src.utils.config import DEFAULT_SEED, EDGRecConfig
 
 # Variants beyond this set require a thesis rationale; do not extend casually.
 ABLATION_VARIANTS: dict[str, dict] = {
@@ -83,8 +83,8 @@ def build_ablation_base_kwargs(
     return base_kwargs
 
 
-def make_ablation_config(variant: str, **base_kwargs) -> UCaGNNConfig:
-    """Create a UCaGNNConfig for a specific ablation variant.
+def make_ablation_config(variant: str, **base_kwargs) -> EDGRecConfig:
+    """Create an EDGRecConfig for a specific ablation variant.
 
     Starts from preset_full(), then applies the variant overrides.
 
@@ -98,7 +98,7 @@ def make_ablation_config(variant: str, **base_kwargs) -> UCaGNNConfig:
             f"Unknown ablation variant '{variant}'. Available: {list(ABLATION_VARIANTS.keys())}",
         )
 
-    config = UCaGNNConfig(**base_kwargs)
+    config = EDGRecConfig(**base_kwargs)
     config.preset_full()
 
     for key, value in _ABLATION_RECOMMENDED_DEFAULTS.items():

@@ -1,10 +1,10 @@
 #!/usr/bin/env python
-"""Main single-experiment CLI runner for U-CaGNN.
+"""Main single-experiment CLI runner for EDGRec.
 
 Usage:
     uv run experiment --list-recipes
-    uv run experiment --dataset movielens1m --recipe ucagnn
-    uv run experiment --dataset kuairec_v2 --preset ucagnn --overwrite-checkpoint
+    uv run experiment --dataset movielens1m --recipe edgrec
+    uv run experiment --dataset kuairec_v2 --preset edgrec --overwrite-checkpoint
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ from src.data.graph_builder import build_graph
 from src.data.loaders import default_preprocessing_preset, load_dataset
 from src.losses.loss_suite import LossSuite
 from src.models.baselines import PaperGCNDICE, PaperLightGCN
-from src.models.ucagnn import UCaGNN
+from src.models.edgrec import EDGRec
 from src.profiling.gpu_profiler import (
     reset_cuda_peak_memory_stats as _reset_cuda_peak_memory_stats,
 )
@@ -46,14 +46,20 @@ from src.training.mini_batch_trainer import MiniBatchTrainer
 from src.utils.config import (
     BENCHMARK_CONFIG_FIELDS,
     CONFIG_OVERRIDE_FIELDS,
+    CONFIG_PRESET_CHOICES,
     CONFIG_PRESET_METHODS,
     DEFAULT_SEED,
-    UCaGNNConfig,
+    EDGRecConfig,
 )
 from src.utils.experiment_logger import ExperimentLogger
 from src.utils.experiment_naming import (
     build_canonical_experiment_name,
     format_num_neighbors_payload,
+)
+from src.utils.method_naming import (
+    canonical_preset_for_identity,
+    method_identifier_aliases,
+    public_preset_name,
 )
 from src.utils.project_paths import (
     CHECKPOINT_DIR,
@@ -79,7 +85,7 @@ from experiments.recipes import (
     recipe_summary_lines,
 )
 
-logger = logging.getLogger("ucagnn")
+logger = logging.getLogger("edgrec")
 
 DB_PATH = THESIS_DB_PATH
 
@@ -190,7 +196,7 @@ def _stable_identity_hash(payload: dict[str, Any]) -> str:
 
 
 def _build_training_identity(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     preset: str | None,
     intervention: str | None,
 ) -> tuple[dict[str, Any], str]:
@@ -199,7 +205,7 @@ def _build_training_identity(
     identity = {
         "identity_version": _CHECKPOINT_IDENTITY_VERSION,
         "identity_kind": "training",
-        "preset": preset or "custom",
+        "preset": canonical_preset_for_identity(preset) or "custom",
         "intervention": intervention,
         "training_mode": "mini_batch",
         "config": {
@@ -210,7 +216,7 @@ def _build_training_identity(
 
 
 def _build_evaluation_identity(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     training_hash: str,
 ) -> tuple[dict[str, Any], str]:
     """Build the comparability identity for same-checkpoint evaluation runs."""
@@ -227,7 +233,7 @@ def _build_evaluation_identity(
 
 
 def _default_checkpoint_path(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     preset: str | None,
     intervention: str | None,
     training_hash: str,
@@ -235,6 +241,23 @@ def _default_checkpoint_path(
     """Return the default checkpoint path for a semantic training identity."""
     canonical_name = build_canonical_experiment_name(config, preset, intervention)
     return CHECKPOINT_DIR / f"{canonical_name}_train-{training_hash}.pt"
+
+
+def _default_checkpoint_path_candidates(
+    config: EDGRecConfig,
+    preset: str | None,
+    intervention: str | None,
+    training_hash: str,
+) -> list[Path]:
+    """Return public and legacy checkpoint paths for one semantic identity."""
+    candidates = [_default_checkpoint_path(config, preset, intervention, training_hash)]
+    if preset is None:
+        return candidates
+    for preset_alias in method_identifier_aliases(preset):
+        alias_path = _default_checkpoint_path(config, preset_alias, intervention, training_hash)
+        if alias_path not in candidates:
+            candidates.append(alias_path)
+    return candidates
 
 
 def _load_checkpoint_payload(
@@ -258,15 +281,15 @@ def _load_checkpoint_payload(
 
     if require_config:
         config = payload.get("config")
-        if not isinstance(config, UCaGNNConfig):
+        if not isinstance(config, EDGRecConfig):
             raise TypeError(
-                "checkpoint does not contain a UCaGNNConfig under the 'config' field",
+                "checkpoint does not contain an EDGRecConfig under the 'config' field",
             )
 
     return payload
 
 
-def load_runtime_data(config: UCaGNNConfig) -> tuple[Any, Any]:
+def load_runtime_data(config: EDGRecConfig) -> tuple[Any, Any]:
     """Load canonical interactions and build the matching runtime graph."""
     canonical = load_dataset(
         config.dataset,
@@ -293,7 +316,7 @@ def load_runtime_data(config: UCaGNNConfig) -> tuple[Any, Any]:
 
 
 def _bootstrap_cagra_embeddings(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     canonical: Any,
     observed_data: Any,
 ) -> torch.Tensor:
@@ -350,7 +373,7 @@ def _train_mask_numpy_from_data(data: Any) -> np.ndarray:
 
 
 def build_runtime_model(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     canonical: Any,
     data: Any,
 ) -> torch.nn.Module:
@@ -385,7 +408,7 @@ def build_runtime_model(
         if canonical.item_propensity_targets is not None
         else None
     )
-    return UCaGNN(
+    return EDGRec(
         canonical.n_users,
         canonical.n_items,
         config,
@@ -457,7 +480,7 @@ def _validate_resume_identity(
 
 def _checkpoint_ready_for_evaluation(
     checkpoint_state: dict[str, Any],
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
 ) -> bool:
     """Return whether a checkpoint can be evaluated without more training."""
     if bool(checkpoint_state.get("training_finished")):
@@ -479,15 +502,15 @@ def _checkpoint_ready_for_evaluation(
 
 
 def _checkpoint_lookup_configs(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     *,
     checkpoint_path: str | Path | None = None,
-) -> list[UCaGNNConfig]:
+) -> list[EDGRecConfig]:
     """Return config variants whose checkpoint identities are worth checking."""
     if checkpoint_path is not None or not bool(config.auto_batch_size):
         return [config]
 
-    configs: list[UCaGNNConfig] = []
+    configs: list[EDGRecConfig] = []
     seen_batch_sizes: set[int] = set()
     for candidate_batch_size in _auto_batch_probe_candidates(config):
         batch_size = int(candidate_batch_size)
@@ -499,12 +522,12 @@ def _checkpoint_lookup_configs(
 
 
 def recoverable_checkpoint_for_config(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     *,
     preset: str | None = None,
     intervention: str | None = None,
     checkpoint_path: str | Path | None = None,
-) -> tuple[UCaGNNConfig, Path] | None:
+) -> tuple[EDGRecConfig, Path] | None:
     """Return the compatible config/path pair for an evaluation-ready checkpoint."""
     for checkpoint_config in _checkpoint_lookup_configs(
         config,
@@ -515,28 +538,29 @@ def recoverable_checkpoint_for_config(
             preset,
             intervention,
         )
-        resolved_checkpoint_path = (
-            Path(checkpoint_path)
+        resolved_checkpoint_paths = (
+            [Path(checkpoint_path)]
             if checkpoint_path is not None
-            else _default_checkpoint_path(
+            else _default_checkpoint_path_candidates(
                 checkpoint_config,
                 preset,
                 intervention,
                 training_hash,
             )
         )
-        checkpoint_state = _validate_resume_identity(
-            _load_checkpoint_metadata(resolved_checkpoint_path, "cpu"),
-            checkpoint_path=resolved_checkpoint_path,
-            explicit_checkpoint_path=checkpoint_path is not None,
-            training_identity=training_identity,
-            training_hash=training_hash,
-        )
-        if checkpoint_state is None:
-            continue
-        if not _checkpoint_ready_for_evaluation(checkpoint_state, checkpoint_config):
-            continue
-        return checkpoint_config, resolved_checkpoint_path
+        for resolved_checkpoint_path in resolved_checkpoint_paths:
+            checkpoint_state = _validate_resume_identity(
+                _load_checkpoint_metadata(resolved_checkpoint_path, "cpu"),
+                checkpoint_path=resolved_checkpoint_path,
+                explicit_checkpoint_path=checkpoint_path is not None,
+                training_identity=training_identity,
+                training_hash=training_hash,
+            )
+            if checkpoint_state is None:
+                continue
+            if not _checkpoint_ready_for_evaluation(checkpoint_state, checkpoint_config):
+                continue
+            return checkpoint_config, resolved_checkpoint_path
     return None
 
 
@@ -707,7 +731,7 @@ def _release_cuda_probe_memory() -> None:
         torch.cuda.empty_cache()
 
 
-def _auto_batch_probe_candidates(config: UCaGNNConfig) -> list[int]:
+def _auto_batch_probe_candidates(config: EDGRecConfig) -> list[int]:
     """Return batch-size probe candidates in descending order.
 
     Args:
@@ -731,7 +755,7 @@ def _auto_batch_probe_candidates(config: UCaGNNConfig) -> list[int]:
 def _auto_batch_probe_interactions(
     train_users: torch.Tensor,
     train_items: torch.Tensor,
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return the epoch-0 shuffled training interactions used by auto-batch probing."""
     if train_users.numel() <= 1:
@@ -745,7 +769,7 @@ def _auto_batch_probe_interactions(
 
 
 def _probe_batch_size_candidate(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     canonical: Any,
     data: Any,
     candidate_batch_size: int,
@@ -826,7 +850,7 @@ def _probe_batch_size_candidate(
 
 
 def _resolve_auto_batch_size(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     canonical: Any,
     data: Any,
 ) -> None:
@@ -910,7 +934,7 @@ def _resolve_auto_batch_size(
 
 
 def _verify_selected_auto_batch_size(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     canonical: Any,
     data: Any,
 ) -> None:
@@ -1014,7 +1038,7 @@ def _resume_auto_batch_fallback(
 
 
 def _build_mlflow_params(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     preset: str | None,
     intervention: str | None,
     recipe_name: str | None,
@@ -1072,7 +1096,7 @@ def _build_mlflow_params(
 
 
 def _start_mlflow_run(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     preset: str | None,
     intervention: str | None,
     experiment_id: str | None,
@@ -1286,7 +1310,7 @@ def normalize_benchmark_config_overrides(
             "Use the current config surface only; removed fields are not supported: "
             + ", ".join(removed_fields),
         )
-    default_config = UCaGNNConfig()
+    default_config = EDGRecConfig()
     normalized: dict[str, object] = {
         field_name: raw_config.get(field_name) for field_name in BENCHMARK_CONFIG_FIELDS
     }
@@ -1488,8 +1512,8 @@ def normalize_benchmark_config_overrides(
     return normalized
 
 
-def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfig:
-    """Build UCaGNNConfig from CLI args or mapping-style overrides.
+def build_config(args: argparse.Namespace | Mapping[str, object]) -> EDGRecConfig:
+    """Build EDGRecConfig from CLI args or mapping-style overrides.
 
     Precedence is: defaults -> preset -> recipe overrides -> explicit CLI flags.
     Conflicts between recipe-owned overrides and explicit CLI/config overrides are
@@ -1504,7 +1528,12 @@ def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfi
     if recipe is not None:
         cli_preset = config_inputs.get("preset")
         recipe_preset = recipe.get("preset")
-        if cli_preset is not None and recipe_preset is not None and cli_preset != recipe_preset:
+        if (
+            cli_preset is not None
+            and recipe_preset is not None
+            and canonical_preset_for_identity(str(cli_preset))
+            != canonical_preset_for_identity(str(recipe_preset))
+        ):
             raise ValueError(
                 (
                     f"preset={cli_preset!r} conflicts with recipe preset={recipe_preset!r}. "
@@ -1515,9 +1544,11 @@ def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfi
         recipe_overrides.update(recipe.get("overrides", {}))
         if effective_preset is None:
             effective_preset = recipe.get("preset")
+    if effective_preset is not None:
+        effective_preset = public_preset_name(str(effective_preset))
 
     if effective_preset is not None and effective_preset not in CONFIG_PRESET_METHODS:
-        available = ", ".join(sorted(CONFIG_PRESET_METHODS))
+        available = ", ".join(sorted(CONFIG_PRESET_CHOICES))
         raise ValueError(
             f"Unknown preset '{effective_preset}'. Available presets: {available}",
         )
@@ -1546,7 +1577,7 @@ def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfi
             "loss_schedule only supports 'baseline'; fused BPR stays active from epoch 0.",
         )
 
-    config = UCaGNNConfig()
+    config = EDGRecConfig()
 
     # Apply preset
     if effective_preset in CONFIG_PRESET_METHODS:
@@ -1566,13 +1597,13 @@ def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfi
 
 
 def run_experiment(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     preset: str | None = None,
     intervention: str | None = None,
     save_checkpoint: bool = True,
     enable_mlflow: bool = True,
     mlflow_tracking_uri: str | None = None,
-    mlflow_experiment_name: str = "ucagnn-thesis",
+    mlflow_experiment_name: str = "edgrec-thesis",
     mlflow_run_name: str | None = None,
     experiment_id: str | None = None,
     recipe_name: str | None = None,
@@ -1705,16 +1736,25 @@ def run_experiment(
         )
     checkpoint_state = None
     if effective_auto_resume:
-        checkpoint_state = _validate_resume_identity(
-            _load_checkpoint_metadata(
-                resolved_checkpoint_path,
-                config.device,
-            ),
-            checkpoint_path=resolved_checkpoint_path,
-            explicit_checkpoint_path=explicit_checkpoint_path,
-            training_identity=training_identity,
-            training_hash=training_hash,
+        candidate_paths = (
+            [resolved_checkpoint_path]
+            if explicit_checkpoint_path or pre_resolved_checkpoint_path is not None
+            else _default_checkpoint_path_candidates(config, preset, intervention, training_hash)
         )
+        for candidate_path in candidate_paths:
+            checkpoint_state = _validate_resume_identity(
+                _load_checkpoint_metadata(
+                    candidate_path,
+                    config.device,
+                ),
+                checkpoint_path=candidate_path,
+                explicit_checkpoint_path=explicit_checkpoint_path,
+                training_identity=training_identity,
+                training_hash=training_hash,
+            )
+            if checkpoint_state is not None:
+                resolved_checkpoint_path = candidate_path
+                break
     checkpoint_ready_for_eval = (
         _checkpoint_ready_for_evaluation(checkpoint_state, config)
         if checkpoint_state is not None
@@ -2201,6 +2241,9 @@ def main() -> int:
     config = build_config(args)
     recipe = get_recipe(args.recipe) if args.recipe else None
     resolved_preset = args.preset or (recipe.get("preset") if recipe else None)
+    if resolved_preset is not None:
+        resolved_preset = public_preset_name(str(resolved_preset))
+    recipe_name = public_preset_name(str(args.recipe)) if args.recipe else None
     result = run_experiment(
         config,
         preset=resolved_preset,
@@ -2211,7 +2254,7 @@ def main() -> int:
         mlflow_experiment_name=args.mlflow_experiment_name,
         mlflow_run_name=args.mlflow_run_name,
         experiment_id=args.experiment_id,
-        recipe_name=args.recipe,
+        recipe_name=recipe_name,
         checkpoint_path=args.checkpoint_path,
         checkpoint_every=args.checkpoint_every,
         auto_resume=args.auto_resume,

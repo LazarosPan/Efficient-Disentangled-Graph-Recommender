@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""Ablation study runner: test each thesis-facing U-CaGNN component contribution.
+"""Ablation study runner: test each thesis-facing EDGRec component contribution.
 
-Runs named variants around the UCaGNN mainline on specified datasets.
+Runs named variants around the EDGRec mainline on specified datasets.
 
 Usage:
     uv run ablation --datasets movielens1m
@@ -38,8 +38,8 @@ from experiments.ablation_configs import (
 from experiments.cli_parsers import build_ablation_parser
 from experiments.run_experiment import run_experiment
 
-logger = logging.getLogger("ucagnn.ablation")
-UCAGNN_PRESET = "ucagnn"
+logger = logging.getLogger("edgrec.ablation")
+EDGREC_PRESET = "edgrec"
 DEFAULT_RUNTIME_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DEFAULT_DATA_DIR = "data"
 
@@ -88,7 +88,7 @@ def main() -> int:
             existing = tracker.find_latest_batch_experiment(
                 batch_id=batch_id,
                 dataset=dataset,
-                preset=UCAGNN_PRESET,
+                preset=EDGREC_PRESET,
                 intervention=variant,
                 seed=DEFAULT_SEED,
                 training_mode=None,
@@ -122,11 +122,11 @@ def main() -> int:
                 t0 = time.time()
                 result = run_experiment(
                     config,
-                    preset=UCAGNN_PRESET,
+                    preset=EDGREC_PRESET,
                     intervention=variant,
                     save_checkpoint=True,
                     enable_mlflow=True,
-                    mlflow_experiment_name="ucagnn-ablation",
+                    mlflow_experiment_name="edgrec-ablation",
                     batch_id=batch_id,
                     overwrite_checkpoint=bool(args.overwrite_checkpoint),
                 )

@@ -1,12 +1,12 @@
 {
     "formal_profiles": [
         {
-            "id": "dev-ucagnn",
+            "id": "dev-edgrec",
             "aliases": ["dev", "development"],
-            "description": "Development-focused formal profile: UCaGNN over the practical core thesis datasets with explicit 1/2 branch depth and the default observed train-interaction graph.",
+            "description": "Development-focused formal profile: EDGRec over the practical core thesis datasets with explicit 1/2 branch depth and the default observed train-interaction graph.",
             "matrix": {
                 "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
-                "presets": ["ucagnn"]
+                "presets": ["edgrec"]
             },
             "config_overrides": {
                 "epochs": 60,
@@ -25,12 +25,12 @@
             }
         },
         {
-            "id": "core-ucagnn-mainline",
+            "id": "core-edgrec-mainline",
             "aliases": ["default", "latest", "core-paper-architecture-comparison"],
-            "description": "Core U-CaGNN thesis mainline across practical datasets. Paper baselines are split into separate run-once profiles so U-CaGNN tuning can iterate without rerunning fixed paper defaults.",
+            "description": "Core EDGRec thesis mainline across practical datasets. Paper baselines are split into separate run-once profiles so EDGRec tuning can iterate without rerunning fixed paper defaults.",
             "matrix": {
                 "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
-                "presets": ["ucagnn"]
+                "presets": ["edgrec"]
             },
             "config_overrides": {
                 "epochs": 200,
@@ -50,14 +50,14 @@
             }
         },
         {
-            "id": "core-ucagnn-mainline-opposite-fanout-smaller-lr",
+            "id": "core-edgrec-mainline-opposite-fanout-smaller-lr",
             "aliases": [
                 "default-opposite-fanout-smaller-lr",
                 "latest-opposite-fanout-smaller-lr",
                 "core-paper-architecture-comparison-opposite-fanout-smaller-lr"
             ],
-            "description": "Core U-CaGNN thesis mainline across practical datasets. Paper baselines are split into separate run-once profiles so U-CaGNN tuning can iterate without rerunning fixed paper defaults. Opposite fan-out from the default (smaller for small datasets, larger for medium datasets) and smaller learning rate to check whether the default settings are actually optimal before committing to long runs.",
-            "matrix": {"datasets": ["small", "medium"], "presets": ["ucagnn"]},
+            "description": "Core EDGRec thesis mainline across practical datasets. Paper baselines are split into separate run-once profiles so EDGRec tuning can iterate without rerunning fixed paper defaults. Opposite fan-out from the default (smaller for small datasets, larger for medium datasets) and smaller learning rate to check whether the default settings are actually optimal before committing to long runs.",
+            "matrix": {"datasets": ["small", "medium"], "presets": ["edgrec"]},
             "config_overrides": {
                 "epochs": 200,
                 "use_early_stopping": true,
@@ -182,8 +182,8 @@
         },
         {
             "id": "core-deeper-comparison-i2-c3",
-            "description": "U-CaGNN-only deeper-branch comparison for checking whether interest=2 and conformity=3 help before spending full stress-run time.",
-            "matrix": {"datasets": ["small", "medium"], "presets": ["ucagnn"]},
+            "description": "EDGRec-only deeper-branch comparison for checking whether interest=2 and conformity=3 help before spending full stress-run time.",
+            "matrix": {"datasets": ["small", "medium"], "presets": ["edgrec"]},
             "config_overrides": {
                 "epochs": 100,
                 "use_early_stopping": true,
@@ -203,8 +203,8 @@
         },
         {
             "id": "movielens1m-all-lr-schedules",
-            "description": "Movielens1M U-CaGNN learning-rate schedule sweep. Paper baselines keep their own fixed defaults and are not rerun here.",
-            "matrix": {"datasets": ["movielens1m"], "presets": ["ucagnn"]},
+            "description": "Movielens1M EDGRec learning-rate schedule sweep. Paper baselines keep their own fixed defaults and are not rerun here.",
+            "matrix": {"datasets": ["movielens1m"], "presets": ["edgrec"]},
             "config_overrides": {
                 "epochs": 60,
                 "use_early_stopping": true,
@@ -223,11 +223,11 @@
             }
         },
         {
-            "id": "ucagnn-learned-cosine-int1-conf2-nn20_10-ep300-aux30-pop60",
-            "description": "Long unattended UCaGNN follow-up across the practical core datasets with the current branch asymmetry (interest=1, conformity=2), larger 20-10 fan-out, cosine scheduling, and a 300-epoch budget guarded by early stopping.",
+            "id": "edgrec-learned-cosine-int1-conf2-nn20_10-ep300-aux30-pop60",
+            "description": "Long unattended EDGRec follow-up across the practical core datasets with the current branch asymmetry (interest=1, conformity=2), larger 20-10 fan-out, cosine scheduling, and a 300-epoch budget guarded by early stopping.",
             "matrix": {
                 "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
-                "presets": ["ucagnn"]
+                "presets": ["edgrec"]
             },
             "config_overrides": {
                 "epochs": 300,
@@ -246,11 +246,11 @@
             }
         },
         {
-            "id": "ucagnn-learned-cosine-int1-conf2-nn8_4-ep300-aux30-pop60",
-            "description": "Long unattended UCaGNN follow-up across the practical core datasets with the current branch asymmetry (interest=1, conformity=2), 8-4 fan-out, cosine scheduling, and a 300-epoch budget guarded by early stopping.",
+            "id": "edgrec-learned-cosine-int1-conf2-nn8_4-ep300-aux30-pop60",
+            "description": "Long unattended EDGRec follow-up across the practical core datasets with the current branch asymmetry (interest=1, conformity=2), 8-4 fan-out, cosine scheduling, and a 300-epoch budget guarded by early stopping.",
             "matrix": {
                 "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
-                "presets": ["ucagnn"]
+                "presets": ["edgrec"]
             },
             "config_overrides": {
                 "epochs": 300,
@@ -270,8 +270,8 @@
         },
         {
             "id": "taobao-preprocessing-sweep",
-            "description": "Taobao preprocessing comparison under one strong UCaGNN mainline so the default preset can be chosen once and then left fixed.",
-            "matrix": {"datasets": ["taobao"], "presets": ["ucagnn"]},
+            "description": "Taobao preprocessing comparison under one strong EDGRec mainline so the default preset can be chosen once and then left fixed.",
+            "matrix": {"datasets": ["taobao"], "presets": ["edgrec"]},
             "config_overrides": {
                 "epochs": 120,
                 "use_early_stopping": true,
@@ -292,7 +292,7 @@
         {
             "id": "kuairec-v2-preprocessing-sweep",
             "description": "KuaiRec_v2 preprocessing comparison across the available causal-ready views so one repository default can be selected and then kept stable.",
-            "matrix": {"datasets": ["kuairec_v2"], "presets": ["ucagnn"]},
+            "matrix": {"datasets": ["kuairec_v2"], "presets": ["edgrec"]},
             "config_overrides": {
                 "epochs": 120,
                 "use_early_stopping": true,
@@ -316,8 +316,8 @@
         },
         {
             "id": "kuairand1k-preprocessing-sweep",
-            "description": "KuaiRand-1K preprocessing comparison between the causal-default and randomized-only evaluation views under the same UCaGNN mainline.",
-            "matrix": {"datasets": ["kuairand1k"], "presets": ["ucagnn"]},
+            "description": "KuaiRand-1K preprocessing comparison between the causal-default and randomized-only evaluation views under the same EDGRec mainline.",
+            "matrix": {"datasets": ["kuairand1k"], "presets": ["edgrec"]},
             "config_overrides": {
                 "epochs": 120,
                 "use_early_stopping": true,
@@ -336,9 +336,9 @@
             }
         },
         {
-            "id": "amazonbook-ucagnn-hardneg-010",
-            "description": "AmazonBook follow-up: reuse the strong UCaGNN learned-fusion setting and test a small popularity-weighted hard-negative fraction.",
-            "matrix": {"datasets": ["amazonbook"], "presets": ["ucagnn"]},
+            "id": "amazonbook-edgrec-hardneg-010",
+            "description": "AmazonBook follow-up: reuse the strong EDGRec learned-fusion setting and test a small popularity-weighted hard-negative fraction.",
+            "matrix": {"datasets": ["amazonbook"], "presets": ["edgrec"]},
             "config_overrides": {
                 "epochs": 300,
                 "use_early_stopping": true,
@@ -357,9 +357,9 @@
             }
         },
         {
-            "id": "amazonbook-ucagnn-hardneg-025",
-            "description": "AmazonBook follow-up: same learned-fusion UCaGNN setting with a stronger popularity-weighted hard-negative mix.",
-            "matrix": {"datasets": ["amazonbook"], "presets": ["ucagnn"]},
+            "id": "amazonbook-edgrec-hardneg-025",
+            "description": "AmazonBook follow-up: same learned-fusion EDGRec setting with a stronger popularity-weighted hard-negative mix.",
+            "matrix": {"datasets": ["amazonbook"], "presets": ["edgrec"]},
             "config_overrides": {
                 "epochs": 300,
                 "use_early_stopping": true,
@@ -380,7 +380,7 @@
         {
             "id": "kuairand1k-random-only-diagnostic",
             "description": "KuaiRand-1K diagnostic: switch to the randomized-exposure-only preset so Recall@K is measured on a much smaller, more interpretable future-positive set.",
-            "matrix": {"datasets": ["kuairand1k"], "presets": ["ucagnn", "lightgcn"]},
+            "matrix": {"datasets": ["kuairand1k"], "presets": ["edgrec", "lightgcn"]},
             "config_overrides": {
                 "epochs": 300,
                 "use_early_stopping": true,
@@ -401,9 +401,9 @@
         }
     ],
     "recipes": {
-        "ucagnn": {
-            "description": "UCaGNN with mini-batch training on the default observed train-interaction graph.",
-            "preset": "ucagnn"
+        "edgrec": {
+            "description": "EDGRec with mini-batch training on the default observed train-interaction graph.",
+            "preset": "edgrec"
         },
         "lightgcn": {
             "description": "Scalable sampled-neighborhood LightGCN approximation with mini-batch training on the default observed train-interaction graph.",
