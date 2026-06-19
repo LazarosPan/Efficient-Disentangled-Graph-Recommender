@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import math
-import sys
 import unittest
-from types import ModuleType
 from unittest.mock import patch
 
 import numpy as np
 import torch
-from experiments.run_experiment import build_runtime_model
+from experiments.run_experiment import _apply_item_universe_policy, build_runtime_model
 from src.data.canonical import CanonicalInteractions, sample_canonical_interactions
 from src.data.graph_builder import build_graph
 from src.data.subgraph_sampler import SubgraphBatch
@@ -20,11 +18,10 @@ from src.models.lightgcn import DualBranchGCN, LightGCNBranch
 from src.training.evaluator import (
     THESIS_PRIMARY_METRICS,
     Evaluator,
-    _cagra_neighbors_to_candidate_mask,
-    _cagra_neighbors_to_scatter_index,
     _EvaluatorDiagnosticsAccumulator,
     _rowwise_spearman,
 )
+from src.training.mini_batch_trainer import MiniBatchTrainer
 from src.utils.config import EDGRecConfig
 from src.utils.interaction_indexing import remap_interaction_ids
 from src.utils.trainer_runtime import TrainerRuntime, stage_graph_tensors_for_device
@@ -225,6 +222,25 @@ class _GatherBeforeFloatGuard:
         raise AssertionError(msg)
 
 
+def _small_memory_canonical() -> CanonicalInteractions:
+    """Return a tiny predefined-split canonical graph for memory-contract tests."""
+    return CanonicalInteractions(
+        user_id=np.array([0, 0, 1, 1, 2, 2], dtype=np.int64),
+        item_id=np.array([0, 1, 1, 2, 2, 3], dtype=np.int64),
+        label=np.ones(6, dtype=np.float32),
+        timestamp=np.array([1, 2, 3, 4, 5, 6], dtype=np.int64),
+        sign=np.ones(6, dtype=np.float32),
+        popularity=np.ones(4, dtype=np.float32),
+        n_users=3,
+        n_items=4,
+        user_map={100: 0, 101: 1, 102: 2},
+        item_map={200: 0, 201: 1, 202: 2, 203: 3},
+        train_mask=np.array([True, True, True, True, False, False]),
+        val_mask=np.array([False, False, False, False, True, False]),
+        test_mask=np.array([False, False, False, False, False, True]),
+    )
+
+
 class SplitSafetyTests(unittest.TestCase):
     """Pin the thesis-critical split boundary behavior."""
 
@@ -245,6 +261,109 @@ class SplitSafetyTests(unittest.TestCase):
                 "Personalization@40",
             ),
         )
+
+    def test_random_exposure_item_universe_compacts_items_and_targets(self) -> None:
+        """KuaiRand compaction should remap interaction, feature, and target arrays."""
+        canonical = CanonicalInteractions(
+            user_id=np.array([0, 0, 1, 1], dtype=np.int64),
+            item_id=np.array([0, 1, 2, 3], dtype=np.int64),
+            label=np.ones(4, dtype=np.float32),
+            timestamp=np.array([1, 2, 3, 4], dtype=np.int64),
+            sign=np.ones(4, dtype=np.float32),
+            popularity=np.ones(4, dtype=np.float32),
+            n_users=2,
+            n_items=4,
+            user_map={10: 0, 11: 1},
+            item_map={100: 0, 101: 1, 102: 2, 103: 3},
+            item_features=np.arange(8, dtype=np.float32).reshape(4, 2),
+            exposure_flag=np.array([True, False, True, False]),
+            item_propensity_targets=np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32),
+            train_mask=np.array([True, True, False, False]),
+            val_mask=np.array([False, False, True, False]),
+            test_mask=np.array([False, False, False, True]),
+        )
+        config = EDGRecConfig(
+            dataset="kuairand1k",
+            device="cpu",
+            item_universe_policy="random_exposure_items_only",
+        )
+
+        compacted = _apply_item_universe_policy(canonical, config)
+
+        np.testing.assert_array_equal(compacted.user_id, np.array([0, 1]))
+        np.testing.assert_array_equal(compacted.item_id, np.array([0, 1]))
+        np.testing.assert_array_equal(
+            compacted.item_features,
+            np.array([[0.0, 1.0], [4.0, 5.0]], dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            compacted.item_propensity_targets,
+            np.array([0.1, 0.3], dtype=np.float32),
+        )
+        np.testing.assert_array_equal(compacted.train_mask, np.array([True, False]))
+        np.testing.assert_array_equal(compacted.val_mask, np.array([False, True]))
+        self.assertEqual(compacted.n_items, 2)
+        self.assertEqual(
+            compacted.metadata["item_universe_original_n_items"],
+            4,
+        )
+
+    def test_train_edge_dropout_affects_graph_only_not_split_masks(self) -> None:
+        """Observed-edge dropout must not remove labels or split assignments."""
+        canonical = _small_memory_canonical()
+        config = EDGRecConfig(
+            device="cpu",
+            train_edge_keep_prob=0.5,
+            seed=7,
+            embed_dim=4,
+            num_neighbors=[4, 2],
+        )
+
+        data = build_graph(canonical, config)
+
+        self.assertEqual(int(data.train_mask.sum().item()), 4)
+        self.assertEqual(int(data.val_mask.sum().item()), 1)
+        self.assertEqual(int(data.test_mask.sum().item()), 1)
+        self.assertEqual(data.labels.numel(), len(canonical))
+        self.assertLess(data.edge_index.size(1), 8)
+        self.assertGreater(data.edge_index.size(1), 0)
+        self.assertEqual(data.edge_index.size(1) % 2, 0)
+        self.assertEqual(data.train_edge_keep_prob, 0.5)
+
+    def test_sparse_embedding_optimizer_splits_sparse_tables(self) -> None:
+        """Sparse embedding modes should not put giant tables in AdamW."""
+        canonical = _small_memory_canonical()
+        config = EDGRecConfig(
+            device="cpu",
+            embed_dim=4,
+            embedding_optimizer="sparseadam",
+            use_features=False,
+            use_popularity_emb=False,
+            use_popularity_head=False,
+            loss_weight_contrastive=0.0,
+            loss_weight_align=0.0,
+            loss_weight_uniform=0.0,
+            num_neighbors=[4, 2],
+        )
+        data = build_graph(canonical, config)
+        model = build_runtime_model(config, canonical, data)
+        trainer = MiniBatchTrainer(
+            model=model,
+            loss_suite=LossSuite(config),
+            data=data,
+            config=config,
+        )
+
+        self.assertTrue(model.embedding.item_embed.sparse)
+        self.assertIsInstance(trainer.optimizer, torch.optim.AdamW)
+        self.assertIsInstance(trainer.embedding_optimizer, torch.optim.SparseAdam)
+
+        trainer.optimizer.zero_grad(set_to_none=True)
+        trainer.embedding_optimizer.zero_grad(set_to_none=True)
+        model.embedding.item_embed(torch.tensor([0, 1], dtype=torch.long)).sum().backward()
+        grad = model.embedding.item_embed.weight.grad
+        self.assertIsNotNone(grad)
+        self.assertTrue(grad.is_sparse)
 
     def test_get_splits_keeps_predefined_test_mask_intact(self) -> None:
         """Validation must be carved from train without touching test rows."""
@@ -588,230 +707,6 @@ class SplitSafetyTests(unittest.TestCase):
         np.testing.assert_array_equal(raw_target, np.array([3.0, 4.0], dtype=np.float32))
         self.assertEqual(float(data.raw_target[0]), 9.0)
 
-    def test_cagra_runtime_failure_falls_back_to_interaction_graph(self) -> None:
-        """CAGRA runtime failures should warn once and keep the train-interaction graph."""
-        canonical = CanonicalInteractions(
-            user_id=np.array([0], dtype=np.int64),
-            item_id=np.array([0], dtype=np.int64),
-            label=np.ones(1, dtype=np.float32),
-            timestamp=np.array([1], dtype=np.int64),
-            sign=np.ones(1, dtype=np.float32),
-            popularity=np.ones(2, dtype=np.float32),
-            n_users=1,
-            n_items=2,
-            user_map={0: 0},
-            item_map={0: 0, 1: 1},
-            train_mask=np.array([True]),
-            val_mask=np.array([False]),
-            test_mask=np.array([False]),
-        )
-        config = EDGRecConfig(device="cuda", seed=17)
-        embeddings = torch.tensor(
-            [[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]],
-            dtype=torch.float32,
-        )
-
-        class _FakeCupyArray:
-            """Minimal CuPy-like wrapper for graph-builder tests."""
-
-            def __init__(self, array: np.ndarray) -> None:
-                self.array = np.asarray(array, dtype=np.float32)
-
-        fake_cp = ModuleType("cupy")
-        fake_cp.asarray = lambda array: _FakeCupyArray(array)
-        fake_cp.asnumpy = lambda array: array.array
-
-        cagra_module = ModuleType("cagra")
-        cagra_module.IndexParams = lambda **kwargs: kwargs
-        cagra_module.SearchParams = lambda **kwargs: kwargs
-
-        def _raise_on_build(*args: object, **kwargs: object) -> object:
-            raise RuntimeError("boom")
-
-        cagra_module.build = _raise_on_build
-
-        neighbors_module = ModuleType("cuvs.neighbors")
-        neighbors_module.cagra = cagra_module
-        cuvs_module = ModuleType("cuvs")
-        cuvs_module.neighbors = neighbors_module
-
-        with (
-            patch.dict(
-                sys.modules,
-                {
-                    "cupy": fake_cp,
-                    "cuvs": cuvs_module,
-                    "cuvs.neighbors": neighbors_module,
-                },
-            ),
-            self.assertWarnsRegex(
-                RuntimeWarning,
-                "using train-interaction graph",
-            ),
-        ):
-            data = build_graph(canonical, config, embeddings=embeddings)
-
-        edge_signs = {
-            (src, dst): float(sign)
-            for (src, dst), sign in zip(
-                data.edge_index.t().cpu().tolist(),
-                data.edge_sign.cpu().tolist(),
-                strict=True,
-            )
-        }
-        self.assertEqual(edge_signs[0, 1], 1.0)
-        self.assertEqual(edge_signs[1, 0], 1.0)
-        self.assertEqual(len(edge_signs), 2)
-
-    def test_cagra_augmented_policy_raises_on_runtime_failure(self) -> None:
-        """Strict CAGRA policy should raise instead of silently downgrading the graph."""
-        canonical = CanonicalInteractions(
-            user_id=np.array([0], dtype=np.int64),
-            item_id=np.array([0], dtype=np.int64),
-            label=np.ones(1, dtype=np.float32),
-            timestamp=np.array([1], dtype=np.int64),
-            sign=np.ones(1, dtype=np.float32),
-            popularity=np.ones(2, dtype=np.float32),
-            n_users=1,
-            n_items=2,
-            user_map={0: 0},
-            item_map={0: 0, 1: 1},
-            train_mask=np.array([True]),
-            val_mask=np.array([False]),
-            test_mask=np.array([False]),
-        )
-        config = EDGRecConfig(device="cuda", seed=17, graph_policy="cagra_augmented")
-        embeddings = torch.tensor(
-            [[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]],
-            dtype=torch.float32,
-        )
-
-        class _FakeCupyArray:
-            """Minimal CuPy-like wrapper for graph-builder tests."""
-
-            def __init__(self, array: np.ndarray) -> None:
-                self.array = np.asarray(array, dtype=np.float32)
-
-        fake_cp = ModuleType("cupy")
-        fake_cp.asarray = lambda array: _FakeCupyArray(array)
-        fake_cp.asnumpy = lambda array: array.array
-
-        cagra_module = ModuleType("cagra")
-        cagra_module.IndexParams = lambda **kwargs: kwargs
-        cagra_module.SearchParams = lambda **kwargs: kwargs
-        cagra_module.build = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
-
-        neighbors_module = ModuleType("cuvs.neighbors")
-        neighbors_module.cagra = cagra_module
-        cuvs_module = ModuleType("cuvs")
-        cuvs_module.neighbors = neighbors_module
-
-        with (
-            patch.dict(
-                sys.modules,
-                {
-                    "cupy": fake_cp,
-                    "cuvs": cuvs_module,
-                    "cuvs.neighbors": neighbors_module,
-                },
-            ),
-            self.assertRaisesRegex(
-                RuntimeError,
-                "graph_policy='cagra_augmented' requires a working CAGRA build",
-            ),
-        ):
-            build_graph(canonical, config, embeddings=embeddings)
-
-    def test_cagra_uses_seeded_search_params(self) -> None:
-        """CAGRA search should thread the config seed into its search params."""
-        canonical = CanonicalInteractions(
-            user_id=np.array([0], dtype=np.int64),
-            item_id=np.array([0], dtype=np.int64),
-            label=np.ones(1, dtype=np.float32),
-            timestamp=np.array([1], dtype=np.int64),
-            sign=np.ones(1, dtype=np.float32),
-            popularity=np.ones(2, dtype=np.float32),
-            n_users=1,
-            n_items=2,
-            user_map={0: 0},
-            item_map={0: 0, 1: 1},
-            train_mask=np.array([True]),
-            val_mask=np.array([False]),
-            test_mask=np.array([False]),
-        )
-        config = EDGRecConfig(device="cuda", seed=29, cagra_k=1)
-        embeddings = torch.tensor(
-            [[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]],
-            dtype=torch.float32,
-        )
-
-        class _FakeCupyArray:
-            """Minimal CuPy-like wrapper for graph-builder tests."""
-
-            def __init__(self, array: np.ndarray) -> None:
-                self.array = np.asarray(array, dtype=np.float32)
-
-        fake_cp = ModuleType("cupy")
-        fake_cp.asarray = lambda array: _FakeCupyArray(array)
-        fake_cp.asnumpy = lambda array: array.array
-
-        seen: dict[str, object] = {}
-
-        cagra_module = ModuleType("cagra")
-
-        class _IndexParams:
-            def __init__(self, **kwargs: object) -> None:
-                seen["index_params"] = kwargs
-
-        class _SearchParams:
-            def __init__(self, **kwargs: object) -> None:
-                seen["search_params"] = kwargs
-
-        def _build(index_params: object, dataset: object) -> object:
-            del index_params
-            seen["build_dataset"] = dataset
-            return object()
-
-        def _search(
-            search_params: object,
-            index: object,
-            queries: object,
-            k: int,
-        ) -> tuple[None, _FakeCupyArray]:
-            del search_params, index, k
-            seen["queries"] = queries
-            return None, _FakeCupyArray(np.array([[2], [0], [1]], dtype=np.int64))
-
-        cagra_module.IndexParams = _IndexParams
-        cagra_module.SearchParams = _SearchParams
-        cagra_module.build = _build
-        cagra_module.search = _search
-
-        neighbors_module = ModuleType("cuvs.neighbors")
-        neighbors_module.cagra = cagra_module
-        cuvs_module = ModuleType("cuvs")
-        cuvs_module.neighbors = neighbors_module
-
-        with patch.dict(
-            sys.modules,
-            {
-                "cupy": fake_cp,
-                "cuvs": cuvs_module,
-                "cuvs.neighbors": neighbors_module,
-            },
-        ):
-            data = build_graph(canonical, config, embeddings=embeddings)
-
-        self.assertEqual(
-            seen["search_params"],
-            {"team_size": 0, "rand_xor_mask": 29, "itopk_size": 64},
-        )
-        self.assertIsInstance(seen["build_dataset"], _FakeCupyArray)
-        self.assertIs(seen["build_dataset"], seen["queries"])
-        edge_set = {tuple(edge) for edge in data.edge_index.t().cpu().tolist()}
-        self.assertIn((0, 2), edge_set)
-        self.assertIn((2, 0), edge_set)
-
     def test_remapped_ids_use_narrow_integer_storage(self) -> None:
         """Contiguous interaction IDs should downcast to the smallest safe dtype."""
         indexed = remap_interaction_ids(
@@ -877,34 +772,6 @@ class SplitSafetyTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["HitRatio@40"], 1.0, places=6)
         self.assertAlmostEqual(metrics["Personalization@20"], 0.0, places=6)
         self.assertAlmostEqual(metrics["Personalization@40"], 0.0, places=6)
-
-    def test_cagra_neighbors_cast_to_scatter_indices(self) -> None:
-        """CAGRA candidate IDs should normalize to Torch integer indices."""
-        neighbors = np.array([[0, 2], [1, 3]], dtype=np.uint32)
-
-        indices = _cagra_neighbors_to_scatter_index(neighbors, torch.device("cpu"))
-
-        self.assertEqual(indices.dtype, torch.long)
-        self.assertTrue(torch.equal(indices, torch.tensor([[0, 2], [1, 3]])))
-
-    def test_cagra_candidate_mask_filters_invalid_unsigned_neighbors(self) -> None:
-        """CAGRA missing-neighbor sentinels must not reach CUDA indexing."""
-        invalid = np.iinfo(np.uint32).max
-        neighbors = np.array([[0, invalid, 2], [invalid, invalid, invalid]], dtype=np.uint32)
-
-        candidate_mask = _cagra_neighbors_to_candidate_mask(
-            neighbors,
-            n_items=4,
-            device=torch.device("cpu"),
-        )
-        expected = torch.tensor(
-            [
-                [True, False, True, False],
-                [True, True, True, True],
-            ],
-            dtype=torch.bool,
-        )
-        self.assertTrue(torch.equal(candidate_mask, expected))
 
     def test_evaluator_uses_only_positive_labels_as_ground_truth(self) -> None:
         """Negative or weak held-out interactions must not count as relevant."""

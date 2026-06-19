@@ -136,10 +136,10 @@ class AblationConfigTests(unittest.TestCase):
             dataset="movielens1m",
             data_dir="data",
             device="cpu",
-            graph_policy="cagra_augmented",
+            graph_policy="observed",
         )
 
-        self.assertEqual(kwargs["graph_policy"], "cagra_augmented")
+        self.assertEqual(kwargs["graph_policy"], "observed")
 
 
 class FormalRunParserTests(unittest.TestCase):

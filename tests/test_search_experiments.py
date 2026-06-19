@@ -18,6 +18,7 @@ from experiments.recipes import (
     load_search_spaces_catalog,
     search_space_names,
 )
+from src.utils.crru import compute_validation_online_crru_components_for_k
 from src.utils.experiment_logger import ExperimentLogger
 from src.utils.method_naming import EDGREC_LEGACY_PRESET
 
@@ -31,7 +32,6 @@ class SearchSpaceValidationTests(unittest.TestCase):
         self.assertIn("search_spaces", load_search_spaces_catalog())
         self.assertIn("edgrec-core-optimization", search_space_names())
         self.assertIn("edgrec-mechanism-coarse", search_space_names())
-        self.assertIn("edgrec-cagra-accuracy-ablation", search_space_names())
 
     def test_search_spaces_resolve_to_edgrec_configs(self) -> None:
         """All search spaces should resolve through the shared config builder."""
@@ -155,23 +155,6 @@ class SearchSpaceValidationTests(unittest.TestCase):
             [0.0, 0.02, 0.05],
         )
 
-    def test_cagra_accuracy_ablation_compares_observed_and_augmented_graphs(self) -> None:
-        """CAGRA performance/accuracy checks should remain a separate search space."""
-        spec = search.resolve_search_space(
-            "edgrec-cagra-accuracy-ablation",
-            dataset="kuairec_v2",
-        )
-        all_dataset_spec = search.resolve_search_space("edgrec-cagra-accuracy-ablation")
-
-        self.assertEqual(spec.objective.metric, search.VALIDATION_ACCURACY_METRIC)
-        self.assertIn("kuairand1k", all_dataset_spec.datasets)
-        self.assertEqual(
-            spec.parameters["graph_policy"]["choices"],
-            ["observed", "cagra_augmented"],
-        )
-        self.assertIn("cagra_candidate_k", spec.parameters)
-        self.assertNotIn("amazonbook", spec.datasets)
-
     def test_search_parser_accepts_comma_separated_space_queue(self) -> None:
         """search-experiments should mirror formal-run's queue syntax."""
         parser = search.build_search_parser()
@@ -179,25 +162,25 @@ class SearchSpaceValidationTests(unittest.TestCase):
         args = parser.parse_args(
             [
                 "--space",
-                "edgrec-mechanism-coarse,edgrec-cagra-accuracy-ablation",
+                "edgrec-mechanism-coarse,edgrec-core-optimization",
                 "--dry-run",
             ],
         )
 
         self.assertEqual(
             args.space,
-            "edgrec-mechanism-coarse,edgrec-cagra-accuracy-ablation",
+            "edgrec-mechanism-coarse,edgrec-core-optimization",
         )
         self.assertEqual(
             search._parse_search_space_sequence(args.space),
-            ["edgrec-mechanism-coarse", "edgrec-cagra-accuracy-ablation"],
+            ["edgrec-mechanism-coarse", "edgrec-core-optimization"],
         )
 
     def test_search_main_runs_comma_separated_spaces_in_order(self) -> None:
         """Multiple search spaces should execute sequentially and report aggregate failure."""
         args = SimpleNamespace(
             list_spaces=False,
-            space="edgrec-mechanism-coarse, edgrec-cagra-accuracy-ablation",
+            space="edgrec-mechanism-coarse, edgrec-core-optimization",
             dataset="kuairec_v2",
             study_name=None,
             dry_run=False,
@@ -218,14 +201,14 @@ class SearchSpaceValidationTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertEqual(
             seen,
-            ["edgrec-mechanism-coarse", "edgrec-cagra-accuracy-ablation"],
+            ["edgrec-mechanism-coarse", "edgrec-core-optimization"],
         )
 
     def test_search_space_queue_rejects_ambiguous_explicit_study_name(self) -> None:
         """One explicit study name should not be reused across queued spaces."""
         args = SimpleNamespace(
             list_spaces=False,
-            space="edgrec-mechanism-coarse,edgrec-cagra-accuracy-ablation",
+            space="edgrec-mechanism-coarse,edgrec-core-optimization",
             study_name="shared-study",
             dry_run=False,
         )
@@ -1006,6 +989,36 @@ class SearchSpaceValidationTests(unittest.TestCase):
                 epoch_time_s=5.0,
             ),
         )
+
+    def test_validation_crru_components_reconstruct_per_k_objective(self) -> None:
+        """OnlineCRRU component diagnostics should share the objective formula."""
+        val_metrics = {
+            "NDCG@20": 0.10,
+            "Recall@20": 0.20,
+            "HitRatio@20": 0.30,
+            "Personalization@20": 0.50,
+            "AveragePopularity@20": 1.0,
+        }
+
+        components = compute_validation_online_crru_components_for_k(
+            val_metrics,
+            k=20,
+            peak_vram_mb=512.0,
+            epoch_time_s=5.0,
+        )
+
+        self.assertAlmostEqual(
+            components["online_crru"],
+            search.compute_validation_online_crru_for_k(
+                val_metrics,
+                k=20,
+                peak_vram_mb=512.0,
+                epoch_time_s=5.0,
+            ),
+        )
+        self.assertGreater(components["accuracy"], 0.0)
+        self.assertGreater(components["popularity_diversity"], 0.0)
+        self.assertGreater(components["efficiency"], 0.0)
 
     def test_validation_accuracy_objective_uses_validation_metrics_only(self) -> None:
         """The accuracy-first objective should not read test metrics."""

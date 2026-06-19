@@ -28,7 +28,6 @@ from experiments.run_benchmark import (
 from experiments.run_experiment import (
     _auto_batch_probe_candidates,
     _auto_batch_probe_interactions,
-    _bootstrap_cagra_embeddings,
     _build_training_identity,
     _checkpoint_ready_for_evaluation,
     _cuda_memory_snapshot,
@@ -258,7 +257,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         config = build_config(
             _experiment_args(
                 preset="edgrec",
-                graph_policy="cagra_augmented",
                 sample_interactions=500,
                 loader_max_rows=1000,
             ),
@@ -506,7 +504,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             _experiment_args(
                 preset="lightgcn_paper",
                 dropout=0.25,
-                graph_policy="cagra_augmented",
                 lr=0.01,
                 lr_scheduler="cosine",
                 weight_decay=1e-2,
@@ -591,7 +588,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             _experiment_args(
                 preset="dice_paper",
                 dropout=0.05,
-                graph_policy="cagra_augmented",
                 lr=0.01,
                 lr_scheduler="cosine",
                 batch_size=8192,
@@ -1066,7 +1062,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         changed = build_config(
             _experiment_args(
                 preset="edgrec",
-                graph_policy="cagra_augmented",
+                num_neighbors=[6, 3],
             ),
         )
 
@@ -1168,7 +1164,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             profile["config_overrides"]["num_neighbors"],
             {
                 "small": [[6, 3], [4, 2]],
-                "medium": [[10, 5], [16, 8]],
+                "medium": [[10, 5], [8, 4], [6, 3], [4, 2]],
             },
         )
         self.assertNotIn("hard_negative_ratio", profile["config_overrides"])
@@ -1195,7 +1191,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             benchmark_args["num_neighbors"],
             {
                 "small": [[6, 3], [4, 2]],
-                "medium": [[10, 5], [16, 8]],
+                "medium": [[10, 5], [8, 4], [6, 3], [4, 2]],
             },
         )
         self.assertEqual(benchmark_args["graph_policy"], "observed")
@@ -1231,7 +1227,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             preset="edgrec",
             lr_scheduler="plateau",
             num_neighbors=[10, 5],
-            graph_policy="cagra_augmented",
+            graph_policy="observed",
         )
 
         self.assertEqual(config_inputs["dataset"], "movielens1m")
@@ -1249,7 +1245,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertTrue(config.auto_batch_size)
         self.assertTrue(config.use_early_stopping)
         self.assertEqual(config.patience, 10)
-        self.assertEqual(config.graph_policy, "cagra_augmented")
+        self.assertEqual(config.graph_policy, "observed")
         self.assertEqual(config.num_neighbors, [10, 5])
 
     def test_benchmark_config_inputs_preserve_auxiliary_loss_overrides(self) -> None:
@@ -1322,7 +1318,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 epochs=2,
                 batch_size=64,
                 auto_batch_size=False,
-                graph_policy="cagra_augmented",
+                graph_policy="observed",
                 sample_interactions=100,
                 loader_max_rows=100,
             ),
@@ -1333,7 +1329,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.epochs, 2)
         self.assertEqual(config.batch_size, 64)
         self.assertFalse(config.auto_batch_size)
-        self.assertEqual(config.graph_policy, "cagra_augmented")
+        self.assertEqual(config.graph_policy, "observed")
         self.assertFalse(hasattr(config, "eval_scoring_mode"))
         self.assertEqual(config.sample_interactions, 100)
         self.assertEqual(config.loader_max_rows, 100)
@@ -1349,18 +1345,6 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertTrue(
             np.array_equal(train_mask, np.array([True, False, True], dtype=bool)),
         )
-
-    def test_bootstrap_cagra_embeddings_explains_feature_requirement(self) -> None:
-        """CAGRA bootstrap should explain why featureless datasets are rejected."""
-        with self.assertRaisesRegex(
-            ValueError,
-            "combines CAGRA edges with the observed train-interaction graph",
-        ):
-            _bootstrap_cagra_embeddings(
-                EDGRecConfig(device="cpu"),
-                canonical=SimpleNamespace(),
-                observed_data=SimpleNamespace(item_features=None),
-            )
 
     def test_formal_profile_lookup_normalizes_user_facing_labels(self) -> None:
         """Formal profile lookup should normalize user-facing aliases centrally."""
@@ -1416,7 +1400,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             profile["config_overrides"]["num_neighbors"],
             {
                 "small": [[6, 3], [4, 2]],
-                "medium": [[10, 5], [16, 8]],
+                "medium": [[10, 5], [8, 4], [6, 3], [4, 2]],
             },
         )
         self.assertNotIn("scoring_weight_modes", benchmark_args)
@@ -1432,7 +1416,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             benchmark_args["num_neighbors"],
             {
                 "small": [[6, 3], [4, 2]],
-                "medium": [[10, 5], [16, 8]],
+                "medium": [[10, 5], [8, 4], [6, 3], [4, 2]],
             },
         )
         self.assertIsNone(benchmark_args["sample_interactions"])
@@ -1778,7 +1762,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 {
                     "tier": "small",
                     "presets": ["edgrec"],
-                    "graph_method": "cagra",
+                    "graph_method": "legacy_ann",
                     "epochs": 60,
                     "batch_size": 4096,
                     "lr": 1e-3,
@@ -2053,7 +2037,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             {
                 "num_neighbors": {
                     "small": [[6, 3], [4, 2]],
-                    "medium": [[10, 5], [16, 8]],
+                    "medium": [[10, 5], [8, 4], [6, 3], [4, 2]],
                 },
             },
         )
@@ -2062,23 +2046,29 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             normalized["num_neighbors"],
             {
                 "small": [[6, 3], [4, 2]],
-                "medium": [[10, 5], [16, 8]],
+                "medium": [[10, 5], [8, 4], [6, 3], [4, 2]],
             },
         )
 
-    def test_normalize_benchmark_config_overrides_supports_graph_policy_sweeps(self) -> None:
-        """Benchmark payload normalization should expand graph-policy sweep lists safely."""
+    def test_normalize_benchmark_config_overrides_accepts_observed_graph_policy(self) -> None:
+        """Benchmark payload normalization should reject removed graph policies."""
         normalized = normalize_benchmark_config_overrides(
             {
-                "graph_policy": ["observed", "cagra_augmented", "observed"],
+                "graph_policy": ["observed", "observed"],
             },
         )
 
         self.assertEqual(normalized["graph_policy"], "observed")
         self.assertEqual(
             normalized["graph_policy_options"],
-            ["observed", "cagra_augmented"],
+            ["observed"],
         )
+        with self.assertRaisesRegex(ValueError, "graph_policy\\[1\\]"):
+            normalize_benchmark_config_overrides(
+                {
+                    "graph_policy": ["observed", "augmented"],
+                },
+            )
 
     def test_normalize_benchmark_config_overrides_supports_preprocessing_sweeps(self) -> None:
         """Benchmark payload normalization should expand preprocessing sweep lists safely."""
@@ -2842,13 +2832,13 @@ class BenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(plan[: len(expected_prefix)], expected_prefix)
         self.assertEqual(len(plan), 8)
 
-    def test_build_benchmark_plan_sweeps_graph_policies(self) -> None:
-        """Benchmark planning should expand graph-policy sweeps into separate runs."""
+    def test_build_benchmark_plan_keeps_observed_graph_policy(self) -> None:
+        """Benchmark planning should keep the only supported graph policy."""
         args = SimpleNamespace(
             datasets=["movielens1m"],
             presets=["edgrec"],
             graph_policy="observed",
-            graph_policy_options=["observed", "cagra_augmented"],
+            graph_policy_options=["observed"],
             num_neighbors=[10, 5],
             lr_scheduler="plateau",
         )
@@ -2859,14 +2849,6 @@ class BenchmarkPlanTests(unittest.TestCase):
             plan,
             [
                 ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5)),
-                (
-                    "movielens1m",
-                    "edgrec",
-                    "plateau",
-                    None,
-                    "cagra_augmented",
-                    (10, 5),
-                ),
             ],
         )
 
@@ -2933,7 +2915,7 @@ class BenchmarkPlanTests(unittest.TestCase):
             presets=["edgrec"],
             num_neighbors={
                 "small": [[6, 3], [4, 2]],
-                "medium": [[10, 5], [16, 8]],
+                "medium": [[10, 5], [8, 4], [6, 3], [4, 2]],
             },
             lr_scheduler="plateau",
         )
@@ -2954,10 +2936,10 @@ class BenchmarkPlanTests(unittest.TestCase):
             plan,
         )
         self.assertIn(
-            ("kuairand1k", "edgrec", "plateau", None, "observed", (16, 8)),
+            ("kuairand1k", "edgrec", "plateau", None, "observed", (10, 5)),
             plan,
         )
-        self.assertEqual(len(plan), 8)
+        self.assertEqual(len(plan), 12)
 
     def test_build_benchmark_plan_resolves_all_lr_schedulers(self) -> None:
         """The lr_scheduler='all' shorthand should expand to all supported schedulers."""
