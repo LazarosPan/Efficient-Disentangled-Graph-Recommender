@@ -52,13 +52,14 @@ Precedence:
 
 | Group | Fields | Current meaning |
 | --- | --- | --- |
-| Graph build | `graph_policy`, `cagra_k`, `cagra_out_degree`, `cagra_initial_degree`, `cagra_team_size`, `cagra_metric`, `cagra_itopk_size` | Controls observed-vs-augmented training graph construction. |
-| Eval prefilter | `cagra_candidate_k` | Optional evaluation-only ANN candidate filter; `0` means full-catalog scoring. |
+| Graph build | `graph_policy` | Observed train-interaction graph only. |
+| Item universe | `item_universe_policy` | Compacts loaded interactions before graph/model construction; KuaiRand thesis-scale runs use randomized-exposure or observed-interaction item universes instead of all catalog IDs. |
 | Model depth | `single_branch_gnn_layers`, `interest_gnn_layers`, `conformity_gnn_layers`, `num_neighbors` | Couples propagation depth to sampled fan-out. |
 | Score fusion | `use_learned_score_mix`, `score_weight_interest`, `score_weight_conformity`, `score_weight_popularity`, `score_mix_min_weight`, `use_popularity_head` | Sets preset-owned priors and learned-vs-fixed fusion; baselines keep fixed mixing while `preset_full()` keeps learned `score_mix_weights`, and `score_mix_min_weight` applies only to learned components available by the model/data contract. |
 | Item branch capacity | `separate_item_branch_embeddings` | Default `False` keeps one shared item table; `True` gives dual-branch EDGRec explicit interest/conformity item tables while retaining `"item"` fallback compatibility. |
 | Loss and schedule | `loss_weight_*`, `branch_loss_mode`, `dice_mask_reduction`, `recommendation_loss_mode`, `auxiliary_loss_schedule`, `auxiliary_ramp_rate`, `independence_ramp_rate`, `distance_correlation_max_pairs`, `contrastive_max_pairs`, `contrastive_temperature`, `uniformity_max_pairs`, `uniformity_temperature`, `use_conformity_au`, `loss_weight_propensity_calibration`, `loss_normalization` | Enables auxiliaries, selects symmetric-vs-DICE branch supervision, sets masked-DICE reduction scale, caps quadratic auxiliary estimators, controls how weights activate, and optionally normalizes auxiliaries with detached EMA denominators. |
 | Training mode | `training_graph_mode`, `negative_sampling_strategy`, `n_negatives`, `dice_sampler_margin`, `dice_sampler_pool`, `dice_branch_margin`, `dice_loss_decay`, `dice_margin_decay`, `dice_adaptive_decay` | Selects sampled-subgraph vs full-graph training and standard vs DICE popularity-conditioned negative sampling. |
+| Optimizer memory | `embedding_optimizer`, `train_edge_keep_prob`, `use_popularity_emb` | Splits giant embedding tables from dense AdamW when requested, applies split-safe observed-edge dropout to propagation edges only, and avoids per-item popularity embeddings on large profiles. |
 | Propensity | `use_ipw`, `propensity_hidden`, `propensity_clip_min`, `propensity_clip_max` | Controls the item-side propensity estimator; `use_ipw=True` requires positive `loss_weight_propensity_calibration`. |
 | Runtime | `batch_size`, `auto_batch_size`, `batch_size_candidates`, `epochs`, `patience`, `use_early_stopping`, `use_amp`, `use_torch_compile`, `use_ema`, `lr_scheduler` | Controls optimization and execution behavior. CUDA runs default to `bfloat16` AMP; experiment CLIs do not expose a separate public AMP mode; eval cutoffs come from `Evaluator`. |
 | Data | `dataset`, `preprocessing_preset`, `feature_policy`, `derived_split_mode`, `sample_interactions`, `loader_max_rows`, `seed` | Controls loader behavior, split derivation, and tiny-run caps. |
@@ -66,8 +67,11 @@ Precedence:
 ## Defaults worth remembering
 
 - `graph_policy="observed"` is the default thesis path.
-- `cagra_k=32`, `cagra_out_degree=64`, `cagra_initial_degree=128`, `cagra_team_size=0`, `cagra_metric="inner_product"`, and `cagra_itopk_size=64` are the default CAGRA graph/search settings. They follow the CAGRA fixed-degree guidance while keeping the metric aligned with dot-product recommender scores.
-- `cagra_candidate_k=0` means evaluation scores the full catalog.
+- CAGRA graph augmentation is not a supported config path.
+- CAGRA config fields and CAGRA Optuna spaces are removed from the Python runtime; do not reintroduce ANN graph augmentation as a training-speed mechanism.
+- `item_universe_policy="observed_interaction_items"` is the default; KuaiRand thesis-scale profiles override to `random_exposure_items_only` where the randomized-exposure diagnostic is intended.
+- `embedding_optimizer="adamw"` keeps the old dense optimizer path; `"sparseadam"` and `"sgd"` split embedding tables into a separate low-state optimizer path for sampled EDGRec training.
+- `train_edge_keep_prob=1.0` keeps all observed train edges; lower values drop only propagation/sampling edges and do not remove labels or split membership.
 - The dataclass default schedule is `phased`, but `preset_full()` switches to `linear_ramp`.
 - The dataclass default `propensity_clip_min` is `0.01`; `preset_full()` raises it to `0.1`.
 - `use_ipw=False` is the dataclass and preset default. IPW must be explicitly enabled with `loss_weight_propensity_calibration > 0`.
@@ -82,7 +86,6 @@ Precedence:
 - Dataclass batch default: `batch_size=4096`, `auto_batch_size=True`, candidates `[16384,8192,4096,2048,1024,512,256]`.
 - Core search overrides candidates to `[32768,16384,8192,4096,2048,1024,512,256]`.
 - In `edgrec-core-optimization`, `batch_size` is runtime metadata when auto-batch is active and `batch_size` is not a sampled parameter.
-- In `edgrec-cagra-ablation`, `auto_batch_size=false`; `batch_size` is sampled exactly with CAGRA settings.
 - Too-large CUDA batches are rejected by probe/verification/fallback and retried at smaller candidates.
 - Auto-batch recovery checks candidate checkpoint identities before probing CUDA again.
 - EDGRec search is coarse-to-focused: completed datasets can narrow basins; KuaiRand stays broader until fresh local evidence exists.
@@ -109,8 +112,6 @@ Precedence:
 | --- | --- | --- | --- | --- | --- |
 | `edgrec-core-optimization` | `core-edgrec-mainline` | core 4; start diagnostics with MovieLens1M and KuaiRec_v2 | `ValidationOnlineCRRU@20_40` | TPE seed 42, startup 4; Hyperband min 6, factor 3, bootstrap 1 | `max_epochs=60`, `trials=8`, auto-batch runtime-only, tunes `dice_mask_reduction`, `feature_gate_init`, `n_negatives`, branch weights, context/feature shortcuts; `hard_negative_ratio` excluded for DICE |
 | `edgrec-mechanism-coarse` | `core-edgrec-mainline` | KuaiRec_v2, MovieLens1M, KuaiRand1K; no AmazonBook broad pass | `ValidationAccuracy@20_40` | TPE seed 42, startup 40; Hyperband min 6, factor 3, bootstrap 1 | `max_epochs=60`, `trials=120`, `parameters` declare profile labels and sibling `profile_overrides` maps them to concrete score-fusion, item-branch, context/feature, loss, and graph-depth config overrides before `EDGRecConfig` is built; dataset-local scalar overrides cover MovieLens `lr=0.005`/score floor `0.1` and wider KuaiRand DICE margins |
-| `edgrec-cagra-accuracy-ablation` | `core-edgrec-mainline` | KuaiRec_v2, MovieLens1M, KuaiRand1K | `ValidationAccuracy@20_40` | TPE seed 42, startup 8; Hyperband min 6, factor 3, bootstrap 1 | `max_epochs=60`, `trials=24`, compares `graph_policy=observed` and `cagra_augmented` plus optional `cagra_candidate_k` |
-| `edgrec-cagra-ablation` | `core-edgrec-mainline` | core 4 | `ValidationOnlineCRRU@20_40` | TPE seed 42, startup 8; Hyperband min 15, factor 3, bootstrap 4 | `max_epochs=90`, `trials=16`, exact sampled `batch_size`, CAGRA graph/eval knobs |
 
 ## Experiment-facing contract
 
@@ -120,4 +121,4 @@ Precedence:
 - Formal profiles may sweep `num_neighbors`, `graph_policy`, or preprocessing presets as lists, but each resolved run still receives one concrete value in the final `EDGRecConfig`.
 - The default formal profile is `core-edgrec-mainline` and targets the practical core datasets: `amazonbook`, `movielens1m`, `kuairec_v2`, and `kuairand1k`. Development, preprocessing-sweep, runtime-probe, `taobao`, and `movielens20m` profiles remain explicit instead of default catalog entries.
 - Public ablation variants start from `preset_full()`: `mainline`, `with_contrastive`, `no_popularity_head`, `no_independence`, and `no_features`. `with_contrastive` is the only additive variant; it enables the bounded DCCL-style branch contrastive auxiliary that remains off in the default mainline.
-- CAGRA is not part of the default core or mechanism Optuna spaces because `graph_policy="cagra_augmented"` changes the training graph and `cagra_candidate_k > 0` changes evaluation candidate coverage. Use `edgrec-cagra-accuracy-ablation` or `edgrec-cagra-ablation` for that systems/retrieval ablation, and keep `cagra_candidate_k=0` as the full-catalog baseline for formal ranking tables.
+- CAGRA graph augmentation and CAGRA-specific Optuna spaces are removed. They did not target the current training-time VRAM/epoch bottleneck, and no CAGRA config field is part of the active Python runtime.

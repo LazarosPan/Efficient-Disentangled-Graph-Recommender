@@ -12,6 +12,7 @@ Use this file for current thesis result interpretation. Truth source: `results/t
 | Conflict rule | If this file disagrees with either generated report, the generated report wins; update this file rather than carrying stale interpretation forward. |
 | Thesis wording | Every result explanation must tie a metric pattern to one of the two reports, then state the boundary: formal row, runtime probe, search candidate, imported trial, or diagnostic-only evidence. |
 | Optuna caution | Do not use mixed, imported, or unrevisioned Optuna rows as strong thesis evidence; use fresh same-revision importances for strong search claims and formal reruns for final test claims. |
+| Optuna figures | Default Optuna figures aggregate all loaded source studies by dataset using runtime-aware `ValidationOnlineCRRU@20_40`; thesis-facing plots call it the validation CRRU selection score, gold stars mark selected trials, black diamonds mark fan-out medians, gray importance cells mean no detected association, and branch-depth cells marked `n*` have fewer than 10 completed trials. The exporter writes PNG figures only and removes stale generated PNG/HTML artifacts before each run. |
 
 ## Evidence Status
 
@@ -105,5 +106,4 @@ Thesis-safe DICE statement: "Paper-faithful DICE is orders of magnitude slower p
 | Fresh revisioned Optuna summaries | Avoid using mixed search-space history as thesis evidence. |
 | Per-dataset branch diagnostic writeup | Explain why score mix and branch rank differ by dataset. |
 | Runtime-normalized comparison table | Separate per-epoch speed, total training time, VRAM, and accuracy. |
-| CRRU weight sensitivity table | Show conclusions are not an artifact of one preference vector. |
-| Pareto/frontier view | Plot accuracy vs efficiency with popularity-diversity marker/color before relying on one scalar utility. |
+| Pareto/frontier view | Use the selection-frontier PNG and component-response PNG before relying on one scalar utility. |

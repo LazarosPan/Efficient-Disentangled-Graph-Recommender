@@ -37,7 +37,7 @@ Runtime path: embeddings/metadata -> graph propagation -> refined scorer -> opti
 | Propensity layer | `PropensityEstimator` | Optional two-layer MLP over propagated item embeddings, clipped to `[propensity_clip_min, propensity_clip_max]`. |
 | Shared model helpers | `src/models/common.py` | Owns cross-model helper functions such as module dtype lookup and the training payload dictionary consumed by `LossSuite`. |
 | Orchestrator | `EDGRec` | Wires the embedding, propagation, scoring, and optional propensity layers together for subgraph training and full-graph evaluation. |
-| Paper baselines | `PaperLightGCN`, `PaperGCNDICE` | Separate canonical adapters for LightGCN and the DICE paper's GCN-DICE variant. They do not use `EmbeddingModule`, `ScoringModule`, CAGRA augmentation, side features, or EDGRec-specific score mixing. |
+| Paper baselines | `PaperLightGCN`, `PaperGCNDICE` | Separate canonical adapters for LightGCN and the DICE paper's GCN-DICE variant. They do not use `EmbeddingModule`, `ScoringModule`, side features, or EDGRec-specific score mixing. |
 
 ## Embedding and propagation rules
 
@@ -68,7 +68,7 @@ Item branch capacity:
 
 - Default `separate_item_branch_embeddings=False`: one shared `item_embed`; raw embeddings may expose only `"item"`, and dual-branch propagation fans it into `"item_interest"` and `"item_conformity"`.
 - Optional `separate_item_branch_embeddings=True`: dual-branch EDGRec creates `item_interest_embed` and `item_conformity_embed`, initializes both like the shared item table, exposes explicit branch item tensors, and keeps `"item"` as a stable fallback.
-- `get_stacked_embeddings()` uses the interest item branch when explicit branch item tables exist, preserving a deterministic CAGRA/bootstrap graph embedding choice.
+- `get_stacked_embeddings()` uses the interest item branch when explicit branch item tables exist, preserving a deterministic stacked embedding view.
 
 ## Score fusion
 

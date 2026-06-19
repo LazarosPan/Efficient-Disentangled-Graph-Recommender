@@ -25,7 +25,7 @@ Use this file for thesis-facing rationale: which literature-backed ideas justify
 | DDCE / MGCE / MCLN | Popularity, quality, conformity, multimodal, and counterfactual signals can help, but noise/depth/counterfactual overhead are risks. | Item-only context head, safe feature policy, feature gates initialized near zero. | Side features are not assumed universally causal. |
 | DCCL / DirectAU | Contrastive and geometry objectives can help representation quality but add `O(B^2 d)` or pairwise-distance cost. | Contrastive/DirectAU terms are implemented, capped, and disabled by default. | They are not part of the default mainline contribution unless enabled. |
 | Full-graph vs mini-batch GNN training | Full graph is a mini-batch limit; tuned batch/fan-out can improve throughput and trade off generalization. | Sampled subgraph EDGRec default; full-graph paper baselines remain fidelity references. | Faster training is partly a training-protocol contribution. |
-| CAGRA / PANORAMA | ANN/retrieval systems can give large graph/search speedups but have memory/layout constraints. | Optional CAGRA graph/eval ablation and retrieval-speed hypothesis. | CAGRA changes graph/candidate semantics and must be reported separately. |
+| CAGRA / PANORAMA | ANN/retrieval systems can give large graph/search speedups but have memory/layout constraints. | Background only for current EDGRec training; CAGRA graph augmentation was removed. | ANN indexing does not reduce LightGCN message-passing cost when materialized as extra training edges. |
 
 ## Thesis-Safe Framing
 
@@ -50,7 +50,7 @@ Use this file for thesis-facing rationale: which literature-backed ideas justify
 | LightGCN++ and LayerGCN show that simple LightGCN-family kernel changes can affect accuracy and depth sensitivity; over-smoothing remains a recurring depth limit. | EDGRec keeps shallow asymmetric branch depths by default: interest 1, conformity 2; deeper runs are explicit diagnostics. | `edgrec-config.md` |
 | Full-graph training is a special mini-batch limit; literature reports that tuned mini-batch/fan-out can improve throughput and sometimes trade off accuracy/generalization better than full graph. | EDGRec uses sampled subgraph training by default; paper baselines lock full-graph training to preserve fidelity. | `edgrec-training.md` |
 | For sparse graphs, the performance summary recommends fan-out under 15 as a practical threshold. | Default EDGRec `num_neighbors=[10,5]`; formal comparisons use small explicit fan-out sweeps. | `edgrec-config.md` |
-| CAGRA reports high GPU ANN graph construction/query throughput, but is memory-bandwidth and device-memory constrained. | CAGRA is optional graph/eval ablation; not part of default formal ranking tables. | `edgrec-data-pipeline.md`, `edgrec-config.md` |
+| CAGRA reports high GPU ANN graph construction/query throughput, but is memory-bandwidth and device-memory constrained. | Not part of EDGRec training/search spaces; graph augmentation was removed after OOM evidence. | `edgrec-data-pipeline.md`, `edgrec-config.md` |
 | Propensity methods such as CausE/PropCare require randomized or propensity/effect evidence; surveys warn propensity correctness is hard to validate. | KuaiRand `show_cnt` can calibrate propensity targets; default scorer zero-fills propensity context unless explicit calibrated IPW is active. | `edgrec-data-pipeline.md`, `edgrec-architecture.md` |
 | DDCE/MGCE/MCLN/FMMRec split interest, conformity, popularity, quality, modality, or fairness signals; several papers report multimodal noise and depth sensitivity. | EDGRec includes safe item-feature gates initialized near zero; side features start as weak optional evidence, not dominant signal. | `edgrec-architecture.md`, `edgrec-config.md` |
 | Causal-rec surveys use standard ranking metrics plus causal metrics; they warn ranking accuracy can improve while causal quality degrades. | Thesis reports PyG ranking metrics plus bias/resource diagnostics; CRRU is explicitly resource-aware utility, not causal effect. | `edgrec-training.md`, `edgrec-result-analysis.md` |
@@ -62,7 +62,7 @@ Use this file for thesis-facing rationale: which literature-backed ideas justify
 | Architecture | LightGCN + DICE + DDCE/MGCE-style explicit popularity path | Dual LightGCN-style branches plus item-only context head and learned bounded score mixing. |
 | Causal supervision | DICE branch triplets and discrepancy; DCCL/DirectAU geometry as optional add-ons | DICE branch losses are default; contrastive/DirectAU terms are available but disabled unless explicitly tested. |
 | Leakage control | Survey warnings about post-treatment features and exposure bias | `thesis_default` feature policy; train-only popularity/recency; explicit propensity-gate rules. |
-| Systems path | Full-graph vs mini-batch GNN literature; CAGRA systems papers | Sampled subgraphs, auto-batch, vectorized negative sampling, bounded pairwise losses, optional ANN ablations. |
+| Systems path | Full-graph vs mini-batch GNN literature; ANN systems papers | Sampled subgraphs, auto-batch, vectorized negative sampling, bounded pairwise losses. |
 | Evaluation | Ranking metrics plus bias/resource diagnostics | NDCG/Recall/Hit/AvgPop/Personalization plus dataset-local CRRU; no causal-effect metric claim. |
 
 ## Contribution Hypotheses
@@ -82,7 +82,7 @@ Use this file for thesis-facing rationale: which literature-backed ideas justify
 | EDGRec equal/slightly worse accuracy but much faster | "EDGRec offers a resource-efficiency trade-off; contribution is systems/practical, not accuracy SOTA." |
 | EDGRec lower popularity but lower accuracy | "The model shifted recommendations away from popular items, but the trade-off hurt ranking utility." |
 | DICE only has runtime probes | "DICE paper-faithful training appears computationally impractical under current hardware/profile; accuracy comparison remains open." |
-| CAGRA improves speed | "ANN acceleration is an explicit retrieval/graph ablation; it changes candidate coverage or graph construction and must be reported separately." |
+| CAGRA improves EDGRec training speed | "CAGRA is not used as an EDGRec training accelerator; materialized ANN edges increase the message-passing graph." |
 
 ## Open Thesis Evidence Gaps
 

@@ -19,15 +19,11 @@ Use this file for the live data contract: loader registry, canonical interaction
 ```mermaid
 flowchart LR
     A[load_dataset] --> B[CanonicalInteractions]
-    B --> C[build_graph embeddings_none]
-    C --> D{graph_policy}
-    D -->|observed| E[Runtime graph]
-    D -->|cagra_augmented| F[Bootstrap embeddings]
-    F --> G[build_graph embeddings_present]
-    G --> E
+    B --> C[build_graph]
+    C --> D[Observed train graph]
 ```
 
-Boundary: loaders emit `CanonicalInteractions`; graph build starts from observed train positives; CAGRA augments only after observed-graph bootstrap embeddings exist.
+Boundary: loaders emit `CanonicalInteractions`; graph build uses observed train positives only.
 
 ## Loader boundary
 
@@ -84,6 +80,16 @@ Split/repeat/sampling rules:
 | `sample_canonical_interactions()` | tiny-run sampling owner |
 | tiny samples | preserve split coverage; remap IDs; recompute popularity; slice all aligned fields |
 
+Item-universe compaction:
+
+| Policy | Contract |
+| --- | --- |
+| `all_catalog_items` | Keep loader cardinality exactly as emitted; use only for stress tests or compatibility checks. |
+| `observed_interaction_items` | Keep all selected interactions but remap user/item IDs and item-aligned arrays to the observed interaction universe. |
+| `random_exposure_items_only` | KuaiRand-only randomized-exposure diagnostic; filters to rows with `exposure_flag=True`, then remaps interactions, item features, propensity targets, split masks, and metadata. |
+
+`item_propensity_targets` such as KuaiRand `show_cnt` are sliced after item compaction. They must not define the embedding-table cardinality.
+
 ## Feature policy
 
 - `thesis_default` loads only safe pre-treatment features from the structured registry.
@@ -107,8 +113,7 @@ Purpose: daily files cannot overwrite thesis-default static descriptors or reint
 
 | `graph_policy` | Path | Current behavior |
 | --- | --- | --- |
-| `observed` | `load_runtime_data()` -> `build_graph(..., embeddings=None)` | Uses only train-split interaction edges. |
-| `cagra_augmented` | `load_runtime_data()` -> bootstrap embeddings -> `build_graph(..., embeddings=...)` | Keeps observed train edges and adds neutral ANN edges from CAGRA. |
+| `observed` | `load_runtime_data()` -> `build_graph(...)` | Uses only train-split interaction edges. |
 
 Current graph rules:
 
@@ -118,7 +123,7 @@ Current graph rules:
 - `build_graph()` always recomputes `data.popularity` from positive rows in the final training split.
 - `build_graph()` precomputes `data.edge_norm` once, so training and evaluation share the same degree normalization.
 - Optional canonical payloads are copied onto the PyG `Data` object through one shared boundary helper.
-- `cagra_augmented` is strict: it requires item features and raises on CAGRA failures instead of silently degrading.
+- CAGRA graph augmentation is removed. It materialized ANN edges into the GNN training graph and did not solve the training-time VRAM/epoch bottleneck.
 
 ## Train-derived user history and exposure context
 

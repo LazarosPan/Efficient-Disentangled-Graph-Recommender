@@ -20,12 +20,7 @@ Integration map only. Use owner docs for details. Keep this file dense and non-d
 flowchart LR
     A[build_config] --> B[load_dataset]
     B --> C[CanonicalInteractions]
-    C --> D[build_graph embeddings_none]
-    D --> E{graph_policy}
-    E -->|observed| F[Runtime graph]
-    E -->|cagra_augmented| G[Bootstrap embeddings]
-    G --> H[build_graph embeddings_present]
-    H --> F
+    C --> F[build_graph observed train positives]
     C --> I[item_propensity_targets optional]
     F --> J[build_runtime_model]
     J --> K[MiniBatchTrainer and LossSuite]
@@ -79,7 +74,7 @@ Runtime invariants:
 | `src/data/loaders/_registry.py` | dataset registry and default preprocessing presets |
 | `src/data/canonical.py` | canonical interaction schema, split logic, tiny-run sampling, item recency |
 | `src/data/feature_policy.py` | safe-vs-optional feature registry |
-| `src/data/graph_builder.py` | graph construction, optional field transfer, train-only popularity, CAGRA augmentation |
+| `src/data/graph_builder.py` | observed graph construction, optional field transfer, train-only popularity |
 | `src/data/subgraph_sampler.py` | sampled k-hop subgraph extraction |
 | `src/data/negative_sampler.py` | vectorized negative sampling |
 | `src/models/common.py` | shared model helpers and training payload packaging |
@@ -99,6 +94,6 @@ Runtime invariants:
 | `experiments/run_search.py` | Optuna search controller |
 | `experiments/ablation_configs.py` | thesis-facing ablation variants |
 | `src/utils/experiment_logger.py` | SQLite experiment store |
-| `src/utils/crru.py` | CRRU and online-validation CRRU utilities |
+| `src/utils/crru.py` | CRRU and OnlineCRRU utilities |
 | `scripts/query_results.py` | SQLite-first result inspection |
 | `scripts/quick_validate.py` | smoke validation entry point |

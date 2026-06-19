@@ -98,9 +98,9 @@ Important runtime details:
   `TrialPruned` when the configured Optuna pruner stops an unpromising trial.
   Normal experiment, formal-run, and baseline paths leave this callback unset,
 - Optuna objectives are validation-only. `ValidationAccuracy@20_40` is the broad
-  discovery objective for the coarse mechanism search; `ValidationOnlineCRRU@20_40`
-  remains available for CRRU-oriented spaces and trial diagnostics when the full
-  metric family is present,
+  discovery objective for the coarse mechanism search; every completed search row
+  should still store `ValidationOnlineCRRU@20_40` diagnostics so reports and figures
+  can compare all source studies through one OnlineCRRU validation objective,
 - `search-experiments --trials N` targets N fresh informative finished trials for the
   current `search_space_revision`: fresh `COMPLETE` plus trainer/pruner-generated
   `PRUNED`, excluding `FAIL`, `RUNNING`, historically imported rows, duplicate-skip
@@ -170,9 +170,7 @@ Current evaluation rules:
 - validation logs only the thesis-primary metrics; refined scorer diagnostics are reserved for the final post-training test pass,
 - do not reintroduce custom Novelty, TrainPop Avoidance, item-pop IoU, or other paper-nonstandard ranking outputs unless a paper-faithful definition is implemented and justified,
 - default thesis outputs stay PyG-standard plus easy-to-defend diagnostics,
-- split-specific ground-truth and exclusion dictionaries are cached by mask identity,
-- `cagra_candidate_k` optionally restricts scoring to ANN candidates on CUDA; cuVS neighbor IDs are normalized to `torch.long`, invalid unsigned sentinels are filtered before CUDA indexing, and empty ANN rows fall back to full-catalog scoring.
-- If `cagra_candidate_k > 0`, CAGRA is an explicit runtime requirement. The evaluator raises instead of silently falling back to full-catalog scoring, because otherwise the recorded config would claim ANN filtering while the metric was computed without it.
+- split-specific ground-truth and exclusion dictionaries are cached by mask identity.
 
 Diagnostic rules:
 
@@ -193,7 +191,7 @@ Diagnostic rules:
 
 Quick validation uses larger tiny caps for sparse-positive Taobao and KuaiRand slices so label-aware validation/test splits contain positive targets.
 
-`cagra_candidate_k` is evaluation-only. It is separate from `graph_policy="cagra_augmented"`, which changes the training graph itself.
+CAGRA evaluation filtering and CAGRA graph augmentation are not part of the active runtime. Training memory work is owned by item-universe compaction, sparse/low-state embedding optimizers, bounded fan-out, and observed-edge dropout.
 
 ## CRRU reporting utility
 
@@ -262,7 +260,7 @@ Optuna CRRU:
 
 | Item | Contract |
 | --- | --- |
-| Live objective | `ValidationOnlineCRRU@20_40` |
+| Live/default report metric | `ValidationOnlineCRRU@20_40` |
 | Per-K attrs | `ValidationOnlineCRRU@20`, `ValidationOnlineCRRU@40` |
 | Accuracy/popularity-diversity inputs | validation NDCG, Recall, Hit, Personalization |
 | Lower-cost inputs | validation AveragePopularity, peak VRAM, seconds/epoch |
@@ -270,6 +268,8 @@ Optuna CRRU:
 | Report CRRU | recomputed after completed rows exist; not live objective |
 | Search shape | short second-pass screen; Hyperband pruning; no exhaustive grid |
 | Depth guard | four-hop excluded unless separate deep diagnostic justifies cost/risk |
+
+Naming note: `OnlineCRRU` means Optuna-safe single-trial CRRU-style objective on the validation split. It includes validation ranking/popularity metrics, seconds/epoch, and peak VRAM; it is not an online-serving or A/B-test metric.
 
 ## Checkpoints and identity
 
