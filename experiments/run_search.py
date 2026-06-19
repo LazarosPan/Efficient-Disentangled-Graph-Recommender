@@ -96,6 +96,9 @@ SEARCH_PARAMETER_FIELDS = frozenset(
         "conformity_gnn_layers",
         "dropout",
         "n_negatives",
+        "embedding_optimizer",
+        "train_edge_keep_prob",
+        "item_universe_policy",
         "score_mix_min_weight",
         "score_fusion_profile",
         "item_branch_profile",
@@ -122,13 +125,6 @@ SEARCH_PARAMETER_FIELDS = frozenset(
         "auxiliary_losses_start_epoch",
         "popularity_supervision_start_epoch",
         "graph_policy",
-        "cagra_k",
-        "cagra_out_degree",
-        "cagra_initial_degree",
-        "cagra_team_size",
-        "cagra_metric",
-        "cagra_itopk_size",
-        "cagra_candidate_k",
         "hard_negative_ratio",
         "dice_sampler_margin",
         "dice_mask_reduction",
@@ -166,20 +162,6 @@ PHASED_ONLY_PARAMETER_FIELDS = frozenset(
     {
         "auxiliary_losses_start_epoch",
         "popularity_supervision_start_epoch",
-    },
-)
-CAGRA_GRAPH_ONLY_PARAMETER_FIELDS = frozenset(
-    {
-        "cagra_k",
-    },
-)
-CAGRA_SEARCH_PARAMETER_FIELDS = frozenset(
-    {
-        "cagra_out_degree",
-        "cagra_initial_degree",
-        "cagra_team_size",
-        "cagra_metric",
-        "cagra_itopk_size",
     },
 )
 
@@ -1129,15 +1111,6 @@ def _parameter_is_conditionally_active(
         return schedule == "linear_ramp"
     if field_name in PHASED_ONLY_PARAMETER_FIELDS:
         return schedule == "phased"
-    graph_policy = str(sampled_params.get("graph_policy", "observed"))
-    try:
-        cagra_candidate_k = int(sampled_params.get("cagra_candidate_k", 0) or 0)
-    except (TypeError, ValueError):
-        cagra_candidate_k = 0
-    if field_name in CAGRA_GRAPH_ONLY_PARAMETER_FIELDS:
-        return graph_policy == "cagra_augmented"
-    if field_name in CAGRA_SEARCH_PARAMETER_FIELDS:
-        return graph_policy == "cagra_augmented" or cagra_candidate_k > 0
     return True
 
 

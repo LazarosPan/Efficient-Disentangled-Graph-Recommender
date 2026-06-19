@@ -508,6 +508,136 @@ def _slice_metadata(
     return sliced
 
 
+def _remap_canonical_subset(
+    canonical: CanonicalInteractions,
+    selected: np.ndarray,
+    *,
+    train_mask: np.ndarray | None = None,
+    val_mask: np.ndarray | None = None,
+    test_mask: np.ndarray | None = None,
+    metadata_overrides: dict | None = None,
+) -> CanonicalInteractions:
+    """Return a canonical subset with compact user/item IDs.
+
+    Args:
+        canonical: Source canonical dataset.
+        selected: Absolute interaction row indices to keep.
+        train_mask: Optional train mask aligned to ``selected``.
+        val_mask: Optional validation mask aligned to ``selected``.
+        test_mask: Optional test mask aligned to ``selected``.
+        metadata_overrides: Extra metadata entries to merge into the result.
+
+    Returns:
+        CanonicalInteractions with user/item-aligned arrays remapped to the
+        selected interaction universe.
+
+    """
+    selected = np.asarray(selected, dtype=np.int64)
+    if selected.ndim != 1:
+        raise ValueError("selected must be a 1-D interaction index array")
+    if selected.size == 0:
+        raise ValueError("Cannot build a canonical subset with no interactions")
+
+    from ..utils.interaction_indexing import compute_normalized_popularity
+
+    selected_users, user_inverse = np.unique(
+        canonical.user_id[selected],
+        return_inverse=True,
+    )
+    selected_items, item_inverse = np.unique(
+        canonical.item_id[selected],
+        return_inverse=True,
+    )
+
+    reverse_user_map = {value: key for key, value in canonical.user_map.items()}
+    reverse_item_map = {value: key for key, value in canonical.item_map.items()}
+    subset_metadata = _slice_metadata(
+        canonical.metadata,
+        canonical,
+        selected,
+        selected_users,
+        selected_items,
+    )
+    if metadata_overrides:
+        subset_metadata = dict(subset_metadata or {})
+        subset_metadata.update(metadata_overrides)
+
+    return replace(
+        canonical,
+        user_id=user_inverse.astype(np.int64, copy=False),
+        item_id=item_inverse.astype(np.int64, copy=False),
+        label=canonical.label[selected],
+        timestamp=canonical.timestamp[selected],
+        sign=canonical.sign[selected],
+        raw_target=_slice_optional(canonical.raw_target, selected),
+        behavior_type=_slice_optional(canonical.behavior_type, selected),
+        exposure_flag=_slice_optional(canonical.exposure_flag, selected),
+        source_domain=_slice_optional(canonical.source_domain, selected),
+        repeat_count=_slice_optional(canonical.repeat_count, selected),
+        repeat_mean_target=_slice_optional(canonical.repeat_mean_target, selected),
+        repeat_max_target=_slice_optional(canonical.repeat_max_target, selected),
+        repeat_latest_target=_slice_optional(canonical.repeat_latest_target, selected),
+        repeat_first_timestamp=_slice_optional(canonical.repeat_first_timestamp, selected),
+        repeat_last_timestamp=_slice_optional(canonical.repeat_last_timestamp, selected),
+        repeat_behavior_counts=_slice_optional(canonical.repeat_behavior_counts, selected),
+        repeat_behavior_labels=canonical.repeat_behavior_labels,
+        item_propensity_targets=_slice_optional(
+            canonical.item_propensity_targets,
+            selected_items,
+        ),
+        popularity=compute_normalized_popularity(
+            item_inverse.astype(np.int64, copy=False),
+            len(selected_items),
+        ),
+        n_users=len(selected_users),
+        n_items=len(selected_items),
+        user_map={
+            reverse_user_map[int(old_id)]: new_id
+            for new_id, old_id in enumerate(selected_users.tolist())
+        },
+        item_map={
+            reverse_item_map[int(old_id)]: new_id
+            for new_id, old_id in enumerate(selected_items.tolist())
+        },
+        user_features=_slice_optional(canonical.user_features, selected_users),
+        item_features=_slice_optional(canonical.item_features, selected_items),
+        train_mask=train_mask,
+        val_mask=val_mask,
+        test_mask=test_mask,
+        metadata=subset_metadata,
+    )
+
+
+def filter_canonical_interactions(
+    canonical: CanonicalInteractions,
+    interaction_mask: np.ndarray,
+    *,
+    metadata_overrides: dict | None = None,
+) -> CanonicalInteractions:
+    """Return a remapped canonical view selected by an interaction mask.
+
+    Args:
+        canonical: Source canonical dataset.
+        interaction_mask: Boolean mask aligned to source interactions.
+        metadata_overrides: Extra metadata entries for the filtered result.
+
+    Returns:
+        Compact canonical dataset containing only selected interactions.
+
+    """
+    if interaction_mask.shape[0] != len(canonical):
+        raise ValueError("interaction_mask must have one entry per interaction")
+    selected = np.flatnonzero(interaction_mask)
+    return _remap_canonical_subset(
+        canonical,
+        selected,
+        train_mask=canonical.train_mask[selected] if canonical.train_mask is not None else None,
+        val_mask=canonical.val_mask[selected] if canonical.val_mask is not None else None,
+        test_mask=canonical.test_mask[selected] if canonical.test_mask is not None else None,
+        metadata_overrides=metadata_overrides,
+    )
+
+
 def sample_canonical_interactions(
     canonical: CanonicalInteractions,
     sample_interactions: int | None,
@@ -534,8 +664,6 @@ def sample_canonical_interactions(
     """
     if sample_interactions is None or sample_interactions >= len(canonical):
         return canonical
-
-    from ..utils.interaction_indexing import compute_normalized_popularity
 
     rng = np.random.default_rng(seed)
     train_mask, val_mask, test_mask = canonical.get_splits(
@@ -569,67 +697,13 @@ def sample_canonical_interactions(
     selected_val = np.isin(selected, split_indices[1])
     selected_test = np.isin(selected, split_indices[2])
 
-    selected_users, user_inverse = np.unique(
-        canonical.user_id[selected],
-        return_inverse=True,
-    )
-    selected_items, item_inverse = np.unique(
-        canonical.item_id[selected],
-        return_inverse=True,
-    )
-
-    reverse_user_map = {value: key for key, value in canonical.user_map.items()}
-    reverse_item_map = {value: key for key, value in canonical.item_map.items()}
-    sampled_popularity = compute_normalized_popularity(
-        item_inverse.astype(np.int64, copy=False),
-        len(selected_items),
-    )
-
-    return replace(
+    return _remap_canonical_subset(
         canonical,
-        user_id=user_inverse.astype(np.int64, copy=False),
-        item_id=item_inverse.astype(np.int64, copy=False),
-        label=canonical.label[selected],
-        timestamp=canonical.timestamp[selected],
-        sign=canonical.sign[selected],
-        raw_target=_slice_optional(canonical.raw_target, selected),
-        behavior_type=_slice_optional(canonical.behavior_type, selected),
-        exposure_flag=_slice_optional(canonical.exposure_flag, selected),
-        source_domain=_slice_optional(canonical.source_domain, selected),
-        repeat_count=_slice_optional(canonical.repeat_count, selected),
-        repeat_mean_target=_slice_optional(canonical.repeat_mean_target, selected),
-        repeat_max_target=_slice_optional(canonical.repeat_max_target, selected),
-        repeat_latest_target=_slice_optional(canonical.repeat_latest_target, selected),
-        repeat_first_timestamp=_slice_optional(canonical.repeat_first_timestamp, selected),
-        repeat_last_timestamp=_slice_optional(canonical.repeat_last_timestamp, selected),
-        repeat_behavior_counts=_slice_optional(canonical.repeat_behavior_counts, selected),
-        item_propensity_targets=_slice_optional(
-            canonical.item_propensity_targets,
-            selected_items,
-        ),
-        popularity=sampled_popularity,
-        n_users=len(selected_users),
-        n_items=len(selected_items),
-        user_map={
-            reverse_user_map[int(old_id)]: new_id
-            for new_id, old_id in enumerate(selected_users.tolist())
-        },
-        item_map={
-            reverse_item_map[int(old_id)]: new_id
-            for new_id, old_id in enumerate(selected_items.tolist())
-        },
-        user_features=_slice_optional(canonical.user_features, selected_users),
-        item_features=_slice_optional(canonical.item_features, selected_items),
+        selected,
         train_mask=selected_train,
         val_mask=selected_val,
         test_mask=selected_test,
-        metadata=_slice_metadata(
-            canonical.metadata,
-            canonical,
-            selected,
-            selected_users,
-            selected_items,
-        ),
+        metadata_overrides={"sample_interactions": int(sample_interactions)},
     )
 
 

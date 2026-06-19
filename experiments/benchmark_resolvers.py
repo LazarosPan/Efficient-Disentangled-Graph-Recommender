@@ -75,6 +75,28 @@ def normalize_benchmark_preprocessing_override(
     return deduped[0], deduped if len(deduped) > 1 else None
 
 
+def resolve_benchmark_item_universe_policy_value(
+    benchmark_args: Mapping[str, object],
+    *,
+    dataset: str,
+) -> str | None:
+    """Return the item-universe policy for one dataset, supporting mappings."""
+    raw_value = benchmark_args.get("item_universe_policy")
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, Mapping):
+        for lookup_key in benchmark_dataset_lookup_keys(dataset):
+            selected = raw_value.get(lookup_key)
+            if selected is not None:
+                return str(selected)
+        available = ", ".join(sorted(str(key) for key in raw_value))
+        raise ValueError(
+            f"No item_universe_policy entry matches dataset '{dataset}'. "
+            f"Available keys: {available}",
+        )
+    return str(raw_value)
+
+
 def normalize_benchmark_num_neighbors_override(
     raw_value: object,
 ) -> list[list[int]] | dict[str, list[list[int]]] | None:
@@ -191,6 +213,7 @@ __all__ = [
     "normalize_benchmark_num_neighbors_override",
     "normalize_benchmark_preprocessing_override",
     "resolve_benchmark_graph_policy_values",
+    "resolve_benchmark_item_universe_policy_value",
     "resolve_benchmark_lr_scheduler_values",
     "resolve_benchmark_num_neighbor_values",
     "resolve_benchmark_preprocessing_preset_values",

@@ -86,6 +86,18 @@ def _training_resource_metric_values(
         yield "peak_vram_mb", float(peak_vram_mb)
 
 
+def _embedding_table_parameters(model: torch.nn.Module) -> list[torch.nn.Parameter]:
+    """Return trainable parameters owned by embedding-table modules."""
+    embedding = getattr(model, "embedding", None)
+    if embedding is None:
+        return []
+    params: list[torch.nn.Parameter] = []
+    for module in embedding.modules():
+        if isinstance(module, torch.nn.Embedding):
+            params.extend(param for param in module.parameters() if param.requires_grad)
+    return params
+
+
 def autocast_context(
     *,
     use_amp: bool,
@@ -265,9 +277,7 @@ class TrainerRuntime:
         self.propensity_targets = move_optional_tensor_to_device(
             getattr(data, "propensity_targets", None), self.device
         )
-        self.trainable_parameters = list(model.parameters()) + list(
-            loss_suite.parameters(),
-        )
+        self.trainable_parameters = list(model.parameters()) + list(loss_suite.parameters())
 
         # Separate sign-aware scalar parameters (alpha_pos / alpha_neg) from the
         # main parameter group.  On datasets with no signed interactions those
@@ -280,10 +290,30 @@ class TrainerRuntime:
             for attr in ("alpha_pos", "alpha_neg")
             for p in ([getattr(gcn, attr)] if gcn is not None and hasattr(gcn, attr) else [])
         ]
+        split_embedding_optimizer = (
+            config.baseline_family not in {"lightgcn_paper", "dice_paper"}
+            and config.embedding_optimizer in {"sparseadam", "sgd"}
+        )
+        embedding_params = _embedding_table_parameters(model) if split_embedding_optimizer else []
         sign_param_ids = {id(p) for p in sign_params}
-        main_params = [p for p in self.trainable_parameters if id(p) not in sign_param_ids]
+        embedding_param_ids = {id(p) for p in embedding_params}
+        main_params = [
+            p
+            for p in self.trainable_parameters
+            if id(p) not in sign_param_ids and id(p) not in embedding_param_ids
+        ]
 
+        self.embedding_optimizer: optim.Optimizer | None = None
         self.optimizer = self._build_optimizer(main_params, sign_params)
+        if embedding_params:
+            self.embedding_optimizer = self._build_embedding_optimizer(embedding_params)
+            logger.info(
+                "Embedding optimizer: %s for %d table parameter(s).",
+                self.config.embedding_optimizer,
+                len(embedding_params),
+            )
+        else:
+            logger.info("Embedding optimizer: adamw/shared dense optimizer.")
 
         self.scheduler = self._build_scheduler()
 
@@ -355,6 +385,19 @@ class TrainerRuntime:
             param_groups,
             lr=self.config.lr,
             fused=self.device.type == "cuda",
+        )
+
+    def _build_embedding_optimizer(
+        self,
+        embedding_params: list[torch.nn.Parameter],
+    ) -> optim.Optimizer:
+        """Build the configured optimizer for large embedding tables."""
+        if self.config.embedding_optimizer == "sparseadam":
+            return optim.SparseAdam(embedding_params, lr=self.config.lr)
+        if self.config.embedding_optimizer == "sgd":
+            return optim.SGD(embedding_params, lr=self.config.lr)
+        raise ValueError(
+            f"Unsupported split embedding_optimizer={self.config.embedding_optimizer!r}.",
         )
 
     def _build_scheduler(self) -> Any:
@@ -432,22 +475,83 @@ class TrainerRuntime:
         retain_graph: bool = False,
     ) -> None:
         """Apply the shared backward, clipping, and optimizer step sequence."""
-        self.optimizer.zero_grad(set_to_none=True)
+        for optimizer in self._optimizers():
+            optimizer.zero_grad(set_to_none=True)
         loss.backward(retain_graph=retain_graph)
-        torch.nn.utils.clip_grad_norm_(
-            self.trainable_parameters,
-            max_norm=self.config.grad_clip_norm,
-        )
-        self.optimizer.step()
+        self._clip_gradients()
+        for optimizer in self._optimizers():
+            optimizer.step()
         if self.ema_model is not None:
             self.ema_model.update_parameters(self.model)
 
+    def _optimizers(self) -> tuple[optim.Optimizer, ...]:
+        """Return all active optimizers in step/checkpoint order."""
+        embedding_optimizer = getattr(self, "embedding_optimizer", None)
+        if embedding_optimizer is None:
+            return (self.optimizer,)
+        return (self.optimizer, embedding_optimizer)
+
+    def _clip_gradients(self) -> None:
+        """Clip dense and sparse gradients without densifying sparse tables."""
+        dense_params: list[torch.nn.Parameter] = []
+        sparse_params: list[torch.nn.Parameter] = []
+        for parameter in self.trainable_parameters:
+            grad = parameter.grad
+            if grad is None:
+                continue
+            if grad.is_sparse:
+                sparse_params.append(parameter)
+            else:
+                dense_params.append(parameter)
+
+        if dense_params:
+            torch.nn.utils.clip_grad_norm_(
+                dense_params,
+                max_norm=self.config.grad_clip_norm,
+            )
+        if sparse_params:
+            self._clip_sparse_grad_norm_(sparse_params, self.config.grad_clip_norm)
+
+    @staticmethod
+    def _clip_sparse_grad_norm_(
+        parameters: list[torch.nn.Parameter],
+        max_norm: float,
+    ) -> None:
+        """Clip sparse gradients by scaling their non-zero value tensors."""
+        if max_norm <= 0:
+            return
+        total_sq_norm = None
+        sparse_grads: list[torch.Tensor] = []
+        for parameter in parameters:
+            grad = parameter.grad
+            if grad is None:
+                continue
+            grad = grad.coalesce()
+            parameter.grad = grad
+            values = grad._values()
+            sparse_grads.append(values)
+            grad_norm = values.norm(2)
+            total_sq_norm = (
+                grad_norm.square()
+                if total_sq_norm is None
+                else total_sq_norm + grad_norm.square()
+            )
+        if total_sq_norm is None:
+            return
+        total_norm = total_sq_norm.sqrt()
+        clip_coef = float(max_norm) / (float(total_norm.item()) + 1e-6)
+        if clip_coef >= 1.0:
+            return
+        for values in sparse_grads:
+            values.mul_(clip_coef)
+
     def _move_optimizer_state(self, device: torch.device) -> None:
         """Move optimizer state tensors to ``device`` in place."""
-        for state in self.optimizer.state.values():
-            for key, value in state.items():
-                if torch.is_tensor(value):
-                    state[key] = move_tensor_to_device(value, device)
+        for optimizer in self._optimizers():
+            for state in optimizer.state.values():
+                for key, value in state.items():
+                    if torch.is_tensor(value):
+                        state[key] = move_tensor_to_device(value, device)
 
     @staticmethod
     def _invalidate_eval_feature_cache(eval_model: Any) -> None:
@@ -883,10 +987,14 @@ class TrainerRuntime:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         training_finished = training_finished or is_complete
+        embedding_optimizer = getattr(self, "embedding_optimizer", None)
         checkpoint: dict[str, Any] = {
             "model_state": self.model.state_dict(),
             "loss_suite_state": self.loss_suite.state_dict(),
             "optimizer_state": self.optimizer.state_dict(),
+            "embedding_optimizer_state": (
+                embedding_optimizer.state_dict() if embedding_optimizer is not None else None
+            ),
             "scheduler_state": (
                 self.scheduler.state_dict() if self.scheduler is not None else None
             ),
@@ -946,6 +1054,9 @@ class TrainerRuntime:
                 f"unexpected={sorted(unexpected_loss_keys)}",
             )
         self.optimizer.load_state_dict(ckpt["optimizer_state"])
+        embedding_optimizer_state = ckpt.get("embedding_optimizer_state")
+        if embedding_optimizer_state is not None and self.embedding_optimizer is not None:
+            self.embedding_optimizer.load_state_dict(embedding_optimizer_state)
         scheduler_state = ckpt.get("scheduler_state")
         if scheduler_state is not None and self.scheduler is not None:
             self.scheduler.load_state_dict(scheduler_state)
