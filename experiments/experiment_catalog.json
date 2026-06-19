@@ -20,6 +20,10 @@
                 "dropout": 0.1,
                 "graph_policy": "observed",
                 "num_neighbors": [10, 5],
+                "item_universe_policy": {
+                    "all": "observed_interaction_items",
+                    "kuairand1k": "random_exposure_items_only"
+                },
                 "auxiliary_losses_start_epoch": 15,
                 "popularity_supervision_start_epoch": 30
             }
@@ -44,7 +48,11 @@
                 "conformity_gnn_layers": 2,
                 "dropout": 0.1,
                 "graph_policy": "observed",
-                "num_neighbors": {"small": [[6, 3], [4, 2]], "medium": [[10, 5], [16, 8]]},
+                "num_neighbors": {"small": [[6, 3], [4, 2]], "medium": [[10, 5], [8, 4], [6, 3], [4, 2]]},
+                "item_universe_policy": {
+                    "all": "observed_interaction_items",
+                    "kuairand1k": "random_exposure_items_only"
+                },
                 "auxiliary_losses_start_epoch": 15,
                 "popularity_supervision_start_epoch": 30
             }
@@ -71,6 +79,10 @@
                 "dropout": 0.1,
                 "graph_policy": "observed",
                 "num_neighbors": {"medium": [[6, 3], [4, 2]], "small": [[10, 5], [16, 8]]},
+                "item_universe_policy": {
+                    "all": "observed_interaction_items",
+                    "kuairand1k": "random_exposure_items_only"
+                },
                 "auxiliary_losses_start_epoch": 15,
                 "popularity_supervision_start_epoch": 30
             }
@@ -330,6 +342,7 @@
                 "dropout": 0.1,
                 "graph_policy": "observed",
                 "num_neighbors": [8, 4],
+                "item_universe_policy": "random_exposure_items_only",
                 "preprocessing_preset": ["kuairand_causal", "kuairand_random_only"],
                 "auxiliary_losses_start_epoch": 30,
                 "popularity_supervision_start_epoch": 60
@@ -394,6 +407,7 @@
                 "dropout": 0.1,
                 "graph_policy": "observed",
                 "num_neighbors": [8, 4],
+                "item_universe_policy": "random_exposure_items_only",
                 "preprocessing_preset": "kuairand_random_only",
                 "auxiliary_losses_start_epoch": 15,
                 "popularity_supervision_start_epoch": 30

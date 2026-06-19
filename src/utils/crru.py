@@ -25,6 +25,12 @@ component/exponent structure but uses trial-local bounded penalties for
 popularity and resources. Exact report CRRU should still be recomputed after the
 search over completed trials.
 
+``Online`` in this function name means "computable for one trial during Optuna
+search". The Optuna `ValidationOnlineCRRU` value is computed on the validation
+split and includes validation ranking/popularity metrics plus peak VRAM and
+seconds/epoch. It is not an online-serving metric, online evaluation protocol,
+or A/B-test result.
+
 ``CRRU_EPSILON`` is not a normalization method. It only prevents division by
 zero when all values in a report section are identical and keeps multiplicative
 fractional-power terms away from exact zero. Min-max is used instead of z-score
@@ -199,15 +205,15 @@ def _trial_local_lower_cost_score(value: float | None) -> float:
     return max(CRRU_EPSILON, 1.0 / (1.0 + math.log1p(float(value))))
 
 
-def compute_validation_online_crru_for_k(
+def compute_validation_online_crru_components_for_k(
     metrics: Mapping[str, float],
     *,
     k: int,
     peak_vram_mb: float | None = None,
     epoch_time_s: float | None = None,
     weights: CRRUWeights = THESIS_CRRU_WEIGHTS,
-) -> float:
-    """Return online validation CRRU@K proxy for one Optuna trial.
+) -> dict[str, float]:
+    """Return OnlineCRRU@K components for one Optuna validation trial.
 
     This uses the same CRRU exponents as the thesis report:
 
@@ -232,11 +238,35 @@ def compute_validation_online_crru_for_k(
     efficiency = (_trial_local_lower_cost_score(peak_vram_mb) ** weights.inverse_vram) * (
         _trial_local_lower_cost_score(epoch_time_s) ** weights.inverse_epoch_time
     )
-    return (
+    online_crru = (
         (accuracy**weights.accuracy)
         * (popularity_diversity**weights.popularity_diversity)
         * (efficiency**weights.efficiency)
     )
+    return {
+        "accuracy": accuracy,
+        "popularity_diversity": popularity_diversity,
+        "efficiency": efficiency,
+        "online_crru": online_crru,
+    }
+
+
+def compute_validation_online_crru_for_k(
+    metrics: Mapping[str, float],
+    *,
+    k: int,
+    peak_vram_mb: float | None = None,
+    epoch_time_s: float | None = None,
+    weights: CRRUWeights = THESIS_CRRU_WEIGHTS,
+) -> float:
+    """Return online validation CRRU@K proxy for one Optuna trial."""
+    return compute_validation_online_crru_components_for_k(
+        metrics,
+        k=k,
+        peak_vram_mb=peak_vram_mb,
+        epoch_time_s=epoch_time_s,
+        weights=weights,
+    )["online_crru"]
 
 
 def compute_validation_online_crru_objective(

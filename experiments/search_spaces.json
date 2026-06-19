@@ -3,12 +3,13 @@
         "edgrec-mechanism-coarse": {
             "description": "Final coarse mechanism-level EDGRec discovery search. Profile parameters are Optuna/search-layer labels that resolve to concrete EDGRecConfig overrides before the model config is built; they are also recorded in sampled_params and resolved_config_overrides for reproducibility. Use --dataset kuairec_v2 for the main broad search, --dataset movielens1m for the secondary sanity search, and --dataset kuairand1k only after narrowing to the top design families. AmazonBook is intentionally excluded from this broad pass.",
             "base_profile": "core-edgrec-mainline",
-            "datasets": ["movielens1m", "kuairec_v2", "kuairand1k"],
+            "datasets": ["amazonbook","movielens1m", "kuairec_v2", "kuairand1k"],
             "config_overrides": {
                 "use_early_stopping": true,
                 "patience": 8,
                 "auto_batch_size": true,
-                "batch_size_candidates": [32768, 16384, 8192, 4096, 2048, 1024, 512, 256]
+                "batch_size_candidates": [1048576, 524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+                "use_popularity_emb": false
             },
             "objective": {
                 "metric": "ValidationAccuracy@20_40",
@@ -30,7 +31,7 @@
                 "bootstrap_count": 1
             },
             "max_epochs": 60,
-            "trials": 120,
+            "trials": 30,
             "parameters": {
                 "score_fusion_profile": {
                     "type": "categorical",
@@ -79,6 +80,14 @@
                 },
                 "dropout": {"type": "categorical", "choices": [0.0, 0.1, 0.2, 0.3]},
                 "grad_clip_norm": {"type": "categorical", "choices": [1.0, 2.0, 5.0]},
+                "embedding_optimizer": {
+                    "type": "categorical",
+                    "choices": ["adamw", "sgd", "sparseadam"]
+                },
+                "train_edge_keep_prob": {
+                    "type": "categorical",
+                    "choices": [1.0, 0.8, 0.6, 0.4]
+                },
                 "n_negatives": {"type": "categorical", "choices": [1, 2, 3, 4]},
                 "dice_sampler_margin": {"type": "categorical", "choices": [10.0, 20.0, 40.0]},
                 "score_mix_min_weight": {"type": "categorical", "choices": [0.0, 0.02, 0.05]},
@@ -235,54 +244,16 @@
                     }
                 },
                 "kuairand1k": {
-                    "dice_sampler_margin": {"type": "categorical", "choices": [50.0, 70.0, 80.0]}
+                    "dice_sampler_margin": {"type": "categorical", "choices": [50.0, 70.0, 80.0]},
+                    "graph_profile": {
+                        "type": "categorical",
+                        "choices": ["light_asym", "medium"]
+                    },
+                    "item_universe_policy": {
+                        "type": "categorical",
+                        "choices": ["random_exposure_items_only", "observed_interaction_items"]
+                    }
                 }
-            }
-        },
-        "edgrec-cagra-accuracy-ablation": {
-            "description": "Accuracy-first CAGRA systems ablation for EDGRec. This space compares the observed training graph against CAGRA-augmented graph construction and optional ANN candidate prefiltering while recording runtime metadata. It is intentionally separate from the broad mechanism search so CAGRA does not become the default model path.",
-            "base_profile": "core-edgrec-mainline",
-            "datasets": ["movielens1m", "kuairec_v2", "kuairand1k"],
-            "config_overrides": {
-                "use_early_stopping": true,
-                "patience": 8,
-                "auto_batch_size": false
-            },
-            "objective": {
-                "metric": "ValidationAccuracy@20_40",
-                "split": "val",
-                "direction": "maximize"
-            },
-            "sampler": {
-                "name": "tpe",
-                "seed": 42,
-                "n_startup_trials": 8,
-                "multivariate": false,
-                "group": false,
-                "constant_liar": false
-            },
-            "pruner": {
-                "name": "hyperband",
-                "min_resource": 6,
-                "reduction_factor": 3,
-                "bootstrap_count": 1
-            },
-            "max_epochs": 60,
-            "trials": 24,
-            "parameters": {
-                "graph_policy": {"type": "categorical", "choices": ["observed", "cagra_augmented"]},
-                "cagra_candidate_k": {"type": "categorical", "choices": [0, 200, 500, 1000]},
-                "cagra_k": {"type": "categorical", "choices": [16, 32, 48]},
-                "cagra_out_degree": {"type": "categorical", "choices": [32, 64]},
-                "cagra_initial_degree": {"type": "categorical", "choices": [64, 128]},
-                "cagra_team_size": {"type": "categorical", "choices": [0, 8, 16]},
-                "cagra_metric": {"type": "categorical", "choices": ["inner_product", "cosine"]},
-                "cagra_itopk_size": {"type": "categorical", "choices": [64, 128]},
-                "lr": {"type": "categorical", "choices": [0.0008, 0.0015, 0.003]},
-                "dropout": {"type": "categorical", "choices": [0.0, 0.1]},
-                "grad_clip_norm": {"type": "categorical", "choices": [1.0, 2.0, 5.0]},
-                "score_mix_min_weight": {"type": "categorical", "choices": [0.02, 0.05]},
-                "loss_normalization": {"type": "categorical", "choices": ["none", "ema_aux"]}
             }
         },
         "edgrec-core-optimization": {
@@ -293,7 +264,8 @@
                 "use_early_stopping": true,
                 "patience": 8,
                 "auto_batch_size": true,
-                "batch_size_candidates": [32768, 16384, 8192, 4096, 2048, 1024, 512, 256]
+                "batch_size_candidates": [1048576, 524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+                "use_popularity_emb": false
             },
             "objective": {
                 "metric": "ValidationOnlineCRRU@20_40",
@@ -344,17 +316,25 @@
                 "lr_scheduler": {"type": "categorical", "choices": ["none", "cosine", "plateau"]},
                 "lr_scheduler_factor": {"type": "grid_float", "low": 0.4, "high": 0.8, "step": 0.1},
                 "grad_clip_norm": {"type": "categorical", "choices": [0.5, 1.0, 2.0, 3.0, 5.0]},
+                "embedding_optimizer": {
+                    "type": "categorical",
+                    "choices": ["adamw", "sgd", "sparseadam"]
+                },
                 "interest_gnn_layers": {"type": "int", "low": 1, "high": 3},
                 "conformity_gnn_layers": {"type": "int", "low": 1, "high": 3},
                 "num_neighbors": {
                     "type": "fanout",
                     "choices_by_depth": {
                         "1": [[8], [16]],
-                        "2": [[4, 2], [5, 3], [6, 3], [8, 4], [10, 5], [16, 8]],
-                        "3": [[5, 3, 2], [8, 4, 2], [10, 5, 3], [16, 8, 4]]
+                        "2": [[4, 2], [5, 3], [6, 3], [8, 4], [10, 5]],
+                        "3": [[5, 3, 2], [8, 4, 2], [10, 5, 3]]
                     }
                 },
                 "dropout": {"type": "grid_float", "low": 0.0, "high": 0.3, "step": 0.05},
+                "train_edge_keep_prob": {
+                    "type": "categorical",
+                    "choices": [1.0, 0.8, 0.6, 0.4]
+                },
                 "n_negatives": {"type": "categorical", "choices": [1, 2, 3, 4]},
                 "dice_mask_reduction": {
                     "type": "categorical",
@@ -407,70 +387,20 @@
                     "dice_sampler_margin": {"type": "categorical", "choices": [10.0, 20.0, 40.0]}
                 },
                 "kuairand1k": {
-                    "dice_sampler_margin": {"type": "categorical", "choices": [20.0, 50.0, 80.0]}
-                }
-            }
-        },
-        "edgrec-cagra-ablation": {
-            "description": "Separate systems ablation for CAGRA rather than the default EDGRec accuracy search. This space tests whether ANN graph augmentation or evaluation candidate prefiltering improves the validation CRRU trade-off. Keep full-catalog formal evaluation (`cagra_candidate_k=0`) as the baseline row; nonzero `cagra_candidate_k` changes candidate coverage and must be reported as an ANN retrieval/runtime ablation, not as the default ranking protocol. This space uses the same fixed early-stopping policy as the core search but a lower epoch cap because CAGRA trials add systems overhead.",
-            "base_profile": "core-edgrec-mainline",
-            "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
-            "config_overrides": {
-                "use_early_stopping": true,
-                "patience": 15,
-                "auto_batch_size": false
-            },
-            "objective": {
-                "metric": "ValidationOnlineCRRU@20_40",
-                "split": "val",
-                "direction": "maximize"
-            },
-            "sampler": {
-                "name": "tpe",
-                "seed": 42,
-                "n_startup_trials": 8,
-                "multivariate": false,
-                "group": false,
-                "constant_liar": false
-            },
-            "pruner": {
-                "name": "hyperband",
-                "min_resource": 15,
-                "reduction_factor": 3,
-                "bootstrap_count": 4
-            },
-            "max_epochs": 90,
-            "trials": 16,
-            "parameters": {
-                "lr": {"type": "categorical", "choices": [0.0004, 0.001, 0.003, 0.004, 0.005]},
-                "weight_decay": {
-                    "type": "categorical",
-                    "choices": [0.0, 0.00000003, 0.00001, 0.0001]
-                },
-                "batch_size": {
-                    "type": "categorical",
-                    "choices": [32768, 16384, 8192, 4096, 2048, 1024, 512, 256]
-                },
-                "lr_scheduler": {"type": "categorical", "choices": ["none", "plateau"]},
-                "lr_scheduler_factor": {"type": "categorical", "choices": [0.7, 0.8]},
-                "interest_gnn_layers": {"type": "int", "low": 1, "high": 3},
-                "conformity_gnn_layers": {"type": "int", "low": 2, "high": 3},
-                "num_neighbors": {
-                    "type": "fanout",
-                    "choices_by_depth": {
-                        "2": [[4, 2], [5, 3], [8, 4], [16, 8]],
-                        "3": [[5, 3, 2], [8, 4, 2], [16, 8, 4]]
+                    "dice_sampler_margin": {"type": "categorical", "choices": [20.0, 50.0, 80.0]},
+                    "interest_gnn_layers": {"type": "categorical", "choices": [1, 2]},
+                    "conformity_gnn_layers": {"type": "categorical", "choices": [2]},
+                    "num_neighbors": {
+                        "type": "fanout",
+                        "choices_by_depth": {
+                            "2": [[4, 2], [6, 3], [8, 4], [10, 5]]
+                        }
+                    },
+                    "item_universe_policy": {
+                        "type": "categorical",
+                        "choices": ["random_exposure_items_only", "observed_interaction_items"]
                     }
-                },
-                "dropout": {"type": "categorical", "choices": [0.0, 0.1, 0.25]},
-                "graph_policy": {"type": "categorical", "choices": ["observed", "cagra_augmented"]},
-                "cagra_candidate_k": {"type": "categorical", "choices": [0, 200, 500, 1000]},
-                "cagra_k": {"type": "categorical", "choices": [16, 32, 48]},
-                "cagra_out_degree": {"type": "categorical", "choices": [32, 64]},
-                "cagra_initial_degree": {"type": "categorical", "choices": [64, 128]},
-                "cagra_team_size": {"type": "categorical", "choices": [0, 8, 16]},
-                "cagra_metric": {"type": "categorical", "choices": ["inner_product", "cosine"]},
-                "cagra_itopk_size": {"type": "categorical", "choices": [64, 128]}
+                }
             }
         }
     }
