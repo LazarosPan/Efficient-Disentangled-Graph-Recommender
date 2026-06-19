@@ -9,7 +9,7 @@ EDGRec synthesizes techniques from multiple causal recommendation papers (CausE,
 Key features:
 - Config-driven architecture with explicit EDGRec, paper LightGCN, and paper GCN-DICE model adapters
 - Mini-batch EDGRec training plus full-graph training for paper baselines
-- Graph construction methods: observed train-interaction graphs by default, with optional CAGRA ANN augmentation
+- Graph construction: observed train-interaction graphs
 - Formal experiment matrix across datasets and presets, with paper baselines kept on observed interaction graphs
 - SQLite primary logging with MLflow secondary tracking
 - Automatic checkpointing and resume from crashes

@@ -32,7 +32,6 @@ dependencies = [
     "h5py>=3.15.1",
     "sentence-transformers>=5.2.3",
     "ray>=2.54.0",
-    "cuvs-cu13>=26.2.0",
     "cudf-polars-cu13>=26.2.1",
     "ipykernel>=7.2.0",
     "mlflow>=3.10.1",
@@ -43,6 +42,8 @@ dependencies = [
     "optuna>=4.9.0",
     "optuna-dashboard>=0.20.0",
     "exa-py>=2.13.2",
+    "cuvs-cu13>=26.2.0",
+    "plotly>=6.8.0",
 ]
 
 [[tool.uv.index]]
