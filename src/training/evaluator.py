@@ -111,38 +111,6 @@ def _rowwise_spearman(values: torch.Tensor, popularity: torch.Tensor) -> torch.T
     )
 
 
-def _cagra_neighbors_to_scatter_index(neighbors: object, device: torch.device) -> torch.Tensor:
-    """Return CAGRA neighbor IDs as an index tensor accepted by ``scatter_``."""
-    return torch.as_tensor(neighbors, device=device).to(dtype=torch.long)
-
-
-def _cagra_neighbors_to_candidate_mask(
-    neighbors: object,
-    *,
-    n_items: int,
-    device: torch.device,
-) -> torch.Tensor:
-    """Return a range-safe item-candidate mask from CAGRA neighbor IDs."""
-    neighbor_indices = _cagra_neighbors_to_scatter_index(neighbors, device)
-    if neighbor_indices.ndim != 2:
-        raise ValueError(
-            f"CAGRA neighbors must be a 2D matrix; got shape={tuple(neighbor_indices.shape)}."
-        )
-    valid_neighbors = (neighbor_indices >= 0) & (neighbor_indices < n_items)
-    candidate_mask = torch.zeros(
-        neighbor_indices.size(0),
-        n_items,
-        dtype=torch.bool,
-        device=device,
-    )
-    row_indices = torch.arange(neighbor_indices.size(0), device=device).unsqueeze(1)
-    row_indices = row_indices.expand_as(neighbor_indices)
-    candidate_mask[row_indices[valid_neighbors], neighbor_indices[valid_neighbors]] = True
-    empty_rows = ~candidate_mask.any(dim=1)
-    candidate_mask[empty_rows] = True
-    return candidate_mask
-
-
 class _EvaluatorDiagnosticsAccumulator:
     """Accumulate refined scorer diagnostics across evaluation batches."""
 
@@ -566,32 +534,6 @@ class Evaluator:
                 embedding_dtype=torch.bfloat16 if use_eval_amp else None,
             )
 
-        # CAGRA candidate pre-filtering (opt-in, GPU-native ANN via cuVS).
-        # When cagra_candidate_k > 0 we restrict per-user scoring to the top-K
-        # nearest-neighbor items, drastically reducing eval VRAM.
-        cagra_candidate_k = self.config.cagra_candidate_k
-        cagra_index = None
-        if cagra_candidate_k > 0 and cagra_candidate_k < n_items:
-            if device.type != "cuda":
-                raise RuntimeError("cagra_candidate_k > 0 requires CUDA evaluation.")
-            try:
-                import cupy as cp
-                from cuvs.neighbors import cagra as cuvs_cagra
-
-                item_key = "item_interest" if "item_interest" in propagated else "item"
-                item_embs = propagated[item_key].float().contiguous()
-                item_cp = cp.asarray(item_embs.detach())
-                index_params = cuvs_cagra.IndexParams(
-                    metric=self.config.cagra_metric,
-                    graph_degree=self.config.cagra_out_degree,
-                    intermediate_graph_degree=self.config.cagra_initial_degree,
-                )
-                cagra_index = cuvs_cagra.build(index_params, item_cp)
-            except Exception as exc:
-                raise RuntimeError(
-                    "cagra_candidate_k > 0 requires a working CAGRA candidate pre-filter.",
-                ) from exc
-
         max_k = max(THESIS_EVAL_KS)
         for start in range(0, unique_users.size(0), effective_batch):
             batch_users = unique_users[start : start + effective_batch]
@@ -612,33 +554,6 @@ class Evaluator:
                 else:
                     scores = score_components["final_score"]
             scores = scores.float()
-
-            # Mask out non-candidate items from CAGRA index (if built).
-            if cagra_index is not None:
-                try:
-                    import cupy as cp
-                    from cuvs.neighbors import cagra as cuvs_cagra
-
-                    user_key = "user_interest" if "user_interest" in propagated else "user"
-                    user_embs = propagated[user_key][batch_users].float().contiguous()
-                    user_cp = cp.asarray(user_embs.detach())
-                    search_params = cuvs_cagra.SearchParams(
-                        team_size=self.config.cagra_team_size,
-                        itopk_size=max(cagra_candidate_k, self.config.cagra_itopk_size),
-                    )
-                    _, neighbors_cp = cuvs_cagra.search(
-                        search_params, cagra_index, user_cp, cagra_candidate_k
-                    )
-                    # cuVS can return unsigned sentinel IDs for missing neighbors.
-                    # Filter before indexing so CUDA never sees an out-of-range ID.
-                    candidate_mask = _cagra_neighbors_to_candidate_mask(
-                        neighbors_cp,
-                        n_items=n_items,
-                        device=device,
-                    )
-                    scores[~candidate_mask] = float("-inf")
-                except Exception as exc:
-                    raise RuntimeError("CAGRA candidate search failed.") from exc
 
             seen_row_parts: list[torch.Tensor] = []
             seen_col_parts: list[torch.Tensor] = []

@@ -33,7 +33,7 @@ if "PYTORCH_ALLOC_CONF" not in os.environ:
 import numpy as np
 import torch
 from scripts._workflow_helpers import configure_cli_logging
-from src.data.canonical import sample_canonical_interactions
+from src.data.canonical import filter_canonical_interactions, sample_canonical_interactions
 from src.data.graph_builder import build_graph
 from src.data.loaders import default_preprocessing_preset, load_dataset
 from src.losses.loss_suite import LossSuite
@@ -78,6 +78,7 @@ from experiments.benchmark_resolvers import (
     normalize_benchmark_lr_scheduler_override,
     normalize_benchmark_num_neighbors_override,
     normalize_benchmark_preprocessing_override,
+    resolve_benchmark_item_universe_policy_value,
 )
 from experiments.cli_parsers import build_run_experiment_parser
 from experiments.recipes import (
@@ -99,12 +100,6 @@ _TRAINING_IDENTITY_FIELDS = (
     "auto_batch_size",
     "batch_size",
     "batch_size_candidates",
-    "cagra_initial_degree",
-    "cagra_itopk_size",
-    "cagra_k",
-    "cagra_metric",
-    "cagra_out_degree",
-    "cagra_team_size",
     "conformity_gnn_layers",
     "contrastive_max_pairs",
     "contrastive_temperature",
@@ -117,6 +112,7 @@ _TRAINING_IDENTITY_FIELDS = (
     "dropout",
     "ema_decay",
     "embed_dim",
+    "embedding_optimizer",
     "epochs",
     "feature_policy",
     "graph_policy",
@@ -153,6 +149,7 @@ _TRAINING_IDENTITY_FIELDS = (
     "lr_scheduler_patience",
     "n_negatives",
     "num_neighbors",
+    "item_universe_policy",
     "popularity_embedding_dimensions",
     "preprocessing_preset",
     "propensity_clip_max",
@@ -164,6 +161,7 @@ _TRAINING_IDENTITY_FIELDS = (
     "score_weight_popularity",
     "seed",
     "single_branch_gnn_layers",
+    "train_edge_keep_prob",
     "train_ratio",
     "uniformity_temperature",
     "use_amp",
@@ -289,6 +287,50 @@ def _load_checkpoint_payload(
     return payload
 
 
+def _apply_item_universe_policy(canonical: Any, config: EDGRecConfig) -> Any:
+    """Apply configured item-universe compaction before graph/model construction."""
+    policy = config.item_universe_policy
+    if policy == "all_catalog_items":
+        return canonical
+
+    if policy == "observed_interaction_items":
+        keep_mask = np.ones(len(canonical), dtype=bool)
+    elif policy == "random_exposure_items_only":
+        exposure_flag = getattr(canonical, "exposure_flag", None)
+        if exposure_flag is None:
+            raise ValueError(
+                "item_universe_policy='random_exposure_items_only' requires exposure flags",
+            )
+        keep_mask = np.asarray(exposure_flag, dtype=bool)
+    else:
+        raise ValueError(f"Unsupported item_universe_policy {policy!r}.")
+
+    if not np.any(keep_mask):
+        raise ValueError(f"item_universe_policy={policy!r} selected no interactions")
+
+    before_items = int(canonical.n_items)
+    before_interactions = len(canonical)
+    compacted = filter_canonical_interactions(
+        canonical,
+        keep_mask,
+        metadata_overrides={
+            "item_universe_policy": policy,
+            "item_universe_original_n_items": before_items,
+            "item_universe_original_interactions": before_interactions,
+        },
+    )
+    if compacted.n_items != before_items or len(compacted) != before_interactions:
+        logger.info(
+            "Applied item_universe_policy=%s: interactions %d -> %d, items %d -> %d.",
+            policy,
+            before_interactions,
+            len(compacted),
+            before_items,
+            compacted.n_items,
+        )
+    return compacted
+
+
 def load_runtime_data(config: EDGRecConfig) -> tuple[Any, Any]:
     """Load canonical interactions and build the matching runtime graph."""
     canonical = load_dataset(
@@ -299,6 +341,7 @@ def load_runtime_data(config: EDGRecConfig) -> tuple[Any, Any]:
         feature_policy=config.feature_policy,
         preprocessing_preset=config.preprocessing_preset,
     )
+    canonical = _apply_item_universe_policy(canonical, config)
     canonical = sample_canonical_interactions(
         canonical,
         config.sample_interactions,
@@ -307,50 +350,7 @@ def load_runtime_data(config: EDGRecConfig) -> tuple[Any, Any]:
         config.val_ratio,
         config.derived_split_mode,
     )
-    observed_data = build_graph(canonical, config, embeddings=None)
-    if config.graph_policy == "observed":
-        return canonical, observed_data
-
-    bootstrap_embeddings = _bootstrap_cagra_embeddings(config, canonical, observed_data)
-    return canonical, build_graph(canonical, config, embeddings=bootstrap_embeddings)
-
-
-def _bootstrap_cagra_embeddings(
-    config: EDGRecConfig,
-    canonical: Any,
-    observed_data: Any,
-) -> torch.Tensor:
-    """Return the bootstrap node embeddings used for CAGRA augmentation.
-
-    Args:
-        config: Active runtime configuration.
-        canonical: Loaded canonical interactions.
-        observed_data: Graph payload for the observed train-interaction graph.
-
-    Returns:
-        torch.Tensor: CPU float tensor with shape ``(n_users + n_items, d)``.
-
-    Raises:
-        ValueError: If the current bootstrap path lacks item features and would
-            therefore build ANN edges from untrained ID-only embeddings.
-
-    """
-    item_features = getattr(observed_data, "item_features", None)
-    if item_features is None or item_features.numel() == 0:
-        raise ValueError(
-            "graph_policy='cagra_augmented' combines CAGRA edges with the observed "
-            "train-interaction graph, but the current bootstrap path still needs "
-            "item features. Without them, load_runtime_data() would build ANN edges "
-            "from untrained ID-only embeddings before training begins.",
-        )
-
-    bootstrap_model = build_runtime_model(config, canonical, observed_data)
-    with torch.no_grad():
-        bootstrap_embeddings = (
-            bootstrap_model.embedding.get_stacked_embeddings().detach().float().cpu()
-        )
-    del bootstrap_model
-    return bootstrap_embeddings
+    return canonical, build_graph(canonical, config)
 
 
 def _train_mask_numpy_from_data(data: Any) -> np.ndarray:
@@ -1067,7 +1067,10 @@ def _build_mlflow_params(
         "use_features": config.use_features,
         "feature_policy": config.feature_policy,
         "preprocessing_preset": config.preprocessing_preset or "default",
+        "item_universe_policy": config.item_universe_policy,
         "derived_split_mode": config.derived_split_mode,
+        "embedding_optimizer": config.embedding_optimizer,
+        "train_edge_keep_prob": config.train_edge_keep_prob,
         "use_dual_branch": config.use_dual_branch,
         "use_sign_aware": config.use_sign_aware,
         "use_ipw": config.use_ipw,
@@ -1093,6 +1096,77 @@ def _build_mlflow_params(
     params["num_neighbors"] = format_num_neighbors_payload(config.num_neighbors) or "-"
     params["batch_size_candidates"] = "-".join(str(value) for value in config.batch_size_candidates)
     return params
+
+
+def _embedding_table_parameter_count(model: torch.nn.Module) -> int:
+    """Return number of trainable scalar parameters in embedding tables."""
+    embedding = getattr(model, "embedding", None)
+    if embedding is None:
+        return 0
+    total = 0
+    for module in embedding.modules():
+        if isinstance(module, torch.nn.Embedding):
+            total += sum(param.numel() for param in module.parameters() if param.requires_grad)
+    return total
+
+
+def _estimate_optimizer_state_mb(
+    model: torch.nn.Module,
+    loss_suite: LossSuite,
+    config: EDGRecConfig,
+) -> float:
+    """Estimate persistent optimizer-state memory in MiB."""
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params += sum(p.numel() for p in loss_suite.parameters() if p.requires_grad)
+    embedding_params = _embedding_table_parameter_count(model)
+    state_scalars = 0
+
+    if (
+        config.baseline_family in {"lightgcn_paper", "dice_paper"}
+        or config.embedding_optimizer == "adamw"
+    ):
+        state_scalars = 2 * total_params
+    else:
+        dense_params = max(0, total_params - embedding_params)
+        state_scalars = 2 * dense_params
+        if config.embedding_optimizer == "sparseadam":
+            state_scalars += 2 * embedding_params
+
+    return state_scalars * 4 / 1024**2
+
+
+def _log_resource_contract(
+    *,
+    config: EDGRecConfig,
+    model: torch.nn.Module,
+    loss_suite: LossSuite,
+    data: Any,
+    experiment_logger: ExperimentLogger,
+    exp_id: int,
+) -> None:
+    """Log static resource-shaping fields before training starts."""
+    model_parameter_count = sum(p.numel() for p in model.parameters())
+    optimizer_state_mb = _estimate_optimizer_state_mb(model, loss_suite, config)
+    resource_fields = {
+        "model_parameter_count": float(model_parameter_count),
+        "optimizer_state_estimate_mb": optimizer_state_mb,
+        "item_embedding_count": float(data.n_items),
+        "train_edge_count": float(data.edge_index.size(1)),
+    }
+    logger.info(
+        (
+            "Resource contract: item embeddings=%d | train edges=%d | "
+            "model params=%d | optimizer state estimate=%.1f MB | "
+            "embedding optimizer=%s"
+        ),
+        int(data.n_items),
+        int(data.edge_index.size(1)),
+        model_parameter_count,
+        optimizer_state_mb,
+        config.embedding_optimizer,
+    )
+    for metric_name, metric_value in resource_fields.items():
+        experiment_logger.log_metric(exp_id, metric_name, metric_value, split="train")
 
 
 def _start_mlflow_run(
@@ -1279,14 +1353,21 @@ def build_benchmark_config_inputs(
     graph_policy: str | None = None,
 ) -> dict[str, object]:
     """Build one run's config inputs from normalized benchmark arguments."""
+    copied_fields = _present_field_mapping(
+        benchmark_args,
+        BENCHMARK_CONFIG_FIELDS,
+    )
+    item_universe_policy = resolve_benchmark_item_universe_policy_value(
+        benchmark_args,
+        dataset=dataset,
+    )
+    if item_universe_policy is not None:
+        copied_fields["item_universe_policy"] = item_universe_policy
     return _build_config_input_mapping(
         dataset=dataset,
         preset=preset,
         seed=DEFAULT_SEED,
-        copied_fields=_present_field_mapping(
-            benchmark_args,
-            BENCHMARK_CONFIG_FIELDS,
-        ),
+        copied_fields=copied_fields,
         extra_overrides={
             "lr_scheduler": lr_scheduler,
             "num_neighbors": num_neighbors,
@@ -1398,19 +1479,17 @@ def normalize_benchmark_config_overrides(
     normalized["num_neighbors"] = normalize_benchmark_num_neighbors_override(
         raw_config.get("num_neighbors"),
     )
-    optional_int_fields = (
-        "cagra_k",
-        "cagra_out_degree",
-        "cagra_initial_degree",
-        "cagra_team_size",
-        "cagra_itopk_size",
-        "cagra_candidate_k",
+    embedding_optimizer = raw_config.get("embedding_optimizer")
+    normalized["embedding_optimizer"] = (
+        str(embedding_optimizer) if embedding_optimizer is not None else None
     )
-    for field_name in optional_int_fields:
-        field_value = raw_config.get(field_name)
-        normalized[field_name] = int(field_value) if field_value is not None else None
-    cagra_metric = raw_config.get("cagra_metric")
-    normalized["cagra_metric"] = str(cagra_metric) if cagra_metric is not None else None
+    item_universe_policy = raw_config.get("item_universe_policy")
+    if isinstance(item_universe_policy, Mapping):
+        normalized["item_universe_policy"] = dict(item_universe_policy)
+    else:
+        normalized["item_universe_policy"] = (
+            str(item_universe_policy) if item_universe_policy is not None else None
+        )
     normalized["hard_negative_ratio"] = float(
         raw_config.get("hard_negative_ratio", default_config.hard_negative_ratio),
     )
@@ -1433,6 +1512,7 @@ def normalize_benchmark_config_overrides(
         "contrastive_temperature",
         "uniformity_temperature",
         "feature_gate_init",
+        "train_edge_keep_prob",
     )
     for field_name in optional_float_fields:
         field_value = raw_config.get(field_name)
@@ -1831,6 +1911,14 @@ def run_experiment(
     else:
         experiment_logger.update_experiment_status(exp_id, status="running")
     logger.info(f"Experiment ID: {exp_id}")
+    _log_resource_contract(
+        config=config,
+        model=model,
+        loss_suite=loss_suite,
+        data=data,
+        experiment_logger=experiment_logger,
+        exp_id=exp_id,
+    )
 
     mlflow_module = None
     mlflow_status = "FAILED"

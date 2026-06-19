@@ -94,6 +94,10 @@ class EmbeddingModule(nn.Module):
         self.n_users = n_users
         self.n_items = n_items
         d = config.embed_dim
+        sparse_embedding_gradients = (
+            config.embedding_optimizer in {"sparseadam", "sgd"}
+            and config.training_graph_mode == "sampled"
+        )
         _register_bf16_buffer(self, "item_popularity", item_popularity, n_items)
         _register_bf16_buffer(self, "item_recency", item_recency, n_items)
         _register_bf16_buffer(
@@ -127,26 +131,38 @@ class EmbeddingModule(nn.Module):
 
         # User embeddings (xavier_uniform_ per PyG LightGCN convention)
         if config.use_dual_branch:
-            self.user_interest = nn.Embedding(n_users, d)
-            self.user_conformity = nn.Embedding(n_users, d)
+            self.user_interest = nn.Embedding(n_users, d, sparse=sparse_embedding_gradients)
+            self.user_conformity = nn.Embedding(n_users, d, sparse=sparse_embedding_gradients)
             nn.init.xavier_uniform_(self.user_interest.weight)
             nn.init.xavier_uniform_(self.user_conformity.weight)
         else:
-            self.user_embed = nn.Embedding(n_users, d)
+            self.user_embed = nn.Embedding(n_users, d, sparse=sparse_embedding_gradients)
             nn.init.xavier_uniform_(self.user_embed.weight)
 
         # Item embedding (always present as the compatibility fallback)
-        self.item_embed = nn.Embedding(n_items, d)
+        self.item_embed = nn.Embedding(n_items, d, sparse=sparse_embedding_gradients)
         nn.init.xavier_uniform_(self.item_embed.weight)
         if config.use_dual_branch and config.separate_item_branch_embeddings:
-            self.item_interest_embed = nn.Embedding(n_items, d)
-            self.item_conformity_embed = nn.Embedding(n_items, d)
+            self.item_interest_embed = nn.Embedding(
+                n_items,
+                d,
+                sparse=sparse_embedding_gradients,
+            )
+            self.item_conformity_embed = nn.Embedding(
+                n_items,
+                d,
+                sparse=sparse_embedding_gradients,
+            )
             nn.init.xavier_uniform_(self.item_interest_embed.weight)
             nn.init.xavier_uniform_(self.item_conformity_embed.weight)
 
         # Optional popularity embedding
         if config.use_popularity_emb:
-            self.item_pop = nn.Embedding(n_items, config.popularity_embedding_dimensions)
+            self.item_pop = nn.Embedding(
+                n_items,
+                config.popularity_embedding_dimensions,
+                sparse=sparse_embedding_gradients,
+            )
             nn.init.xavier_uniform_(self.item_pop.weight)
 
         if self.has_item_features:
@@ -175,7 +191,7 @@ class EmbeddingModule(nn.Module):
         ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Return all embedding rows or an indexed subset."""
-        return embedding.weight if ids is None else embedding.weight[ids]
+        return embedding.weight if ids is None else embedding(ids)
 
     @staticmethod
     def _cast_floating_tensors(

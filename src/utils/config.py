@@ -10,8 +10,14 @@ from ..data.feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 from .method_naming import EDGREC_PUBLIC_PRESET
 
 DEFAULT_SEED = 13
-GraphPolicy = Literal["observed", "cagra_augmented"]
+GraphPolicy = Literal["observed"]
 TrainingGraphMode = Literal["sampled", "full"]
+EmbeddingOptimizer = Literal["adamw", "sparseadam", "sgd"]
+ItemUniversePolicy = Literal[
+    "all_catalog_items",
+    "observed_interaction_items",
+    "random_exposure_items_only",
+]
 BranchLossMode = Literal["symmetric_bpr", "dice"]
 DiceMaskReduction = Literal["batch_mean", "active_mean"]
 RecommendationLossMode = Literal["final", "dice_sum"]
@@ -68,23 +74,20 @@ CONFIG_OVERRIDE_FIELDS = (
     "patience",
     "use_features",
     "use_popularity_head",
+    "use_popularity_emb",
+    "embedding_optimizer",
     "use_learned_score_mix",
     "separate_item_branch_embeddings",
     "feature_policy",
     "graph_policy",
-    "cagra_k",
-    "cagra_out_degree",
-    "cagra_initial_degree",
-    "cagra_team_size",
-    "cagra_metric",
-    "cagra_itopk_size",
-    "cagra_candidate_k",
     "training_graph_mode",
+    "train_edge_keep_prob",
     "branch_loss_mode",
     "dice_mask_reduction",
     "recommendation_loss_mode",
     "negative_sampling_strategy",
     "preprocessing_preset",
+    "item_universe_policy",
     "derived_split_mode",
     "num_neighbors",
     "hard_negative_ratio",
@@ -137,7 +140,17 @@ BENCHMARK_CONFIG_FIELDS = (
     "data_dir",
 )
 PAPER_BASELINE_PRESETS = frozenset(("lightgcn_paper", "dice_paper"))
-GRAPH_POLICY_CHOICES: tuple[GraphPolicy, ...] = ("observed", "cagra_augmented")
+GRAPH_POLICY_CHOICES: tuple[GraphPolicy, ...] = ("observed",)
+EMBEDDING_OPTIMIZER_CHOICES: tuple[EmbeddingOptimizer, ...] = (
+    "adamw",
+    "sparseadam",
+    "sgd",
+)
+ITEM_UNIVERSE_POLICY_CHOICES: tuple[ItemUniversePolicy, ...] = (
+    "all_catalog_items",
+    "observed_interaction_items",
+    "random_exposure_items_only",
+)
 PresetOverrideValue = bool | int | float | str | list[int]
 PresetOverrides = dict[str, PresetOverrideValue]
 
@@ -153,6 +166,7 @@ _NON_CAUSAL_PRESET_OVERRIDES: PresetOverrides = {
     "use_ipw": False,
     "use_popularity_head": False,
     "use_popularity_emb": False,
+    "embedding_optimizer": "adamw",
     "use_learned_score_mix": False,
     "separate_item_branch_embeddings": False,
     "loss_normalization": "none",
@@ -166,6 +180,7 @@ _NON_CAUSAL_PRESET_OVERRIDES: PresetOverrides = {
     "score_weight_popularity": 0.0,
     "use_features": False,
     "feature_policy": DEFAULT_FEATURE_POLICY,
+    "train_edge_keep_prob": 1.0,
     "propensity_clip_min": 0.01,
 }
 _LIGHTGCN_PRESET_OVERRIDES: PresetOverrides = _NON_CAUSAL_PRESET_OVERRIDES | {
@@ -250,6 +265,7 @@ _LIGHTGCN_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
         "use_ipw",
         "use_popularity_head",
         "use_popularity_emb",
+        "embedding_optimizer",
         "use_learned_score_mix",
         "separate_item_branch_embeddings",
         "use_features",
@@ -266,6 +282,7 @@ _LIGHTGCN_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
         "weight_decay",
         "batch_size",
         "auto_batch_size",
+        "train_edge_keep_prob",
         "loss_weight_recommendation",
         "loss_weight_interest_bpr",
         "loss_weight_conformity_bpr",
@@ -292,6 +309,7 @@ _DICE_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
         "use_ipw",
         "use_popularity_head",
         "use_popularity_emb",
+        "embedding_optimizer",
         "use_learned_score_mix",
         "separate_item_branch_embeddings",
         "use_features",
@@ -310,6 +328,7 @@ _DICE_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
         "weight_decay",
         "batch_size",
         "auto_batch_size",
+        "train_edge_keep_prob",
         "dice_sampler_margin",
         "dice_sampler_pool",
         "dice_branch_margin",
@@ -343,7 +362,7 @@ _FULL_PRESET_OVERRIDES: PresetOverrides = {
     "use_sign_aware": True,
     "use_ipw": False,
     "use_popularity_head": True,
-    "use_popularity_emb": True,
+    "use_popularity_emb": False,
     "use_learned_score_mix": True,
     "loss_weight_interest_bpr": 0.02,
     "loss_weight_conformity_bpr": 0.02,
@@ -382,20 +401,13 @@ class EDGRecConfig:
     use_ipw: bool = False
     use_popularity_head: bool = True
     use_popularity_emb: bool = True
+    embedding_optimizer: EmbeddingOptimizer = "adamw"
     use_learned_score_mix: bool = True
     separate_item_branch_embeddings: bool = False
     baseline_family: str = EDGREC_PUBLIC_PRESET
     training_graph_mode: TrainingGraphMode = "sampled"
 
-    # ── Graph construction ───────────────────────────────────────────────
-    cagra_k: int = 32
-    cagra_out_degree: int = 64  # cuVS-recommended default graph degree
-    cagra_initial_degree: int = 128  # cuVS-recommended intermediate graph degree
-    cagra_team_size: int = 0  # 0 = auto-select (cuVS default)
-    cagra_metric: str = "inner_product"  # dot-product space matches the model's scoring function
-    cagra_itopk_size: int = 64  # intermediate candidates per step; higher = better recall
     graph_policy: GraphPolicy = "observed"
-    cagra_candidate_k: int = 0  # 0 = full-catalog eval; >0 = restrict to top-K ANN candidates
 
     # ── Embedding / GNN hyperparameters ──────────────────────────────────
     embed_dim: int = 64
@@ -452,6 +464,7 @@ class EDGRecConfig:
     patience: int = 10
     use_early_stopping: bool = True
     grad_clip_norm: float = 1.0
+    train_edge_keep_prob: float = 1.0
     use_amp: bool = True
     amp_dtype: Literal["bfloat16"] = "bfloat16"
     use_torch_compile: bool = False
@@ -502,6 +515,7 @@ class EDGRecConfig:
     val_ratio: float = 0.1
     derived_split_mode: DerivedSplitMode = "per_user_temporal"
     preprocessing_preset: str | None = None
+    item_universe_policy: ItemUniversePolicy = "observed_interaction_items"
     seed: int = DEFAULT_SEED
 
     # ── Device ───────────────────────────────────────────────────────────
@@ -545,22 +559,30 @@ class EDGRecConfig:
             raise ValueError(
                 f"graph_policy must be one of {', '.join(GRAPH_POLICY_CHOICES)}",
             )
-        if self.cagra_k < 1:
-            raise ValueError("cagra_k must be >= 1")
-        if self.cagra_out_degree < 1:
-            raise ValueError("cagra_out_degree must be >= 1")
-        if self.cagra_initial_degree < self.cagra_out_degree:
-            raise ValueError("cagra_initial_degree must be >= cagra_out_degree")
-        if self.cagra_team_size not in (0, 4, 8, 16, 32):
-            raise ValueError("cagra_team_size must be one of 0, 4, 8, 16, 32")
-        if self.cagra_metric not in ("sqeuclidean", "inner_product", "cosine"):
-            raise ValueError("cagra_metric must be sqeuclidean, inner_product, or cosine")
-        if self.cagra_itopk_size < self.cagra_k:
-            raise ValueError("cagra_itopk_size must be >= cagra_k")
-        if self.cagra_candidate_k < 0:
-            raise ValueError("cagra_candidate_k must be >= 0")
+        if self.embedding_optimizer not in EMBEDDING_OPTIMIZER_CHOICES:
+            raise ValueError(
+                "embedding_optimizer must be one of "
+                f"{', '.join(EMBEDDING_OPTIMIZER_CHOICES)}",
+            )
+        if self.embedding_optimizer == "sparseadam" and self.training_graph_mode != "sampled":
+            raise ValueError("embedding_optimizer='sparseadam' requires sampled training")
+        if self.item_universe_policy not in ITEM_UNIVERSE_POLICY_CHOICES:
+            raise ValueError(
+                "item_universe_policy must be one of "
+                f"{', '.join(ITEM_UNIVERSE_POLICY_CHOICES)}",
+            )
+        if (
+            self.item_universe_policy == "random_exposure_items_only"
+            and self.dataset != "kuairand1k"
+        ):
+            raise ValueError(
+                "item_universe_policy='random_exposure_items_only' is only supported "
+                "for KuaiRand-1K style randomized-exposure data",
+            )
         if self.training_graph_mode not in ("sampled", "full"):
             raise ValueError("training_graph_mode must be either 'sampled' or 'full'")
+        if not 0 < self.train_edge_keep_prob <= 1:
+            raise ValueError("train_edge_keep_prob must be in (0, 1]")
         if self.branch_loss_mode not in ("symmetric_bpr", "dice"):
             raise ValueError("branch_loss_mode must be either 'symmetric_bpr' or 'dice'")
         if self.dice_mask_reduction not in ("batch_mean", "active_mean"):

@@ -20,9 +20,9 @@ class PaperLightGCN(CanonicalBaselineRecommender):
     """LightGCN as the paper equation: embeddings + normalized propagation + BPR.
 
     This class intentionally omits feature transforms, activations, learned
-    score mixing, dropout, and CAGRA-specific logic. It accepts the same
-    canonical graph and batch tensors as EDGRec so comparisons share data,
-    splits, negative sampling, and evaluation.
+    score mixing, and dropout. It accepts the same canonical graph and batch
+    tensors as EDGRec so comparisons share data, splits, negative sampling,
+    and evaluation.
     """
 
     def __init__(
