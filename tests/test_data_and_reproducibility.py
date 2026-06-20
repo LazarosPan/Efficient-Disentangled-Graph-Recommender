@@ -124,6 +124,85 @@ class DataContractTests(unittest.TestCase):
         np.testing.assert_array_equal(canonical.exposure_flag, np.array([False]))
         np.testing.assert_array_equal(canonical.source_domain, np.array(["standard"]))
 
+    def test_kuairand_label_modes_change_only_labels(self) -> None:
+        """KuaiRand label ablations should preserve raw target, is_rand, and sign."""
+        with TemporaryDirectory() as tmp_dir:
+            data_root = Path(tmp_dir) / "KuaiRand-1K" / "data"
+            data_root.mkdir(parents=True)
+            (data_root / "log_standard_labels.csv").write_text(
+                (
+                    "user_id,video_id,is_click,is_like,is_follow,is_comment,is_hate,"
+                    "long_view,play_time_ms,duration_ms,is_rand,time_ms\n"
+                    "1,10,1,0,0,0,0,0,100,1000,0,10\n"
+                    "2,11,0,1,0,0,0,0,100,1000,1,20\n"
+                    "3,12,0,0,1,0,0,0,100,1000,1,30\n"
+                    "4,13,0,0,0,0,0,1,100,1000,0,40\n"
+                    "5,14,0,0,0,0,0,0,600,1000,1,50\n"
+                ),
+                encoding="utf-8",
+            )
+
+            labels_by_mode = {
+                mode: load_kuairand1k(
+                    data_dir=tmp_dir,
+                    include_optional_features=False,
+                    label_mode=mode,
+                )
+                for mode in (
+                    "current",
+                    "strict_like_follow",
+                    "strict_longview_like_follow",
+                    "watch_ratio_proxy",
+                )
+            }
+
+        expected_labels = {
+            "current": [1, 1, 1, 0, 0],
+            "strict_like_follow": [0, 1, 1, 0, 0],
+            "strict_longview_like_follow": [0, 1, 1, 1, 0],
+            "watch_ratio_proxy": [0, 0, 0, 0, 1],
+        }
+        for mode, canonical in labels_by_mode.items():
+            np.testing.assert_array_equal(canonical.label, np.array(expected_labels[mode]))
+            np.testing.assert_allclose(
+                canonical.raw_target,
+                np.array([0.1, 0.1, 0.1, 0.1, 0.6], dtype=np.float32),
+            )
+            np.testing.assert_array_equal(
+                canonical.metadata["is_rand"],
+                np.array([False, True, True, False, True]),
+            )
+            np.testing.assert_allclose(
+                canonical.sign,
+                np.array([0.0, 1.0, 0.7, 0.0, 0.0], dtype=np.float32),
+            )
+
+    def test_kuairand_loader_rejects_invalid_label_mode(self) -> None:
+        """Invalid KuaiRand label modes should fail before any data-dependent work."""
+        with TemporaryDirectory() as tmp_dir:
+            data_root = Path(tmp_dir) / "KuaiRand-1K" / "data"
+            data_root.mkdir(parents=True)
+            (data_root / "log_standard_labels.csv").write_text(
+                "user_id,video_id,is_rand,time_ms\n1,10,0,1000\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "label_mode"):
+                load_kuairand1k(
+                    data_dir=tmp_dir,
+                    include_optional_features=False,
+                    label_mode="bad",
+                )
+
+    def test_label_mode_is_kuairand_only(self) -> None:
+        """Non-KuaiRand loaders should reject ignored label ablation knobs."""
+        with self.assertRaisesRegex(ValueError, "KuaiRand-only"):
+            load_dataset(
+                "movielens1m",
+                data_dir="/missing-data-root",
+                label_mode="strict_like_follow",
+            )
+
     def test_kuairand_loader_skips_bad_core_rows_and_nonfinite_optional_floats(
         self,
     ) -> None:

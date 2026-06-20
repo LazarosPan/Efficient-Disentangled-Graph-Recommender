@@ -32,6 +32,9 @@ class SearchSpaceValidationTests(unittest.TestCase):
         self.assertIn("search_spaces", load_search_spaces_catalog())
         self.assertIn("edgrec-core-optimization", search_space_names())
         self.assertIn("edgrec-mechanism-coarse", search_space_names())
+        self.assertIn("edgrec-lite-kuairec-search", search_space_names())
+        self.assertIn("edgrec-lite-movielens-search", search_space_names())
+        self.assertIn("edgrec-lite-kuairand-search", search_space_names())
 
     def test_search_spaces_resolve_to_edgrec_configs(self) -> None:
         """All search spaces should resolve through the shared config builder."""
