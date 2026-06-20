@@ -13,6 +13,18 @@ DEFAULT_SEED = 13
 GraphPolicy = Literal["observed"]
 TrainingGraphMode = Literal["sampled", "full"]
 EmbeddingOptimizer = Literal["adamw", "sparseadam", "sgd"]
+SamplerResidencyPolicy = Literal["release_for_validation", "keep_resident"]
+PropagationBackend = Literal[
+    "auto",
+    "cuda_sparse_adjacency",
+    "chunked_edge_index_aggregation",
+]
+KuaiRandLabelMode = Literal[
+    "current",
+    "strict_like_follow",
+    "strict_longview_like_follow",
+    "watch_ratio_proxy",
+]
 ItemUniversePolicy = Literal[
     "all_catalog_items",
     "observed_interaction_items",
@@ -75,13 +87,18 @@ CONFIG_OVERRIDE_FIELDS = (
     "use_features",
     "use_popularity_head",
     "use_popularity_emb",
+    "embedding_sparse_optimizer",
     "embedding_optimizer",
     "use_learned_score_mix",
     "separate_item_branch_embeddings",
     "feature_policy",
     "graph_policy",
     "training_graph_mode",
+    "sampler_residency_policy",
+    "propagation_backend",
+    "profile_training_stages",
     "train_edge_keep_prob",
+    "validation_every_n_epochs",
     "branch_loss_mode",
     "dice_mask_reduction",
     "recommendation_loss_mode",
@@ -128,6 +145,8 @@ CONFIG_OVERRIDE_FIELDS = (
     "loss_schedule",
     "sample_interactions",
     "loader_max_rows",
+    "label_mode",
+    "watch_ratio_proxy_threshold",
 )
 _BENCHMARK_EXCLUDED_FIELDS = ("embed_dim",)
 BENCHMARK_CONFIG_FIELDS = (
@@ -145,6 +164,21 @@ EMBEDDING_OPTIMIZER_CHOICES: tuple[EmbeddingOptimizer, ...] = (
     "adamw",
     "sparseadam",
     "sgd",
+)
+SAMPLER_RESIDENCY_POLICY_CHOICES: tuple[SamplerResidencyPolicy, ...] = (
+    "release_for_validation",
+    "keep_resident",
+)
+PROPAGATION_BACKEND_CHOICES: tuple[PropagationBackend, ...] = (
+    "auto",
+    "cuda_sparse_adjacency",
+    "chunked_edge_index_aggregation",
+)
+KUAIRAND_LABEL_MODE_CHOICES: tuple[KuaiRandLabelMode, ...] = (
+    "current",
+    "strict_like_follow",
+    "strict_longview_like_follow",
+    "watch_ratio_proxy",
 )
 ITEM_UNIVERSE_POLICY_CHOICES: tuple[ItemUniversePolicy, ...] = (
     "all_catalog_items",
@@ -166,6 +200,7 @@ _NON_CAUSAL_PRESET_OVERRIDES: PresetOverrides = {
     "use_ipw": False,
     "use_popularity_head": False,
     "use_popularity_emb": False,
+    "embedding_sparse_optimizer": False,
     "embedding_optimizer": "adamw",
     "use_learned_score_mix": False,
     "separate_item_branch_embeddings": False,
@@ -265,6 +300,7 @@ _LIGHTGCN_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
         "use_ipw",
         "use_popularity_head",
         "use_popularity_emb",
+        "embedding_sparse_optimizer",
         "embedding_optimizer",
         "use_learned_score_mix",
         "separate_item_branch_embeddings",
@@ -309,6 +345,7 @@ _DICE_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
         "use_ipw",
         "use_popularity_head",
         "use_popularity_emb",
+        "embedding_sparse_optimizer",
         "embedding_optimizer",
         "use_learned_score_mix",
         "separate_item_branch_embeddings",
@@ -401,11 +438,15 @@ class EDGRecConfig:
     use_ipw: bool = False
     use_popularity_head: bool = True
     use_popularity_emb: bool = True
+    embedding_sparse_optimizer: bool = False
     embedding_optimizer: EmbeddingOptimizer = "adamw"
     use_learned_score_mix: bool = True
     separate_item_branch_embeddings: bool = False
     baseline_family: str = EDGREC_PUBLIC_PRESET
     training_graph_mode: TrainingGraphMode = "sampled"
+    sampler_residency_policy: SamplerResidencyPolicy = "release_for_validation"
+    propagation_backend: PropagationBackend = "auto"
+    profile_training_stages: bool = False
 
     graph_policy: GraphPolicy = "observed"
 
@@ -465,6 +506,7 @@ class EDGRecConfig:
     use_early_stopping: bool = True
     grad_clip_norm: float = 1.0
     train_edge_keep_prob: float = 1.0
+    validation_every_n_epochs: int = 1
     use_amp: bool = True
     amp_dtype: Literal["bfloat16"] = "bfloat16"
     use_torch_compile: bool = False
@@ -516,6 +558,8 @@ class EDGRecConfig:
     derived_split_mode: DerivedSplitMode = "per_user_temporal"
     preprocessing_preset: str | None = None
     item_universe_policy: ItemUniversePolicy = "observed_interaction_items"
+    label_mode: KuaiRandLabelMode = "current"
+    watch_ratio_proxy_threshold: float = 0.5
     seed: int = DEFAULT_SEED
 
     # ── Device ───────────────────────────────────────────────────────────
@@ -561,15 +605,29 @@ class EDGRecConfig:
             )
         if self.embedding_optimizer not in EMBEDDING_OPTIMIZER_CHOICES:
             raise ValueError(
-                "embedding_optimizer must be one of "
-                f"{', '.join(EMBEDDING_OPTIMIZER_CHOICES)}",
+                f"embedding_optimizer must be one of {', '.join(EMBEDDING_OPTIMIZER_CHOICES)}",
             )
+        if self.embedding_sparse_optimizer:
+            if self.embedding_optimizer != "adamw":
+                raise ValueError(
+                    "Use either embedding_sparse_optimizer=True or embedding_optimizer, not both.",
+                )
+            self.embedding_optimizer = "sparseadam"
+        self.embedding_sparse_optimizer = self.embedding_optimizer == "sparseadam"
         if self.embedding_optimizer == "sparseadam" and self.training_graph_mode != "sampled":
-            raise ValueError("embedding_optimizer='sparseadam' requires sampled training")
+            raise ValueError("sparse embedding optimization requires sampled training")
+        if self.sampler_residency_policy not in SAMPLER_RESIDENCY_POLICY_CHOICES:
+            raise ValueError(
+                "sampler_residency_policy must be one of "
+                f"{', '.join(SAMPLER_RESIDENCY_POLICY_CHOICES)}",
+            )
+        if self.propagation_backend not in PROPAGATION_BACKEND_CHOICES:
+            raise ValueError(
+                f"propagation_backend must be one of {', '.join(PROPAGATION_BACKEND_CHOICES)}",
+            )
         if self.item_universe_policy not in ITEM_UNIVERSE_POLICY_CHOICES:
             raise ValueError(
-                "item_universe_policy must be one of "
-                f"{', '.join(ITEM_UNIVERSE_POLICY_CHOICES)}",
+                f"item_universe_policy must be one of {', '.join(ITEM_UNIVERSE_POLICY_CHOICES)}",
             )
         if (
             self.item_universe_policy == "random_exposure_items_only"
@@ -583,6 +641,8 @@ class EDGRecConfig:
             raise ValueError("training_graph_mode must be either 'sampled' or 'full'")
         if not 0 < self.train_edge_keep_prob <= 1:
             raise ValueError("train_edge_keep_prob must be in (0, 1]")
+        if self.validation_every_n_epochs < 1:
+            raise ValueError("validation_every_n_epochs must be >= 1")
         if self.branch_loss_mode not in ("symmetric_bpr", "dice"):
             raise ValueError("branch_loss_mode must be either 'symmetric_bpr' or 'dice'")
         if self.dice_mask_reduction not in ("batch_mean", "active_mean"):
@@ -601,6 +661,16 @@ class EDGRecConfig:
             raise ValueError("propensity_clip_max must be in (0, 1]")
         if self.propensity_clip_min >= self.propensity_clip_max:
             raise ValueError("propensity_clip_min must be < propensity_clip_max")
+        if self.label_mode not in KUAIRAND_LABEL_MODE_CHOICES:
+            raise ValueError(
+                f"label_mode must be one of {', '.join(KUAIRAND_LABEL_MODE_CHOICES)}",
+            )
+        if not 0.0 <= self.watch_ratio_proxy_threshold <= 5.0:
+            raise ValueError("watch_ratio_proxy_threshold must be in [0, 5]")
+        if self.dataset != "kuairand1k" and (
+            self.label_mode != "current" or self.watch_ratio_proxy_threshold != 0.5
+        ):
+            raise ValueError("label_mode and watch_ratio_proxy_threshold are KuaiRand-only")
         if self.use_ipw and self.loss_weight_propensity_calibration <= 0:
             raise ValueError(
                 "use_ipw requires loss_weight_propensity_calibration > 0 "
