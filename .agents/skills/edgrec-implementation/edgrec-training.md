@@ -41,7 +41,7 @@ Single-run path: config -> data/graph -> model -> sampled/full training -> eval 
 | `uv run ablation` | Thesis-facing ablation sweep over named variants. |
 | `uv run formal-run` | Profile-driven formal matrix with strict resume state; accepts comma-separated profile queues. |
 | `uv run search-experiments` | Optuna EDGRec search over declarative search spaces; validation-only by default; accepts comma-separated search-space queues. |
-| `uv run quick-validate` | Fixed smoke suite over the shared runtime path. |
+| `uv run quick-validate` | Fixed smoke suite over the shared runtime path with SQLite and MLflow logging disabled. |
 | `uv run query-results` | SQLite-first result/report inspection surface. |
 
 CLI rule: commands select work; recipes, presets, ablation variants, profiles, and search spaces own semantics.
@@ -300,6 +300,7 @@ Current rules:
 - Evaluator diagnostics use the same metric logging path as thesis metrics.
 - `search-experiments` default Optuna storage: `sqlite:///results/optuna_studies.db`.
 - Search runs use existing runtime; default `evaluate_test=False`; checkpointing and MLflow stay opt-in/lightweight by search config.
+- Quick validation uses existing runtime with `log_to_sqlite=False`, `enable_mlflow=False`, and temporary resume checkpoints, so it does not write smoke rows to the thesis or MLflow databases.
 - `formal-run` state file: `results/formal_run_state.json`.
 - Formal state is a strict resume pointer, not a profile definition.
 - Comma-separated `--profile` values run sequentially; state tracks active/latest profile.

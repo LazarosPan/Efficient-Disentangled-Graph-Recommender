@@ -84,7 +84,7 @@ Precedence:
 - `loss_normalization="none"` is the default; `"ema_aux"` normalizes auxiliary losses only and leaves the main recommendation BPR scale unchanged.
 - `use_amp=True` is the default runtime path, and `amp_dtype` is fixed to `bfloat16`.
 - Dataclass batch default: `batch_size=4096`, `auto_batch_size=True`, candidates `[16384,8192,4096,2048,1024,512,256]`.
-- Core search overrides candidates to `[32768,16384,8192,4096,2048,1024,512,256]`.
+- Active model-selection searches use the largest-feasible auto-batch ladder `[1048576,524288,262144,131072,65536,32768,16384,8192,4096,2048,1024,512,256]`; the selected batch is runtime metadata, not a sampled thesis mechanism.
 - In `edgrec-core-optimization`, `batch_size` is runtime metadata when auto-batch is active and `batch_size` is not a sampled parameter.
 - Too-large CUDA batches are rejected by probe/verification/fallback and retried at smaller candidates.
 - Auto-batch recovery checks candidate checkpoint identities before probing CUDA again.
@@ -110,8 +110,8 @@ Precedence:
 
 | Space | Base | Datasets | Objective | Sampler/pruner | Runtime contract |
 | --- | --- | --- | --- | --- | --- |
-| `edgrec-core-optimization` | `core-edgrec-mainline` | core 4; start diagnostics with MovieLens1M and KuaiRec_v2 | `ValidationOnlineCRRU@20_40` | TPE seed 42, startup 4; Hyperband min 6, factor 3, bootstrap 1 | `max_epochs=60`, `trials=8`, auto-batch runtime-only, tunes `dice_mask_reduction`, `feature_gate_init`, `n_negatives`, branch weights, context/feature shortcuts; `hard_negative_ratio` excluded for DICE |
-| `edgrec-mechanism-coarse` | `core-edgrec-mainline` | KuaiRec_v2, MovieLens1M, KuaiRand1K; no AmazonBook broad pass | `ValidationAccuracy@20_40` | TPE seed 42, startup 40; Hyperband min 6, factor 3, bootstrap 1 | `max_epochs=60`, `trials=120`, `parameters` declare profile labels and sibling `profile_overrides` maps them to concrete score-fusion, item-branch, context/feature, loss, and graph-depth config overrides before `EDGRecConfig` is built; dataset-local scalar overrides cover MovieLens `lr=0.005`/score floor `0.1` and wider KuaiRand DICE margins |
+| `edgrec-core-optimization` | `core-edgrec-mainline` | core 4; start diagnostics with MovieLens1M and KuaiRec_v2; KuaiRand uses `observed_interaction_items` as a separate sanity regime | `ValidationOnlineCRRU@20_40` | TPE seed 42, startup 4; Hyperband min 6, factor 3, bootstrap 1 | `max_epochs=60`, `trials=8`, largest-feasible auto-batch runtime-only, tunes `dice_mask_reduction`, `feature_gate_init`, `n_negatives`, branch weights, context/feature shortcuts; `hard_negative_ratio` excluded for DICE |
+| `edgrec-mechanism-coarse` | `core-edgrec-mainline` | KuaiRec_v2, MovieLens1M, KuaiRand1K randomized-exposure regime; no AmazonBook broad pass | `ValidationAccuracy@20_40` | TPE seed 42, startup 40; Hyperband min 6, factor 3, bootstrap 1 | `max_epochs=60`, `trials=30`, largest-feasible auto-batch runtime-only, focused profile labels and sibling `profile_overrides` maps them to concrete score-fusion, item-branch, context/feature, loss, and graph-depth config overrides before `EDGRecConfig` is built; dataset-local scalar overrides cover MovieLens score floor `0.1` and wider KuaiRand DICE margins |
 
 ## Experiment-facing contract
 
