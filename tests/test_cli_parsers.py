@@ -243,7 +243,7 @@ class UtilityParserTests(unittest.TestCase):
     """Pin the centralized utility parser defaults."""
 
     def test_quick_validate_parser_defaults(self) -> None:
-        """Quick-validate should keep its default categories and MLflow opt-in."""
+        """Quick-validate should keep its fixed non-persistent smoke surface."""
         args = build_quick_validate_parser().parse_args([])
 
         self.assertEqual(
@@ -358,13 +358,13 @@ class UtilityParserTests(unittest.TestCase):
         self.assertFalse(config.use_torch_compile)
 
     def test_quick_validate_run_single_case_disables_refined_diagnostics(self) -> None:
-        """Quick validation should exercise execution without optional refined metrics."""
+        """Quick validation should run without optional diagnostics or persistence."""
         config = SimpleNamespace()
 
         with mock.patch.object(
             quick_validate,
             "run_experiment",
-            return_value={"exp_id": 1, "test_metrics": {}},
+            return_value={"exp_id": None, "test_metrics": {}},
         ) as run_experiment:
             quick_validate._run_single_case(
                 category="recipes",
@@ -376,6 +376,8 @@ class UtilityParserTests(unittest.TestCase):
             )
 
         self.assertFalse(run_experiment.call_args.kwargs["include_refined_diagnostics"])
+        self.assertFalse(run_experiment.call_args.kwargs["enable_mlflow"])
+        self.assertFalse(run_experiment.call_args.kwargs["log_to_sqlite"])
 
     def test_quick_validate_resume_probe_disables_refined_diagnostics(self) -> None:
         """The direct resume probe should share the quick validation metric contract."""
@@ -399,6 +401,8 @@ class UtilityParserTests(unittest.TestCase):
 
         self.assertTrue(run_experiment.called)
         self.assertFalse(run_experiment.call_args.kwargs["include_refined_diagnostics"])
+        self.assertFalse(run_experiment.call_args.kwargs["enable_mlflow"])
+        self.assertFalse(run_experiment.call_args.kwargs["log_to_sqlite"])
 
 
 if __name__ == "__main__":

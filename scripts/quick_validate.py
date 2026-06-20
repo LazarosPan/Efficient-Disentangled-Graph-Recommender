@@ -10,8 +10,9 @@ against the full experiment surface before longer formal runs.
 from __future__ import annotations
 
 import argparse
-import sqlite3
+import tempfile
 import time
+from pathlib import Path
 
 import torch
 from experiments.ablation_configs import (
@@ -31,7 +32,6 @@ from src.utils.cli_parsers import (
     build_quick_validate_parser,
 )
 from src.utils.config import DEFAULT_SEED, EDGRecConfig
-from src.utils.project_paths import CHECKPOINT_DIR, MLFLOW_DB_PATH, THESIS_DB_PATH
 
 RUNTIME_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 QUICK_VALIDATE_EPOCHS = 1
@@ -207,27 +207,12 @@ def _select_values(
     return [value for value in available if value in requested]
 
 
-def _sqlite_count(query: str, params: tuple[object, ...]) -> int:
-    with sqlite3.connect(THESIS_DB_PATH) as conn:
-        row = conn.execute(query, params).fetchone()
-    return int(row[0] or 0) if row is not None else 0
-
-
-def _assert_experiment_logging(exp_id: int) -> None:
-    experiments = _sqlite_count(
-        "SELECT COUNT(*) FROM experiments WHERE id = ?",
-        (exp_id,),
-    )
-    metrics = _sqlite_count(
-        "SELECT COUNT(*) FROM metrics WHERE experiment_id = ?",
-        (exp_id,),
-    )
-    if experiments == 0:
+def _assert_no_persistent_experiment(result: dict) -> None:
+    """Ensure quick validation did not create a thesis SQLite experiment row."""
+    if result.get("exp_id") is not None:
         raise AssertionError(
-            f"SQLite experiment row missing for experiment_id={exp_id}",
+            f"Quick validation unexpectedly persisted experiment_id={result['exp_id']}",
         )
-    if metrics == 0:
-        raise AssertionError(f"SQLite metric rows missing for experiment_id={exp_id}")
 
 
 def _assert_ranking_metrics(test_metrics: dict[str, float]) -> None:
@@ -260,43 +245,30 @@ def _run_single_case(
     intervention: str,
     recipe_name: str | None = None,
     save_checkpoint: bool = False,
-    enable_mlflow: bool = False,
     auto_resume: bool = False,
     checkpoint_path: str | None = None,
-    expect_logging: bool = False,
     expect_metrics: bool = False,
-    expect_mlflow_db_touch: bool = False,
 ) -> tuple[dict, float]:
-    mlflow_mtime_before = (
-        MLFLOW_DB_PATH.stat().st_mtime_ns
-        if expect_mlflow_db_touch and MLFLOW_DB_PATH.exists()
-        else None
-    )
     started = time.perf_counter()
     result = run_experiment(
         config,
         preset=preset,
         intervention=intervention,
         save_checkpoint=save_checkpoint,
-        enable_mlflow=enable_mlflow,
+        enable_mlflow=False,
         mlflow_experiment_name="edgrec-quick-validate",
         recipe_name=recipe_name,
         checkpoint_path=checkpoint_path,
         checkpoint_every=1,
         auto_resume=auto_resume,
         include_refined_diagnostics=False,
+        log_to_sqlite=False,
     )
     elapsed = time.perf_counter() - started
 
-    exp_id = int(result["exp_id"])
-    if expect_logging:
-        _assert_experiment_logging(exp_id)
+    _assert_no_persistent_experiment(result)
     if expect_metrics:
         _assert_ranking_metrics(result["test_metrics"])
-    if expect_mlflow_db_touch:
-        mlflow_mtime_after = MLFLOW_DB_PATH.stat().st_mtime_ns if MLFLOW_DB_PATH.exists() else None
-        if mlflow_mtime_after is None or mlflow_mtime_after == mlflow_mtime_before:
-            raise AssertionError("MLflow probe did not update results/mlflow.db")
 
     return result, elapsed
 
@@ -437,7 +409,6 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
                 preset="edgrec",
                 intervention="quick_features",
                 recipe_name=feature_recipe,
-                expect_logging=True,
                 expect_metrics=True,
             )
             results.append(
@@ -467,63 +438,48 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
 
     resume_label = "checkpoint-resume:edgrec"
     for dataset in args.datasets:
-        checkpoint_path = CHECKPOINT_DIR / f"quick_validate_resume_probe_{dataset}.pt"
-        checkpoint_path.unlink(missing_ok=True)
         resume_config = _build_tiny_recipe_config(
             args,
             dataset,
             recipe="edgrec",
         )
         try:
-            _, first_elapsed = _run_single_case(
-                category="observability",
-                dataset=dataset,
-                label=resume_label,
-                config=resume_config,
-                preset="edgrec",
-                intervention="quick_resume_probe",
-                recipe_name="edgrec",
-                save_checkpoint=True,
-                enable_mlflow=args.mlflow,
-                auto_resume=False,
-                checkpoint_path=str(checkpoint_path),
-                expect_logging=True,
-                expect_metrics=True,
-                expect_mlflow_db_touch=args.mlflow,
-            )
-            second_started = time.perf_counter()
-            resumed_result = run_experiment(
-                resume_config,
-                preset="edgrec",
-                intervention="quick_resume_probe",
-                save_checkpoint=True,
-                enable_mlflow=False,
-                mlflow_experiment_name="edgrec-quick-validate",
-                recipe_name="edgrec",
-                checkpoint_path=str(checkpoint_path),
-                checkpoint_every=1,
-                auto_resume=True,
-                include_refined_diagnostics=False,
-            )
-            second_elapsed = time.perf_counter() - second_started
-            if not resumed_result.get("resumed"):
-                raise AssertionError("Auto-resume probe did not report resumed=True")
-            results.append(
-                {
-                    "status": "pass",
-                    "category": "observability",
-                    "dataset": dataset,
-                    "label": resume_label,
-                    "elapsed": first_elapsed + second_elapsed,
-                },
-            )
-            _print_case(
-                "OK",
-                "observability",
-                dataset,
-                resume_label,
-                first_elapsed + second_elapsed,
-            )
+            with tempfile.TemporaryDirectory(prefix="edgrec_quick_validate_") as tmpdir:
+                checkpoint_path = Path(tmpdir) / f"quick_validate_resume_probe_{dataset}.pt"
+                checkpoint_path.unlink(missing_ok=True)
+                _, first_elapsed = _run_single_case(
+                    category="observability",
+                    dataset=dataset,
+                    label=resume_label,
+                    config=resume_config,
+                    preset="edgrec",
+                    intervention="quick_resume_probe",
+                    recipe_name="edgrec",
+                    save_checkpoint=True,
+                    auto_resume=False,
+                    checkpoint_path=str(checkpoint_path),
+                    expect_metrics=True,
+                )
+                second_started = time.perf_counter()
+                resumed_result = run_experiment(
+                    resume_config,
+                    preset="edgrec",
+                    intervention="quick_resume_probe",
+                    save_checkpoint=True,
+                    enable_mlflow=False,
+                    mlflow_experiment_name="edgrec-quick-validate",
+                    recipe_name="edgrec",
+                    checkpoint_path=str(checkpoint_path),
+                    checkpoint_every=1,
+                    auto_resume=True,
+                    include_refined_diagnostics=False,
+                    log_to_sqlite=False,
+                )
+                second_elapsed = time.perf_counter() - second_started
+                _assert_no_persistent_experiment(resumed_result)
+                if not resumed_result.get("resumed"):
+                    raise AssertionError("Auto-resume probe did not report resumed=True")
+                total_elapsed = first_elapsed + second_elapsed
         except Exception as exc:
             results.append(
                 {
@@ -538,8 +494,23 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
             _print_case("FAIL", "observability", dataset, resume_label, 0.0, str(exc))
             if args.fail_fast:
                 return
-        finally:
-            checkpoint_path.unlink(missing_ok=True)
+        else:
+            results.append(
+                {
+                    "status": "pass",
+                    "category": "observability",
+                    "dataset": dataset,
+                    "label": resume_label,
+                    "elapsed": total_elapsed,
+                },
+            )
+            _print_case(
+                "OK",
+                "observability",
+                dataset,
+                resume_label,
+                total_elapsed,
+            )
 
 
 def _run_evaluation_category(args: argparse.Namespace, results: list[dict]) -> None:
@@ -645,7 +616,7 @@ def main() -> int:
     print(f"Datasets: {', '.join(args.datasets)}")
     print(f"Categories: {', '.join(args.categories)}")
     print(f"Epochs: {QUICK_VALIDATE_EPOCHS} | Batch size: {QUICK_VALIDATE_BATCH_SIZE}")
-    print(f"MLflow probe: {'enabled' if args.mlflow else 'disabled'}")
+    print("Persistence: SQLite and MLflow disabled")
 
     for category in args.categories:
         category_runners[category](args, results)

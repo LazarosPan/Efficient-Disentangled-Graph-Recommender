@@ -1,6 +1,6 @@
 # Workspace Instructions
 
-You are working on a thesis project about causal embeddings for recommendation. Follow these rules to keep implementation quality high and diffs small.
+You are working on a thesis project about efficient disentangled graph recommender. Follow these rules to keep implementation quality high and diffs small.
 
 ## Core Working Principles
 

@@ -1,4 +1,4 @@
-# Causal Embeddings for Recommendation: Theory Synthesis
+# Causal Disentanglement for Recommendation: Theory Synthesis
 
 ## 1. Foundational Causal Formalisms
 Source: [summary_survey_papers_4.md](../../../docs/paper_summaries/summary_survey_papers_4.md); [methematical_formulations.md](../../../docs/paper_summaries/methematical_formulations.md)

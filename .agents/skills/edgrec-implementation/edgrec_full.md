@@ -96,4 +96,4 @@ Runtime invariants:
 | `src/utils/experiment_logger.py` | SQLite experiment store |
 | `src/utils/crru.py` | CRRU and OnlineCRRU utilities |
 | `scripts/query_results.py` | SQLite-first result inspection |
-| `scripts/quick_validate.py` | smoke validation entry point |
+| `scripts/quick_validate.py` | non-persistent smoke validation entry point |

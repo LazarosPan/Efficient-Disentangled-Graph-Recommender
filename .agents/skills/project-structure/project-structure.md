@@ -1,13 +1,6 @@
 # Run: `tree -I 'latex|.venv|external|results/checkpoints|mlruns|*/__pycache__/'`
 
 ```
-├── causal_embeddings_for_recommendations.egg-info
-│   ├── dependency_links.txt
-│   ├── entry_points.txt
-│   ├── PKG-INFO
-│   ├── requires.txt
-│   ├── SOURCES.txt
-│   └── top_level.txt
 ├── data
 │   ├── all_datasets_feature_audit.json
 │   ├── all_datasets_information.md
@@ -99,15 +92,18 @@
 │   │   └── SIGformer_audit.md
 │   ├── guidelines
 │   │   ├── env_setup.md
+│   │   ├── gpt-pro.md
+│   │   ├── gpt-xhigh.md
 │   │   ├── profile_plan.md
 │   │   └── thesis_plan.md
 │   ├── notes
-│   │   ├── manus_research_report.md
-│   │   ├── progress_ideas.md
-│   │   ├── recsys_improvements.md
 │   │   ├── edgrec_consolidated_recommendations.md
 │   │   ├── EDGRec_updates_implementation_focused.md
 │   │   ├── EDGRec_updates.md
+│   │   ├── exa.md
+│   │   ├── manus_research_report.md
+│   │   ├── progress_ideas.md
+│   │   ├── recsys_improvements.md
 │   │   └── useful_commands.md
 │   ├── paper_summaries
 │   │   ├── full_summary_detailed.md
@@ -123,47 +119,74 @@
 │   └── usage
 │       ├── experiments.md
 │       └── scripts.md
+├── efficient_disentangled_graph_recommender.egg-info
+│   ├── dependency_links.txt
+│   ├── entry_points.txt
+│   ├── PKG-INFO
+│   ├── requires.txt
+│   ├── SOURCES.txt
+│   └── top_level.txt
 ├── experiments
 │   ├── ablation_configs.py
+│   ├── benchmark_resolvers.py
 │   ├── cli_parsers.py
 │   ├── experiment_catalog.json
 │   ├── __init__.py
 │   ├── recipes.py
 │   ├── run_ablation.py
 │   ├── run_benchmark.py
-│   └── run_experiment.py
+│   ├── run_experiment.py
+│   ├── run_search.py
+│   └── search_spaces.json
 ├── LICENCE
-├── Papers_Causal_Embeddings_Recommendation_Systems
-│   ├── A Comprehensive Survey of Evaluation Techniques for Recommendation Systems.pdf
-│   ├── A Survey on Causal Inference for Recommendation.pdf
-│   ├── CAGRA_ Highly Parallel Graph Construction and Approximate Nearest Neighbor Search for GPUs.pdf
-│   ├── causal-augmented-disentanglement-for-contrastive-recommendation.pdf
-│   ├── CausalCDR: Causal Embedding Learning for Cross-domain Recommendation.pdf
-│   ├── Causal_Disentanglement_for_Semantic-Aware_Intent_Learning_in_Recommendation.pdf
-│   ├── Causal Embeddings for Recommendation.pdf
-│   ├── Causal Inference for Recommendation_ Foundations, Methods, and Applications.pdf
-│   ├── Causal Inference for Recommendation.pdf
-│   ├── Causal Inference in Recommender Systems - A Survey and Future Directions.pdf
-│   ├── Causal Inference in Recommender Systems_ A Survey of Strategies for Bias Mitigation, Explanation, and Generalization.pdf
-│   ├── Causality-Inspired Fair Representation Learning for Multimodal Recommendation.pdf
-│   ├── Causal Representation Learning from Multimodal Biomedical Observations.pdf
-│   ├── CIDGMed_ Causal Inference-Driven Medication Recommendation with.pdf
-│   ├── Disentangled Causal Embedding With Contrastive Learning For Recommender System.pdf
-│   ├── Disentangling User Interest and Conformity for Recommendation with Causal Embedding.pdf
-│   ├── Dual disentanglement of user–item interaction for recommendation with causal embedding.pdf
-│   ├── FULL-GRAPH VS. MINI-BATCH TRAINING_ COMPRE- HENSIVE ANALYSIS FROM A BATCH SIZE AND FAN- OUT SIZE PERSPECTIVE.pdf
-│   ├── Layer-refined Graph Convolutional Networks for_Recommendation.pdf
-│   ├── Learning Causal Explanations for Recommendation.pdf
-│   ├── LightGCN: Simplifying and Powering Graph Convolution Network for Recommendation.pdf
-│   ├── Multimodal Counterfactual Learning Network for Multimedia-based Recommendation.pdf
-│   ├── Multimodal_Graph_Causal_Embedding_for_Multimedia-Based_Recommendation.pdf
-│   ├── NeurIPS-2023-estimating-propensity-for-causality-based-recommendation-without-exposure-data-Paper-Conference.pdf
-│   ├── PANORAMA_ FAST-TRACK NEAREST NEIGHBORS.pdf
-│   ├── RecFlow_ An Industrial Full Flow Recommendation Dataset.pdf
-│   └── Revisiting LightGCN: Unexpected Inflexibility, Inconsistency, and A Remedy Towards Improved Recommendation.pdf
+├── Papers_Efficient_Disentangled_Graph_Recommender
+│   ├── Causal_Embeddings_for_RecSys
+│   │   ├── Causal Embeddings for Recommendation.pdf
+│   │   └── Causal Variational Inference for Deconfounded Multi-Behavior Recommendation.pdf
+│   ├── Causal_Surveys
+│   │   ├── A Survey on Causal Inference for Recommendation.pdf
+│   │   ├── Causal Inference for Recommendation_ Foundations, Methods, and Applications.pdf
+│   │   ├── Causal Inference in Recommender Systems - A Survey and Future Directions.pdf
+│   │   └── Causal Inference in Recommender Systems_ A Survey of Strategies for Bias Mitigation, Explanation, and Generalization.pdf
+│   ├── Datasets
+│   │   ├── KuaiRand_ An Unbiased Sequential Recommendation Dataset with Randomly Exposed Videos.pdf
+│   │   ├── KuaiRec_ A Fully-observed Dataset and Insights for Evaluating Recommender Systems.pdf
+│   │   ├── RecFlow_ An Industrial Full Flow Recommendation Dataset.pdf
+│   │   └── The MovieLens Datasets: History and Context.pdf
+│   ├── Disentanglement
+│   │   ├── causal-augmented-disentanglement-for-contrastive-recommendation.pdf
+│   │   ├── Causal_Disentanglement_for_Semantic-Aware_Intent_Learning_in_Recommendation.pdf
+│   │   ├── Disentangled Causal Embedding With Contrastive Learning For Recommender System.pdf
+│   │   ├── Disentangling User Interest and Conformity for Recommendation with Causal Embedding.pdf
+│   │   └── Dual disentanglement of user–item interaction for recommendation with causal embedding.pdf
+│   ├── GNN_GCN
+│   │   ├── Graph Convolutional Neural Networks for Web-Scale Recommender Systems.pdf
+│   │   ├── Graph Embedding Techniques, Applications, and Performance_ A Survey.pdf
+│   │   ├── Layer-refined Graph Convolutional Networks for_Recommendation.pdf
+│   │   ├── LightGCN: Simplifying and Powering Graph Convolution Network for Recommendation.pdf
+│   │   ├── Revisiting LightGCN: Unexpected Inflexibility, Inconsistency, and A Remedy Towards Improved Recommendation.pdf
+│   │   ├── SIGformer_ Sign-aware Graph Transformer for Recommendation.pdf
+│   │   └── TransGNN_ Harnessing the Collaborative Power of Transformers and Graph Neural Networks for Recommender Systems.pdf
+│   ├── Losses_Validation-metrics
+│   │   ├── A Comprehensive Survey of Evaluation Techniques for Recommendation Systems.pdf
+│   │   ├── BPR_ Bayesian Personalized Ranking from Implicit Feedback.pdf
+│   │   ├── NeurIPS-2023-estimating-propensity-for-causality-based-recommendation-without-exposure-data-Paper-Conference.pdf
+│   │   ├── Scaling Limit of Neural Networks with the Xavier Initialization and Convergence to a Global Minimum.pdf
+│   │   └── Towards Representation Alignment and Uniformity in Collaborative Filtering.pdf
+│   ├── Performance
+│   │   ├── CAGRA_ Highly Parallel Graph Construction and Approximate Nearest Neighbor Search for GPUs.pdf
+│   │   ├── FULL-GRAPH VS. MINI-BATCH TRAINING_ COMPREHENSIVE ANALYSIS FROM A BATCH SIZE AND FAN- OUT SIZE PERSPECTIVE.pdf
+│   │   ├── Optuna_ A Next-generation Hyperparameter Optimization Framework.pdf
+│   │   └── PANORAMA_ FAST-TRACK NEAREST NEIGHBORS.pdf
+│   └── Recommendation_Systems
+│       ├── A comprehensive review of recommender systems_ Transitioning from theory to practice.pdf
+│       ├── A Survey of Graph Neural Networks for Recommender Systems: Challenges, Methods, and Directions.pdf
+│       └── Graph Neural Networks in Recommender Systems: A Survey.pdf
 ├── pyproject.toml
 ├── README.md
 ├── results
+│   ├── archive
+│   │   └── query_results_20260527.md
 │   ├── dataset_visualizations
 │   │   ├── amazonbook_profile.png
 │   │   ├── benchmark_overview.png
@@ -174,20 +197,31 @@
 │   │   ├── movielens1m_profile.png
 │   │   ├── movielens20m_profile.png
 │   │   └── taobao_profile.png
+│   ├── edgrec_config_audit.md
 │   ├── experiments.db
 │   ├── formal_run_state.json
 │   ├── mlflow.db
-│   ├── query_results_20260527.md
+│   ├── optuna_figures
+│   │   ├── optuna_crru_branch_depth_heatmaps.png
+│   │   ├── optuna_crru_component_correlations_by_dataset.png
+│   │   ├── optuna_crru_components_by_dataset.png
+│   │   ├── optuna_crru_fanout_runtime_tradeoffs.png
+│   │   ├── optuna_crru_importance_by_dataset.png
+│   │   ├── optuna_crru_lr_branchmix_landscape.png
+│   │   └── optuna_crru_selection_frontier_by_dataset.png
+│   ├── optuna_optimization.md
+│   ├── optuna_studies.db
 │   ├── query_results.md
-│   ├── thesis_experiments.db
-│   ├── thesis_experiments.db-shm
-│   └── thesis_experiments.db-wal
+│   └── thesis_experiments.db
 ├── scripts
 │   ├── cleanup_experiment_artifacts.py
 │   ├── download_pyg_datasets.py
+│   ├── export_optuna_figures.py
 │   ├── __init__.py
+│   ├── prune_checkpoints.py
 │   ├── query_results.py
 │   ├── quick_validate.py
+│   ├── report_optuna_optimization.py
 │   ├── reset_experiment_db.py
 │   └── _workflow_helpers.py
 ├── src
@@ -224,12 +258,13 @@
 │   │   │   ├── dice.py
 │   │   │   ├── __init__.py
 │   │   │   └── lightgcn.py
+│   │   ├── common.py
+│   │   ├── edgrec.py
 │   │   ├── embeddings.py
 │   │   ├── __init__.py
 │   │   ├── lightgcn.py
 │   │   ├── propensity.py
-│   │   ├── scoring.py
-│   │   └── edgrec.py
+│   │   └── scoring.py
 │   ├── profiling
 │   │   ├── gpu_profiler.py
 │   │   └── __init__.py
@@ -238,14 +273,17 @@
 │   │   ├── __init__.py
 │   │   └── mini_batch_trainer.py
 │   └── utils
+│       ├── benchmark_datasets.py
 │       ├── cli_parsers.py
 │       ├── config.py
+│       ├── crru.py
 │       ├── csv_features.py
 │       ├── dataset_loader_utils.py
 │       ├── experiment_logger.py
 │       ├── experiment_naming.py
 │       ├── __init__.py
 │       ├── interaction_indexing.py
+│       ├── method_naming.py
 │       ├── project_paths.py
 │       ├── reproducibility.py
 │       └── trainer_runtime.py
@@ -256,6 +294,8 @@
 │   ├── test_data_and_reproducibility.py
 │   ├── test_experiment_logger.py
 │   ├── test_formal_training_policy.py
+│   ├── test_prune_checkpoints.py
+│   ├── test_search_experiments.py
 │   └── test_split_safety.py
 └── uv.lock
 ```

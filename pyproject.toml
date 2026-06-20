@@ -3,7 +3,7 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "causal-embeddings-for-recommendations"
+name = "efficient-disentangled-graph-recommender"
 version = "0.3.2"
 description = "GPU-Efficient Causal Disentanglement: A Unified Embedding Pipeline with ANN-Accelerated Graph Construction and Memory-Aware Optimization"
 readme = "README.md"

@@ -105,12 +105,12 @@ class SearchSpaceValidationTests(unittest.TestCase):
         self.assertIn("score_fusion_profile", payload["profile_overrides"])
         self.assertEqual(payload["profile_overrides"], spec.profile_overrides)
         self.assertEqual(
-            spec.profile_overrides["score_fusion_profile"]["fixed_dice_no_context"],
+            spec.profile_overrides["score_fusion_profile"]["fixed_interest_context"],
             {
                 "use_learned_score_mix": False,
-                "score_weight_interest": 0.5,
-                "score_weight_conformity": 0.5,
-                "score_weight_popularity": 0.0,
+                "score_weight_interest": 0.7,
+                "score_weight_conformity": 0.0,
+                "score_weight_popularity": 0.3,
             },
         )
         self.assertEqual(spec.parameters["dropout"]["choices"], [0.0, 0.1, 0.2, 0.3])
@@ -136,7 +136,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
 
         self.assertEqual(
             movielens_spec.parameters["lr"]["choices"],
-            [0.0004, 0.0008, 0.0015, 0.003, 0.005],
+            [0.0004, 0.0008, 0.0015, 0.003],
         )
         self.assertEqual(
             movielens_spec.parameters["dice_sampler_margin"]["choices"],
@@ -144,7 +144,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
         )
         self.assertEqual(
             movielens_spec.parameters["score_mix_min_weight"]["choices"],
-            [0.0, 0.02, 0.05, 0.1],
+            [0.02, 0.05, 0.1],
         )
         self.assertEqual(
             kuairand_spec.parameters["dice_sampler_margin"]["choices"],
@@ -152,7 +152,11 @@ class SearchSpaceValidationTests(unittest.TestCase):
         )
         self.assertEqual(
             kuairand_spec.parameters["score_mix_min_weight"]["choices"],
-            [0.0, 0.02, 0.05],
+            [0.02, 0.05],
+        )
+        self.assertEqual(
+            kuairand_spec.parameters["item_universe_policy"]["choices"],
+            ["random_exposure_items_only"],
         )
 
     def test_search_parser_accepts_comma_separated_space_queue(self) -> None:
@@ -314,7 +318,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
             "parameters": {
                 "score_fusion_profile": {
                     "type": "categorical",
-                    "choices": ["fixed_dice_no_context"],
+                    "choices": ["fixed_interest_context"],
                 },
             },
         }
@@ -350,7 +354,21 @@ class SearchSpaceValidationTests(unittest.TestCase):
         self.assertEqual(base_config["batch_size"], 4096)
         self.assertEqual(
             base_config["batch_size_candidates"],
-            [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+            [
+                1048576,
+                524288,
+                262144,
+                131072,
+                65536,
+                32768,
+                16384,
+                8192,
+                4096,
+                2048,
+                1024,
+                512,
+                256,
+            ],
         )
         self.assertNotIn("batch_size", payload["parameters"])
         self.assertNotIn("hard_negative_ratio", payload["parameters"])
@@ -478,10 +496,10 @@ class SearchSpaceValidationTests(unittest.TestCase):
         self.assertIn("| COMPLETE | 1 | 1 | 2 |", lines)
         self.assertIn("| PRUNED | 2 | 0 | 2 |", lines)
         self.assertIn(
-            "- Fresh informative budget count: `2` (fresh COMPLETE + real fresh PRUNED).",
+            "- Fresh informative target count: `2` (fresh COMPLETE + real fresh PRUNED).",
             lines,
         )
-        self.assertIn("- Duplicate-skip pruned trials excluded from that budget: `1`.", lines)
+        self.assertIn("- Duplicate-skip pruned trials excluded from that target count: `1`.", lines)
 
     def test_trial_overrides_enter_build_config_path(self) -> None:
         """Sampled values should become a valid config without post-build mutation."""
@@ -616,7 +634,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
             parameters={
                 "score_fusion_profile": {
                     "type": "categorical",
-                    "choices": ["fixed_dice_no_context"],
+                    "choices": ["fixed_interest_context"],
                 },
                 "item_branch_profile": {
                     "type": "categorical",
@@ -624,7 +642,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
                 },
                 "context_feature_profile": {
                     "type": "categorical",
-                    "choices": ["features_only"],
+                    "choices": ["context_only"],
                 },
                 "loss_profile": {
                     "type": "categorical",
@@ -632,11 +650,11 @@ class SearchSpaceValidationTests(unittest.TestCase):
                 },
                 "graph_profile": {
                     "type": "categorical",
-                    "choices": ["deep_asym"],
+                    "choices": ["medium"],
                 },
                 "loss_normalization": {
                     "type": "categorical",
-                    "choices": ["ema_aux"],
+                    "choices": ["none"],
                 },
             },
             profile_overrides=catalog_profile_overrides,
@@ -652,7 +670,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
                 search._parameter_storage_name(
                     "score_fusion_profile",
                     spec.parameters["score_fusion_profile"],
-                ): "fixed_dice_no_context",
+                ): "fixed_interest_context",
                 search._parameter_storage_name(
                     "item_branch_profile",
                     spec.parameters["item_branch_profile"],
@@ -660,7 +678,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
                 search._parameter_storage_name(
                     "context_feature_profile",
                     spec.parameters["context_feature_profile"],
-                ): "features_only",
+                ): "context_only",
                 search._parameter_storage_name(
                     "loss_profile",
                     spec.parameters["loss_profile"],
@@ -668,11 +686,11 @@ class SearchSpaceValidationTests(unittest.TestCase):
                 search._parameter_storage_name(
                     "graph_profile",
                     spec.parameters["graph_profile"],
-                ): "deep_asym",
+                ): "medium",
                 search._parameter_storage_name(
                     "loss_normalization",
                     spec.parameters["loss_normalization"],
-                ): "ema_aux",
+                ): "none",
             },
         )
 
@@ -691,21 +709,20 @@ class SearchSpaceValidationTests(unittest.TestCase):
 
         self.assertEqual(
             resolution.sampled_params["score_fusion_profile"],
-            "fixed_dice_no_context",
+            "fixed_interest_context",
         )
         self.assertFalse(config.use_learned_score_mix)
-        self.assertEqual(config.score_weight_interest, 0.5)
-        self.assertEqual(config.score_weight_conformity, 0.5)
-        self.assertEqual(config.score_weight_popularity, 0.0)
+        self.assertEqual(config.score_weight_interest, 0.7)
+        self.assertEqual(config.score_weight_conformity, 0.0)
+        self.assertEqual(config.score_weight_popularity, 0.3)
         self.assertTrue(config.separate_item_branch_embeddings)
-        self.assertTrue(config.use_features)
-        self.assertFalse(config.use_popularity_head)
-        self.assertEqual(config.feature_gate_init, -4.0)
+        self.assertFalse(config.use_features)
+        self.assertTrue(config.use_popularity_head)
         self.assertEqual(config.loss_weight_conformity_bpr, 0.05)
         self.assertEqual(config.interest_gnn_layers, 2)
-        self.assertEqual(config.conformity_gnn_layers, 3)
-        self.assertEqual(config.num_neighbors, [8, 4, 2])
-        self.assertEqual(config.loss_normalization, "ema_aux")
+        self.assertEqual(config.conformity_gnn_layers, 2)
+        self.assertEqual(config.num_neighbors, [10, 5])
+        self.assertEqual(config.loss_normalization, "none")
 
     def test_grid_float_parameter_samples_from_declared_steps(self) -> None:
         """Segmented float grids should keep human-readable search points."""

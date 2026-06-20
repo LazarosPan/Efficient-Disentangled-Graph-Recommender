@@ -161,7 +161,7 @@ wheels = [
 ]
 
 [[package]]
-name = "causal-embeddings-for-recommendations"
+name = "efficient-disentangled-graph-recommender"
 version = "0.3.2"
 source = { editable = "." }
 dependencies = [

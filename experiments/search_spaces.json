@@ -1,9 +1,9 @@
 {
     "search_spaces": {
         "edgrec-mechanism-coarse": {
-            "description": "Final coarse mechanism-level EDGRec discovery search. Profile parameters are Optuna/search-layer labels that resolve to concrete EDGRecConfig overrides before the model config is built; they are also recorded in sampled_params and resolved_config_overrides for reproducibility. Use --dataset kuairec_v2 for the main broad search, --dataset movielens1m for the secondary sanity search, and --dataset kuairand1k only after narrowing to the top design families. AmazonBook is intentionally excluded from this broad pass.",
+            "description": "Focused mechanism-level EDGRec discovery search. Profile parameters are Optuna/search-layer labels that resolve to concrete EDGRecConfig overrides before the model config is built; they are also recorded in sampled_params and resolved_config_overrides for reproducibility. Use --dataset kuairec_v2 for the main confirmation search, --dataset movielens1m for the secondary sanity search, and --dataset kuairand1k for the randomized-exposure regime only. AmazonBook is intentionally excluded from this broad pass. Auto-batch uses a largest-feasible throughput ladder and records the selected batch as runtime metadata.",
             "base_profile": "core-edgrec-mainline",
-            "datasets": ["amazonbook","movielens1m", "kuairec_v2", "kuairand1k"],
+            "datasets": ["movielens1m", "kuairec_v2", "kuairand1k"],
             "config_overrides": {
                 "use_early_stopping": true,
                 "patience": 8,
@@ -38,22 +38,19 @@
                     "choices": [
                         "learned_default",
                         "fixed_interest_only",
-                        "fixed_dice_no_context",
                         "fixed_interest_context",
-                        "fixed_balanced",
-                        "fixed_conformity_heavy"
+                        "fixed_balanced"
                     ]
                 },
                 "item_branch_profile": {
                     "type": "categorical",
-                    "choices": ["shared_item", "separate_item_branch_embeddings"]
+                    "choices": ["separate_item_branch_embeddings"]
                 },
                 "context_feature_profile": {
                     "type": "categorical",
                     "choices": [
                         "no_context_no_features",
                         "context_only",
-                        "features_only",
                         "context_features_gate_neg4",
                         "context_features_gate0"
                     ]
@@ -61,17 +58,15 @@
                 "loss_profile": {
                     "type": "categorical",
                     "choices": [
-                        "no_auxiliary_losses",
                         "dice_low",
                         "dice_asym_conformity",
-                        "interest_strong",
                         "no_independence",
                         "contrastive_off"
                     ]
                 },
                 "graph_profile": {
                     "type": "categorical",
-                    "choices": ["shallow", "light_asym", "medium", "deep_asym"]
+                    "choices": ["shallow", "light_asym"]
                 },
                 "lr": {"type": "categorical", "choices": [0.0004, 0.0008, 0.0015, 0.003]},
                 "weight_decay": {
@@ -82,16 +77,16 @@
                 "grad_clip_norm": {"type": "categorical", "choices": [1.0, 2.0, 5.0]},
                 "embedding_optimizer": {
                     "type": "categorical",
-                    "choices": ["adamw", "sgd", "sparseadam"]
+                    "choices": ["adamw", "sparseadam"]
                 },
                 "train_edge_keep_prob": {
                     "type": "categorical",
                     "choices": [1.0, 0.8, 0.6, 0.4]
                 },
-                "n_negatives": {"type": "categorical", "choices": [1, 2, 3, 4]},
+                "n_negatives": {"type": "categorical", "choices": [1, 3]},
                 "dice_sampler_margin": {"type": "categorical", "choices": [10.0, 20.0, 40.0]},
-                "score_mix_min_weight": {"type": "categorical", "choices": [0.0, 0.02, 0.05]},
-                "loss_normalization": {"type": "categorical", "choices": ["none", "ema_aux"]}
+                "score_mix_min_weight": {"type": "categorical", "choices": [0.02, 0.05]},
+                "loss_normalization": {"type": "categorical", "choices": ["none"]}
             },
             "profile_overrides": {
                 "score_fusion_profile": {
@@ -107,12 +102,6 @@
                         "score_weight_conformity": 0.0,
                         "score_weight_popularity": 0.0
                     },
-                    "fixed_dice_no_context": {
-                        "use_learned_score_mix": false,
-                        "score_weight_interest": 0.5,
-                        "score_weight_conformity": 0.5,
-                        "score_weight_popularity": 0.0
-                    },
                     "fixed_interest_context": {
                         "use_learned_score_mix": false,
                         "score_weight_interest": 0.7,
@@ -124,16 +113,9 @@
                         "score_weight_interest": 0.4,
                         "score_weight_conformity": 0.3,
                         "score_weight_popularity": 0.3
-                    },
-                    "fixed_conformity_heavy": {
-                        "use_learned_score_mix": false,
-                        "score_weight_interest": 0.3,
-                        "score_weight_conformity": 0.5,
-                        "score_weight_popularity": 0.2
                     }
                 },
                 "item_branch_profile": {
-                    "shared_item": {"separate_item_branch_embeddings": false},
                     "separate_item_branch_embeddings": {"separate_item_branch_embeddings": true}
                 },
                 "context_feature_profile": {
@@ -144,11 +126,6 @@
                     "context_only": {
                         "use_popularity_head": true,
                         "use_features": false
-                    },
-                    "features_only": {
-                        "use_popularity_head": false,
-                        "use_features": true,
-                        "feature_gate_init": -4.0
                     },
                     "context_features_gate_neg4": {
                         "use_popularity_head": true,
@@ -162,13 +139,6 @@
                     }
                 },
                 "loss_profile": {
-                    "no_auxiliary_losses": {
-                        "loss_weight_interest_bpr": 0.0,
-                        "loss_weight_conformity_bpr": 0.0,
-                        "loss_weight_independence": 0.0,
-                        "loss_weight_contrastive": 0.0,
-                        "loss_weight_popularity": 0.0
-                    },
                     "dice_low": {
                         "loss_weight_interest_bpr": 0.02,
                         "loss_weight_conformity_bpr": 0.02,
@@ -182,13 +152,6 @@
                         "loss_weight_independence": 0.005,
                         "loss_weight_contrastive": 0.025,
                         "loss_weight_popularity": 0.025
-                    },
-                    "interest_strong": {
-                        "loss_weight_interest_bpr": 0.1,
-                        "loss_weight_conformity_bpr": 0.03,
-                        "loss_weight_independence": 0.02,
-                        "loss_weight_contrastive": 0.03,
-                        "loss_weight_popularity": 0.015
                     },
                     "no_independence": {
                         "loss_weight_interest_bpr": 0.03,
@@ -220,11 +183,6 @@
                         "interest_gnn_layers": 2,
                         "conformity_gnn_layers": 2,
                         "num_neighbors": [10, 5]
-                    },
-                    "deep_asym": {
-                        "interest_gnn_layers": 2,
-                        "conformity_gnn_layers": 3,
-                        "num_neighbors": [8, 4, 2]
                     }
                 }
             },
@@ -235,12 +193,12 @@
                 "movielens1m": {
                     "lr": {
                         "type": "categorical",
-                        "choices": [0.0004, 0.0008, 0.0015, 0.003, 0.005]
+                        "choices": [0.0004, 0.0008, 0.0015, 0.003]
                     },
                     "dice_sampler_margin": {"type": "categorical", "choices": [20.0, 40.0, 80.0]},
                     "score_mix_min_weight": {
                         "type": "categorical",
-                        "choices": [0.0, 0.02, 0.05, 0.1]
+                        "choices": [0.02, 0.05, 0.1]
                     }
                 },
                 "kuairand1k": {
@@ -251,13 +209,13 @@
                     },
                     "item_universe_policy": {
                         "type": "categorical",
-                        "choices": ["random_exposure_items_only", "observed_interaction_items"]
+                        "choices": ["random_exposure_items_only"]
                     }
                 }
             }
         },
         "edgrec-core-optimization": {
-            "description": "Small dataset-local Optuna screen for EDGRec. Without --dataset, the runner creates one independent study per core thesis dataset, so --trials N means target N fresh informative finished trials for the current search_space_revision per dataset: COMPLETE plus real PRUNED, excluding FAIL/RUNNING, historically imported rows, duplicate-skip prunes, and other revision hashes. For the current causal-stability pass, start with --dataset movielens1m and --dataset kuairec_v2 before promoting a configuration to expensive datasets. The core search uses automatic largest-feasible batch-size probing from a descending throughput-oriented candidate ladder instead of sampling batch_size as a model-selection parameter; the selected batch size remains logged as runtime metadata. This pass tunes the effective DICE branch-loss scale, feature-gate initialization, negative count, score-mix floor, branch-supervision weights, and context/feature shortcuts. hard_negative_ratio is intentionally excluded because DICE sampling owns the high/low-popularity negative route. Four-hop GNN depth remains excluded: current evidence does not justify extra over-smoothing and compute risk for the thesis budget.",
+            "description": "Small dataset-local Optuna screen for EDGRec. Without --dataset, the runner creates one independent study per core thesis dataset, so --trials N means target N fresh informative finished trials for the current search_space_revision per dataset: COMPLETE plus real PRUNED, excluding FAIL/RUNNING, historically imported rows, duplicate-skip prunes, and other revision hashes. For the current causal-stability pass, start with --dataset movielens1m and --dataset kuairec_v2 before promoting a configuration to expensive datasets. The core search uses automatic largest-feasible batch-size probing from a descending throughput ladder as runtime metadata, not as a sampled model-selection parameter. This pass tunes the effective DICE branch-loss scale, feature-gate initialization, negative count, score-mix floor, branch-supervision weights, and context/feature shortcuts. hard_negative_ratio is intentionally excluded because DICE sampling owns the high/low-popularity negative route. Four-hop GNN depth remains excluded: current evidence does not justify extra over-smoothing and compute risk for the thesis budget.",
             "base_profile": "core-edgrec-mainline",
             "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
             "config_overrides": {
@@ -398,7 +356,7 @@
                     },
                     "item_universe_policy": {
                         "type": "categorical",
-                        "choices": ["random_exposure_items_only", "observed_interaction_items"]
+                        "choices": ["observed_interaction_items"]
                     }
                 }
             }

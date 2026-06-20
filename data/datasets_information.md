@@ -1,7 +1,7 @@
 # Dataset Information Report
 
 - Generated at: 2026-05-05T23:02:52+00:00
-- Scan root: `/home/lazar/Documents/MSc_Data_Science/MSc_Thesis/Causal-Embeddings-for-Recommendations/data`
+- Scan root: `/home/lazar/Documents/MSc_Data_Science/MSc_Thesis/Efficient-Disentangled-Graph-Recommender/data`
 - Selected datasets: AmazonBook, KuaiRand-1K, KuaiRec_v2, MovieLens20M, Taobao, MovieLens1M
 - Datasets scanned: 6
 - Files scanned: 44
