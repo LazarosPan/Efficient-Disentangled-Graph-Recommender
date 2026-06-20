@@ -1,14 +1,271 @@
 {
     "search_spaces": {
-        "ucagnn-core-optimization": {
-            "description": "Small dataset-local Optuna screen for U-CaGNN. Without --dataset, the runner creates one independent study per core thesis dataset, so --trials N means target N fresh informative finished trials per dataset: COMPLETE plus real PRUNED, excluding FAIL/RUNNING, historically imported rows, and duplicate-skip prunes. The base grid is only a fallback. The parameters_by_dataset overrides are the active research grid. AmazonBook, MovieLens, and KuaiRec are already bounded by completed and real-pruned local evidence; KuaiRand uses a coarse low/medium/high regime screen because it still has no fresh local trials and should not inherit a narrow basin from imported global rows. The core search uses automatic largest-feasible batch-size probing from a descending throughput-oriented candidate ladder instead of sampling batch_size as a model-selection parameter; the selected batch size remains logged as runtime metadata. This pass tunes only active causal branch-supervision weights and a few schedule controls because thesis time is now better spent on formal reruns, diagnostics, and writing than broad hyperparameter exploration. Four-hop GNN depth remains excluded: current evidence does not justify extra over-smoothing and compute risk for the thesis budget.",
-            "base_profile": "core-ucagnn-mainline",
+        "edgrec-mechanism-coarse": {
+            "description": "Final coarse mechanism-level EDGRec discovery search. Profile parameters are Optuna/search-layer labels that resolve to concrete EDGRecConfig overrides before the model config is built; they are also recorded in sampled_params and resolved_config_overrides for reproducibility. Use --dataset kuairec_v2 for the main broad search, --dataset movielens1m for the secondary sanity search, and --dataset kuairand1k only after narrowing to the top design families. AmazonBook is intentionally excluded from this broad pass.",
+            "base_profile": "core-edgrec-mainline",
+            "datasets": ["amazonbook","movielens1m", "kuairec_v2", "kuairand1k"],
+            "config_overrides": {
+                "use_early_stopping": true,
+                "patience": 8,
+                "auto_batch_size": true,
+                "batch_size_candidates": [1048576, 524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+                "use_popularity_emb": false
+            },
+            "objective": {
+                "metric": "ValidationAccuracy@20_40",
+                "split": "val",
+                "direction": "maximize"
+            },
+            "sampler": {
+                "name": "tpe",
+                "seed": 42,
+                "n_startup_trials": 40,
+                "multivariate": false,
+                "group": false,
+                "constant_liar": false
+            },
+            "pruner": {
+                "name": "hyperband",
+                "min_resource": 6,
+                "reduction_factor": 3,
+                "bootstrap_count": 1
+            },
+            "max_epochs": 60,
+            "trials": 30,
+            "parameters": {
+                "score_fusion_profile": {
+                    "type": "categorical",
+                    "choices": [
+                        "learned_default",
+                        "fixed_interest_only",
+                        "fixed_dice_no_context",
+                        "fixed_interest_context",
+                        "fixed_balanced",
+                        "fixed_conformity_heavy"
+                    ]
+                },
+                "item_branch_profile": {
+                    "type": "categorical",
+                    "choices": ["shared_item", "separate_item_branch_embeddings"]
+                },
+                "context_feature_profile": {
+                    "type": "categorical",
+                    "choices": [
+                        "no_context_no_features",
+                        "context_only",
+                        "features_only",
+                        "context_features_gate_neg4",
+                        "context_features_gate0"
+                    ]
+                },
+                "loss_profile": {
+                    "type": "categorical",
+                    "choices": [
+                        "no_auxiliary_losses",
+                        "dice_low",
+                        "dice_asym_conformity",
+                        "interest_strong",
+                        "no_independence",
+                        "contrastive_off"
+                    ]
+                },
+                "graph_profile": {
+                    "type": "categorical",
+                    "choices": ["shallow", "light_asym", "medium", "deep_asym"]
+                },
+                "lr": {"type": "categorical", "choices": [0.0004, 0.0008, 0.0015, 0.003]},
+                "weight_decay": {
+                    "type": "categorical",
+                    "choices": [0.0, 0.0000001, 0.00001, 0.0001]
+                },
+                "dropout": {"type": "categorical", "choices": [0.0, 0.1, 0.2, 0.3]},
+                "grad_clip_norm": {"type": "categorical", "choices": [1.0, 2.0, 5.0]},
+                "embedding_optimizer": {
+                    "type": "categorical",
+                    "choices": ["adamw", "sgd", "sparseadam"]
+                },
+                "train_edge_keep_prob": {
+                    "type": "categorical",
+                    "choices": [1.0, 0.8, 0.6, 0.4]
+                },
+                "n_negatives": {"type": "categorical", "choices": [1, 2, 3, 4]},
+                "dice_sampler_margin": {"type": "categorical", "choices": [10.0, 20.0, 40.0]},
+                "score_mix_min_weight": {"type": "categorical", "choices": [0.0, 0.02, 0.05]},
+                "loss_normalization": {"type": "categorical", "choices": ["none", "ema_aux"]}
+            },
+            "profile_overrides": {
+                "score_fusion_profile": {
+                    "learned_default": {
+                        "use_learned_score_mix": true,
+                        "score_weight_interest": 0.5,
+                        "score_weight_conformity": 0.3,
+                        "score_weight_popularity": 0.2
+                    },
+                    "fixed_interest_only": {
+                        "use_learned_score_mix": false,
+                        "score_weight_interest": 1.0,
+                        "score_weight_conformity": 0.0,
+                        "score_weight_popularity": 0.0
+                    },
+                    "fixed_dice_no_context": {
+                        "use_learned_score_mix": false,
+                        "score_weight_interest": 0.5,
+                        "score_weight_conformity": 0.5,
+                        "score_weight_popularity": 0.0
+                    },
+                    "fixed_interest_context": {
+                        "use_learned_score_mix": false,
+                        "score_weight_interest": 0.7,
+                        "score_weight_conformity": 0.0,
+                        "score_weight_popularity": 0.3
+                    },
+                    "fixed_balanced": {
+                        "use_learned_score_mix": false,
+                        "score_weight_interest": 0.4,
+                        "score_weight_conformity": 0.3,
+                        "score_weight_popularity": 0.3
+                    },
+                    "fixed_conformity_heavy": {
+                        "use_learned_score_mix": false,
+                        "score_weight_interest": 0.3,
+                        "score_weight_conformity": 0.5,
+                        "score_weight_popularity": 0.2
+                    }
+                },
+                "item_branch_profile": {
+                    "shared_item": {"separate_item_branch_embeddings": false},
+                    "separate_item_branch_embeddings": {"separate_item_branch_embeddings": true}
+                },
+                "context_feature_profile": {
+                    "no_context_no_features": {
+                        "use_popularity_head": false,
+                        "use_features": false
+                    },
+                    "context_only": {
+                        "use_popularity_head": true,
+                        "use_features": false
+                    },
+                    "features_only": {
+                        "use_popularity_head": false,
+                        "use_features": true,
+                        "feature_gate_init": -4.0
+                    },
+                    "context_features_gate_neg4": {
+                        "use_popularity_head": true,
+                        "use_features": true,
+                        "feature_gate_init": -4.0
+                    },
+                    "context_features_gate0": {
+                        "use_popularity_head": true,
+                        "use_features": true,
+                        "feature_gate_init": 0.0
+                    }
+                },
+                "loss_profile": {
+                    "no_auxiliary_losses": {
+                        "loss_weight_interest_bpr": 0.0,
+                        "loss_weight_conformity_bpr": 0.0,
+                        "loss_weight_independence": 0.0,
+                        "loss_weight_contrastive": 0.0,
+                        "loss_weight_popularity": 0.0
+                    },
+                    "dice_low": {
+                        "loss_weight_interest_bpr": 0.02,
+                        "loss_weight_conformity_bpr": 0.02,
+                        "loss_weight_independence": 0.005,
+                        "loss_weight_contrastive": 0.0,
+                        "loss_weight_popularity": 0.0
+                    },
+                    "dice_asym_conformity": {
+                        "loss_weight_interest_bpr": 0.02,
+                        "loss_weight_conformity_bpr": 0.05,
+                        "loss_weight_independence": 0.005,
+                        "loss_weight_contrastive": 0.025,
+                        "loss_weight_popularity": 0.025
+                    },
+                    "interest_strong": {
+                        "loss_weight_interest_bpr": 0.1,
+                        "loss_weight_conformity_bpr": 0.03,
+                        "loss_weight_independence": 0.02,
+                        "loss_weight_contrastive": 0.03,
+                        "loss_weight_popularity": 0.015
+                    },
+                    "no_independence": {
+                        "loss_weight_interest_bpr": 0.03,
+                        "loss_weight_conformity_bpr": 0.03,
+                        "loss_weight_independence": 0.0,
+                        "loss_weight_contrastive": 0.025,
+                        "loss_weight_popularity": 0.025
+                    },
+                    "contrastive_off": {
+                        "loss_weight_interest_bpr": 0.03,
+                        "loss_weight_conformity_bpr": 0.03,
+                        "loss_weight_independence": 0.005,
+                        "loss_weight_contrastive": 0.0,
+                        "loss_weight_popularity": 0.025
+                    }
+                },
+                "graph_profile": {
+                    "shallow": {
+                        "interest_gnn_layers": 1,
+                        "conformity_gnn_layers": 1,
+                        "num_neighbors": [8]
+                    },
+                    "light_asym": {
+                        "interest_gnn_layers": 1,
+                        "conformity_gnn_layers": 2,
+                        "num_neighbors": [10, 5]
+                    },
+                    "medium": {
+                        "interest_gnn_layers": 2,
+                        "conformity_gnn_layers": 2,
+                        "num_neighbors": [10, 5]
+                    },
+                    "deep_asym": {
+                        "interest_gnn_layers": 2,
+                        "conformity_gnn_layers": 3,
+                        "num_neighbors": [8, 4, 2]
+                    }
+                }
+            },
+            "parameters_by_dataset": {
+                "kuairec_v2": {
+                    "dice_sampler_margin": {"type": "categorical", "choices": [10.0, 20.0, 40.0]}
+                },
+                "movielens1m": {
+                    "lr": {
+                        "type": "categorical",
+                        "choices": [0.0004, 0.0008, 0.0015, 0.003, 0.005]
+                    },
+                    "dice_sampler_margin": {"type": "categorical", "choices": [20.0, 40.0, 80.0]},
+                    "score_mix_min_weight": {
+                        "type": "categorical",
+                        "choices": [0.0, 0.02, 0.05, 0.1]
+                    }
+                },
+                "kuairand1k": {
+                    "dice_sampler_margin": {"type": "categorical", "choices": [50.0, 70.0, 80.0]},
+                    "graph_profile": {
+                        "type": "categorical",
+                        "choices": ["light_asym", "medium"]
+                    },
+                    "item_universe_policy": {
+                        "type": "categorical",
+                        "choices": ["random_exposure_items_only", "observed_interaction_items"]
+                    }
+                }
+            }
+        },
+        "edgrec-core-optimization": {
+            "description": "Small dataset-local Optuna screen for EDGRec. Without --dataset, the runner creates one independent study per core thesis dataset, so --trials N means target N fresh informative finished trials for the current search_space_revision per dataset: COMPLETE plus real PRUNED, excluding FAIL/RUNNING, historically imported rows, duplicate-skip prunes, and other revision hashes. For the current causal-stability pass, start with --dataset movielens1m and --dataset kuairec_v2 before promoting a configuration to expensive datasets. The core search uses automatic largest-feasible batch-size probing from a descending throughput-oriented candidate ladder instead of sampling batch_size as a model-selection parameter; the selected batch size remains logged as runtime metadata. This pass tunes the effective DICE branch-loss scale, feature-gate initialization, negative count, score-mix floor, branch-supervision weights, and context/feature shortcuts. hard_negative_ratio is intentionally excluded because DICE sampling owns the high/low-popularity negative route. Four-hop GNN depth remains excluded: current evidence does not justify extra over-smoothing and compute risk for the thesis budget.",
+            "base_profile": "core-edgrec-mainline",
             "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
             "config_overrides": {
                 "use_early_stopping": true,
                 "patience": 8,
                 "auto_batch_size": true,
-                "batch_size_candidates": [32768, 16384, 8192, 4096, 2048, 1024, 512, 256]
+                "batch_size_candidates": [1048576, 524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+                "use_popularity_emb": false
             },
             "objective": {
                 "metric": "ValidationOnlineCRRU@20_40",
@@ -19,8 +276,8 @@
                 "name": "tpe",
                 "seed": 42,
                 "n_startup_trials": 4,
-                "multivariate": true,
-                "group": true,
+                "multivariate": false,
+                "group": false,
                 "constant_liar": false
             },
             "pruner": {
@@ -59,78 +316,55 @@
                 "lr_scheduler": {"type": "categorical", "choices": ["none", "cosine", "plateau"]},
                 "lr_scheduler_factor": {"type": "grid_float", "low": 0.4, "high": 0.8, "step": 0.1},
                 "grad_clip_norm": {"type": "categorical", "choices": [0.5, 1.0, 2.0, 3.0, 5.0]},
+                "embedding_optimizer": {
+                    "type": "categorical",
+                    "choices": ["adamw", "sgd", "sparseadam"]
+                },
                 "interest_gnn_layers": {"type": "int", "low": 1, "high": 3},
                 "conformity_gnn_layers": {"type": "int", "low": 1, "high": 3},
                 "num_neighbors": {
                     "type": "fanout",
                     "choices_by_depth": {
                         "1": [[8], [16]],
-                        "2": [[4, 2], [5, 3], [6, 3], [8, 4], [10, 5], [16, 8]],
-                        "3": [[5, 3, 2], [8, 4, 2], [10, 5, 3], [16, 8, 4]]
+                        "2": [[4, 2], [5, 3], [6, 3], [8, 4], [10, 5]],
+                        "3": [[5, 3, 2], [8, 4, 2], [10, 5, 3]]
                     }
                 },
                 "dropout": {"type": "grid_float", "low": 0.0, "high": 0.3, "step": 0.05},
-                "score_mix_min_weight": {
-                    "type": "grid_float",
-                    "low": 0.03,
-                    "high": 0.1,
-                    "step": 0.01
+                "train_edge_keep_prob": {
+                    "type": "categorical",
+                    "choices": [1.0, 0.8, 0.6, 0.4]
                 },
-                "loss_weight_interest_bpr": {
-                    "type": "grid_float",
-                    "low": 0.01,
-                    "high": 0.04,
-                    "step": 0.005
+                "n_negatives": {"type": "categorical", "choices": [1, 2, 3, 4]},
+                "dice_mask_reduction": {
+                    "type": "categorical",
+                    "choices": ["batch_mean", "active_mean"]
                 },
+                "feature_gate_init": {"type": "categorical", "choices": [0.0, -2.0, -4.0]},
+                "score_mix_min_weight": {"type": "categorical", "choices": [0.0, 0.02, 0.05]},
+                "loss_weight_interest_bpr": {"type": "categorical", "choices": [0.02, 0.05, 0.1]},
                 "loss_weight_conformity_bpr": {
-                    "type": "grid_float",
-                    "low": 0.01,
-                    "high": 0.04,
-                    "step": 0.005
+                    "type": "categorical",
+                    "choices": [0.01, 0.02, 0.05]
                 },
-                "loss_weight_independence": {
-                    "type": "grid_float",
-                    "low": 0.0,
-                    "high": 0.02,
-                    "step": 0.0025
-                },
-                "loss_weight_contrastive": {
-                    "type": "grid_float",
-                    "low": 0.0,
-                    "high": 0.05,
-                    "step": 0.005
-                },
-                "loss_weight_popularity": {
-                    "type": "grid_float",
-                    "low": 0.0,
-                    "high": 0.05,
-                    "step": 0.005
-                },
+                "loss_weight_independence": {"type": "categorical", "choices": [0.0, 0.005]},
+                "loss_weight_contrastive": {"type": "categorical", "choices": [0.0, 0.025]},
+                "loss_weight_popularity": {"type": "categorical", "choices": [0.0, 0.01, 0.025]},
+                "use_popularity_head": {"type": "categorical", "choices": [true, false]},
+                "use_features": {"type": "categorical", "choices": [true, false]},
                 "auxiliary_loss_schedule": {
                     "type": "categorical",
                     "choices": ["linear_ramp", "phased"]
                 },
-                "auxiliary_ramp_rate": {
-                    "type": "categorical",
-                    "choices": [0.0005, 0.001, 0.002]
-                },
+                "auxiliary_ramp_rate": {"type": "categorical", "choices": [0.0005, 0.001, 0.002]},
                 "independence_ramp_rate": {
                     "type": "categorical",
                     "choices": [0.000125, 0.00025, 0.0005]
                 },
-                "auxiliary_losses_start_epoch": {
-                    "type": "categorical",
-                    "choices": [0, 5, 10, 15]
-                },
+                "auxiliary_losses_start_epoch": {"type": "categorical", "choices": [0, 5, 10, 15]},
                 "popularity_supervision_start_epoch": {
                     "type": "categorical",
                     "choices": [0, 10, 20, 30]
-                },
-                "hard_negative_ratio": {
-                    "type": "grid_float",
-                    "low": 0.0,
-                    "high": 0.35,
-                    "step": 0.05
                 },
                 "dice_sampler_margin": {
                     "type": "grid_float",
@@ -141,196 +375,32 @@
             },
             "parameters_by_dataset": {
                 "amazonbook": {
-                    "lr": {"type": "categorical", "choices": [0.002, 0.003, 0.004]},
-                    "weight_decay": {
-                        "type": "categorical",
-                        "choices": [0.00000003, 0.0000001, 0.0001]
-                    },
-                    "lr_scheduler": {"type": "categorical", "choices": ["none"]},
-                    "lr_scheduler_factor": {"type": "categorical", "choices": [0.7]},
-                    "grad_clip_norm": {"type": "categorical", "choices": [1.0, 1.5]},
-                    "interest_gnn_layers": {"type": "int", "low": 2, "high": 2},
-                    "conformity_gnn_layers": {"type": "int", "low": 3, "high": 3},
-                    "num_neighbors": {
-                        "type": "fanout",
-                        "choices_by_depth": {
-                            "3": [[10, 5, 3]]
-                        }
-                    },
-                    "dropout": {"type": "categorical", "choices": [0.0, 0.05]},
-                    "score_mix_min_weight": {"type": "categorical", "choices": [0.06, 0.07, 0.1]},
-                    "loss_weight_interest_bpr": {"type": "categorical", "choices": [0.015, 0.02, 0.04]},
-                    "loss_weight_conformity_bpr": {"type": "categorical", "choices": [0.015, 0.02]},
-                    "loss_weight_independence": {"type": "categorical", "choices": [0.02]},
-                    "loss_weight_contrastive": {"type": "categorical", "choices": [0.025, 0.03]},
-                    "loss_weight_popularity": {"type": "categorical", "choices": [0.02, 0.025, 0.03, 0.035]},
-                    "auxiliary_loss_schedule": {"type": "categorical", "choices": ["phased"]},
-                    "auxiliary_ramp_rate": {"type": "categorical", "choices": [0.001]},
-                    "independence_ramp_rate": {"type": "categorical", "choices": [0.00025]},
-                    "auxiliary_losses_start_epoch": {"type": "categorical", "choices": [5, 15]},
-                    "popularity_supervision_start_epoch": {"type": "categorical", "choices": [20]},
-                    "hard_negative_ratio": {"type": "categorical", "choices": [0.2, 0.3]},
                     "dice_sampler_margin": {"type": "categorical", "choices": [10.0, 20.0]}
                 },
                 "movielens1m": {
-                    "lr": {"type": "categorical", "choices": [0.004, 0.005]},
-                    "weight_decay": {
+                    "dice_sampler_margin": {
                         "type": "categorical",
-                        "choices": [0.0000003, 0.000001, 0.00003]
-                    },
-                    "lr_scheduler": {"type": "categorical", "choices": ["plateau"]},
-                    "lr_scheduler_factor": {"type": "categorical", "choices": [0.7]},
-                    "grad_clip_norm": {"type": "categorical", "choices": [1.0, 2.0, 3.0]},
-                    "interest_gnn_layers": {"type": "int", "low": 2, "high": 2},
-                    "conformity_gnn_layers": {"type": "int", "low": 2, "high": 3},
-                    "num_neighbors": {
-                        "type": "fanout",
-                        "choices_by_depth": {
-                            "2": [[10, 5], [16, 8]],
-                            "3": [[8, 4, 2]]
-                        }
-                    },
-                    "dropout": {"type": "categorical", "choices": [0.05]},
-                    "score_mix_min_weight": {"type": "categorical", "choices": [0.09, 0.1]},
-                    "loss_weight_interest_bpr": {"type": "categorical", "choices": [0.03]},
-                    "loss_weight_conformity_bpr": {"type": "categorical", "choices": [0.02]},
-                    "loss_weight_independence": {"type": "categorical", "choices": [0.005, 0.0075]},
-                    "loss_weight_contrastive": {"type": "categorical", "choices": [0.015, 0.03]},
-                    "loss_weight_popularity": {"type": "categorical", "choices": [0.025]},
-                    "auxiliary_loss_schedule": {"type": "categorical", "choices": ["linear_ramp"]},
-                    "auxiliary_ramp_rate": {"type": "categorical", "choices": [0.002]},
-                    "independence_ramp_rate": {"type": "categorical", "choices": [0.000125]},
-                    "auxiliary_losses_start_epoch": {"type": "categorical", "choices": [0]},
-                    "popularity_supervision_start_epoch": {"type": "categorical", "choices": [10]},
-                    "hard_negative_ratio": {"type": "categorical", "choices": [0.1, 0.2, 0.25, 0.35]},
-                    "dice_sampler_margin": {"type": "categorical", "choices": [20.0, 30.0, 50.0, 80.0]}
-                },
-                "kuairec_v2": {
-                    "lr": {"type": "categorical", "choices": [0.0002, 0.0003, 0.0004, 0.004, 0.008]},
-                    "weight_decay": {
-                        "type": "categorical",
-                        "choices": [0.0, 0.000001, 0.000003, 0.00001]
-                    },
-                    "lr_scheduler": {"type": "categorical", "choices": ["none", "plateau"]},
-                    "lr_scheduler_factor": {"type": "categorical", "choices": [0.6, 0.7, 0.8]},
-                    "grad_clip_norm": {"type": "categorical", "choices": [1.0, 2.0, 3.5]},
-                    "interest_gnn_layers": {"type": "int", "low": 1, "high": 1},
-                    "conformity_gnn_layers": {"type": "int", "low": 2, "high": 3},
-                    "num_neighbors": {
-                        "type": "fanout",
-                        "choices_by_depth": {
-                            "2": [[4, 2], [8, 4], [10, 5]],
-                            "3": [[5, 3, 2], [8, 4, 2]]
-                        }
-                    },
-                    "dropout": {"type": "categorical", "choices": [0.0, 0.1, 0.2]},
-                    "score_mix_min_weight": {"type": "categorical", "choices": [0.03, 0.05, 0.08]},
-                    "loss_weight_interest_bpr": {"type": "categorical", "choices": [0.01, 0.03]},
-                    "loss_weight_conformity_bpr": {"type": "categorical", "choices": [0.015, 0.03]},
-                    "loss_weight_independence": {"type": "categorical", "choices": [0.015, 0.02]},
-                    "loss_weight_contrastive": {"type": "categorical", "choices": [0.0, 0.01, 0.02]},
-                    "loss_weight_popularity": {"type": "categorical", "choices": [0.03, 0.04, 0.05]},
-                    "auxiliary_loss_schedule": {"type": "categorical", "choices": ["phased"]},
-                    "auxiliary_ramp_rate": {"type": "categorical", "choices": [0.002]},
-                    "independence_ramp_rate": {"type": "categorical", "choices": [0.0005]},
-                    "auxiliary_losses_start_epoch": {"type": "categorical", "choices": [5, 10]},
-                    "popularity_supervision_start_epoch": {"type": "categorical", "choices": [10, 20]},
-                    "hard_negative_ratio": {"type": "categorical", "choices": [0.05, 0.1, 0.15]},
-                    "dice_sampler_margin": {"type": "categorical", "choices": [30.0, 50.0, 70.0, 80.0]}
-                },
-                "kuairand1k": {
-                    "lr": {"type": "categorical", "choices": [0.0005, 0.001, 0.003, 0.0075]},
-                    "weight_decay": {
-                        "type": "categorical",
-                        "choices": [0.0, 0.0000001, 0.00001, 0.001]
-                    },
-                    "lr_scheduler": {"type": "categorical", "choices": ["none", "plateau"]},
-                    "lr_scheduler_factor": {"type": "categorical", "choices": [0.7]},
-                    "grad_clip_norm": {"type": "categorical", "choices": [1.0, 5.0]},
-                    "interest_gnn_layers": {"type": "int", "low": 1, "high": 3},
-                    "conformity_gnn_layers": {"type": "int", "low": 1, "high": 3},
-                    "num_neighbors": {
-                        "type": "fanout",
-                        "choices_by_depth": {
-                            "1": [[16]],
-                            "2": [[8, 4], [16, 8]],
-                            "3": [[8, 4, 2], [16, 8, 4]]
-                        }
-                    },
-                    "dropout": {"type": "categorical", "choices": [0.0, 0.15, 0.3]},
-                    "score_mix_min_weight": {"type": "categorical", "choices": [0.0, 0.05, 0.1]},
-                    "loss_weight_interest_bpr": {"type": "categorical", "choices": [0.01, 0.02, 0.03]},
-                    "loss_weight_conformity_bpr": {"type": "categorical", "choices": [0.01, 0.03]},
-                    "loss_weight_independence": {"type": "categorical", "choices": [0.0, 0.01, 0.02]},
-                    "loss_weight_contrastive": {"type": "categorical", "choices": [0.0, 0.03, 0.05]},
-                    "loss_weight_popularity": {"type": "categorical", "choices": [0.0, 0.015, 0.03]},
-                    "auxiliary_loss_schedule": {"type": "categorical", "choices": ["linear_ramp"]},
-                    "auxiliary_ramp_rate": {"type": "categorical", "choices": [0.001, 0.002]},
-                    "independence_ramp_rate": {"type": "categorical", "choices": [0.000125, 0.0005]},
-                    "auxiliary_losses_start_epoch": {"type": "categorical", "choices": [0]},
-                    "popularity_supervision_start_epoch": {"type": "categorical", "choices": [0]},
-                    "hard_negative_ratio": {"type": "categorical", "choices": [0.0, 0.15, 0.3]},
-                    "dice_sampler_margin": {"type": "categorical", "choices": [20.0, 50.0, 80.0]}
-                }
-            }
-        },
-        "ucagnn-cagra-ablation": {
-            "description": "Separate systems ablation for CAGRA rather than the default U-CaGNN accuracy search. This space tests whether ANN graph augmentation or evaluation candidate prefiltering improves the validation CRRU trade-off. Keep full-catalog formal evaluation (`cagra_candidate_k=0`) as the baseline row; nonzero `cagra_candidate_k` changes candidate coverage and must be reported as an ANN retrieval/runtime ablation, not as the default ranking protocol. This space uses the same fixed early-stopping policy as the core search but a lower epoch cap because CAGRA trials add systems overhead.",
-            "base_profile": "core-ucagnn-mainline",
-            "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
-            "config_overrides": {
-                "use_early_stopping": true,
-                "patience": 15,
-                "auto_batch_size": false
-            },
-            "objective": {
-                "metric": "ValidationOnlineCRRU@20_40",
-                "split": "val",
-                "direction": "maximize"
-            },
-            "sampler": {
-                "name": "tpe",
-                "seed": 42,
-                "n_startup_trials": 8,
-                "multivariate": true,
-                "group": true,
-                "constant_liar": false
-            },
-            "pruner": {
-                "name": "hyperband",
-                "min_resource": 15,
-                "reduction_factor": 3,
-                "bootstrap_count": 4
-            },
-            "max_epochs": 90,
-            "trials": 16,
-            "parameters": {
-                "lr": {"type": "categorical", "choices": [0.0004, 0.001, 0.003, 0.004, 0.005]},
-                "weight_decay": {"type": "categorical", "choices": [0.0, 0.00000003, 0.00001, 0.0001]},
-                "batch_size": {
-                    "type": "categorical",
-                    "choices": [32768, 16384, 8192, 4096, 2048, 1024, 512, 256]
-                },
-                "lr_scheduler": {"type": "categorical", "choices": ["none", "plateau"]},
-                "lr_scheduler_factor": {"type": "categorical", "choices": [0.7, 0.8]},
-                "interest_gnn_layers": {"type": "int", "low": 1, "high": 3},
-                "conformity_gnn_layers": {"type": "int", "low": 2, "high": 3},
-                "num_neighbors": {
-                    "type": "fanout",
-                    "choices_by_depth": {
-                        "2": [[4, 2], [5, 3], [8, 4], [16, 8]],
-                        "3": [[5, 3, 2], [8, 4, 2], [16, 8, 4]]
+                        "choices": [10.0, 20.0, 40.0, 80.0]
                     }
                 },
-                "dropout": {"type": "categorical", "choices": [0.0, 0.1, 0.25]},
-                "graph_policy": {"type": "categorical", "choices": ["observed", "cagra_augmented"]},
-                "cagra_candidate_k": {"type": "categorical", "choices": [0, 200, 500, 1000]},
-                "cagra_k": {"type": "categorical", "choices": [16, 32, 48]},
-                "cagra_out_degree": {"type": "categorical", "choices": [32, 64]},
-                "cagra_initial_degree": {"type": "categorical", "choices": [64, 128]},
-                "cagra_team_size": {"type": "categorical", "choices": [0, 8, 16]},
-                "cagra_metric": {"type": "categorical", "choices": ["inner_product", "cosine"]},
-                "cagra_itopk_size": {"type": "categorical", "choices": [64, 128]}
+                "kuairec_v2": {
+                    "dice_sampler_margin": {"type": "categorical", "choices": [10.0, 20.0, 40.0]}
+                },
+                "kuairand1k": {
+                    "dice_sampler_margin": {"type": "categorical", "choices": [20.0, 50.0, 80.0]},
+                    "interest_gnn_layers": {"type": "categorical", "choices": [1, 2]},
+                    "conformity_gnn_layers": {"type": "categorical", "choices": [2]},
+                    "num_neighbors": {
+                        "type": "fanout",
+                        "choices_by_depth": {
+                            "2": [[4, 2], [6, 3], [8, 4], [10, 5]]
+                        }
+                    },
+                    "item_universe_policy": {
+                        "type": "categorical",
+                        "choices": ["random_exposure_items_only", "observed_interaction_items"]
+                    }
+                }
             }
         }
     }

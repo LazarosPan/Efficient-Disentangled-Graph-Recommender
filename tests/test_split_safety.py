@@ -3,27 +3,26 @@
 from __future__ import annotations
 
 import math
-import sys
 import unittest
-from types import ModuleType
 from unittest.mock import patch
 
 import numpy as np
 import torch
-from experiments.run_experiment import build_runtime_model
+from experiments.run_experiment import _apply_item_universe_policy, build_runtime_model
 from src.data.canonical import CanonicalInteractions, sample_canonical_interactions
 from src.data.graph_builder import build_graph
 from src.data.subgraph_sampler import SubgraphBatch
 from src.losses.loss_suite import LossSuite, _bpr_loss
+from src.models.edgrec import EDGRec
 from src.models.lightgcn import DualBranchGCN, LightGCNBranch
-from src.models.ucagnn import UCaGNN
 from src.training.evaluator import (
     THESIS_PRIMARY_METRICS,
     Evaluator,
     _EvaluatorDiagnosticsAccumulator,
     _rowwise_spearman,
 )
-from src.utils.config import UCaGNNConfig
+from src.training.mini_batch_trainer import MiniBatchTrainer
+from src.utils.config import EDGRecConfig
 from src.utils.interaction_indexing import remap_interaction_ids
 from src.utils.trainer_runtime import TrainerRuntime, stage_graph_tensors_for_device
 from torch_geometric.data import Data
@@ -223,6 +222,25 @@ class _GatherBeforeFloatGuard:
         raise AssertionError(msg)
 
 
+def _small_memory_canonical() -> CanonicalInteractions:
+    """Return a tiny predefined-split canonical graph for memory-contract tests."""
+    return CanonicalInteractions(
+        user_id=np.array([0, 0, 1, 1, 2, 2], dtype=np.int64),
+        item_id=np.array([0, 1, 1, 2, 2, 3], dtype=np.int64),
+        label=np.ones(6, dtype=np.float32),
+        timestamp=np.array([1, 2, 3, 4, 5, 6], dtype=np.int64),
+        sign=np.ones(6, dtype=np.float32),
+        popularity=np.ones(4, dtype=np.float32),
+        n_users=3,
+        n_items=4,
+        user_map={100: 0, 101: 1, 102: 2},
+        item_map={200: 0, 201: 1, 202: 2, 203: 3},
+        train_mask=np.array([True, True, True, True, False, False]),
+        val_mask=np.array([False, False, False, False, True, False]),
+        test_mask=np.array([False, False, False, False, False, True]),
+    )
+
+
 class SplitSafetyTests(unittest.TestCase):
     """Pin the thesis-critical split boundary behavior."""
 
@@ -243,6 +261,109 @@ class SplitSafetyTests(unittest.TestCase):
                 "Personalization@40",
             ),
         )
+
+    def test_random_exposure_item_universe_compacts_items_and_targets(self) -> None:
+        """KuaiRand compaction should remap interaction, feature, and target arrays."""
+        canonical = CanonicalInteractions(
+            user_id=np.array([0, 0, 1, 1], dtype=np.int64),
+            item_id=np.array([0, 1, 2, 3], dtype=np.int64),
+            label=np.ones(4, dtype=np.float32),
+            timestamp=np.array([1, 2, 3, 4], dtype=np.int64),
+            sign=np.ones(4, dtype=np.float32),
+            popularity=np.ones(4, dtype=np.float32),
+            n_users=2,
+            n_items=4,
+            user_map={10: 0, 11: 1},
+            item_map={100: 0, 101: 1, 102: 2, 103: 3},
+            item_features=np.arange(8, dtype=np.float32).reshape(4, 2),
+            exposure_flag=np.array([True, False, True, False]),
+            item_propensity_targets=np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32),
+            train_mask=np.array([True, True, False, False]),
+            val_mask=np.array([False, False, True, False]),
+            test_mask=np.array([False, False, False, True]),
+        )
+        config = EDGRecConfig(
+            dataset="kuairand1k",
+            device="cpu",
+            item_universe_policy="random_exposure_items_only",
+        )
+
+        compacted = _apply_item_universe_policy(canonical, config)
+
+        np.testing.assert_array_equal(compacted.user_id, np.array([0, 1]))
+        np.testing.assert_array_equal(compacted.item_id, np.array([0, 1]))
+        np.testing.assert_array_equal(
+            compacted.item_features,
+            np.array([[0.0, 1.0], [4.0, 5.0]], dtype=np.float32),
+        )
+        np.testing.assert_allclose(
+            compacted.item_propensity_targets,
+            np.array([0.1, 0.3], dtype=np.float32),
+        )
+        np.testing.assert_array_equal(compacted.train_mask, np.array([True, False]))
+        np.testing.assert_array_equal(compacted.val_mask, np.array([False, True]))
+        self.assertEqual(compacted.n_items, 2)
+        self.assertEqual(
+            compacted.metadata["item_universe_original_n_items"],
+            4,
+        )
+
+    def test_train_edge_dropout_affects_graph_only_not_split_masks(self) -> None:
+        """Observed-edge dropout must not remove labels or split assignments."""
+        canonical = _small_memory_canonical()
+        config = EDGRecConfig(
+            device="cpu",
+            train_edge_keep_prob=0.5,
+            seed=7,
+            embed_dim=4,
+            num_neighbors=[4, 2],
+        )
+
+        data = build_graph(canonical, config)
+
+        self.assertEqual(int(data.train_mask.sum().item()), 4)
+        self.assertEqual(int(data.val_mask.sum().item()), 1)
+        self.assertEqual(int(data.test_mask.sum().item()), 1)
+        self.assertEqual(data.labels.numel(), len(canonical))
+        self.assertLess(data.edge_index.size(1), 8)
+        self.assertGreater(data.edge_index.size(1), 0)
+        self.assertEqual(data.edge_index.size(1) % 2, 0)
+        self.assertEqual(data.train_edge_keep_prob, 0.5)
+
+    def test_sparse_embedding_optimizer_splits_sparse_tables(self) -> None:
+        """Sparse embedding modes should not put giant tables in AdamW."""
+        canonical = _small_memory_canonical()
+        config = EDGRecConfig(
+            device="cpu",
+            embed_dim=4,
+            embedding_optimizer="sparseadam",
+            use_features=False,
+            use_popularity_emb=False,
+            use_popularity_head=False,
+            loss_weight_contrastive=0.0,
+            loss_weight_align=0.0,
+            loss_weight_uniform=0.0,
+            num_neighbors=[4, 2],
+        )
+        data = build_graph(canonical, config)
+        model = build_runtime_model(config, canonical, data)
+        trainer = MiniBatchTrainer(
+            model=model,
+            loss_suite=LossSuite(config),
+            data=data,
+            config=config,
+        )
+
+        self.assertTrue(model.embedding.item_embed.sparse)
+        self.assertIsInstance(trainer.optimizer, torch.optim.AdamW)
+        self.assertIsInstance(trainer.embedding_optimizer, torch.optim.SparseAdam)
+
+        trainer.optimizer.zero_grad(set_to_none=True)
+        trainer.embedding_optimizer.zero_grad(set_to_none=True)
+        model.embedding.item_embed(torch.tensor([0, 1], dtype=torch.long)).sum().backward()
+        grad = model.embedding.item_embed.weight.grad
+        self.assertIsNotNone(grad)
+        self.assertTrue(grad.is_sparse)
 
     def test_get_splits_keeps_predefined_test_mask_intact(self) -> None:
         """Validation must be carved from train without touching test rows."""
@@ -289,7 +410,7 @@ class SplitSafetyTests(unittest.TestCase):
             val_mask=np.array([False, True, False]),
             test_mask=np.array([False, False, True]),
         )
-        config = UCaGNNConfig(device="cuda")
+        config = EDGRecConfig(device="cuda")
 
         data = build_graph(canonical, config)
 
@@ -376,7 +497,7 @@ class SplitSafetyTests(unittest.TestCase):
             val_mask=np.array([False, False, False]),
             test_mask=np.array([False, False, False]),
         )
-        config = UCaGNNConfig(
+        config = EDGRecConfig(
             device="cuda",
         )
 
@@ -420,7 +541,7 @@ class SplitSafetyTests(unittest.TestCase):
             test_mask=np.array([False, True]),
             metadata=metadata,
         )
-        config = UCaGNNConfig(device="cuda")
+        config = EDGRecConfig(device="cuda")
 
         data = build_graph(canonical, config)
 
@@ -578,237 +699,13 @@ class SplitSafetyTests(unittest.TestCase):
             val_mask=np.array([False, False]),
             test_mask=np.array([False, True]),
         )
-        config = UCaGNNConfig(device="cuda")
+        config = EDGRecConfig(device="cuda")
 
         data = build_graph(canonical, config)
         data.raw_target[0] = 9.0
 
         np.testing.assert_array_equal(raw_target, np.array([3.0, 4.0], dtype=np.float32))
         self.assertEqual(float(data.raw_target[0]), 9.0)
-
-    def test_cagra_runtime_failure_falls_back_to_interaction_graph(self) -> None:
-        """CAGRA runtime failures should warn once and keep the train-interaction graph."""
-        canonical = CanonicalInteractions(
-            user_id=np.array([0], dtype=np.int64),
-            item_id=np.array([0], dtype=np.int64),
-            label=np.ones(1, dtype=np.float32),
-            timestamp=np.array([1], dtype=np.int64),
-            sign=np.ones(1, dtype=np.float32),
-            popularity=np.ones(2, dtype=np.float32),
-            n_users=1,
-            n_items=2,
-            user_map={0: 0},
-            item_map={0: 0, 1: 1},
-            train_mask=np.array([True]),
-            val_mask=np.array([False]),
-            test_mask=np.array([False]),
-        )
-        config = UCaGNNConfig(device="cuda", seed=17)
-        embeddings = torch.tensor(
-            [[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]],
-            dtype=torch.float32,
-        )
-
-        class _FakeCupyArray:
-            """Minimal CuPy-like wrapper for graph-builder tests."""
-
-            def __init__(self, array: np.ndarray) -> None:
-                self.array = np.asarray(array, dtype=np.float32)
-
-        fake_cp = ModuleType("cupy")
-        fake_cp.asarray = lambda array: _FakeCupyArray(array)
-        fake_cp.asnumpy = lambda array: array.array
-
-        cagra_module = ModuleType("cagra")
-        cagra_module.IndexParams = lambda **kwargs: kwargs
-        cagra_module.SearchParams = lambda **kwargs: kwargs
-
-        def _raise_on_build(*args: object, **kwargs: object) -> object:
-            raise RuntimeError("boom")
-
-        cagra_module.build = _raise_on_build
-
-        neighbors_module = ModuleType("cuvs.neighbors")
-        neighbors_module.cagra = cagra_module
-        cuvs_module = ModuleType("cuvs")
-        cuvs_module.neighbors = neighbors_module
-
-        with (
-            patch.dict(
-                sys.modules,
-                {
-                    "cupy": fake_cp,
-                    "cuvs": cuvs_module,
-                    "cuvs.neighbors": neighbors_module,
-                },
-            ),
-            self.assertWarnsRegex(
-                RuntimeWarning,
-                "using train-interaction graph",
-            ),
-        ):
-            data = build_graph(canonical, config, embeddings=embeddings)
-
-        edge_signs = {
-            (src, dst): float(sign)
-            for (src, dst), sign in zip(
-                data.edge_index.t().cpu().tolist(),
-                data.edge_sign.cpu().tolist(),
-                strict=True,
-            )
-        }
-        self.assertEqual(edge_signs[0, 1], 1.0)
-        self.assertEqual(edge_signs[1, 0], 1.0)
-        self.assertEqual(len(edge_signs), 2)
-
-    def test_cagra_augmented_policy_raises_on_runtime_failure(self) -> None:
-        """Strict CAGRA policy should raise instead of silently downgrading the graph."""
-        canonical = CanonicalInteractions(
-            user_id=np.array([0], dtype=np.int64),
-            item_id=np.array([0], dtype=np.int64),
-            label=np.ones(1, dtype=np.float32),
-            timestamp=np.array([1], dtype=np.int64),
-            sign=np.ones(1, dtype=np.float32),
-            popularity=np.ones(2, dtype=np.float32),
-            n_users=1,
-            n_items=2,
-            user_map={0: 0},
-            item_map={0: 0, 1: 1},
-            train_mask=np.array([True]),
-            val_mask=np.array([False]),
-            test_mask=np.array([False]),
-        )
-        config = UCaGNNConfig(device="cuda", seed=17, graph_policy="cagra_augmented")
-        embeddings = torch.tensor(
-            [[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]],
-            dtype=torch.float32,
-        )
-
-        class _FakeCupyArray:
-            """Minimal CuPy-like wrapper for graph-builder tests."""
-
-            def __init__(self, array: np.ndarray) -> None:
-                self.array = np.asarray(array, dtype=np.float32)
-
-        fake_cp = ModuleType("cupy")
-        fake_cp.asarray = lambda array: _FakeCupyArray(array)
-        fake_cp.asnumpy = lambda array: array.array
-
-        cagra_module = ModuleType("cagra")
-        cagra_module.IndexParams = lambda **kwargs: kwargs
-        cagra_module.SearchParams = lambda **kwargs: kwargs
-        cagra_module.build = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
-
-        neighbors_module = ModuleType("cuvs.neighbors")
-        neighbors_module.cagra = cagra_module
-        cuvs_module = ModuleType("cuvs")
-        cuvs_module.neighbors = neighbors_module
-
-        with (
-            patch.dict(
-                sys.modules,
-                {
-                    "cupy": fake_cp,
-                    "cuvs": cuvs_module,
-                    "cuvs.neighbors": neighbors_module,
-                },
-            ),
-            self.assertRaisesRegex(
-                RuntimeError,
-                "graph_policy='cagra_augmented' requires a working CAGRA build",
-            ),
-        ):
-            build_graph(canonical, config, embeddings=embeddings)
-
-    def test_cagra_uses_seeded_search_params(self) -> None:
-        """CAGRA search should thread the config seed into its search params."""
-        canonical = CanonicalInteractions(
-            user_id=np.array([0], dtype=np.int64),
-            item_id=np.array([0], dtype=np.int64),
-            label=np.ones(1, dtype=np.float32),
-            timestamp=np.array([1], dtype=np.int64),
-            sign=np.ones(1, dtype=np.float32),
-            popularity=np.ones(2, dtype=np.float32),
-            n_users=1,
-            n_items=2,
-            user_map={0: 0},
-            item_map={0: 0, 1: 1},
-            train_mask=np.array([True]),
-            val_mask=np.array([False]),
-            test_mask=np.array([False]),
-        )
-        config = UCaGNNConfig(device="cuda", seed=29, cagra_k=1)
-        embeddings = torch.tensor(
-            [[1.0, 0.0], [0.0, 1.0], [0.5, 0.5]],
-            dtype=torch.float32,
-        )
-
-        class _FakeCupyArray:
-            """Minimal CuPy-like wrapper for graph-builder tests."""
-
-            def __init__(self, array: np.ndarray) -> None:
-                self.array = np.asarray(array, dtype=np.float32)
-
-        fake_cp = ModuleType("cupy")
-        fake_cp.asarray = lambda array: _FakeCupyArray(array)
-        fake_cp.asnumpy = lambda array: array.array
-
-        seen: dict[str, object] = {}
-
-        cagra_module = ModuleType("cagra")
-
-        class _IndexParams:
-            def __init__(self, **kwargs: object) -> None:
-                seen["index_params"] = kwargs
-
-        class _SearchParams:
-            def __init__(self, **kwargs: object) -> None:
-                seen["search_params"] = kwargs
-
-        def _build(index_params: object, dataset: object) -> object:
-            del index_params
-            seen["build_dataset"] = dataset
-            return object()
-
-        def _search(
-            search_params: object,
-            index: object,
-            queries: object,
-            k: int,
-        ) -> tuple[None, _FakeCupyArray]:
-            del search_params, index, k
-            seen["queries"] = queries
-            return None, _FakeCupyArray(np.array([[2], [0], [1]], dtype=np.int64))
-
-        cagra_module.IndexParams = _IndexParams
-        cagra_module.SearchParams = _SearchParams
-        cagra_module.build = _build
-        cagra_module.search = _search
-
-        neighbors_module = ModuleType("cuvs.neighbors")
-        neighbors_module.cagra = cagra_module
-        cuvs_module = ModuleType("cuvs")
-        cuvs_module.neighbors = neighbors_module
-
-        with patch.dict(
-            sys.modules,
-            {
-                "cupy": fake_cp,
-                "cuvs": cuvs_module,
-                "cuvs.neighbors": neighbors_module,
-            },
-        ):
-            data = build_graph(canonical, config, embeddings=embeddings)
-
-        self.assertEqual(
-            seen["search_params"],
-            {"team_size": 0, "rand_xor_mask": 29, "itopk_size": 64},
-        )
-        self.assertIsInstance(seen["build_dataset"], _FakeCupyArray)
-        self.assertIs(seen["build_dataset"], seen["queries"])
-        edge_set = {tuple(edge) for edge in data.edge_index.t().cpu().tolist()}
-        self.assertIn((0, 2), edge_set)
-        self.assertIn((2, 0), edge_set)
 
     def test_remapped_ids_use_narrow_integer_storage(self) -> None:
         """Contiguous interaction IDs should downcast to the smallest safe dtype."""
@@ -846,7 +743,7 @@ class SplitSafetyTests(unittest.TestCase):
 
     def test_evaluator_masks_observed_non_target_items_before_ranking(self) -> None:
         """Held-out targets must rank after masking previously observed items."""
-        config = UCaGNNConfig(device="cuda")
+        config = EDGRecConfig(device="cuda")
         evaluator = Evaluator(config)
 
         data = Data(edge_index=torch.empty((2, 0), dtype=torch.long), num_nodes=51)
@@ -878,7 +775,7 @@ class SplitSafetyTests(unittest.TestCase):
 
     def test_evaluator_uses_only_positive_labels_as_ground_truth(self) -> None:
         """Negative or weak held-out interactions must not count as relevant."""
-        evaluator = Evaluator(UCaGNNConfig(device="cpu"))
+        evaluator = Evaluator(EDGRecConfig(device="cpu"))
 
         data = Data(edge_index=torch.empty((2, 0), dtype=torch.long), num_nodes=51)
         data.edge_sign = torch.empty((0,), dtype=torch.bfloat16)
@@ -904,7 +801,7 @@ class SplitSafetyTests(unittest.TestCase):
 
     def test_evaluator_appends_refined_score_diagnostics_from_exported_components(self) -> None:
         """Evaluator diagnostics should be computed from exported refined score components."""
-        evaluator = Evaluator(UCaGNNConfig(device="cpu"))
+        evaluator = Evaluator(EDGRecConfig(device="cpu"))
 
         data = Data(edge_index=torch.empty((2, 0), dtype=torch.long), num_nodes=52)
         data.edge_sign = torch.empty((0,), dtype=torch.bfloat16)
@@ -990,7 +887,7 @@ class SplitSafetyTests(unittest.TestCase):
         self,
     ) -> None:
         """Item-only expanded context scores must not be mutated by seen-item masking."""
-        evaluator = Evaluator(UCaGNNConfig(device="cpu"))
+        evaluator = Evaluator(EDGRecConfig(device="cpu"))
 
         user_nodes = [0] * 11 + [1] * 11
         item_ids = [*list(range(30, 40)), 0, *list(range(40, 50)), 1]
@@ -1036,7 +933,7 @@ class SplitSafetyTests(unittest.TestCase):
 
     def test_evaluator_branch_ranking_diagnostics_use_raw_branch_scores(self) -> None:
         """Branch ranking diagnostics should evaluate branch-local BPR score surfaces."""
-        evaluator = Evaluator(UCaGNNConfig(device="cpu"))
+        evaluator = Evaluator(EDGRecConfig(device="cpu"))
 
         data = Data(edge_index=torch.empty((2, 0), dtype=torch.long), num_nodes=51)
         data.edge_sign = torch.empty((0,), dtype=torch.bfloat16)
@@ -1075,7 +972,7 @@ class SplitSafetyTests(unittest.TestCase):
 
     def test_evaluator_skips_refined_score_diagnostics_when_disabled(self) -> None:
         """Validation-style evaluation should omit refined diagnostics when disabled."""
-        evaluator = Evaluator(UCaGNNConfig(device="cpu"))
+        evaluator = Evaluator(EDGRecConfig(device="cpu"))
 
         data = Data(edge_index=torch.empty((2, 0), dtype=torch.long), num_nodes=52)
         data.edge_sign = torch.empty((0,), dtype=torch.bfloat16)
@@ -1145,7 +1042,7 @@ class SplitSafetyTests(unittest.TestCase):
 
     def test_evaluator_omits_branch_ranking_diagnostics_for_single_branch_model(self) -> None:
         """Single-branch exporters should not report misleading branch rank metrics."""
-        evaluator = Evaluator(UCaGNNConfig(device="cpu", use_dual_branch=False))
+        evaluator = Evaluator(EDGRecConfig(device="cpu", use_dual_branch=False))
 
         data = Data(edge_index=torch.empty((2, 0), dtype=torch.long), num_nodes=52)
         data.edge_sign = torch.empty((0,), dtype=torch.bfloat16)
@@ -1208,7 +1105,7 @@ class SplitSafetyTests(unittest.TestCase):
 
     def test_evaluator_batch_budget_accounts_for_component_export_path(self) -> None:
         """Diagnostics-enabled evaluation should budget for all full score matrices."""
-        evaluator = Evaluator(UCaGNNConfig(device="cpu"))
+        evaluator = Evaluator(EDGRecConfig(device="cpu"))
 
         self.assertEqual(
             evaluator._effective_eval_batch_size(
@@ -1309,7 +1206,7 @@ class SplitSafetyTests(unittest.TestCase):
         knowledge to influence early stopping and best-model selection,
         violating the information barrier between training and test phases.
         """
-        evaluator = Evaluator(UCaGNNConfig(device="cuda"))
+        evaluator = Evaluator(EDGRecConfig(device="cuda"))
 
         # 3 interactions: one per split, same user
         data = Data(num_nodes=4)
@@ -1338,7 +1235,7 @@ class SplitSafetyTests(unittest.TestCase):
         The test evaluation pool should only contain items the model has never
         encountered during training or been selected against during validation.
         """
-        evaluator = Evaluator(UCaGNNConfig(device="cuda"))
+        evaluator = Evaluator(EDGRecConfig(device="cuda"))
 
         data = Data(num_nodes=4)
         data.train_mask = torch.tensor([True, False, False], dtype=torch.bool)
@@ -1362,7 +1259,7 @@ class SplitSafetyTests(unittest.TestCase):
 
     def test_test_evaluation_excludes_val_for_copied_test_mask(self) -> None:
         """Equivalent test masks must keep the same train+val exclusion contract."""
-        evaluator = Evaluator(UCaGNNConfig(device="cuda"))
+        evaluator = Evaluator(EDGRecConfig(device="cuda"))
 
         data = Data(num_nodes=4)
         data.train_mask = torch.tensor([True, False, False], dtype=torch.bool)
@@ -1425,7 +1322,7 @@ class SplitSafetyTests(unittest.TestCase):
             val_mask=np.array([False, False, False]),
             test_mask=np.array([False, False, False]),
         )
-        data = build_graph(canonical, UCaGNNConfig(device="cpu"))
+        data = build_graph(canonical, EDGRecConfig(device="cpu"))
 
         expected_positive_mask = torch.tensor([True, False, True], dtype=torch.bool)
         self.assertTrue(torch.equal(data.train_positive_mask, expected_positive_mask))
@@ -1447,16 +1344,16 @@ class CausalTrainingContractTests(unittest.TestCase):
     """Pin the intended dual-branch scoring and sign-aware behavior."""
 
     @staticmethod
-    def _build_dual_branch_config() -> UCaGNNConfig:
+    def _build_dual_branch_config() -> EDGRecConfig:
         """Return a small CUDA-tagged config suitable for unit tests."""
-        config = UCaGNNConfig(device="cuda")
+        config = EDGRecConfig(device="cuda")
         config.use_torch_compile = False
         config.use_ipw = False
         config.use_dual_branch = True
         return config
 
     @staticmethod
-    def _patch_user_dependent_score_mix(model: UCaGNN) -> None:
+    def _patch_user_dependent_score_mix(model: EDGRec) -> None:
         """Make the learned score-mix head depend on user embeddings."""
         with torch.no_grad():
             first_layer = model.scoring.alpha_mlp[0]
@@ -1470,11 +1367,96 @@ class CausalTrainingContractTests(unittest.TestCase):
             second_layer.weight[0, 0] = 5.0
             second_layer.weight[1, 1] = 5.0
 
+    @staticmethod
+    def _tiny_dual_branch_scoring_config(*, separate_items: bool = False) -> EDGRecConfig:
+        """Return a tiny deterministic dual-branch scorer config."""
+        config = EDGRecConfig(device="cpu", embed_dim=4)
+        config.use_dual_branch = True
+        config.use_features = False
+        config.use_popularity_head = False
+        config.use_learned_score_mix = False
+        config.score_weight_interest = 0.5
+        config.score_weight_conformity = 0.5
+        config.score_weight_popularity = 0.0
+        config.score_mix_min_weight = 0.0
+        config.interest_gnn_layers = 1
+        config.conformity_gnn_layers = 1
+        config.num_neighbors = [8]
+        config.separate_item_branch_embeddings = separate_items
+        return config
+
+    @staticmethod
+    def _loss_suite_model_output() -> tuple[
+        dict[str, torch.Tensor | dict[str, torch.Tensor]],
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
+        """Return a finite synthetic LossSuite payload with active auxiliaries."""
+        user_interest = torch.tensor(
+            [[0.1, 0.4], [0.2, 0.3], [0.3, 0.2]],
+            dtype=torch.float32,
+        )
+        user_conformity = torch.tensor(
+            [[0.4, 0.1], [0.3, 0.2], [0.2, 0.3]],
+            dtype=torch.float32,
+        )
+        item_interest = torch.tensor(
+            [[0.5, 0.1], [0.1, 0.5], [0.3, 0.3], [0.2, 0.4]],
+            dtype=torch.float32,
+        )
+        item_conformity = torch.tensor(
+            [[0.2, 0.4], [0.4, 0.2], [0.3, 0.1], [0.5, 0.2]],
+            dtype=torch.float32,
+        )
+        pos_item_ids = torch.tensor([0, 1, 2], dtype=torch.long)
+        neg_item_ids = torch.tensor([1, 2, 3], dtype=torch.long)
+        pos_scores = {
+            "final_score": torch.tensor([0.8, 0.7, 0.6], dtype=torch.float32),
+            "interest_score": torch.tensor([0.7, 0.6, 0.5], dtype=torch.float32),
+            "conformity_score": torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32),
+            "context_score": torch.tensor([0.1, 0.1, 0.1], dtype=torch.float32),
+            "branch_interest_score": torch.tensor([0.75, 0.65, 0.55], dtype=torch.float32),
+            "branch_conformity_score": torch.tensor([0.45, 0.55, 0.65], dtype=torch.float32),
+            "raw_context_score": torch.tensor([0.2, 0.3, 0.4], dtype=torch.float32),
+            "score_mix_weights": torch.tensor(
+                [[0.5, 0.3, 0.2], [0.6, 0.2, 0.2], [0.4, 0.4, 0.2]],
+                dtype=torch.float32,
+            ),
+        }
+        neg_scores = {
+            "final_score": torch.tensor([0.2, 0.3, 0.4], dtype=torch.float32),
+            "interest_score": torch.tensor([0.2, 0.3, 0.4], dtype=torch.float32),
+            "conformity_score": torch.tensor([0.6, 0.5, 0.4], dtype=torch.float32),
+            "context_score": torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32),
+            "branch_interest_score": torch.tensor([0.25, 0.35, 0.45], dtype=torch.float32),
+            "branch_conformity_score": torch.tensor([0.65, 0.55, 0.45], dtype=torch.float32),
+        }
+        propagated = {
+            "user_interest": user_interest,
+            "user_conformity": user_conformity,
+            "item_interest": item_interest,
+            "item_conformity": item_conformity,
+        }
+        model_output: dict[str, torch.Tensor | dict[str, torch.Tensor]] = {
+            "pos_scores": pos_scores,
+            "neg_scores": neg_scores,
+            "propagated": propagated,
+            "embeddings": {"user": user_interest, "item": item_interest},
+            "ipw_weights": torch.ones(3, dtype=torch.float32),
+            "loss_user_ids": torch.tensor([0, 1, 2], dtype=torch.long),
+            "loss_neg_item_ids": neg_item_ids,
+            "propensity_scores": torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32),
+        }
+        item_popularity = torch.tensor([0.1, 0.3, 0.6, 0.9], dtype=torch.float32)
+        propensity_targets = torch.tensor([0.2, 0.4, 0.6, 0.8], dtype=torch.float32)
+        return model_output, item_popularity, pos_item_ids, propensity_targets
+
     def test_presets_pin_expected_scoring_contracts(self) -> None:
         """Preset helpers should expose the thesis scoring contract directly."""
-        lightgcn = UCaGNNConfig(device="cuda").preset_lightgcn()
-        dice_like = UCaGNNConfig(device="cuda").preset_dice_like()
-        ucagnn = UCaGNNConfig(device="cuda").preset_full()
+        lightgcn = EDGRecConfig(device="cuda").preset_lightgcn()
+        dice_like = EDGRecConfig(device="cuda").preset_dice_like()
+        edgrec = EDGRecConfig(device="cuda").preset_full()
 
         self.assertFalse(hasattr(lightgcn, "train_scoring_mode"))
         self.assertFalse(hasattr(lightgcn, "eval_scoring_mode"))
@@ -1484,16 +1466,155 @@ class CausalTrainingContractTests(unittest.TestCase):
         self.assertFalse(hasattr(dice_like, "scoring_weight_mode"))
         self.assertFalse(hasattr(dice_like, "train_scoring_mode"))
         self.assertFalse(hasattr(dice_like, "eval_scoring_mode"))
-        self.assertFalse(hasattr(ucagnn, "train_scoring_mode"))
-        self.assertFalse(hasattr(ucagnn, "eval_scoring_mode"))
-        self.assertFalse(ucagnn.use_ipw)
+        self.assertFalse(hasattr(edgrec, "train_scoring_mode"))
+        self.assertFalse(hasattr(edgrec, "eval_scoring_mode"))
+        self.assertFalse(edgrec.use_ipw)
+
+    def test_dual_branch_shared_item_embeddings_forward_and_full_catalog_shape(self) -> None:
+        """Shared item embeddings should keep the default branch-scoring path intact."""
+        config = self._tiny_dual_branch_scoring_config(separate_items=False)
+        model = EDGRec(n_users=2, n_items=3, config=config)
+        edge_index = torch.tensor([[0, 2, 1, 3], [2, 0, 3, 1]], dtype=torch.long)
+        user_ids = torch.tensor([0, 1], dtype=torch.long)
+        pos_item_ids = torch.tensor([0, 1], dtype=torch.long)
+        neg_item_ids = torch.tensor([1, 2], dtype=torch.long)
+
+        embeddings = model.embedding.get_embeddings()
+        output = model(edge_index, user_ids, pos_item_ids, neg_item_ids)
+        propagated = output["propagated"]
+        assert isinstance(propagated, dict)
+        scores = model.score_users_from_propagated(propagated, user_ids)
+
+        self.assertFalse(config.separate_item_branch_embeddings)
+        self.assertEqual(tuple(embeddings["item"].shape), (3, 4))
+        self.assertNotIn("item_interest", embeddings)
+        self.assertEqual(tuple(propagated["item"].shape), (3, 4))
+        self.assertEqual(tuple(propagated["item_interest"].shape), (3, 4))
+        self.assertEqual(tuple(propagated["item_conformity"].shape), (3, 4))
+        self.assertEqual(tuple(scores.shape), (2, 3))
+
+    def test_dual_branch_separate_item_embeddings_forward_and_full_catalog_shape(self) -> None:
+        """Separate item branch embeddings should expose explicit branch tensors."""
+        config = self._tiny_dual_branch_scoring_config(separate_items=True)
+        model = EDGRec(n_users=2, n_items=3, config=config)
+        edge_index = torch.tensor([[0, 2, 1, 3], [2, 0, 3, 1]], dtype=torch.long)
+        user_ids = torch.tensor([0, 1], dtype=torch.long)
+        pos_item_ids = torch.tensor([0, 1], dtype=torch.long)
+        neg_item_ids = torch.tensor([1, 2], dtype=torch.long)
+
+        embeddings = model.embedding.get_embeddings()
+        output = model(edge_index, user_ids, pos_item_ids, neg_item_ids)
+        propagated = output["propagated"]
+        assert isinstance(propagated, dict)
+        scores = model.score_users_from_propagated(propagated, user_ids)
+
+        self.assertTrue(config.separate_item_branch_embeddings)
+        self.assertEqual(tuple(embeddings["item"].shape), (3, 4))
+        self.assertEqual(tuple(embeddings["item_interest"].shape), (3, 4))
+        self.assertEqual(tuple(embeddings["item_conformity"].shape), (3, 4))
+        self.assertEqual(tuple(model.embedding.get_stacked_embeddings().shape), (5, 4))
+        self.assertEqual(tuple(propagated["item"].shape), (3, 4))
+        self.assertEqual(tuple(propagated["item_interest"].shape), (3, 4))
+        self.assertEqual(tuple(propagated["item_conformity"].shape), (3, 4))
+        self.assertEqual(tuple(scores.shape), (2, 3))
+
+    def test_loss_normalization_none_preserves_raw_weighted_total(self) -> None:
+        """The default loss path should keep the historical weighted raw formula."""
+        config = EDGRecConfig(device="cpu", embed_dim=2)
+        config.use_dual_branch = True
+        config.branch_loss_mode = "symmetric_bpr"
+        config.loss_weight_interest_bpr = 0.2
+        config.loss_weight_conformity_bpr = 0.3
+        config.loss_weight_independence = 0.4
+        config.loss_weight_contrastive = 0.0
+        config.loss_weight_align = 0.0
+        config.loss_weight_uniform = 0.0
+        config.loss_weight_popularity = 0.0
+        config.loss_weight_propensity_calibration = 0.0
+        config.loss_normalization = "none"
+        config.auxiliary_losses_start_epoch = 0
+        config.popularity_supervision_start_epoch = 0
+        model_output, item_popularity, pos_item_ids, propensity_targets = (
+            self._loss_suite_model_output()
+        )
+
+        losses = LossSuite(config)(
+            model_output,
+            item_popularity=item_popularity,
+            pos_item_ids=pos_item_ids,
+            epoch=1,
+            propensity_targets=propensity_targets,
+        )
+
+        expected = (
+            config.loss_weight_recommendation * losses["rec"]
+            + config.loss_weight_interest_bpr * losses["interest_bpr"]
+            + config.loss_weight_conformity_bpr * losses["conformity_bpr"]
+            + config.loss_weight_independence * losses["independence"]
+        )
+        torch.testing.assert_close(losses["total"], expected)
+        torch.testing.assert_close(losses["raw_rec_loss"], losses["rec"])
+        self.assertNotIn("normalized_interest_bpr", losses)
+
+    def test_loss_normalization_ema_aux_logs_normalized_losses_without_eval_update(
+        self,
+    ) -> None:
+        """EMA normalization should affect auxiliaries only and freeze in eval."""
+        config = EDGRecConfig(
+            device="cpu",
+            embed_dim=2,
+            use_ipw=True,
+            loss_weight_propensity_calibration=0.1,
+        )
+        config.use_dual_branch = True
+        config.branch_loss_mode = "symmetric_bpr"
+        config.use_popularity_head = True
+        config.loss_weight_interest_bpr = 0.2
+        config.loss_weight_conformity_bpr = 0.3
+        config.loss_weight_independence = 0.4
+        config.loss_weight_contrastive = 0.1
+        config.loss_weight_align = 0.1
+        config.loss_weight_uniform = 0.1
+        config.loss_weight_popularity = 0.1
+        config.loss_normalization = "ema_aux"
+        config.auxiliary_losses_start_epoch = 0
+        config.popularity_supervision_start_epoch = 0
+        model_output, item_popularity, pos_item_ids, propensity_targets = (
+            self._loss_suite_model_output()
+        )
+        loss_suite = LossSuite(config)
+
+        losses = loss_suite(
+            model_output,
+            item_popularity=item_popularity,
+            pos_item_ids=pos_item_ids,
+            epoch=1,
+            propensity_targets=propensity_targets,
+        )
+        ema_after_train = loss_suite._aux_loss_ema.detach().clone()
+        loss_suite.eval()
+        eval_losses = loss_suite(
+            model_output,
+            item_popularity=item_popularity,
+            pos_item_ids=pos_item_ids,
+            epoch=1,
+            propensity_targets=propensity_targets,
+        )
+
+        self.assertTrue(torch.isfinite(losses["total"]))
+        self.assertTrue(torch.isfinite(eval_losses["total"]))
+        self.assertIn("normalized_interest_bpr", losses)
+        self.assertIn("normalized_propensity_calibration", losses)
+        self.assertIn("weighted_interest_bpr", losses)
+        torch.testing.assert_close(losses["raw_rec_loss"], losses["rec"])
+        torch.testing.assert_close(loss_suite._aux_loss_ema, ema_after_train)
 
     def test_ipw_requires_calibrated_propensity_objective(self) -> None:
         """IPW should not use random unsupervised propensity estimates."""
         with self.assertRaisesRegex(ValueError, "use_ipw requires"):
-            UCaGNNConfig(use_ipw=True, loss_weight_propensity_calibration=0.0)
+            EDGRecConfig(use_ipw=True, loss_weight_propensity_calibration=0.0)
 
-        config = UCaGNNConfig(
+        config = EDGRecConfig(
             use_ipw=True,
             loss_weight_propensity_calibration=0.1,
         )
@@ -1502,14 +1623,14 @@ class CausalTrainingContractTests(unittest.TestCase):
 
     def test_presets_reset_preset_owned_fields_when_switched(self) -> None:
         """Switching presets on one config should not preserve stale preset state."""
-        ucagnn = UCaGNNConfig(device="cuda").preset_dice_like().preset_full()
-        baseline = UCaGNNConfig(device="cuda").preset_full().preset_dice_like()
+        edgrec = EDGRecConfig(device="cuda").preset_dice_like().preset_full()
+        baseline = EDGRecConfig(device="cuda").preset_full().preset_dice_like()
 
-        self.assertTrue(ucagnn.use_features)
-        self.assertFalse(hasattr(ucagnn, "scoring_weight_mode"))
-        self.assertEqual(ucagnn.auxiliary_losses_start_epoch, 15)
-        self.assertEqual(ucagnn.popularity_supervision_start_epoch, 30)
-        self.assertEqual(ucagnn.propensity_clip_min, 0.1)
+        self.assertTrue(edgrec.use_features)
+        self.assertFalse(hasattr(edgrec, "scoring_weight_mode"))
+        self.assertEqual(edgrec.auxiliary_losses_start_epoch, 15)
+        self.assertEqual(edgrec.popularity_supervision_start_epoch, 30)
+        self.assertEqual(edgrec.propensity_clip_min, 0.1)
 
         self.assertFalse(baseline.use_ipw)
         self.assertFalse(baseline.use_features)
@@ -1519,14 +1640,14 @@ class CausalTrainingContractTests(unittest.TestCase):
 
     def test_short_term_interest_uses_recent_train_items_when_temporal_order_exists(self) -> None:
         """The refined scorer should derive short-term interest from recent train items."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2)
+        config = EDGRecConfig(device="cpu", embed_dim=2)
         config.use_dual_branch = True
         config.use_ipw = False
         config.use_learned_score_mix = False
         config.score_weight_interest = 1.0
         config.score_weight_conformity = 0.0
         config.score_weight_popularity = 0.0
-        model = UCaGNN(
+        model = EDGRec(
             n_users=1,
             n_items=2,
             config=config,
@@ -1566,9 +1687,9 @@ class CausalTrainingContractTests(unittest.TestCase):
         self,
     ) -> None:
         """Subgraph scoring should not index global history items into local item tables."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_full()
+        config = EDGRecConfig(device="cpu", embed_dim=2).preset_full()
         config.use_ipw = False
-        model = UCaGNN(
+        model = EDGRec(
             n_users=1,
             n_items=3,
             config=config,
@@ -1605,10 +1726,10 @@ class CausalTrainingContractTests(unittest.TestCase):
 
     def test_model_parameter_count_does_not_require_context_head_lazy_init(self) -> None:
         """Model parameter counting should work before any scorer forward pass."""
-        model = UCaGNN(
+        model = EDGRec(
             n_users=1,
             n_items=2,
-            config=UCaGNNConfig(device="cpu", embed_dim=4).preset_full(),
+            config=EDGRecConfig(device="cpu", embed_dim=4).preset_full(),
         )
 
         n_params = sum(parameter.numel() for parameter in model.parameters())
@@ -1730,8 +1851,8 @@ class CausalTrainingContractTests(unittest.TestCase):
 
     def test_scoring_exports_context_score_mix_weights_and_item_only_context(self) -> None:
         """The refined scorer should expose context diagnostics and keep context item-only."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_full()
-        model = UCaGNN(
+        config = EDGRecConfig(device="cpu", embed_dim=2).preset_full()
+        model = EDGRec(
             n_users=1,
             n_items=2,
             config=config,
@@ -1773,9 +1894,9 @@ class CausalTrainingContractTests(unittest.TestCase):
 
     def test_default_context_scorer_ignores_uncalibrated_propensity_targets(self) -> None:
         """Post-treatment exposure proxies should not affect default recommendations."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_full()
+        config = EDGRecConfig(device="cpu", embed_dim=2).preset_full()
         config.loss_weight_propensity_calibration = 0.0
-        model = UCaGNN(
+        model = EDGRec(
             n_users=1,
             n_items=2,
             config=config,
@@ -1815,9 +1936,9 @@ class CausalTrainingContractTests(unittest.TestCase):
 
     def test_uncalibrated_propensity_targets_do_not_activate_context_mix(self) -> None:
         """Ignored exposure proxies should not reserve score-mix mass for context."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_full()
+        config = EDGRecConfig(device="cpu", embed_dim=2).preset_full()
         config.score_mix_min_weight = 0.1
-        model = UCaGNN(
+        model = EDGRec(
             n_users=1,
             n_items=2,
             config=config,
@@ -1842,10 +1963,10 @@ class CausalTrainingContractTests(unittest.TestCase):
 
     def test_calibrated_context_scorer_can_use_propensity_targets(self) -> None:
         """Explicit propensity calibration can opt into the exposure-proxy context slot."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_full()
+        config = EDGRecConfig(device="cpu", embed_dim=2).preset_full()
         config.use_ipw = True
         config.loss_weight_propensity_calibration = 0.1
-        model = UCaGNN(
+        model = EDGRec(
             n_users=1,
             n_items=2,
             config=config,
@@ -1882,16 +2003,16 @@ class CausalTrainingContractTests(unittest.TestCase):
             scores["context_score"][0, 0].item(),
         )
 
-    def test_baseline_presets_keep_fixed_score_mix_weights_while_ucagnn_learns_them(
+    def test_baseline_presets_keep_fixed_score_mix_weights_while_edgrec_learns_them(
         self,
     ) -> None:
-        """Baseline presets should keep preset-owned fixed mixing while U-CaGNN stays learned."""
+        """Baseline presets should keep preset-owned fixed mixing while EDGRec stays learned."""
         user_ids = torch.tensor([0, 1], dtype=torch.long)
 
-        lightgcn = UCaGNN(
+        lightgcn = EDGRec(
             n_users=2,
             n_items=2,
-            config=UCaGNNConfig(device="cpu", embed_dim=2).preset_lightgcn(),
+            config=EDGRecConfig(device="cpu", embed_dim=2).preset_lightgcn(),
         )
         lightgcn_scores = lightgcn.scoring.score_all_items(
             propagated={
@@ -1907,10 +2028,10 @@ class CausalTrainingContractTests(unittest.TestCase):
             ),
         )
 
-        dice_like = UCaGNN(
+        dice_like = EDGRec(
             n_users=2,
             n_items=2,
-            config=UCaGNNConfig(device="cpu", embed_dim=2).preset_dice_like(),
+            config=EDGRecConfig(device="cpu", embed_dim=2).preset_dice_like(),
         )
         self._patch_user_dependent_score_mix(dice_like)
         dice_scores = dice_like.scoring.score_all_items(
@@ -1930,16 +2051,16 @@ class CausalTrainingContractTests(unittest.TestCase):
             ),
         )
 
-        ucagnn = UCaGNN(
+        edgrec = EDGRec(
             n_users=2,
             n_items=2,
-            config=UCaGNNConfig(device="cpu", embed_dim=2).preset_full(),
+            config=EDGRecConfig(device="cpu", embed_dim=2).preset_full(),
             item_popularity=torch.tensor([0.4, 0.7]),
             item_recency=torch.tensor([0.2, 0.9]),
             item_propensity_targets=torch.tensor([0.1, 0.3]),
         )
-        self._patch_user_dependent_score_mix(ucagnn)
-        ucagnn_scores = ucagnn.scoring.score_all_items(
+        self._patch_user_dependent_score_mix(edgrec)
+        edgrec_scores = edgrec.scoring.score_all_items(
             propagated={
                 "user_interest": torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
                 "item_interest": torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
@@ -1953,18 +2074,18 @@ class CausalTrainingContractTests(unittest.TestCase):
         )
         self.assertFalse(
             torch.allclose(
-                ucagnn_scores["score_mix_weights"][0],
-                ucagnn_scores["score_mix_weights"][1],
+                edgrec_scores["score_mix_weights"][0],
+                edgrec_scores["score_mix_weights"][1],
                 atol=1e-6,
             ),
         )
 
     def test_no_popularity_head_ablation_keeps_learned_user_specific_non_context_mix(self) -> None:
         """Removing the context head must not collapse learned interest-conformity mixing."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_full()
+        config = EDGRecConfig(device="cpu", embed_dim=2).preset_full()
         config.use_popularity_head = False
         config.score_weight_popularity = 0.0
-        model = UCaGNN(
+        model = EDGRec(
             n_users=2,
             n_items=2,
             config=config,
@@ -1996,11 +2117,11 @@ class CausalTrainingContractTests(unittest.TestCase):
             ),
         )
 
-    def test_ucagnn_score_mix_floor_uses_component_availability(self) -> None:
+    def test_edgrec_score_mix_floor_uses_component_availability(self) -> None:
         """Available causal components should keep floor mass even when scores are zero."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_full()
+        config = EDGRecConfig(device="cpu", embed_dim=2).preset_full()
         config.score_mix_min_weight = 0.1
-        model = UCaGNN(
+        model = EDGRec(
             n_users=1,
             n_items=1,
             config=config,
@@ -2037,16 +2158,16 @@ class CausalTrainingContractTests(unittest.TestCase):
         self.assertGreaterEqual(scores["score_mix_weights"][0, 2], expected_floor)
         self.assertAlmostEqual(scores["score_mix_weights"].sum().item(), 1.0, places=6)
 
-    def test_ucagnn_score_mix_is_not_overridden_by_raw_conformity_scale(self) -> None:
+    def test_edgrec_score_mix_is_not_overridden_by_raw_conformity_scale(self) -> None:
         """Small conformity weight should not beat interest via raw embedding norm."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_full()
+        config = EDGRecConfig(device="cpu", embed_dim=2).preset_full()
         config.use_learned_score_mix = False
         config.use_popularity_head = False
         config.score_mix_min_weight = 0.0
         config.score_weight_interest = 0.95
         config.score_weight_conformity = 0.05
         config.score_weight_popularity = 0.0
-        model = UCaGNN(n_users=1, n_items=2, config=config)
+        model = EDGRec(n_users=1, n_items=2, config=config)
 
         scores = model.scoring.score_all_items(
             propagated={
@@ -2065,8 +2186,8 @@ class CausalTrainingContractTests(unittest.TestCase):
 
     def test_embedding_feature_projection_accepts_cpu_fallback_inputs(self) -> None:
         """CPU fallback paths should project bf16 feature buffers without dtype errors."""
-        config = UCaGNNConfig(device="cpu", embed_dim=4).preset_full()
-        model = UCaGNN(
+        config = EDGRecConfig(device="cpu", embed_dim=4).preset_full()
+        model = EDGRec(
             n_users=1,
             n_items=2,
             config=config,
@@ -2087,8 +2208,8 @@ class CausalTrainingContractTests(unittest.TestCase):
 
     def test_scoring_accepts_bf16_inputs_on_cpu_without_autocast(self) -> None:
         """The scorer should handle bf16 propagated tensors on CPU fallback paths."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_full()
-        model = UCaGNN(
+        config = EDGRecConfig(device="cpu", embed_dim=2).preset_full()
+        model = EDGRec(
             n_users=1,
             n_items=2,
             config=config,
@@ -2120,8 +2241,8 @@ class CausalTrainingContractTests(unittest.TestCase):
 
     def test_scoring_hot_path_does_not_call_tensor_item_for_active_components(self) -> None:
         """Active-component masking should not synchronize tensors to Python scalars."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2).preset_full()
-        model = UCaGNN(n_users=1, n_items=2, config=config)
+        config = EDGRecConfig(device="cpu", embed_dim=2).preset_full()
+        model = EDGRec(n_users=1, n_items=2, config=config)
         propagated = {
             "user_interest": torch.tensor([[1.0, 0.0]]),
             "item_interest": torch.tensor([[2.0, 0.0], [1.0, 0.0]]),
@@ -2141,7 +2262,7 @@ class CausalTrainingContractTests(unittest.TestCase):
 
     def test_sign_aware_weighting_falls_back_without_mixed_signs(self) -> None:
         """One-sided graphs should keep the plain LightGCN unit baseline."""
-        config = UCaGNNConfig(device="cuda", use_dual_branch=False, use_sign_aware=True)
+        config = EDGRecConfig(device="cuda", use_dual_branch=False, use_sign_aware=True)
         model = DualBranchGCN(config)
 
         weights = model._compute_edge_weights_impl(torch.tensor([1.0, 1.0, 0.0]))
@@ -2152,7 +2273,7 @@ class CausalTrainingContractTests(unittest.TestCase):
 
     def test_sign_aware_weighting_keeps_positive_edges_at_least_neutral(self) -> None:
         """Observed positive interactions must not be weaker than neutral ANN edges."""
-        config = UCaGNNConfig(device="cuda", use_dual_branch=False, use_sign_aware=True)
+        config = EDGRecConfig(device="cuda", use_dual_branch=False, use_sign_aware=True)
         model = DualBranchGCN(config)
 
         weights = model._compute_edge_weights_impl(torch.tensor([1.0, 0.0, -1.0]))
@@ -2164,7 +2285,7 @@ class CausalTrainingContractTests(unittest.TestCase):
 
     def test_sign_aware_weighting_is_constant_without_negative_edges(self) -> None:
         """All-positive observed graphs should not request sparse edge-value gradients."""
-        config = UCaGNNConfig(device="cuda", use_dual_branch=False, use_sign_aware=True)
+        config = EDGRecConfig(device="cuda", use_dual_branch=False, use_sign_aware=True)
         model = DualBranchGCN(config)
 
         weights = model._compute_edge_weights_impl(torch.tensor([1.0, 1.0, 0.0]))
@@ -2232,7 +2353,7 @@ class CausalTrainingContractTests(unittest.TestCase):
 
     def test_edge_propagation_backprops_through_sign_weights(self) -> None:
         """Chunked LightGCN propagation should preserve gradients for sign-aware weights."""
-        config = UCaGNNConfig(device="cuda", use_dual_branch=False, use_sign_aware=True)
+        config = EDGRecConfig(device="cuda", use_dual_branch=False, use_sign_aware=True)
         model = DualBranchGCN(config)
         embeddings = {
             "user": torch.tensor([[1.0, 0.0]], dtype=torch.float32, requires_grad=True),
@@ -2258,7 +2379,7 @@ class CausalTrainingContractTests(unittest.TestCase):
 
     def test_loss_suite_supports_popularity_aware_branch_contrastive_mainline(self) -> None:
         """LossSuite should expose DCCL-style interest and conformity contrastive losses."""
-        config = UCaGNNConfig(device="cuda", embed_dim=3)
+        config = EDGRecConfig(device="cuda", embed_dim=3)
         config.use_dual_branch = True
         config.use_ipw = False
         config.use_popularity_head = False
@@ -2345,7 +2466,7 @@ class CausalTrainingContractTests(unittest.TestCase):
         self,
     ) -> None:
         """DICE-style branch loss should train conformity as popularity, not interest."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2)
+        config = EDGRecConfig(device="cpu", embed_dim=2)
         config.use_dual_branch = True
         config.use_popularity_head = False
         config.branch_loss_mode = "dice"
@@ -2405,7 +2526,7 @@ class CausalTrainingContractTests(unittest.TestCase):
         self,
     ) -> None:
         """Context regression should not train against the calibrated fusion score."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2)
+        config = EDGRecConfig(device="cpu", embed_dim=2)
         config.use_dual_branch = True
         config.use_popularity_head = True
         config.loss_weight_recommendation = 0.0
@@ -2459,7 +2580,7 @@ class CausalTrainingContractTests(unittest.TestCase):
 
     def test_loss_suite_caps_dice_discrepancy_pairwise_entities(self) -> None:
         """DICE discrepancy should not allocate quadratic matrices over huge batches."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2)
+        config = EDGRecConfig(device="cpu", embed_dim=2)
         config.use_dual_branch = True
         config.branch_loss_mode = "dice"
         config.loss_weight_recommendation = 0.0
@@ -2528,7 +2649,7 @@ class CausalTrainingContractTests(unittest.TestCase):
 
     def test_loss_suite_caps_directau_uniformity_pairwise_rows(self) -> None:
         """DirectAU uniformity should not run pdist over the full training batch."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2)
+        config = EDGRecConfig(device="cpu", embed_dim=2)
         config.use_dual_branch = True
         config.loss_weight_recommendation = 0.0
         config.loss_weight_interest_bpr = 0.0
@@ -2586,7 +2707,7 @@ class CausalTrainingContractTests(unittest.TestCase):
 
     def test_loss_suite_dice_discrepancy_has_finite_tiny_batch_gradients(self) -> None:
         """DICE distance-correlation discrepancy should stay finite on smoke batches."""
-        config = UCaGNNConfig(device="cpu", embed_dim=2)
+        config = EDGRecConfig(device="cpu", embed_dim=2)
         config.use_dual_branch = True
         config.branch_loss_mode = "dice"
         config.loss_weight_recommendation = 0.0

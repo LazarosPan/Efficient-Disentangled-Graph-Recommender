@@ -1026,7 +1026,7 @@ def choose_primary_risk(risks: list[str]) -> str:
 def build_causal_audit(record: DatasetRecord) -> dict[str, Any]:
     """Build a causal-audit summary that separates file availability from actual usage."""
     aspects = collect_aspect_sources(record)
-    requirements = (record.exploration_summary or {}).get("ucagnn_requirements", {})
+    requirements = (record.exploration_summary or {}).get("edgrec_requirements", {})
     coverage = get_loader_coverage(record)
     thesis_default_user_sources = ENABLED_FEATURE_SOURCES(
         "thesis_default",

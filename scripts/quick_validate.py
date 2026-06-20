@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Tiny unified validation suite for the full U-CaGNN experiment pipeline.
+"""Tiny unified validation suite for the full EDGRec experiment pipeline.
 
 This script is the single post-change validation entry point for the repository.
 It runs tiny-scale experiments that cover the canonical recipe matrix, ablation
@@ -30,7 +30,7 @@ from src.training import THESIS_PRIMARY_METRICS
 from src.utils.cli_parsers import (
     build_quick_validate_parser,
 )
-from src.utils.config import DEFAULT_SEED, UCaGNNConfig
+from src.utils.config import DEFAULT_SEED, EDGRecConfig
 from src.utils.project_paths import CHECKPOINT_DIR, MLFLOW_DB_PATH, THESIS_DB_PATH
 
 RUNTIME_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -78,9 +78,9 @@ def _build_tiny_runtime_overrides(dataset: str) -> dict[str, int | bool]:
 
 
 def _apply_tiny_runtime_overrides(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     tiny_overrides: dict[str, int | bool],
-) -> UCaGNNConfig:
+) -> EDGRecConfig:
     """Apply the shared tiny-run runtime knobs to a config.
 
     Args:
@@ -109,7 +109,7 @@ def _build_runtime_config(
     batch_size: int = QUICK_VALIDATE_BATCH_SIZE,
     sample_interactions: int | None = None,
     loader_max_rows: int | None = None,
-) -> UCaGNNConfig:
+) -> EDGRecConfig:
     """Build a quick-validate config without emulating a full CLI namespace.
 
     Args:
@@ -155,7 +155,7 @@ def _build_tiny_recipe_config(
     *,
     recipe: str,
     use_features: bool | None = None,
-) -> UCaGNNConfig:
+) -> EDGRecConfig:
     """Build a tiny validation config for a catalog recipe on one dataset."""
     tiny_overrides = _build_tiny_runtime_overrides(dataset)
     config = _build_runtime_config(
@@ -176,7 +176,7 @@ def _build_tiny_ablation_config(
     dataset: str,
     *,
     variant: str,
-) -> UCaGNNConfig:
+) -> EDGRecConfig:
     """Build a tiny validation config for an ablation variant on one dataset."""
     tiny_overrides = _build_tiny_runtime_overrides(dataset)
     config = make_ablation_config(
@@ -255,7 +255,7 @@ def _run_single_case(
     category: str,
     dataset: str,
     label: str,
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     preset: str | None,
     intervention: str,
     recipe_name: str | None = None,
@@ -279,7 +279,7 @@ def _run_single_case(
         intervention=intervention,
         save_checkpoint=save_checkpoint,
         enable_mlflow=enable_mlflow,
-        mlflow_experiment_name="ucagnn-quick-validate",
+        mlflow_experiment_name="edgrec-quick-validate",
         recipe_name=recipe_name,
         checkpoint_path=checkpoint_path,
         checkpoint_every=1,
@@ -381,7 +381,7 @@ def _run_ablation_category(args: argparse.Namespace, results: list[dict]) -> Non
                     dataset=dataset,
                     label=label,
                     config=config,
-                    preset="ucagnn",
+                    preset="edgrec",
                     intervention=f"quick_ablation_{variant}",
                 )
                 results.append(
@@ -419,8 +419,8 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
         f"{len(args.datasets)} resume probes",
     )
 
-    feature_recipe = "ucagnn"
-    feature_label = "features:ucagnn"
+    feature_recipe = "edgrec"
+    feature_label = "features:edgrec"
     for dataset in feature_datasets:
         feature_config = _build_tiny_recipe_config(
             args,
@@ -434,7 +434,7 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
                 dataset=dataset,
                 label=feature_label,
                 config=feature_config,
-                preset="ucagnn",
+                preset="edgrec",
                 intervention="quick_features",
                 recipe_name=feature_recipe,
                 expect_logging=True,
@@ -465,14 +465,14 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
             if args.fail_fast:
                 return
 
-    resume_label = "checkpoint-resume:ucagnn"
+    resume_label = "checkpoint-resume:edgrec"
     for dataset in args.datasets:
         checkpoint_path = CHECKPOINT_DIR / f"quick_validate_resume_probe_{dataset}.pt"
         checkpoint_path.unlink(missing_ok=True)
         resume_config = _build_tiny_recipe_config(
             args,
             dataset,
-            recipe="ucagnn",
+            recipe="edgrec",
         )
         try:
             _, first_elapsed = _run_single_case(
@@ -480,9 +480,9 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
                 dataset=dataset,
                 label=resume_label,
                 config=resume_config,
-                preset="ucagnn",
+                preset="edgrec",
                 intervention="quick_resume_probe",
-                recipe_name="ucagnn",
+                recipe_name="edgrec",
                 save_checkpoint=True,
                 enable_mlflow=args.mlflow,
                 auto_resume=False,
@@ -494,12 +494,12 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
             second_started = time.perf_counter()
             resumed_result = run_experiment(
                 resume_config,
-                preset="ucagnn",
+                preset="edgrec",
                 intervention="quick_resume_probe",
                 save_checkpoint=True,
                 enable_mlflow=False,
-                mlflow_experiment_name="ucagnn-quick-validate",
-                recipe_name="ucagnn",
+                mlflow_experiment_name="edgrec-quick-validate",
+                recipe_name="edgrec",
                 checkpoint_path=str(checkpoint_path),
                 checkpoint_every=1,
                 auto_resume=True,
@@ -545,7 +545,7 @@ def _run_observability_category(args: argparse.Namespace, results: list[dict]) -
 def _run_evaluation_category(args: argparse.Namespace, results: list[dict]) -> None:
     preferred = ["movielens1m", "kuairec_v2", "taobao"]
     eval_dataset = next((c for c in preferred if c in args.datasets), args.datasets[0])
-    config = _build_tiny_recipe_config(args, eval_dataset, recipe="ucagnn")
+    config = _build_tiny_recipe_config(args, eval_dataset, recipe="edgrec")
     label = "eval:primary"
     try:
         _, elapsed = _run_single_case(
@@ -553,9 +553,9 @@ def _run_evaluation_category(args: argparse.Namespace, results: list[dict]) -> N
             dataset=eval_dataset,
             label=label,
             config=config,
-            preset="ucagnn",
+            preset="edgrec",
             intervention="quick_eval_refined",
-            recipe_name="ucagnn",
+            recipe_name="edgrec",
             expect_metrics=True,
         )
         results.append(

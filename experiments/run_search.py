@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Optuna search controller for configured U-CaGNN spaces."""
+"""Optuna search controller for configured EDGRec spaces."""
 
 from __future__ import annotations
 
@@ -23,14 +23,24 @@ from src.utils.benchmark_datasets import (
     normalize_benchmark_datasets_arg,
     resolve_benchmark_datasets,
 )
-from src.utils.config import BENCHMARK_CONFIG_FIELDS, DEFAULT_SEED, UCaGNNConfig
+from src.utils.config import BENCHMARK_CONFIG_FIELDS, DEFAULT_SEED, EDGRecConfig
 from src.utils.crru import (
+    VALIDATION_ACCURACY_METRIC,
     VALIDATION_ONLINE_CRRU_K_METRICS,
     VALIDATION_ONLINE_CRRU_METRIC,
+    compute_validation_accuracy_objective,
     compute_validation_online_crru_for_k,
     compute_validation_online_crru_objective,
 )
 from src.utils.experiment_logger import ExperimentLogger
+from src.utils.method_naming import (
+    EDGREC_DISPLAY_NAME,
+    EDGREC_PUBLIC_PRESET,
+    is_edgrec_token,
+    legacy_method_identifier,
+    method_identifier_aliases,
+    public_method_identifier,
+)
 from src.utils.project_paths import THESIS_DB_PATH
 
 from experiments.benchmark_resolvers import (
@@ -54,7 +64,7 @@ from experiments.run_experiment import (
     run_experiment,
 )
 
-logger = logging.getLogger("ucagnn.search")
+logger = logging.getLogger("edgrec.search")
 
 DEFAULT_STORAGE = "sqlite:///results/optuna_studies.db"
 DEFAULT_OBJECTIVE_METRIC = VALIDATION_ONLINE_CRRU_METRIC
@@ -68,7 +78,11 @@ INFORMATIVE_TRIAL_STATES = frozenset(
         optuna.trial.TrialState.PRUNED,
     },
 )
-SEARCH_PRESET = "ucagnn"
+CUDA_CONTEXT_POISONED_MARKERS = (
+    "CUDA error: device-side assert triggered",
+    "cudaErrorAssert",
+)
+SEARCH_PRESET = EDGREC_PUBLIC_PRESET
 SEARCH_PARAMETER_FIELDS = frozenset(
     {
         "lr",
@@ -81,27 +95,40 @@ SEARCH_PARAMETER_FIELDS = frozenset(
         "interest_gnn_layers",
         "conformity_gnn_layers",
         "dropout",
+        "n_negatives",
+        "embedding_optimizer",
+        "train_edge_keep_prob",
+        "item_universe_policy",
         "score_mix_min_weight",
+        "score_fusion_profile",
+        "item_branch_profile",
+        "context_feature_profile",
+        "loss_profile",
+        "graph_profile",
+        "use_learned_score_mix",
+        "score_weight_interest",
+        "score_weight_conformity",
+        "score_weight_popularity",
+        "separate_item_branch_embeddings",
         "loss_weight_interest_bpr",
         "loss_weight_conformity_bpr",
         "loss_weight_independence",
         "loss_weight_contrastive",
+        "loss_weight_align",
+        "loss_weight_uniform",
         "loss_weight_popularity",
+        "loss_weight_propensity_calibration",
+        "loss_normalization",
         "auxiliary_loss_schedule",
         "auxiliary_ramp_rate",
         "independence_ramp_rate",
         "auxiliary_losses_start_epoch",
         "popularity_supervision_start_epoch",
         "graph_policy",
-        "cagra_k",
-        "cagra_out_degree",
-        "cagra_initial_degree",
-        "cagra_team_size",
-        "cagra_metric",
-        "cagra_itopk_size",
-        "cagra_candidate_k",
         "hard_negative_ratio",
         "dice_sampler_margin",
+        "dice_mask_reduction",
+        "feature_gate_init",
         "use_popularity_head",
         "use_features",
     },
@@ -137,20 +164,6 @@ PHASED_ONLY_PARAMETER_FIELDS = frozenset(
         "popularity_supervision_start_epoch",
     },
 )
-CAGRA_GRAPH_ONLY_PARAMETER_FIELDS = frozenset(
-    {
-        "cagra_k",
-    },
-)
-CAGRA_SEARCH_PARAMETER_FIELDS = frozenset(
-    {
-        "cagra_out_degree",
-        "cagra_initial_degree",
-        "cagra_team_size",
-        "cagra_metric",
-        "cagra_itopk_size",
-    },
-)
 
 
 @dataclass(frozen=True)
@@ -169,8 +182,8 @@ class SamplerSpec:
     name: str = "tpe"
     seed: int = DEFAULT_SEED
     n_startup_trials: int = 12
-    multivariate: bool = True
-    group: bool = True
+    multivariate: bool = False
+    group: bool = False
     constant_liar: bool = False
 
 
@@ -197,13 +210,33 @@ class SearchSpaceSpec:
     trials: int
     config_overrides: dict[str, Any]
     parameters: dict[str, dict[str, Any]]
+    profile_overrides: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
     sampler: SamplerSpec = field(default_factory=SamplerSpec)
     pruner: PrunerSpec = field(default_factory=PrunerSpec)
+
+
+@dataclass(frozen=True)
+class TrialParameterResolution:
+    """Logical sampled params plus concrete config overrides for one trial."""
+
+    sampled_params: dict[str, Any]
+    config_overrides: dict[str, Any]
 
 
 ParameterValidator = Callable[[str, Mapping[str, Any]], None]
 DistributionPayloadBuilder = Callable[[str, Mapping[str, Any], int | None], dict[str, Any]]
 ParameterSuggester = Callable[[optuna.Trial, str, str, Mapping[str, Any]], Any]
+ProfileOverrides = Mapping[str, Mapping[str, Mapping[str, Any]]]
+
+_PROFILE_PARAMETER_FIELDS = frozenset(
+    {
+        "score_fusion_profile",
+        "item_branch_profile",
+        "context_feature_profile",
+        "loss_profile",
+        "graph_profile",
+    },
+)
 
 
 def _json_safe(value: Any) -> Any:
@@ -316,13 +349,16 @@ def _build_sampler(spec: SamplerSpec) -> optuna.samplers.BaseSampler:
     """Instantiate the configured Optuna sampler."""
     if spec.name == "random":
         return optuna.samplers.RandomSampler(seed=spec.seed)
-    return optuna.samplers.TPESampler(
-        seed=spec.seed,
-        n_startup_trials=spec.n_startup_trials,
-        multivariate=spec.multivariate,
-        group=spec.group,
-        constant_liar=spec.constant_liar,
-    )
+    kwargs: dict[str, Any] = {
+        "seed": spec.seed,
+        "n_startup_trials": spec.n_startup_trials,
+        "constant_liar": spec.constant_liar,
+    }
+    if spec.multivariate:
+        kwargs["multivariate"] = True
+        if spec.group:
+            kwargs["group"] = True
+    return optuna.samplers.TPESampler(**kwargs)
 
 
 def _build_pruner(spec: PrunerSpec, *, max_epochs: int) -> optuna.pruners.BasePruner:
@@ -422,6 +458,63 @@ def _validate_categorical_parameter(field_name: str, spec: Mapping[str, Any]) ->
         raise ValueError(f"parameters.{field_name}.choices contains duplicate values.")
 
 
+def _normalize_profile_overrides(
+    raw_space: Mapping[str, Any],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Return validated search-layer profile-to-config mappings."""
+    raw_overrides = _require_mapping(
+        raw_space.get("profile_overrides", {}),
+        field_name="profile_overrides",
+    )
+    _validate_catalog_fields(
+        raw_overrides,
+        field_name="profile_overrides",
+        allowed_fields=set(_PROFILE_PARAMETER_FIELDS),
+    )
+    normalized: dict[str, dict[str, dict[str, Any]]] = {}
+    for field_name, raw_profiles in raw_overrides.items():
+        profiles = _require_mapping(raw_profiles, field_name=f"profile_overrides.{field_name}")
+        if not profiles:
+            raise ValueError(f"profile_overrides.{field_name} must define at least one profile.")
+        normalized[field_name] = {}
+        for profile_name, raw_config_overrides in profiles.items():
+            config_overrides = dict(
+                _require_mapping(
+                    raw_config_overrides,
+                    field_name=f"profile_overrides.{field_name}.{profile_name}",
+                ),
+            )
+            _validate_catalog_fields(
+                config_overrides,
+                field_name=f"profile_overrides.{field_name}.{profile_name}",
+                allowed_fields=set(BENCHMARK_CONFIG_FIELDS),
+            )
+            normalized[field_name][str(profile_name)] = config_overrides
+    return normalized
+
+
+def _validate_search_profile_parameter(
+    field_name: str,
+    spec: Mapping[str, Any],
+    *,
+    profile_overrides: ProfileOverrides,
+) -> None:
+    """Validate a search-layer mechanism profile parameter."""
+    if field_name not in _PROFILE_PARAMETER_FIELDS:
+        return
+    if str(spec.get("type", "")).lower() != "categorical":
+        raise ValueError(f"parameters.{field_name} must be a categorical profile.")
+    choices = spec.get("choices", [])
+    if field_name not in profile_overrides:
+        raise ValueError(f"profile_overrides.{field_name} must define profile choices.")
+    allowed = set(profile_overrides[field_name])
+    unsupported = sorted(str(choice) for choice in choices if str(choice) not in allowed)
+    if unsupported:
+        raise ValueError(
+            f"parameters.{field_name} contains unknown profile choices: {', '.join(unsupported)}.",
+        )
+
+
 def _validate_fanout_parameter(field_name: str, spec: Mapping[str, Any]) -> None:
     """Validate a depth-keyed ``num_neighbors`` search parameter."""
     if field_name != "num_neighbors":
@@ -453,13 +546,18 @@ _PARAMETER_VALIDATORS: dict[str, ParameterValidator] = {
 SUPPORTED_PARAMETER_TYPES = frozenset(_PARAMETER_VALIDATORS)
 
 
-def _validate_parameter_specs(parameters: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+def _validate_parameter_specs(
+    parameters: Mapping[str, Any],
+    *,
+    profile_overrides: ProfileOverrides | None = None,
+) -> dict[str, dict[str, Any]]:
     """Validate search parameter specs and return a plain dict copy."""
     _validate_catalog_fields(
         parameters,
         field_name="parameters",
         allowed_fields=set(SEARCH_PARAMETER_FIELDS),
     )
+    profile_overrides = profile_overrides or {}
     normalized: dict[str, dict[str, Any]] = {}
     for field_name, raw_spec in parameters.items():
         spec = dict(_require_mapping(raw_spec, field_name=f"parameters.{field_name}"))
@@ -473,6 +571,11 @@ def _validate_parameter_specs(parameters: Mapping[str, Any]) -> dict[str, dict[s
                 ),
             )
         validator(field_name, spec)
+        _validate_search_profile_parameter(
+            field_name,
+            spec,
+            profile_overrides=profile_overrides,
+        )
         normalized[field_name] = spec
     return normalized
 
@@ -482,11 +585,12 @@ def _resolve_parameter_specs(
     *,
     all_datasets: Sequence[str],
     active_dataset: str | None,
+    profile_overrides: ProfileOverrides,
 ) -> dict[str, dict[str, Any]]:
     """Resolve base plus optional dataset-local parameter overrides.
 
     The study name remains stable across search-space edits. Dataset-local
-    overrides keep one command (`--space ucagnn-core-optimization`) while
+    overrides keep one command (`--space edgrec-core-optimization`) while
     avoiding a single compromise grid for datasets with different Optuna basins.
     """
     raw_parameters = _require_mapping(raw_space.get("parameters", {}), field_name="parameters")
@@ -510,10 +614,16 @@ def _resolve_parameter_specs(
                 field_name=f"parameters_by_dataset.{dataset}",
             ),
         )
-        _validate_parameter_specs({**base_parameters, **overrides})
+        _validate_parameter_specs(
+            {**base_parameters, **overrides},
+            profile_overrides=profile_overrides,
+        )
 
     if active_dataset is None:
-        return _validate_parameter_specs(base_parameters)
+        return _validate_parameter_specs(
+            base_parameters,
+            profile_overrides=profile_overrides,
+        )
 
     dataset_overrides = dict(
         _require_mapping(
@@ -521,7 +631,10 @@ def _resolve_parameter_specs(
             field_name=f"parameters_by_dataset.{active_dataset}",
         ),
     )
-    return _validate_parameter_specs({**base_parameters, **dataset_overrides})
+    return _validate_parameter_specs(
+        {**base_parameters, **dataset_overrides},
+        profile_overrides=profile_overrides,
+    )
 
 
 def resolve_search_space(
@@ -537,10 +650,11 @@ def resolve_search_space(
 
     base_profile = get_formal_profile(base_profile_name)
     presets = list(base_profile["matrix"]["presets"])
-    if presets != [SEARCH_PRESET]:
+    if len(presets) != 1 or not is_edgrec_token(presets[0]):
         raise ValueError(
             (
-                f"search space '{space_name}' must use a U-CaGNN-only base profile; "
+                f"search space '{space_name}' must use an {EDGREC_DISPLAY_NAME}-only base "
+                "profile; "
                 f"got presets={presets!r}."
             ),
         )
@@ -573,16 +687,18 @@ def resolve_search_space(
         field_name="config_overrides",
         allowed_fields=set(BENCHMARK_CONFIG_FIELDS),
     )
+    profile_overrides = _normalize_profile_overrides(raw_space)
     parameters = _resolve_parameter_specs(
         raw_space,
         all_datasets=all_datasets,
         active_dataset=dataset,
+        profile_overrides=profile_overrides,
     )
     if not parameters:
         raise ValueError(f"search space '{space_name}' must define at least one parameter.")
 
     return SearchSpaceSpec(
-        name=space_name,
+        name=str(raw_space["name"]),
         description=str(raw_space.get("description", "")),
         base_profile=base_profile_name,
         datasets=tuple(datasets),
@@ -593,6 +709,7 @@ def resolve_search_space(
         trials=trials,
         config_overrides=config_overrides,
         parameters=parameters,
+        profile_overrides=profile_overrides,
     )
 
 
@@ -683,8 +800,8 @@ def build_search_config(
     sampled_overrides: Mapping[str, Any] | None = None,
     device: str,
     data_dir: str,
-) -> UCaGNNConfig:
-    """Resolve one concrete U-CaGNN config for a search trial."""
+) -> EDGRecConfig:
+    """Resolve one concrete EDGRec config for a search trial."""
     return build_config(
         build_search_config_inputs(
             search_space,
@@ -822,8 +939,9 @@ def _distribution_fingerprint(payload: Mapping[str, Any]) -> str:
 def search_space_revision(search_space: SearchSpaceSpec) -> str:
     """Return a stable revision id for the resolved logical search contract."""
     payload = {
-        "name": search_space.name,
-        "base_profile": search_space.base_profile,
+        "name": legacy_method_identifier(search_space.name) or search_space.name,
+        "base_profile": legacy_method_identifier(search_space.base_profile)
+        or search_space.base_profile,
         "datasets": list(search_space.datasets),
         "objective": dataclasses.asdict(search_space.objective),
         "sampler": dataclasses.asdict(search_space.sampler),
@@ -832,6 +950,8 @@ def search_space_revision(search_space: SearchSpaceSpec) -> str:
         "config_overrides": _json_safe(search_space.config_overrides),
         "parameters": _json_safe(search_space.parameters),
     }
+    if search_space.profile_overrides:
+        payload["profile_overrides"] = _json_safe(search_space.profile_overrides)
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:SEARCH_SPACE_REVISION_HASH_LENGTH]
 
@@ -945,7 +1065,7 @@ def _suggest_fanout_value(
     trial: optuna.Trial,
     spec: Mapping[str, Any],
     *,
-    base_config: UCaGNNConfig,
+    base_config: EDGRecConfig,
     sampled_overrides: Mapping[str, Any],
 ) -> list[int]:
     """Suggest ``num_neighbors`` for the active sampled branch depth.
@@ -991,42 +1111,106 @@ def _parameter_is_conditionally_active(
         return schedule == "linear_ramp"
     if field_name in PHASED_ONLY_PARAMETER_FIELDS:
         return schedule == "phased"
-    graph_policy = str(sampled_params.get("graph_policy", "observed"))
-    try:
-        cagra_candidate_k = int(sampled_params.get("cagra_candidate_k", 0) or 0)
-    except (TypeError, ValueError):
-        cagra_candidate_k = 0
-    if field_name in CAGRA_GRAPH_ONLY_PARAMETER_FIELDS:
-        return graph_policy == "cagra_augmented"
-    if field_name in CAGRA_SEARCH_PARAMETER_FIELDS:
-        return graph_policy == "cagra_augmented" or cagra_candidate_k > 0
     return True
+
+
+def _profile_config_overrides(
+    profile_overrides: ProfileOverrides,
+    field_name: str,
+    profile_name: Any,
+) -> dict[str, Any]:
+    """Return concrete config overrides for one search-layer profile choice."""
+    try:
+        return dict(profile_overrides[field_name][str(profile_name)])
+    except KeyError as exc:
+        raise ValueError(f"Unknown {field_name} profile: {profile_name!r}") from exc
+
+
+def _resolved_config_overrides_from_sampled_params(
+    sampled_params: Mapping[str, Any],
+    *,
+    profile_overrides: ProfileOverrides,
+) -> dict[str, Any]:
+    """Resolve logical sampled params into concrete config overrides."""
+    resolved: dict[str, Any] = {}
+    for field_name in _PROFILE_PARAMETER_FIELDS:
+        if field_name in sampled_params:
+            resolved.update(
+                _profile_config_overrides(
+                    profile_overrides,
+                    field_name,
+                    sampled_params[field_name],
+                ),
+            )
+    for field_name, value in sampled_params.items():
+        if field_name not in _PROFILE_PARAMETER_FIELDS:
+            resolved[field_name] = value
+    return resolved
+
+
+def resolve_trial_parameters(
+    trial: optuna.Trial,
+    search_space: SearchSpaceSpec,
+    *,
+    base_config: EDGRecConfig,
+) -> TrialParameterResolution:
+    """Suggest logical trial params and resolve them to config overrides."""
+    sampled_params: dict[str, Any] = {}
+    config_overrides: dict[str, Any] = {}
+
+    for field_name, spec in search_space.parameters.items():
+        if field_name not in _PROFILE_PARAMETER_FIELDS:
+            continue
+        value = _suggest_parameter_value(trial, field_name, spec)
+        sampled_params[field_name] = value
+        config_overrides.update(
+            _profile_config_overrides(search_space.profile_overrides, field_name, value),
+        )
+
+    for field_name, spec in search_space.parameters.items():
+        if field_name in _PROFILE_PARAMETER_FIELDS:
+            continue
+        if str(spec["type"]).lower() == "fanout":
+            continue
+        active_context = {**config_overrides, **sampled_params}
+        if not _parameter_is_conditionally_active(field_name, active_context):
+            continue
+        value = _suggest_parameter_value(trial, field_name, spec)
+        sampled_params[field_name] = value
+        config_overrides[field_name] = value
+
+    for field_name, spec in search_space.parameters.items():
+        if str(spec["type"]).lower() != "fanout":
+            continue
+        active_context = {**config_overrides, **sampled_params}
+        if not _parameter_is_conditionally_active(field_name, active_context):
+            continue
+        value = _suggest_fanout_value(
+            trial,
+            spec,
+            base_config=base_config,
+            sampled_overrides=config_overrides,
+        )
+        sampled_params[field_name] = value
+        config_overrides[field_name] = value
+    return TrialParameterResolution(
+        sampled_params=sampled_params,
+        config_overrides=config_overrides,
+    )
 
 
 def suggest_trial_overrides(
     trial: optuna.Trial,
     search_space: SearchSpaceSpec,
     *,
-    base_config: UCaGNNConfig,
+    base_config: EDGRecConfig,
 ) -> dict[str, Any]:
-    """Suggest one trial override dict over existing ``UCaGNNConfig`` fields."""
-    sampled: dict[str, Any] = {}
-    for field_name, spec in search_space.parameters.items():
-        if str(spec["type"]).lower() == "fanout":
-            continue
-        if not _parameter_is_conditionally_active(field_name, sampled):
-            continue
-        sampled[field_name] = _suggest_parameter_value(trial, field_name, spec)
-    for field_name, spec in search_space.parameters.items():
-        if str(spec["type"]).lower() != "fanout":
-            continue
-        sampled[field_name] = _suggest_fanout_value(
-            trial,
-            spec,
-            base_config=base_config,
-            sampled_overrides=sampled,
-        )
-    return sampled
+    """Suggest one concrete trial override dict over ``EDGRecConfig`` fields."""
+    return resolve_trial_parameters(
+        trial,
+        search_space,
+        base_config=base_config,
+    ).config_overrides
 
 
 def _result_epoch_time_s(result: Mapping[str, Any]) -> float | None:
@@ -1055,6 +1239,8 @@ def _objective_metric_value(
             peak_vram_mb=result.get("peak_vram_mb"),
             epoch_time_s=_result_epoch_time_s(result),
         )
+    if metric_name == VALIDATION_ACCURACY_METRIC:
+        return compute_validation_accuracy_objective(metrics)
     if metric_name not in metrics:
         raise ValueError(f"Validation metrics did not include {metric_name}.")
     return float(metrics[metric_name])
@@ -1158,7 +1344,7 @@ def _set_trial_attrs_from_result(
     trial: optuna.Trial,
     *,
     dataset: str,
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     result: Mapping[str, Any],
     objective: ObjectiveSpec,
 ) -> None:
@@ -1168,7 +1354,7 @@ def _set_trial_attrs_from_result(
         metric_name=objective.metric,
         direction=objective.direction,
     )
-    if objective.metric == VALIDATION_ONLINE_CRRU_METRIC:
+    try:
         for k, metric_name in VALIDATION_ONLINE_CRRU_K_METRICS.items():
             best_val_metrics[metric_name] = compute_validation_online_crru_for_k(
                 best_val_metrics,
@@ -1176,6 +1362,13 @@ def _set_trial_attrs_from_result(
                 peak_vram_mb=result.get("peak_vram_mb"),
                 epoch_time_s=_result_epoch_time_s(result),
             )
+        best_val_metrics[VALIDATION_ONLINE_CRRU_METRIC] = compute_validation_online_crru_objective(
+            best_val_metrics,
+            peak_vram_mb=result.get("peak_vram_mb"),
+            epoch_time_s=_result_epoch_time_s(result),
+        )
+    except ValueError:
+        logger.debug("Skipping CRRU trial attrs because validation metrics are incomplete.")
     prefix = f"{dataset}."
     trial.set_user_attr(prefix + "exp_id", result.get("exp_id"))
     trial.set_user_attr(prefix + "canonical_name", result.get("canonical_name"))
@@ -1197,6 +1390,7 @@ def _set_trial_attrs_from_result(
         *THESIS_PRIMARY_METRICS,
         *VALIDATION_ONLINE_CRRU_K_METRICS.values(),
         VALIDATION_ONLINE_CRRU_METRIC,
+        VALIDATION_ACCURACY_METRIC,
     ):
         if metric_name in best_val_metrics:
             trial.set_user_attr(prefix + f"val.{metric_name}", best_val_metrics[metric_name])
@@ -1228,7 +1422,8 @@ def _trial_change_note(
     search_space: SearchSpaceSpec,
     study_name: str,
     trial_number: int,
-    sampled_overrides: Mapping[str, Any],
+    sampled_params: Mapping[str, Any],
+    resolved_config_overrides: Mapping[str, Any],
 ) -> str:
     """Return compact trial metadata for the existing change_note field."""
     return json.dumps(
@@ -1237,11 +1432,33 @@ def _trial_change_note(
             "search_space_revision": search_space_revision(search_space),
             "study_name": study_name,
             "trial_number": trial_number,
-            "sampled_params": _json_safe(sampled_overrides),
+            "sampled_params": _json_safe(sampled_params),
+            "resolved_config_overrides": _json_safe(resolved_config_overrides),
         },
         sort_keys=True,
         separators=(",", ":"),
     )
+
+
+def _is_cuda_context_poisoned_exception(exc: BaseException) -> bool:
+    """Return whether an exception indicates a process-local CUDA assert state."""
+    messages: list[str] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        messages.append(f"{type(current).__name__}: {current}")
+        current = current.__cause__ or current.__context__
+    combined = "\n".join(messages)
+    return any(marker in combined for marker in CUDA_CONTEXT_POISONED_MARKERS)
+
+
+def _trial_has_poisoned_cuda_context_failure(trial: optuna.trial.FrozenTrial) -> bool:
+    """Return whether a stored trial failure should abort this Python process."""
+    if trial.user_attrs.get("fatal_failure") == "cuda_context_poisoned":
+        return True
+    failure_reason = str(trial.user_attrs.get("failure_reason", ""))
+    return any(marker in failure_reason for marker in CUDA_CONTEXT_POISONED_MARKERS)
 
 
 def _record_trial_failure(
@@ -1255,6 +1472,8 @@ def _record_trial_failure(
     failure_reason = f"{type(exc).__name__}: {exc}"
     trial.set_user_attr("failure_stage", stage)
     trial.set_user_attr("failure_reason", failure_reason)
+    if _is_cuda_context_poisoned_exception(exc):
+        trial.set_user_attr("fatal_failure", "cuda_context_poisoned")
     if dataset is not None:
         trial.set_user_attr(f"{dataset}.failure_stage", stage)
         trial.set_user_attr(f"{dataset}.failure_reason", failure_reason)
@@ -1288,7 +1507,7 @@ def _objective_factory(
                 device=device,
                 data_dir=data_dir,
             )
-            sampled_overrides = suggest_trial_overrides(
+            resolution = resolve_trial_parameters(
                 trial,
                 search_space,
                 base_config=base_config,
@@ -1297,9 +1516,21 @@ def _objective_factory(
             _record_trial_failure(trial, stage="suggest_overrides", exc=exc)
             raise
 
-        sampled_key = _canonical_sampled_params(sampled_overrides)
-        trial.set_user_attr("sampled_params", _json_safe(sampled_overrides))
+        sampled_key = _canonical_sampled_params(resolution.sampled_params)
+        trial.set_user_attr("sampled_params", _json_safe(resolution.sampled_params))
         trial.set_user_attr("sampled_params_json", sampled_key)
+        trial.set_user_attr(
+            "resolved_config_overrides",
+            _json_safe(resolution.config_overrides),
+        )
+        trial.set_user_attr(
+            "resolved_config_overrides_json",
+            json.dumps(
+                _json_safe(resolution.config_overrides),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
         if seen_sampled_param_keys is not None and sampled_key in seen_sampled_param_keys:
             trial.set_user_attr("duplicate_sampled_params", True)
             trial.set_user_attr("duplicate_sampled_params_key", sampled_key)
@@ -1307,13 +1538,13 @@ def _objective_factory(
                 "Duplicate fresh sampled_params; skipping training.",
             )
 
-        configs_by_dataset: dict[str, UCaGNNConfig] = {}
+        configs_by_dataset: dict[str, EDGRecConfig] = {}
         for dataset in search_space.datasets:
             try:
                 configs_by_dataset[dataset] = build_search_config(
                     search_space,
                     dataset=dataset,
-                    sampled_overrides=sampled_overrides,
+                    sampled_overrides=resolution.config_overrides,
                     device=device,
                     data_dir=data_dir,
                 )
@@ -1327,7 +1558,8 @@ def _objective_factory(
             search_space=search_space,
             study_name=study_name,
             trial_number=trial.number,
-            sampled_overrides=sampled_overrides,
+            sampled_params=resolution.sampled_params,
+            resolved_config_overrides=resolution.config_overrides,
         )
         for dataset_index, (dataset, config) in enumerate(configs_by_dataset.items()):
             try:
@@ -1398,7 +1630,8 @@ def default_study_name(
 ) -> str:
     """Return the default study name for a space/dataset selection."""
     dataset_part = datasets[0] if len(datasets) == 1 else "all"
-    base_name = f"{space_name}-{dataset_part}"
+    public_space_name = public_method_identifier(space_name) or space_name
+    base_name = f"{public_space_name}-{dataset_part}"
     if search_space is None:
         return base_name
     objective_name = slugify_fragment(
@@ -1406,6 +1639,22 @@ def default_study_name(
         fallback="search",
     )
     return f"{base_name}-{objective_name}"
+
+
+def _storage_study_names(storage: str) -> set[str]:
+    """Return existing study names in one Optuna storage."""
+    return {summary.study_name for summary in optuna.get_all_study_summaries(storage=storage)}
+
+
+def _resolve_existing_study_name(storage: str, study_name: str) -> str:
+    """Reuse an existing public or legacy EDGRec study instead of starting over."""
+    existing_names = _storage_study_names(storage)
+    if study_name in existing_names:
+        return study_name
+    for alias in method_identifier_aliases(study_name):
+        if alias in existing_names:
+            return alias
+    return study_name
 
 
 def _canonical_sampled_params(sampled_params: Mapping[str, Any]) -> str:
@@ -1483,14 +1732,20 @@ def _sampled_value_matches_spec(value: Any, field_name: str, spec: Mapping[str, 
 def _sampled_fanout_matches_spec(
     sampled_params: Mapping[str, Any],
     spec: Mapping[str, Any],
+    *,
+    profile_overrides: ProfileOverrides,
 ) -> bool:
     """Return whether sampled ``num_neighbors`` is valid for current branch depth."""
-    raw_value = sampled_params.get("num_neighbors")
+    resolved_params = _resolved_config_overrides_from_sampled_params(
+        sampled_params,
+        profile_overrides=profile_overrides,
+    )
+    raw_value = resolved_params.get("num_neighbors")
     if not isinstance(raw_value, list):
         return False
     try:
-        interest_layers = int(sampled_params["interest_gnn_layers"])
-        conformity_layers = int(sampled_params["conformity_gnn_layers"])
+        interest_layers = int(resolved_params["interest_gnn_layers"])
+        conformity_layers = int(resolved_params["conformity_gnn_layers"])
     except (KeyError, TypeError, ValueError):
         return False
     depth = max(interest_layers, conformity_layers)
@@ -1520,16 +1775,32 @@ def _sampled_params_match_search_space(
     logical_sampled_params = {
         key: value for key, value in sampled_params.items() if key not in runtime_only_fields
     }
+    try:
+        resolved_logical_params = _resolved_config_overrides_from_sampled_params(
+            logical_sampled_params,
+            profile_overrides=search_space.profile_overrides,
+        )
+    except ValueError:
+        return False
     allowed_keys = set(search_space.parameters)
     if set(logical_sampled_params) - allowed_keys:
         return False
     for field_name, spec in search_space.parameters.items():
         parameter_type = str(spec["type"]).lower()
+        active_context = {**resolved_logical_params, **logical_sampled_params}
         if parameter_type == "fanout":
-            if not _sampled_fanout_matches_spec(logical_sampled_params, spec):
+            if not _parameter_is_conditionally_active(field_name, active_context):
+                if field_name in logical_sampled_params:
+                    return False
+                continue
+            if not _sampled_fanout_matches_spec(
+                logical_sampled_params,
+                spec,
+                profile_overrides=search_space.profile_overrides,
+            ):
                 return False
             continue
-        if not _parameter_is_conditionally_active(field_name, logical_sampled_params):
+        if not _parameter_is_conditionally_active(field_name, active_context):
             if field_name in logical_sampled_params:
                 return False
             continue
@@ -1545,7 +1816,9 @@ def _trial_matches_current_search_contract(
     search_space: SearchSpaceSpec,
 ) -> bool:
     """Return whether an Optuna trial belongs to the current logical contract."""
-    if trial.user_attrs.get("search_space") != search_space.name:
+    if str(trial.user_attrs.get("search_space")) not in method_identifier_aliases(
+        search_space.name,
+    ):
         return False
     if trial.user_attrs.get("objective_metric") != search_space.objective.metric:
         return False
@@ -1587,7 +1860,11 @@ def _trial_matches_search_budget_scope(
         return False
     if is_duplicate_pruned_trial(trial):
         return False
-    if trial.user_attrs.get("search_space") != search_space.name:
+    if str(trial.user_attrs.get("search_space")) not in method_identifier_aliases(
+        search_space.name,
+    ):
+        return False
+    if trial.user_attrs.get("search_space_revision") != search_space_revision(search_space):
         return False
     if trial.user_attrs.get("objective_metric") != search_space.objective.metric:
         return False
@@ -1640,9 +1917,10 @@ def _budget_count_fragment(
     seeded_complete = sum(1 for trial in seeded if trial.state == optuna.trial.TrialState.COMPLETE)
     seeded_pruned = sum(1 for trial in seeded if trial.state == optuna.trial.TrialState.PRUNED)
     return (
-        f"budget_count={len(fresh)} "
-        f"(fresh complete={fresh_complete}, fresh pruned={fresh_pruned}, "
-        f"imported complete={seeded_complete}, imported pruned={seeded_pruned})"
+        f"revision={search_space_revision(search_space)} "
+        f"fresh_budget_count={len(fresh)} "
+        f"(fresh complete={fresh_complete}, fresh pruned={fresh_pruned}); "
+        f"imported_history=(complete={seeded_complete}, pruned={seeded_pruned})"
     )
 
 
@@ -1663,12 +1941,83 @@ def _print_best_trial_summary(
     *,
     objective_metric: str,
 ) -> None:
-    """Print best comparable trial details from logical sampled params."""
+    """Print best comparable trial details from effective config when available."""
     print(
         (f"Best trial: {best_trial.number} | {objective_metric}={float(best_trial.value):.6f}"),
     )
-    print("Best params:")
-    print(json.dumps(_json_safe(best_trial.user_attrs.get("sampled_params", {}))))
+    label, payload = _best_trial_config_payload(best_trial)
+    print(label)
+    print(json.dumps(_json_safe(payload), sort_keys=True))
+
+
+def _trial_dataset_names(trial: optuna.trial.FrozenTrial) -> list[str]:
+    """Return dataset names recorded on a trial."""
+    raw_datasets = trial.user_attrs.get("datasets")
+    if isinstance(raw_datasets, Sequence) and not isinstance(raw_datasets, (str, bytes)):
+        return [str(dataset) for dataset in raw_datasets]
+    return sorted(
+        {
+            key.split(".", 1)[0]
+            for key in trial.user_attrs
+            if key.endswith(".objective") and "." in key
+        },
+    )
+
+
+def _best_trial_config_payload(
+    trial: optuna.trial.FrozenTrial,
+) -> tuple[str, Mapping[str, Any]]:
+    """Return a truthful best-trial config payload for CLI display."""
+    dataset_names = _trial_dataset_names(trial)
+    if len(dataset_names) == 1:
+        dataset = dataset_names[0]
+        effective_config = trial.user_attrs.get(f"{dataset}.effective_config")
+        if isinstance(effective_config, Mapping):
+            return "Best effective config:", effective_config
+
+    payload: dict[str, Any] = {}
+    sampled_params = trial.user_attrs.get("sampled_params")
+    if isinstance(sampled_params, Mapping):
+        payload.update(sampled_params)
+    if len(dataset_names) == 1:
+        dataset = dataset_names[0]
+        for attr_name in (
+            "batch_size",
+            "auto_batch_size",
+            "avg_epoch_time_s",
+            "peak_vram_mb",
+            "epochs_stopped_at",
+            "canonical_name",
+        ):
+            value = trial.user_attrs.get(f"{dataset}.{attr_name}")
+            if value is not None:
+                payload[attr_name] = value
+    return "Best sampled/runtime params (historical trial lacks effective_config):", payload
+
+
+def _print_best_trial_or_note(
+    compatible_completed: Sequence[optuna.trial.FrozenTrial],
+    *,
+    objective_metric: str,
+    direction: str,
+) -> None:
+    """Print a best trial, or explain why no best row can be reused."""
+    best_trial = _best_trial_from_completed(
+        list(compatible_completed),
+        direction=direction,
+    )
+    if best_trial is not None:
+        _print_best_trial_summary(
+            best_trial,
+            objective_metric=objective_metric,
+        )
+        return
+    print(
+        (
+            "No completed trial matches the current logical search-space parameters; "
+            "fresh budget may still be spent by pruned or older incompatible completed trials."
+        ),
+    )
 
 
 def build_dry_run_payload(
@@ -1691,6 +2040,11 @@ def build_dry_run_payload(
             data_dir=data_dir,
         )
         base_configs[dataset] = dataclasses.asdict(config)
+    profile_overrides = {
+        field_name: search_space.profile_overrides[field_name]
+        for field_name in search_space.parameters
+        if field_name in _PROFILE_PARAMETER_FIELDS
+    }
 
     return {
         "search_space": search_space.name,
@@ -1706,12 +2060,13 @@ def build_dry_run_payload(
         "search_space_revision": search_space_revision(search_space),
         "trials": int(trials or search_space.trials),
         "trial_budget": (
-            "fresh informative finished trials: COMPLETE plus real PRUNED; excludes FAIL, "
-            "RUNNING, historically imported rows, and duplicate-skip prunes; tightening "
-            "parameter ranges does not reset already-spent fresh budget"
+            "for this search_space_revision only: fresh informative finished trials, "
+            "COMPLETE plus real PRUNED; excludes FAIL, RUNNING, historically imported rows, "
+            "duplicate-skip prunes, and trials from other search-space revisions"
         ),
         "config_overrides": _json_safe(search_space.config_overrides),
         "parameters": _json_safe(search_space.parameters),
+        "profile_overrides": _json_safe(profile_overrides),
         "base_configs": base_configs,
     }
 
@@ -1725,8 +2080,12 @@ def _run_single_search_study(
 ) -> int:
     """Run one Optuna study for one resolved search-space dataset selection."""
     _ensure_storage_parent(args.storage)
+    public_study_name = study_name
+    storage_study_name = _resolve_existing_study_name(args.storage, public_study_name)
+    if storage_study_name != public_study_name:
+        print(f"Reusing legacy Optuna study {storage_study_name} for {public_study_name}.")
     study = optuna.create_study(
-        study_name=study_name,
+        study_name=storage_study_name,
         storage=args.storage,
         direction=search_space.objective.direction,
         sampler=_build_sampler(search_space.sampler),
@@ -1736,26 +2095,22 @@ def _run_single_search_study(
     compatible_completed = _compatible_completed_trials(study, search_space)
     budget_informative = _budget_informative_trials(study, search_space)
     print(
-        f"Study {study_name} trial budget status: "
+        f"Study {public_study_name} trial budget status: "
         f"{_budget_count_fragment(study, search_space)}; "
         f"target={n_trials}."
     )
     if len(budget_informative) >= n_trials:
         print(
             (
-                f"Study {study_name} already has {len(budget_informative)} fresh "
+                f"Study {public_study_name} already has {len(budget_informative)} fresh "
                 f"informative trial(s); target={n_trials}. Nothing to run."
             ),
         )
-        best_trial = _best_trial_from_completed(
+        _print_best_trial_or_note(
             compatible_completed,
+            objective_metric=search_space.objective.metric,
             direction=search_space.objective.direction,
         )
-        if best_trial is not None:
-            _print_best_trial_summary(
-                best_trial,
-                objective_metric=search_space.objective.metric,
-            )
         return 0
 
     starting_trial_count = len(study.trials)
@@ -1769,7 +2124,7 @@ def _run_single_search_study(
     }
     objective = _objective_factory(
         search_space,
-        study_name=study_name,
+        study_name=public_study_name,
         device=args.device,
         data_dir=args.data_dir,
         enable_mlflow=not bool(args.no_mlflow),
@@ -1785,21 +2140,26 @@ def _run_single_search_study(
             n_trials=1,
             catch=(Exception,),
         )
+        attempted_trials = study.trials[before_trial_count:]
         attempts += max(1, len(study.trials) - before_trial_count)
         compatible_completed = _compatible_completed_trials(study, search_space)
         budget_informative = _budget_informative_trials(study, search_space)
+        if any(_trial_has_poisoned_cuda_context_failure(trial) for trial in attempted_trials):
+            print(
+                (
+                    "Aborting Optuna search after CUDA device-side assert. "
+                    "CUDA context is poisoned in this Python process; restart before retrying."
+                ),
+            )
+            break
 
     new_trials = study.trials[starting_trial_count:]
     if len(budget_informative) >= target_trials:
-        best_trial = _best_trial_from_completed(
+        _print_best_trial_or_note(
             compatible_completed,
+            objective_metric=search_space.objective.metric,
             direction=search_space.objective.direction,
         )
-        if best_trial is not None:
-            _print_best_trial_summary(
-                best_trial,
-                objective_metric=search_space.objective.metric,
-            )
         return 0
 
     failed_new_trials = [
@@ -1833,16 +2193,17 @@ def _dataset_study_name(
 def _build_per_dataset_dry_run_payload(
     args: argparse.Namespace,
     *,
+    space_name: str,
     search_space: SearchSpaceSpec,
     n_trials: int,
 ) -> dict[str, Any]:
     """Return dry-run details for the default dataset-local search expansion."""
     payloads: dict[str, Any] = {}
     for dataset in search_space.datasets:
-        dataset_space = resolve_search_space(args.space, dataset=dataset)
+        dataset_space = resolve_search_space(space_name, dataset=dataset)
         study_name = _dataset_study_name(
             args.study_name,
-            space_name=args.space,
+            space_name=space_name,
             dataset_space=dataset_space,
         )
         payloads[dataset] = build_dry_run_payload(
@@ -1863,19 +2224,81 @@ def _build_per_dataset_dry_run_payload(
     }
 
 
-def run_search(args: argparse.Namespace) -> int:
-    """Execute a resolved Optuna search from parsed CLI args."""
-    if args.list_spaces:
-        print("Available search spaces:")
-        for space_name in search_space_names():
-            space = get_search_space(space_name)
-            description = space.get("description", "")
-            print(f"  {space_name}: {description}")
-        return 0
-    if args.space is None:
-        raise ValueError("--space is required unless --list-spaces is used.")
+def _parse_search_space_sequence(raw_space: str | None) -> list[str]:
+    """Return one or more search-space identifiers from CLI input."""
+    if raw_space is None:
+        return []
+    space_names = [part.strip() for part in raw_space.split(",") if part.strip()]
+    if not space_names:
+        raise ValueError("--space must name at least one search space.")
+    return space_names
 
-    search_space = resolve_search_space(args.space, dataset=args.dataset)
+
+def _build_single_space_dry_run_payload(
+    args: argparse.Namespace,
+    *,
+    space_name: str,
+) -> dict[str, Any]:
+    """Return dry-run details for one queued search-space entry."""
+    search_space = resolve_search_space(space_name, dataset=args.dataset)
+    n_trials = int(args.trials or search_space.trials)
+    if n_trials < 1:
+        raise ValueError("--trials must be >= 1.")
+
+    if args.dataset is None and len(search_space.datasets) > 1:
+        return _build_per_dataset_dry_run_payload(
+            args,
+            space_name=space_name,
+            search_space=search_space,
+            n_trials=n_trials,
+        )
+
+    study_name = args.study_name or default_study_name(
+        space_name,
+        search_space.datasets,
+        search_space=search_space,
+    )
+    return build_dry_run_payload(
+        search_space,
+        study_name=study_name,
+        storage=args.storage,
+        trials=n_trials,
+        device=args.device,
+        data_dir=args.data_dir,
+    )
+
+
+def _build_search_space_queue_dry_run_payload(
+    args: argparse.Namespace,
+    *,
+    space_names: Sequence[str],
+) -> dict[str, Any]:
+    """Return one dry-run payload for a sequential search-space queue."""
+    return {
+        "search_mode": "search_space_queue",
+        "search_spaces": list(space_names),
+        "dataset": args.dataset,
+        "storage": args.storage,
+        "space_payloads": {
+            space_name: _build_single_space_dry_run_payload(args, space_name=space_name)
+            for space_name in space_names
+        },
+    }
+
+
+def _validate_search_space_queue(
+    args: argparse.Namespace,
+    *,
+    space_names: Sequence[str],
+) -> None:
+    """Validate every queued search-space entry before training starts."""
+    for space_name in space_names:
+        resolve_search_space(space_name, dataset=args.dataset)
+
+
+def _run_search_space(args: argparse.Namespace, *, space_name: str) -> int:
+    """Execute one resolved Optuna search-space entry from parsed CLI args."""
+    search_space = resolve_search_space(space_name, dataset=args.dataset)
     n_trials = int(args.trials or search_space.trials)
     if n_trials < 1:
         raise ValueError("--trials must be >= 1.")
@@ -1886,6 +2309,7 @@ def run_search(args: argparse.Namespace) -> int:
                 json.dumps(
                     _build_per_dataset_dry_run_payload(
                         args,
+                        space_name=space_name,
                         search_space=search_space,
                         n_trials=n_trials,
                     ),
@@ -1897,10 +2321,10 @@ def run_search(args: argparse.Namespace) -> int:
 
         exit_codes: list[int] = []
         for dataset in search_space.datasets:
-            dataset_space = resolve_search_space(args.space, dataset=dataset)
+            dataset_space = resolve_search_space(space_name, dataset=dataset)
             study_name = _dataset_study_name(
                 args.study_name,
-                space_name=args.space,
+                space_name=space_name,
                 dataset_space=dataset_space,
             )
             print(f"Dataset-local Optuna search: {dataset} -> {study_name}")
@@ -1915,7 +2339,7 @@ def run_search(args: argparse.Namespace) -> int:
         return 0 if all(code == 0 for code in exit_codes) else 1
 
     study_name = args.study_name or default_study_name(
-        args.space,
+        space_name,
         search_space.datasets,
         search_space=search_space,
     )
@@ -1941,6 +2365,48 @@ def run_search(args: argparse.Namespace) -> int:
         study_name=study_name,
         n_trials=n_trials,
     )
+
+
+def run_search(args: argparse.Namespace) -> int:
+    """Execute one or more Optuna searches from parsed CLI args."""
+    if args.list_spaces:
+        print("Available search spaces:")
+        for space_name in search_space_names():
+            space = get_search_space(space_name)
+            description = space.get("description", "")
+            print(f"  {space_name}: {description}")
+        return 0
+
+    space_names = _parse_search_space_sequence(args.space)
+    if not space_names:
+        raise ValueError("--space is required unless --list-spaces is used.")
+
+    if len(space_names) == 1:
+        return _run_search_space(args, space_name=space_names[0])
+
+    if args.study_name:
+        raise ValueError("--study-name is ambiguous with multiple --space entries.")
+
+    _validate_search_space_queue(args, space_names=space_names)
+
+    if args.dry_run:
+        print(
+            json.dumps(
+                _build_search_space_queue_dry_run_payload(args, space_names=space_names),
+                indent=2,
+                sort_keys=True,
+            ),
+        )
+        return 0
+
+    print("=" * 70)
+    print("OPTUNA SEARCH SPACE QUEUE")
+    for index, space_name in enumerate(space_names, 1):
+        print(f"  {index}. {space_name}")
+    print("=" * 70)
+
+    exit_codes = [_run_search_space(args, space_name=space_name) for space_name in space_names]
+    return 0 if all(exit_code == 0 for exit_code in exit_codes) else 1
 
 
 def main() -> int:

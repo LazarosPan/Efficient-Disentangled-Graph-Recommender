@@ -1,4 +1,4 @@
-from .config import UCaGNNConfig
+from .config import EDGRecConfig
 from .experiment_logger import ExperimentLogger
 
-__all__ = ["ExperimentLogger", "UCaGNNConfig"]
+__all__ = ["EDGRecConfig", "ExperimentLogger"]

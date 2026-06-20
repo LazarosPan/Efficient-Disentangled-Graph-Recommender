@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from src.utils.benchmark_datasets import benchmark_dataset_lookup_keys
-from src.utils.config import GRAPH_POLICY_CHOICES, SUPPORTED_LR_SCHEDULERS, UCaGNNConfig
+from src.utils.config import GRAPH_POLICY_CHOICES, SUPPORTED_LR_SCHEDULERS, EDGRecConfig
 
 from experiments.recipes import resolve_profile_num_neighbors
 
@@ -75,6 +75,28 @@ def normalize_benchmark_preprocessing_override(
     return deduped[0], deduped if len(deduped) > 1 else None
 
 
+def resolve_benchmark_item_universe_policy_value(
+    benchmark_args: Mapping[str, object],
+    *,
+    dataset: str,
+) -> str | None:
+    """Return the item-universe policy for one dataset, supporting mappings."""
+    raw_value = benchmark_args.get("item_universe_policy")
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, Mapping):
+        for lookup_key in benchmark_dataset_lookup_keys(dataset):
+            selected = raw_value.get(lookup_key)
+            if selected is not None:
+                return str(selected)
+        available = ", ".join(sorted(str(key) for key in raw_value))
+        raise ValueError(
+            f"No item_universe_policy entry matches dataset '{dataset}'. "
+            f"Available keys: {available}",
+        )
+    return str(raw_value)
+
+
 def normalize_benchmark_num_neighbors_override(
     raw_value: object,
 ) -> list[list[int]] | dict[str, list[list[int]]] | None:
@@ -112,7 +134,7 @@ def resolve_benchmark_lr_scheduler_values(
     """Return the resolved scheduler sweep for benchmark-style args."""
     raw_values = benchmark_args.get("lr_scheduler")
     if raw_values is None:
-        raw_values = UCaGNNConfig().lr_scheduler
+        raw_values = EDGRecConfig().lr_scheduler
 
     if isinstance(raw_values, str):
         scheduler_values = [raw_values]
@@ -138,7 +160,7 @@ def resolve_benchmark_graph_policy_values(
     graph_policy = benchmark_args.get("graph_policy")
     if graph_policy is not None:
         return [str(graph_policy)]
-    return [UCaGNNConfig().graph_policy]
+    return [EDGRecConfig().graph_policy]
 
 
 def resolve_benchmark_num_neighbor_values(
@@ -170,7 +192,7 @@ def resolve_benchmark_num_neighbor_values(
     neighbor_sweep = resolve_profile_num_neighbors({"num_neighbors": raw_num_neighbors})
     if neighbor_sweep is not None:
         return [list(num_neighbors) for num_neighbors in neighbor_sweep]
-    return [list(UCaGNNConfig().num_neighbors)]
+    return [list(EDGRecConfig().num_neighbors)]
 
 
 def resolve_benchmark_preprocessing_preset_values(
@@ -191,6 +213,7 @@ __all__ = [
     "normalize_benchmark_num_neighbors_override",
     "normalize_benchmark_preprocessing_override",
     "resolve_benchmark_graph_policy_values",
+    "resolve_benchmark_item_universe_policy_value",
     "resolve_benchmark_lr_scheduler_values",
     "resolve_benchmark_num_neighbor_values",
     "resolve_benchmark_preprocessing_preset_values",

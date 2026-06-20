@@ -189,7 +189,7 @@ Let:
 - Eval rating tensor: $[B, I]$  
   Evidence: `external/SIGformer/code/model.py:119-122`
 
-#### Requested canonical Transformer mapping (for U-CaGNN wrapper)
+#### Requested canonical Transformer mapping (for EDGRec wrapper)
 
 A sequence-compatible adapter can materialize:
 - GNN input: $[N, d]$
@@ -490,7 +490,7 @@ Evidence: `external/SIGformer/code/parse.py:11-30`
 
 ---
 
-## 5) U-CaGNN Integration Interface
+## 5) EDGRec Integration Interface
 
 ### 5.1 Minimal Viable Code (MVC): three critical SIGformer functions
 
@@ -638,7 +638,7 @@ Source equivalent: `external/SIGformer/code/model.py:91-105`
 - `node_embedding` tables (if end-to-end recommender module)
 - `path_emb`: Embedding `[2^(sample_hop+1)-2, 1]`
 - `lambda0`: scalar for eig channel weighting
-- optional projection matrices (recommended for U-CaGNN modernization):
+- optional projection matrices (recommended for EDGRec modernization):
   - `W_q, W_k, W_v: [d, d]`
   - optional multi-head decomposition
 
@@ -658,7 +658,7 @@ Source equivalent: `external/SIGformer/code/model.py:91-105`
 
 ### 5.3 Integration notes for canonical Transformer compatibility
 
-To expose a standard Transformer contract in U-CaGNN while preserving SIGformer semantics:
+To expose a standard Transformer contract in EDGRec while preserving SIGformer semantics:
 1) Build per-anchor neighbor sequences from sampled edges -> tensor `[B,L,d]`.
 2) Use path-type embedding as additive attention bias tensor.
 3) Use eig-similarity as structural bias term in attention logits.

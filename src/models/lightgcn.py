@@ -6,7 +6,7 @@ import torch
 from torch import nn
 from torch.nn import functional
 
-from ..utils.config import UCaGNNConfig
+from ..utils.config import EDGRecConfig
 
 _EDGE_PROPAGATION_CHUNK_BYTES = 64 * 1024 * 1024
 
@@ -18,7 +18,7 @@ class LightGCNBranch(nn.Module):
     The legacy ``forward`` path accepts a prebuilt sparse adjacency for paper
     baselines, while ``forward_edges`` propagates directly from edge lists in
     bounded chunks to avoid per-batch sparse COO coalescing workspaces during
-    sampled U-CaGNN training.
+    sampled EDGRec training.
     """
 
     def __init__(self, n_layers: int, dropout: float = 0.0) -> None:
@@ -168,7 +168,7 @@ class DualBranchGCN(nn.Module):
     - ``use_sign_aware=True``: learnable alpha_pos/alpha_neg scalars for edge weighting
     """
 
-    def __init__(self, config: UCaGNNConfig) -> None:
+    def __init__(self, config: EDGRecConfig) -> None:
         super().__init__()
         self.config = config
 
@@ -272,6 +272,7 @@ class DualBranchGCN(nn.Module):
             )
             out["user_conformity"] = h_conf[:n_users]
             out["item_conformity"] = h_conf[n_users:]
+            out["item"] = 0.5 * (out["item_interest"] + out["item_conformity"])
         else:
             x = torch.cat([embeddings["user"], embeddings["item"]], dim=0)
             h = (
@@ -306,7 +307,7 @@ class DualBranchGCN(nn.Module):
                 ``edge_index``.
             num_nodes: Total number of nodes in the bipartite graph.
             dtype: Propagation dtype for adjacency values.
-            coalesce: Whether to coalesce the sparse COO tensor. U-CaGNN's
+            coalesce: Whether to coalesce the sparse COO tensor. EDGRec's
                 CUDA sampled-subgraph path leaves this False to avoid a large
                 per-batch COO coalescing workspace.
 

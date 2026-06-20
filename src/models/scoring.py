@@ -6,14 +6,14 @@ import torch
 from torch import nn
 from torch.nn import functional
 
-from ..utils.config import UCaGNNConfig
+from ..utils.config import EDGRecConfig
 from .common import module_parameter_dtype
 
 
 class ScoringModule(nn.Module):
     """Compute refined interest, conformity, context, and final scores."""
 
-    def __init__(self, config: UCaGNNConfig, *, context_feature_dim: int) -> None:
+    def __init__(self, config: EDGRecConfig, *, context_feature_dim: int) -> None:
         """Initialize scorer heads and priors.
 
         Args:

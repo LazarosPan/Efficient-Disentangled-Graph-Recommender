@@ -13,9 +13,9 @@ from pathlib import Path
 from src.utils.project_paths import CHECKPOINT_DIR, THESIS_DB_PATH
 
 HASH_PATTERN = re.compile(r"_train-([0-9a-f]{16})\.pt$")
-DEFAULT_FAMILIES = ("ucagnn", "dice", "lightgcn")
+DEFAULT_FAMILIES = ("edgrec", "dice", "lightgcn")
 FAMILY_ALIASES = {
-    "ucagnn": "ucagnn",
+    "edgrec": "edgrec",
     "dice_like": "dice",
     "dice_paper": "dice",
     "lgndice_paper": "dice",
@@ -109,7 +109,7 @@ def _normalize_family(preset: str | None) -> str | None:
 def _is_search_row(row: ExperimentCheckpointRow) -> bool:
     batch_id = row.batch_id or ""
     profile_name = row.profile_name or ""
-    return batch_id.startswith("optuna-") or profile_name.startswith("ucagnn-")
+    return batch_id.startswith("optuna-") or profile_name.startswith("edgrec-")
 
 
 def _file_training_hash(path: Path) -> str | None:
@@ -447,7 +447,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--families",
         default=",".join(DEFAULT_FAMILIES),
-        help="Comma-separated retention families: ucagnn,dice,lightgcn.",
+        help="Comma-separated retention families: edgrec,dice,lightgcn.",
     )
     parser.add_argument("--metric", default="NDCG@40")
     parser.add_argument("--split", default="val", choices=("val", "test"))

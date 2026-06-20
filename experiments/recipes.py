@@ -205,7 +205,7 @@ def _formal_profile_name(profile: dict[str, Any]) -> str:
     neighbor_slug = format_num_neighbors_payload(neighbor_options) or "na"
     batch_slug = (
         "abauto"
-        if overrides.get("auto_batch_size", True)  # True matches UCaGNNConfig default
+        if overrides.get("auto_batch_size", True)  # True matches EDGRecConfig default
         else f"bs{slugify_fragment(overrides.get('batch_size', 'na'))}"
     )
     signature = json.dumps(
@@ -308,6 +308,7 @@ def get_search_space(space_name: str) -> dict[str, Any]:
         "trials": space.get("trials"),
         "config_overrides": dict(space.get("config_overrides", {})),
         "parameters": dict(space.get("parameters", {})),
+        "profile_overrides": dict(space.get("profile_overrides", {})),
         "parameters_by_dataset": dict(space.get("parameters_by_dataset", {})),
     }
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from ..utils.config import UCaGNNConfig
+from ..utils.config import EDGRecConfig
 from .common import module_parameter_dtype
 
 
@@ -80,7 +80,7 @@ class EmbeddingModule(nn.Module):
         self,
         n_users: int,
         n_items: int,
-        config: UCaGNNConfig,
+        config: EDGRecConfig,
         item_features: torch.Tensor | None = None,
         item_popularity: torch.Tensor | None = None,
         item_recency: torch.Tensor | None = None,
@@ -94,6 +94,10 @@ class EmbeddingModule(nn.Module):
         self.n_users = n_users
         self.n_items = n_items
         d = config.embed_dim
+        sparse_embedding_gradients = (
+            config.embedding_optimizer in {"sparseadam", "sgd"}
+            and config.training_graph_mode == "sampled"
+        )
         _register_bf16_buffer(self, "item_popularity", item_popularity, n_items)
         _register_bf16_buffer(self, "item_recency", item_recency, n_items)
         _register_bf16_buffer(
@@ -127,21 +131,38 @@ class EmbeddingModule(nn.Module):
 
         # User embeddings (xavier_uniform_ per PyG LightGCN convention)
         if config.use_dual_branch:
-            self.user_interest = nn.Embedding(n_users, d)
-            self.user_conformity = nn.Embedding(n_users, d)
+            self.user_interest = nn.Embedding(n_users, d, sparse=sparse_embedding_gradients)
+            self.user_conformity = nn.Embedding(n_users, d, sparse=sparse_embedding_gradients)
             nn.init.xavier_uniform_(self.user_interest.weight)
             nn.init.xavier_uniform_(self.user_conformity.weight)
         else:
-            self.user_embed = nn.Embedding(n_users, d)
+            self.user_embed = nn.Embedding(n_users, d, sparse=sparse_embedding_gradients)
             nn.init.xavier_uniform_(self.user_embed.weight)
 
-        # Item embedding (always single)
-        self.item_embed = nn.Embedding(n_items, d)
+        # Item embedding (always present as the compatibility fallback)
+        self.item_embed = nn.Embedding(n_items, d, sparse=sparse_embedding_gradients)
         nn.init.xavier_uniform_(self.item_embed.weight)
+        if config.use_dual_branch and config.separate_item_branch_embeddings:
+            self.item_interest_embed = nn.Embedding(
+                n_items,
+                d,
+                sparse=sparse_embedding_gradients,
+            )
+            self.item_conformity_embed = nn.Embedding(
+                n_items,
+                d,
+                sparse=sparse_embedding_gradients,
+            )
+            nn.init.xavier_uniform_(self.item_interest_embed.weight)
+            nn.init.xavier_uniform_(self.item_conformity_embed.weight)
 
         # Optional popularity embedding
         if config.use_popularity_emb:
-            self.item_pop = nn.Embedding(n_items, config.popularity_embedding_dimensions)
+            self.item_pop = nn.Embedding(
+                n_items,
+                config.popularity_embedding_dimensions,
+                sparse=sparse_embedding_gradients,
+            )
             nn.init.xavier_uniform_(self.item_pop.weight)
 
         if self.has_item_features:
@@ -153,8 +174,9 @@ class EmbeddingModule(nn.Module):
             )
             self.item_feature_proj = nn.Linear(item_features.size(-1), d)
             self.item_feature_norm = nn.LayerNorm(d)
-            self.item_interest_gate = nn.Parameter(torch.tensor(0.0))
-            self.item_conformity_gate = nn.Parameter(torch.tensor(0.0))
+            gate_init = float(config.feature_gate_init)
+            self.item_interest_gate = nn.Parameter(torch.tensor(gate_init))
+            self.item_conformity_gate = nn.Parameter(torch.tensor(gate_init))
             self.popularity_modulator = nn.Sequential(
                 nn.Linear(1, d),
                 nn.Sigmoid(),
@@ -169,7 +191,7 @@ class EmbeddingModule(nn.Module):
         ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Return all embedding rows or an indexed subset."""
-        return embedding.weight if ids is None else embedding.weight[ids]
+        return embedding.weight if ids is None else embedding(ids)
 
     @staticmethod
     def _cast_floating_tensors(
@@ -321,16 +343,41 @@ class EmbeddingModule(nn.Module):
         item_embed, projected_features, pop_gate = self._get_item_base_embeddings(
             item_ids,
         )
+        separate_item_branches = (
+            self.config.use_dual_branch and self.config.separate_item_branch_embeddings
+        )
+        if separate_item_branches:
+            item_interest_base = self._select_embedding_rows(
+                self.item_interest_embed,
+                item_ids,
+            )
+            item_conformity_base = self._select_embedding_rows(
+                self.item_conformity_embed,
+                item_ids,
+            )
+        else:
+            item_interest_base = item_embed
+            item_conformity_base = item_embed
+
         if projected_features is None or pop_gate is None:
+            if separate_item_branches:
+                return {
+                    "item": 0.5 * (item_interest_base + item_conformity_base),
+                    "item_interest": item_interest_base,
+                    "item_conformity": item_conformity_base,
+                }
             return {"item": item_embed}
 
         interest_gate = torch.sigmoid(self.item_interest_gate)
         conformity_gate = torch.sigmoid(self.item_conformity_gate)
 
-        item_interest = item_embed + interest_gate * projected_features
-        item_conformity = item_embed + conformity_gate * (projected_features * pop_gate)
+        item_interest = item_interest_base + interest_gate * projected_features
+        item_conformity = item_conformity_base + conformity_gate * (projected_features * pop_gate)
+        item_fallback = (
+            0.5 * (item_interest + item_conformity) if separate_item_branches else item_embed
+        )
         return {
-            "item": item_embed,
+            "item": item_fallback,
             "item_interest": item_interest,
             "item_conformity": item_conformity,
         }

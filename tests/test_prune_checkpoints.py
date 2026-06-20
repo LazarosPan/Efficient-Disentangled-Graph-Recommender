@@ -69,30 +69,30 @@ class CheckpointPruneTests(unittest.TestCase):
                     self._write_checkpoint(
                         checkpoint_dir,
                         dataset="amazonbook",
-                        preset="ucagnn",
+                        preset="edgrec",
                         training_hash=training_hash,
                     )
                     self._log_run(
                         logger,
                         dataset="amazonbook",
-                        preset="ucagnn",
+                        preset="edgrec",
                         training_hash=training_hash,
                         score=index / 10,
                     )
                 self._write_checkpoint(
                     checkpoint_dir,
                     dataset="amazonbook",
-                    preset="ucagnn",
+                    preset="edgrec",
                     training_hash="ffffffffffffffff",
                 )
                 self._log_run(
                     logger,
                     dataset="amazonbook",
-                    preset="ucagnn",
+                    preset="edgrec",
                     training_hash="ffffffffffffffff",
                     score=0.99,
                     batch_id="optuna-study-trial-0",
-                    profile_name="ucagnn-core-optimization",
+                    profile_name="edgrec-core-optimization",
                 )
             finally:
                 logger.close()
@@ -119,16 +119,16 @@ class CheckpointPruneTests(unittest.TestCase):
             execute_plan(plan)
 
             self.assertFalse(
-                (checkpoint_dir / "amazonbook_ucagnn_seed13_train-0000000000000001.pt").exists(),
+                (checkpoint_dir / "amazonbook_edgrec_seed13_train-0000000000000001.pt").exists(),
             )
             self.assertFalse(
-                (checkpoint_dir / "amazonbook_ucagnn_seed13_train-0000000000000002.pt").exists(),
+                (checkpoint_dir / "amazonbook_edgrec_seed13_train-0000000000000002.pt").exists(),
             )
             self.assertFalse(
-                (checkpoint_dir / "amazonbook_ucagnn_seed13_train-ffffffffffffffff.pt").exists(),
+                (checkpoint_dir / "amazonbook_edgrec_seed13_train-ffffffffffffffff.pt").exists(),
             )
             self.assertTrue(
-                (checkpoint_dir / "amazonbook_ucagnn_seed13_train-0000000000000005.pt").exists(),
+                (checkpoint_dir / "amazonbook_edgrec_seed13_train-0000000000000005.pt").exists(),
             )
             self.assertTrue(unmatched.exists())
 

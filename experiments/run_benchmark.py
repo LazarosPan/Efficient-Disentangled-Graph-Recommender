@@ -33,10 +33,11 @@ from src.utils.config import (
     BENCHMARK_CONFIG_FIELDS,
     DEFAULT_SEED,
     PAPER_BASELINE_PRESETS,
-    UCaGNNConfig,
+    EDGRecConfig,
 )
 from src.utils.experiment_logger import RUNTIME_PROBE_METRIC_NAMES, ExperimentLogger
 from src.utils.experiment_naming import format_num_neighbors_payload
+from src.utils.method_naming import public_method_identifier, public_preset_name
 from src.utils.project_paths import FORMAL_RUN_STATE_PATH, THESIS_DB_PATH
 
 from experiments.benchmark_resolvers import (
@@ -61,7 +62,7 @@ from experiments.run_experiment import (
     run_experiment,
 )
 
-logger = logging.getLogger("ucagnn.benchmark")
+logger = logging.getLogger("edgrec.benchmark")
 STATE_PATH = FORMAL_RUN_STATE_PATH
 DEFAULT_PROFILE_NAME = default_formal_profile_name()
 
@@ -223,9 +224,17 @@ def _normalize_benchmark_args(
     normalized_args["datasets"] = normalize_benchmark_datasets_arg(
         benchmark_args.get("datasets"),
     )
-    normalized_args["presets"] = list(benchmark_args["presets"])
-    normalized_args["profile_name"] = benchmark_args.get("profile_name") or fallback_profile_name
-    normalized_args["profile_slug"] = benchmark_args.get("profile_slug")
+    normalized_args["presets"] = [
+        public_preset_name(str(preset)) or str(preset) for preset in benchmark_args["presets"]
+    ]
+    profile_name = benchmark_args.get("profile_name") or fallback_profile_name
+    normalized_args["profile_name"] = (
+        public_method_identifier(str(profile_name)) if profile_name is not None else None
+    )
+    profile_slug = benchmark_args.get("profile_slug")
+    normalized_args["profile_slug"] = (
+        public_method_identifier(str(profile_slug)) if profile_slug is not None else None
+    )
     return normalized_args
 
 
@@ -254,7 +263,15 @@ def _coerce_benchmark_args(
 ) -> dict[str, object]:
     """Return benchmark args, reusing an already-normalized payload when possible."""
     if isinstance(raw_args, Mapping) and _is_normalized_benchmark_args(raw_args):
-        return dict(raw_args)
+        normalized_args = dict(raw_args)
+        normalized_args["presets"] = [
+            public_preset_name(str(preset)) or str(preset) for preset in normalized_args["presets"]
+        ]
+        for field_name in ("profile_name", "profile_slug"):
+            field_value = normalized_args.get(field_name)
+            if field_value is not None:
+                normalized_args[field_name] = public_method_identifier(str(field_value))
+        return normalized_args
     return _normalize_benchmark_args(
         raw_args,
         fallback_profile_name=fallback_profile_name,
@@ -299,7 +316,7 @@ def _build_new_run_args(
             "data_dir": "data",
             "no_mlflow": False,
             "mlflow_tracking_uri": None,
-            "mlflow_experiment_name": "ucagnn-formal",
+            "mlflow_experiment_name": "edgrec-formal",
             "overwrite_checkpoint": bool(
                 getattr(cli_args, "overwrite_checkpoint", False),
             ),
@@ -536,7 +553,7 @@ def _resolve_benchmark_num_neighbors_for_preset(
     num_neighbors: list[int] | tuple[int, ...],
 ) -> list[int]:
     """Return the fan-out prefix needed by the preset's active depth."""
-    default_config = UCaGNNConfig()
+    default_config = EDGRecConfig()
     if preset in {"lightgcn", "lightgcn_paper"}:
         required_hops = int(
             benchmark_args.get("single_branch_gnn_layers")
@@ -579,7 +596,7 @@ def _benchmark_num_neighbors_summary(
 
     resolved = resolve_profile_num_neighbors({"num_neighbors": raw_num_neighbors})
     if resolved is None:
-        resolved = [list(UCaGNNConfig().num_neighbors)]
+        resolved = [list(EDGRecConfig().num_neighbors)]
     return format_num_neighbors_payload(resolved) or ""
 
 

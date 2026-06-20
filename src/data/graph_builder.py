@@ -1,20 +1,13 @@
-"""Graph builder: CanonicalInteractions -> PyG Data with edge_index, masks, and sign weights.
-
-Edge signs are aligned to edge_index so that edge_sign[i] corresponds to
-edge_index[:, i]. Edges without interaction semantics (CAGRA neighbors)
-receive a neutral sign of 0.0.
-"""
+"""Graph builder: CanonicalInteractions -> PyG Data with edge_index, masks, and sign weights."""
 
 from __future__ import annotations
-
-import warnings
 
 import numpy as np
 import torch
 from torch_geometric.data import Data
-from torch_geometric.utils import coalesce, degree
+from torch_geometric.utils import degree
 
-from ..utils.config import UCaGNNConfig
+from ..utils.config import EDGRecConfig
 from ..utils.interaction_indexing import compute_normalized_popularity
 from .canonical import CanonicalInteractions
 from .interaction_masks import positive_interaction_mask
@@ -161,8 +154,7 @@ def _attach_optional_canonical_fields(
 
 def build_graph(
     canonical: CanonicalInteractions,
-    config: UCaGNNConfig,
-    embeddings: torch.Tensor | None = None,
+    config: EDGRecConfig,
 ) -> Data:
     """Convert canonical interactions into a PyG Data object.
 
@@ -171,10 +163,7 @@ def build_graph(
 
     Args:
         canonical: The loaded dataset.
-        config: Model config (controls split ratios, CAGRA settings, etc.).
-        embeddings: Optional (n_users + n_items, D) node embeddings used to add
-            CAGRA similarity edges. When absent, the graph reduces to the
-            train-interaction bipartite edges only.
+        config: Model config controlling split ratios and graph construction.
 
     Returns:
         PyG Data with ``edge_index``, ``edge_sign``, ``train/val/test_mask``,
@@ -207,13 +196,15 @@ def build_graph(
     train_positive_mask_t = torch.from_numpy(train_positive_mask)
     val_positive_mask_t = torch.from_numpy(val_positive_mask)
     test_positive_mask_t = torch.from_numpy(test_positive_mask)
-    edge_index, edge_sign = _build_cagra(
+    edge_index, edge_sign = _build_interaction_graph(
         user_nodes,
         item_nodes,
-        train_positive_mask_t,
+        _apply_train_edge_dropout(
+            train_positive_mask_t,
+            keep_prob=config.train_edge_keep_prob,
+            seed=config.seed,
+        ),
         all_signs,
-        embeddings,
-        config,
     )
 
     # Popularity must be derived from positive rows in the final training split
@@ -255,6 +246,7 @@ def build_graph(
     data.popularity = popularity
     data.popularity_count = popularity_count
     data.labels = labels
+    data.train_edge_keep_prob = float(config.train_edge_keep_prob)
 
     data.user_nodes = user_nodes
     data.item_nodes = item_nodes
@@ -294,171 +286,26 @@ def _build_interaction_graph(
     return edge_index, edge_sign
 
 
-def _to_cagra_array(embeddings: torch.Tensor) -> object:
-    """Convert torch embeddings to a cuVS-compatible array.
-
-    Args:
-        embeddings: Node embeddings used to build or query the ANN graph.
-
-    Returns:
-        A CUDA-array-interface object suitable for `cuvs.neighbors.cagra`.
-
-    Raises:
-        RuntimeError: If CuPy is unavailable for the conversion.
-
-    """
-    try:
-        import cupy as cp
-    except ImportError as exc:
-        raise RuntimeError("cupy is required for cagra graph construction") from exc
-
-    contiguous = embeddings.detach().contiguous()
-    if contiguous.is_cuda:
-        from_dlpack = getattr(cp, "from_dlpack", None)
-        if from_dlpack is not None:
-            return from_dlpack(contiguous)
-
-        from torch.utils import dlpack as torch_dlpack
-
-        return cp.fromDlpack(torch_dlpack.to_dlpack(contiguous))
-
-    return cp.asarray(contiguous.float().cpu().numpy().astype("float32", copy=False))
-
-
-def _cagra_neighbors_to_tensor(neighbors: object) -> torch.Tensor:
-    """Materialize CAGRA neighbor results as a CPU ``torch.long`` tensor.
-
-    Args:
-        neighbors: cuVS neighbor output.
-
-    Returns:
-        torch.Tensor: CPU tensor with shape ``(n_nodes, k)``.
-
-    """
-    if isinstance(neighbors, torch.Tensor):
-        return neighbors.to(device="cpu", dtype=torch.long)
-    if isinstance(neighbors, np.ndarray):
-        return torch.from_numpy(neighbors).long()
-    if hasattr(neighbors, "copy_to_host"):
-        return torch.from_numpy(np.asarray(neighbors.copy_to_host())).long()
-
-    import cupy as cp
-
-    return torch.from_numpy(np.asarray(cp.asnumpy(neighbors))).long()
-
-
-def _build_cagra_edge_index(
-    neighbors: torch.Tensor,
-    n_nodes: int,
-) -> torch.Tensor:
-    """Build directed ANN edges from a dense neighbor table.
-
-    Args:
-        neighbors: Neighbor IDs with shape ``(n_nodes, k)`` on CPU.
-        n_nodes: Number of graph nodes represented by ``neighbors``.
-
-    Returns:
-        torch.Tensor: Directed edge index with invalid/self edges removed.
-
-    """
-    if neighbors.numel() == 0:
-        return torch.zeros((2, 0), dtype=torch.long)
-
-    k = neighbors.size(1)
-    src = torch.arange(n_nodes, dtype=torch.long).repeat_interleave(k)
-    dst = neighbors.reshape(-1)
-    valid = (src != dst) & (dst >= 0) & (dst < n_nodes)
-    return torch.stack((src[valid], dst[valid]), dim=0)
-
-
-def _make_undirected_zero_signed_edges(
-    directed_edges: torch.Tensor,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Mirror neutral ANN edges so the graph stays undirected.
-
-    Args:
-        directed_edges: Directed ANN edges with shape ``(2, E)``.
-
-    Returns:
-        Tuple of undirected edge index and aligned zero signs.
-
-    """
-    reverse_edges = directed_edges.flip(0)
-    undirected_edges = torch.cat([directed_edges, reverse_edges], dim=1)
-    edge_sign = torch.zeros(undirected_edges.size(1), dtype=torch.float32)
-    return undirected_edges, edge_sign
-
-
-def _build_cagra(
-    user_nodes: torch.Tensor,
-    item_nodes: torch.Tensor,
+def _apply_train_edge_dropout(
     train_mask: torch.Tensor,
-    all_signs: torch.Tensor,
-    embeddings: torch.Tensor | None,
-    config: UCaGNNConfig,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """Bipartite edges + CAGRA GPU-accelerated ANN graph.
+    *,
+    keep_prob: float,
+    seed: int,
+) -> torch.Tensor:
+    """Return a train-edge mask after split-safe observed-edge dropout."""
+    if keep_prob >= 1.0:
+        return train_mask
 
-    When ``config.graph_policy == "cagra_augmented"``, CAGRA build/search errors
-    are treated as hard failures so thesis runs never silently degrade to the
-    observed graph. Other callers keep the legacy warning-and-fallback behavior.
-    CAGRA edges receive a neutral sign of 0.0.
-    """
-    bipartite_ei, bipartite_sign = _build_interaction_graph(
-        user_nodes,
-        item_nodes,
-        train_mask,
-        all_signs,
-    )
+    train_indices = torch.nonzero(train_mask, as_tuple=False).flatten()
+    if train_indices.numel() <= 1:
+        return train_mask
 
-    if embeddings is None:
-        return bipartite_ei, bipartite_sign
+    generator = torch.Generator(device=train_indices.device)
+    generator.manual_seed(int(seed))
+    kept = torch.rand(train_indices.numel(), generator=generator) < keep_prob
+    if not bool(kept.any()):
+        kept[torch.randint(train_indices.numel(), (1,), generator=generator)] = True
 
-    try:
-        from cuvs.neighbors import cagra
-
-        cagra_embeddings = _to_cagra_array(embeddings)
-        index_params = cagra.IndexParams(
-            intermediate_graph_degree=config.cagra_initial_degree,
-            graph_degree=config.cagra_out_degree,
-            metric=config.cagra_metric,
-        )
-        index = cagra.build(index_params, cagra_embeddings)
-
-        search_params = cagra.SearchParams(
-            team_size=config.cagra_team_size,
-            rand_xor_mask=int(config.seed),
-            itopk_size=config.cagra_itopk_size,
-        )
-        _, neighbors = cagra.search(
-            search_params,
-            index,
-            cagra_embeddings,
-            k=config.cagra_k,
-        )
-
-        neighbors_t = _cagra_neighbors_to_tensor(neighbors)
-        n_nodes = embeddings.shape[0]
-        cagra_edges = _build_cagra_edge_index(neighbors_t, n_nodes)
-        cagra_edges, cagra_sign = _make_undirected_zero_signed_edges(cagra_edges)
-
-        combined_ei = torch.cat([bipartite_ei, cagra_edges], dim=1)
-        combined_sign = torch.cat([bipartite_sign, cagra_sign])
-        edge_index, edge_sign = coalesce(combined_ei, combined_sign)
-        return edge_index, edge_sign
-
-    except (ImportError, Exception) as exc:
-        msg = (
-            f"CAGRA graph construction unavailable; using train-interaction graph: {exc}"
-            if isinstance(exc, ImportError)
-            else f"CAGRA graph construction failed; using train-interaction graph: {exc}"
-        )
-        if config.graph_policy == "cagra_augmented":
-            raise RuntimeError(
-                msg.replace(
-                    "using train-interaction graph",
-                    "graph_policy='cagra_augmented' requires a working CAGRA build",
-                ),
-            ) from exc
-        warnings.warn(msg, RuntimeWarning, stacklevel=2)
-        return bipartite_ei, bipartite_sign
+    dropped_mask = torch.zeros_like(train_mask)
+    dropped_mask[train_indices[kept]] = True
+    return dropped_mask

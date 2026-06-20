@@ -450,7 +450,7 @@ Evidence: `src/configs/overall.yaml` (~L20-L80), `src/configs/dataset/ml1m.yaml`
 
 ---
 
-## 5) U-CaGNN Integration Interface
+## 5) EDGRec Integration Interface
 
 ## 5.1 Minimal Viable Code (extract exactly three functions)
 
@@ -562,12 +562,12 @@ def get_fair_representation(self):
 
 Source: `src/models/fairness_models/bfmmr.py` (~L314-L403).
 
-## 5.2 Module API to wrap into U-CaGNN
+## 5.2 Module API to wrap into EDGRec
 
 ### Recommended unified interface
 
 ```python
-class UCaGNNCausalAdapter(nn.Module):
+class EDGRecCausalAdapter(nn.Module):
     """
     State:
       - interaction operator R (sparse preferred)
@@ -630,7 +630,7 @@ class UCaGNNCausalAdapter(nn.Module):
 1. To reproduce behavior exactly, keep two-stage precomputation:
    - stage-1 save modality channels,
    - stage-2 load them in BFMMR.
-2. To modernize for U-CaGNN, collapse stages into end-to-end mode with optional checkpointing.
+2. To modernize for EDGRec, collapse stages into end-to-end mode with optional checkpointing.
 3. Replace dense interaction and dense all-pairs similarity first; these are primary scalability blockers.
 4. If preserving exact semantics, keep multiclass random-label filtered discriminator behavior.
 

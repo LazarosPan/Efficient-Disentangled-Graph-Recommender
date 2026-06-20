@@ -18,7 +18,9 @@ from experiments.recipes import (
     load_search_spaces_catalog,
     search_space_names,
 )
+from src.utils.crru import compute_validation_online_crru_components_for_k
 from src.utils.experiment_logger import ExperimentLogger
+from src.utils.method_naming import EDGREC_LEGACY_PRESET
 
 
 class SearchSpaceValidationTests(unittest.TestCase):
@@ -28,11 +30,12 @@ class SearchSpaceValidationTests(unittest.TestCase):
         """Optuna configuration should stay in its own focused JSON file."""
         self.assertNotIn("search_spaces", load_experiment_catalog())
         self.assertIn("search_spaces", load_search_spaces_catalog())
-        self.assertIn("ucagnn-core-optimization", search_space_names())
+        self.assertIn("edgrec-core-optimization", search_space_names())
+        self.assertIn("edgrec-mechanism-coarse", search_space_names())
 
-    def test_search_spaces_resolve_to_ucagnn_configs(self) -> None:
+    def test_search_spaces_resolve_to_edgrec_configs(self) -> None:
         """All search spaces should resolve through the shared config builder."""
-        self.assertIn("ucagnn-core-optimization", search_space_names())
+        self.assertIn("edgrec-core-optimization", search_space_names())
 
         for space_name in search_space_names():
             spec = search.resolve_search_space(space_name)
@@ -43,20 +46,187 @@ class SearchSpaceValidationTests(unittest.TestCase):
                 data_dir="data",
             )
 
-            self.assertEqual(config.baseline_family, "ucagnn")
+            self.assertEqual(config.baseline_family, "edgrec")
             self.assertEqual(config.epochs, spec.max_epochs)
             self.assertEqual(config.device, "cpu")
             self.assertEqual(len(config.num_neighbors), config.max_gnn_layers)
 
+    def test_old_edgrec_search_space_name_is_not_a_catalog_alias(self) -> None:
+        """Catalog CLIs should expose only the public EDGRec search-space names."""
+        with self.assertRaises(KeyError):
+            search.resolve_search_space(
+                f"{EDGREC_LEGACY_PRESET}-core-optimization",
+                dataset="amazonbook",
+            )
+
+    def test_legacy_edgrec_trial_metadata_counts_for_public_budget(self) -> None:
+        """Old Optuna trial labels should still count against the EDGRec budget."""
+        spec = search.resolve_search_space(
+            "edgrec-core-optimization",
+            dataset="amazonbook",
+        )
+        study = optuna.create_study(direction=spec.objective.direction)
+        legacy_trial = optuna.trial.create_trial(
+            state=optuna.trial.TrialState.COMPLETE,
+            value=1.0,
+            user_attrs={
+                "search_space": f"{EDGREC_LEGACY_PRESET}-core-optimization",
+                "search_space_revision": search.search_space_revision(spec),
+                "objective_metric": spec.objective.metric,
+                "objective_split": spec.objective.split,
+            },
+        )
+
+        study.add_trial(legacy_trial)
+
+        self.assertEqual(search._budget_informative_trials(study, spec), [study.trials[0]])
+
+    def test_mechanism_search_space_uses_profile_layer_and_accuracy_objective(self) -> None:
+        """The broad mechanism search should keep profile labels out of model config."""
+        spec = search.resolve_search_space(
+            "edgrec-mechanism-coarse",
+            dataset="kuairec_v2",
+        )
+        all_dataset_spec = search.resolve_search_space("edgrec-mechanism-coarse")
+        payload = search.build_dry_run_payload(
+            spec,
+            study_name="mechanism-dry-run",
+            storage="sqlite:///:memory:",
+            device="cpu",
+            data_dir="data",
+        )
+
+        self.assertEqual(spec.datasets, ("kuairec_v2",))
+        self.assertIn("kuairand1k", all_dataset_spec.datasets)
+        self.assertEqual(spec.objective.metric, search.VALIDATION_ACCURACY_METRIC)
+        self.assertEqual(spec.sampler.n_startup_trials, 40)
+        self.assertNotIn("amazonbook", spec.datasets)
+        self.assertIn("score_fusion_profile", payload["parameters"])
+        self.assertIn("score_fusion_profile", payload["profile_overrides"])
+        self.assertEqual(payload["profile_overrides"], spec.profile_overrides)
+        self.assertEqual(
+            spec.profile_overrides["score_fusion_profile"]["fixed_dice_no_context"],
+            {
+                "use_learned_score_mix": False,
+                "score_weight_interest": 0.5,
+                "score_weight_conformity": 0.5,
+                "score_weight_popularity": 0.0,
+            },
+        )
+        self.assertEqual(spec.parameters["dropout"]["choices"], [0.0, 0.1, 0.2, 0.3])
+        self.assertEqual(
+            spec.parameters["dice_sampler_margin"]["choices"],
+            [10.0, 20.0, 40.0],
+        )
+        base_config = payload["base_configs"]["kuairec_v2"]
+        self.assertFalse(base_config["separate_item_branch_embeddings"])
+        self.assertEqual(base_config["loss_normalization"], "none")
+        self.assertTrue(base_config["use_learned_score_mix"])
+
+    def test_mechanism_search_space_applies_dataset_local_scalar_ladders(self) -> None:
+        """Dataset-local scalar choices should cover known useful regions only."""
+        movielens_spec = search.resolve_search_space(
+            "edgrec-mechanism-coarse",
+            dataset="movielens1m",
+        )
+        kuairand_spec = search.resolve_search_space(
+            "edgrec-mechanism-coarse",
+            dataset="kuairand1k",
+        )
+
+        self.assertEqual(
+            movielens_spec.parameters["lr"]["choices"],
+            [0.0004, 0.0008, 0.0015, 0.003, 0.005],
+        )
+        self.assertEqual(
+            movielens_spec.parameters["dice_sampler_margin"]["choices"],
+            [20.0, 40.0, 80.0],
+        )
+        self.assertEqual(
+            movielens_spec.parameters["score_mix_min_weight"]["choices"],
+            [0.0, 0.02, 0.05, 0.1],
+        )
+        self.assertEqual(
+            kuairand_spec.parameters["dice_sampler_margin"]["choices"],
+            [50.0, 70.0, 80.0],
+        )
+        self.assertEqual(
+            kuairand_spec.parameters["score_mix_min_weight"]["choices"],
+            [0.0, 0.02, 0.05],
+        )
+
+    def test_search_parser_accepts_comma_separated_space_queue(self) -> None:
+        """search-experiments should mirror formal-run's queue syntax."""
+        parser = search.build_search_parser()
+
+        args = parser.parse_args(
+            [
+                "--space",
+                "edgrec-mechanism-coarse,edgrec-core-optimization",
+                "--dry-run",
+            ],
+        )
+
+        self.assertEqual(
+            args.space,
+            "edgrec-mechanism-coarse,edgrec-core-optimization",
+        )
+        self.assertEqual(
+            search._parse_search_space_sequence(args.space),
+            ["edgrec-mechanism-coarse", "edgrec-core-optimization"],
+        )
+
+    def test_search_main_runs_comma_separated_spaces_in_order(self) -> None:
+        """Multiple search spaces should execute sequentially and report aggregate failure."""
+        args = SimpleNamespace(
+            list_spaces=False,
+            space="edgrec-mechanism-coarse, edgrec-core-optimization",
+            dataset="kuairec_v2",
+            study_name=None,
+            dry_run=False,
+        )
+        seen: list[str] = []
+
+        def fake_run_search_space(_args, *, space_name: str) -> int:
+            seen.append(space_name)
+            return 0 if space_name == "edgrec-mechanism-coarse" else 1
+
+        with patch.object(
+            search,
+            "_run_search_space",
+            side_effect=fake_run_search_space,
+        ):
+            exit_code = search.run_search(args)
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(
+            seen,
+            ["edgrec-mechanism-coarse", "edgrec-core-optimization"],
+        )
+
+    def test_search_space_queue_rejects_ambiguous_explicit_study_name(self) -> None:
+        """One explicit study name should not be reused across queued spaces."""
+        args = SimpleNamespace(
+            list_spaces=False,
+            space="edgrec-mechanism-coarse,edgrec-core-optimization",
+            study_name="shared-study",
+            dry_run=False,
+        )
+
+        with self.assertRaisesRegex(ValueError, "--study-name is ambiguous"):
+            search.run_search(args)
+
     def test_search_space_resolves_sampler_and_pruner_from_catalog(self) -> None:
         """Sampler/pruner blocks in search_spaces.json should not be dropped."""
         spec = search.resolve_search_space(
-            "ucagnn-core-optimization",
+            "edgrec-core-optimization",
             dataset="amazonbook",
         )
 
         self.assertEqual(spec.sampler.seed, 42)
         self.assertEqual(spec.sampler.name, "tpe")
+        self.assertFalse(spec.sampler.multivariate)
+        self.assertFalse(spec.sampler.group)
         self.assertEqual(spec.pruner.name, "hyperband")
         self.assertEqual(spec.pruner.min_resource, 6)
 
@@ -65,7 +235,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
         spec = search.SearchSpaceSpec(
             name="tiny",
             description="test search space",
-            base_profile="core-ucagnn-mainline",
+            base_profile="core-edgrec-mainline",
             datasets=("amazonbook",),
             objective=search.ObjectiveSpec(),
             max_epochs=1,
@@ -96,7 +266,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
         """Search-space parameters should stay on the explicit existing-knob allowlist."""
         bad_space = {
             "name": "bad-space",
-            "base_profile": "core-ucagnn-mainline",
+            "base_profile": "core-edgrec-mainline",
             "datasets": ["amazonbook"],
             "parameters": {
                 "not_a_config_field": {
@@ -131,15 +301,35 @@ class SearchSpaceValidationTests(unittest.TestCase):
 
         with (
             patch.object(search, "get_search_space", return_value=bad_space),
-            self.assertRaisesRegex(ValueError, "U-CaGNN-only"),
+            self.assertRaisesRegex(ValueError, "EDGRec-only"),
         ):
             search.resolve_search_space("bad-paper-space")
+
+    def test_search_space_validation_requires_json_owned_profile_overrides(self) -> None:
+        """Profile labels should be backed by profile_overrides in search_spaces.json."""
+        bad_space = {
+            "name": "bad-profile-space",
+            "base_profile": "core-edgrec-mainline",
+            "datasets": ["kuairec_v2"],
+            "parameters": {
+                "score_fusion_profile": {
+                    "type": "categorical",
+                    "choices": ["fixed_dice_no_context"],
+                },
+            },
+        }
+
+        with (
+            patch.object(search, "get_search_space", return_value=bad_space),
+            self.assertRaisesRegex(ValueError, "profile_overrides.score_fusion_profile"),
+        ):
+            search.resolve_search_space("bad-profile-space")
 
     def test_dry_run_resolves_base_config_without_training(self) -> None:
         """Dry-run payloads should build valid configs and avoid run_experiment()."""
         with patch.object(search, "run_experiment") as run_experiment:
             spec = search.resolve_search_space(
-                "ucagnn-core-optimization",
+                "edgrec-core-optimization",
                 dataset="amazonbook",
             )
             payload = search.build_dry_run_payload(
@@ -152,7 +342,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
 
         run_experiment.assert_not_called()
         base_config = payload["base_configs"]["amazonbook"]
-        self.assertEqual(base_config["baseline_family"], "ucagnn")
+        self.assertEqual(base_config["baseline_family"], "edgrec")
         self.assertEqual(base_config["dataset"], "amazonbook")
         self.assertEqual(base_config["epochs"], 60)
         self.assertEqual(base_config["device"], "cpu")
@@ -163,6 +353,10 @@ class SearchSpaceValidationTests(unittest.TestCase):
             [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
         )
         self.assertNotIn("batch_size", payload["parameters"])
+        self.assertNotIn("hard_negative_ratio", payload["parameters"])
+        self.assertIn("dice_mask_reduction", payload["parameters"])
+        self.assertIn("feature_gate_init", payload["parameters"])
+        self.assertIn("n_negatives", payload["parameters"])
 
     def test_optuna_report_effective_params_include_runtime_batch(self) -> None:
         """Promotion candidates should show resolved runtime fields, not only sampled knobs."""
@@ -200,6 +394,53 @@ class SearchSpaceValidationTests(unittest.TestCase):
         self.assertIn("batch_size_candidates=[32768,16384,8192,4096]", formatted)
         self.assertIn("time_per_epoch_s=12.5", formatted)
         self.assertIn("peak_vram_mb=8192.0", formatted)
+
+    def test_search_cli_best_trial_prefers_effective_config(self) -> None:
+        """CLI best-trial output should show the resolved config when it exists."""
+        trial = optuna.trial.create_trial(
+            state=optuna.trial.TrialState.COMPLETE,
+            value=0.5,
+            params={},
+            distributions={},
+            user_attrs={
+                "datasets": ["kuairand1k"],
+                "sampled_params": {"lr": 0.003},
+                "kuairand1k.effective_config": {
+                    "lr": 0.003,
+                    "batch_size": 8192,
+                    "auto_batch_size": True,
+                },
+            },
+        )
+
+        label, payload = search._best_trial_config_payload(trial)
+
+        self.assertEqual(label, "Best effective config:")
+        self.assertEqual(payload["batch_size"], 8192)
+        self.assertTrue(payload["auto_batch_size"])
+
+    def test_search_cli_best_trial_labels_historical_params(self) -> None:
+        """Old trials without effective config should not be mislabeled as full config."""
+        trial = optuna.trial.create_trial(
+            state=optuna.trial.TrialState.COMPLETE,
+            value=0.5,
+            params={},
+            distributions={},
+            user_attrs={
+                "datasets": ["movielens1m"],
+                "sampled_params": {"lr": 0.003, "batch_size": 32768},
+                "movielens1m.batch_size": 32768,
+                "movielens1m.auto_batch_size": False,
+                "movielens1m.avg_epoch_time_s": 12.5,
+            },
+        )
+
+        label, payload = search._best_trial_config_payload(trial)
+
+        self.assertIn("historical trial lacks effective_config", label)
+        self.assertEqual(payload["batch_size"], 32768)
+        self.assertFalse(payload["auto_batch_size"])
+        self.assertEqual(payload["avg_epoch_time_s"], 12.5)
 
     def test_optuna_report_trial_accounting_tracks_budget_semantics(self) -> None:
         """Trial accounting should share the search controller's budget predicates."""
@@ -247,7 +488,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
         spec = search.SearchSpaceSpec(
             name="tiny",
             description="test search space",
-            base_profile="core-ucagnn-mainline",
+            base_profile="core-edgrec-mainline",
             datasets=("amazonbook",),
             objective=search.ObjectiveSpec(),
             max_epochs=3,
@@ -277,6 +518,18 @@ class SearchSpaceValidationTests(unittest.TestCase):
                     "type": "categorical",
                     "choices": [False],
                 },
+                "dice_mask_reduction": {
+                    "type": "categorical",
+                    "choices": ["active_mean"],
+                },
+                "feature_gate_init": {
+                    "type": "categorical",
+                    "choices": [-2.0],
+                },
+                "n_negatives": {
+                    "type": "categorical",
+                    "choices": [2],
+                },
             },
         )
         base_config = search.build_search_config(
@@ -304,6 +557,18 @@ class SearchSpaceValidationTests(unittest.TestCase):
                     "use_popularity_head",
                     spec.parameters["use_popularity_head"],
                 ): False,
+                search._parameter_storage_name(
+                    "dice_mask_reduction",
+                    spec.parameters["dice_mask_reduction"],
+                ): "active_mean",
+                search._parameter_storage_name(
+                    "feature_gate_init",
+                    spec.parameters["feature_gate_init"],
+                ): -2.0,
+                search._parameter_storage_name(
+                    "n_negatives",
+                    spec.parameters["n_negatives"],
+                ): 2,
             },
         )
 
@@ -324,15 +589,130 @@ class SearchSpaceValidationTests(unittest.TestCase):
         self.assertEqual(config.conformity_gnn_layers, 2)
         self.assertEqual(config.num_neighbors, [6, 3])
         self.assertFalse(config.use_popularity_head)
+        self.assertEqual(config.dice_mask_reduction, "active_mean")
+        self.assertEqual(config.feature_gate_init, -2.0)
+        self.assertEqual(config.n_negatives, 2)
         self.assertEqual(config.sample_interactions, 100)
         self.assertEqual(config.loader_max_rows, 100)
+
+    def test_profile_trial_resolution_records_logical_and_concrete_params(self) -> None:
+        """Profile labels should resolve before EDGRecConfig construction."""
+        catalog_profile_overrides = search.resolve_search_space(
+            "edgrec-mechanism-coarse",
+            dataset="kuairec_v2",
+        ).profile_overrides
+        spec = search.SearchSpaceSpec(
+            name="tiny-profile",
+            description="test profile search space",
+            base_profile="core-edgrec-mainline",
+            datasets=("kuairec_v2",),
+            objective=search.ObjectiveSpec(metric=search.VALIDATION_ACCURACY_METRIC),
+            max_epochs=3,
+            trials=1,
+            config_overrides={
+                "sample_interactions": 100,
+                "loader_max_rows": 100,
+            },
+            parameters={
+                "score_fusion_profile": {
+                    "type": "categorical",
+                    "choices": ["fixed_dice_no_context"],
+                },
+                "item_branch_profile": {
+                    "type": "categorical",
+                    "choices": ["separate_item_branch_embeddings"],
+                },
+                "context_feature_profile": {
+                    "type": "categorical",
+                    "choices": ["features_only"],
+                },
+                "loss_profile": {
+                    "type": "categorical",
+                    "choices": ["dice_asym_conformity"],
+                },
+                "graph_profile": {
+                    "type": "categorical",
+                    "choices": ["deep_asym"],
+                },
+                "loss_normalization": {
+                    "type": "categorical",
+                    "choices": ["ema_aux"],
+                },
+            },
+            profile_overrides=catalog_profile_overrides,
+        )
+        base_config = search.build_search_config(
+            spec,
+            dataset="kuairec_v2",
+            device="cpu",
+            data_dir="data",
+        )
+        fixed_trial = optuna.trial.FixedTrial(
+            {
+                search._parameter_storage_name(
+                    "score_fusion_profile",
+                    spec.parameters["score_fusion_profile"],
+                ): "fixed_dice_no_context",
+                search._parameter_storage_name(
+                    "item_branch_profile",
+                    spec.parameters["item_branch_profile"],
+                ): "separate_item_branch_embeddings",
+                search._parameter_storage_name(
+                    "context_feature_profile",
+                    spec.parameters["context_feature_profile"],
+                ): "features_only",
+                search._parameter_storage_name(
+                    "loss_profile",
+                    spec.parameters["loss_profile"],
+                ): "dice_asym_conformity",
+                search._parameter_storage_name(
+                    "graph_profile",
+                    spec.parameters["graph_profile"],
+                ): "deep_asym",
+                search._parameter_storage_name(
+                    "loss_normalization",
+                    spec.parameters["loss_normalization"],
+                ): "ema_aux",
+            },
+        )
+
+        resolution = search.resolve_trial_parameters(
+            fixed_trial,
+            spec,
+            base_config=base_config,
+        )
+        config = search.build_search_config(
+            spec,
+            dataset="kuairec_v2",
+            sampled_overrides=resolution.config_overrides,
+            device="cpu",
+            data_dir="data",
+        )
+
+        self.assertEqual(
+            resolution.sampled_params["score_fusion_profile"],
+            "fixed_dice_no_context",
+        )
+        self.assertFalse(config.use_learned_score_mix)
+        self.assertEqual(config.score_weight_interest, 0.5)
+        self.assertEqual(config.score_weight_conformity, 0.5)
+        self.assertEqual(config.score_weight_popularity, 0.0)
+        self.assertTrue(config.separate_item_branch_embeddings)
+        self.assertTrue(config.use_features)
+        self.assertFalse(config.use_popularity_head)
+        self.assertEqual(config.feature_gate_init, -4.0)
+        self.assertEqual(config.loss_weight_conformity_bpr, 0.05)
+        self.assertEqual(config.interest_gnn_layers, 2)
+        self.assertEqual(config.conformity_gnn_layers, 3)
+        self.assertEqual(config.num_neighbors, [8, 4, 2])
+        self.assertEqual(config.loss_normalization, "ema_aux")
 
     def test_grid_float_parameter_samples_from_declared_steps(self) -> None:
         """Segmented float grids should keep human-readable search points."""
         spec = search.SearchSpaceSpec(
             name="tiny-grid",
             description="test search space",
-            base_profile="core-ucagnn-mainline",
+            base_profile="core-edgrec-mainline",
             datasets=("amazonbook",),
             objective=search.ObjectiveSpec(),
             max_epochs=3,
@@ -372,7 +752,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
         """Default study names should not restart just because the grid changed."""
         common_kwargs = {
             "description": "test search space",
-            "base_profile": "core-ucagnn-mainline",
+            "base_profile": "core-edgrec-mainline",
             "datasets": ("amazonbook",),
             "objective": search.ObjectiveSpec(),
             "max_epochs": 1,
@@ -423,7 +803,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
         spec = search.SearchSpaceSpec(
             name="tiny",
             description="test search space",
-            base_profile="core-ucagnn-mainline",
+            base_profile="core-edgrec-mainline",
             datasets=("amazonbook",),
             objective=search.ObjectiveSpec(metric="NDCG@40"),
             max_epochs=1,
@@ -450,7 +830,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
             spec = search.SearchSpaceSpec(
                 name="fanout-dynamic",
                 description="test dynamic fanout",
-                base_profile="core-ucagnn-mainline",
+                base_profile="core-edgrec-mainline",
                 datasets=("amazonbook",),
                 objective=search.ObjectiveSpec(),
                 max_epochs=1,
@@ -610,6 +990,63 @@ class SearchSpaceValidationTests(unittest.TestCase):
             ),
         )
 
+    def test_validation_crru_components_reconstruct_per_k_objective(self) -> None:
+        """OnlineCRRU component diagnostics should share the objective formula."""
+        val_metrics = {
+            "NDCG@20": 0.10,
+            "Recall@20": 0.20,
+            "HitRatio@20": 0.30,
+            "Personalization@20": 0.50,
+            "AveragePopularity@20": 1.0,
+        }
+
+        components = compute_validation_online_crru_components_for_k(
+            val_metrics,
+            k=20,
+            peak_vram_mb=512.0,
+            epoch_time_s=5.0,
+        )
+
+        self.assertAlmostEqual(
+            components["online_crru"],
+            search.compute_validation_online_crru_for_k(
+                val_metrics,
+                k=20,
+                peak_vram_mb=512.0,
+                epoch_time_s=5.0,
+            ),
+        )
+        self.assertGreater(components["accuracy"], 0.0)
+        self.assertGreater(components["popularity_diversity"], 0.0)
+        self.assertGreater(components["efficiency"], 0.0)
+
+    def test_validation_accuracy_objective_uses_validation_metrics_only(self) -> None:
+        """The accuracy-first objective should not read test metrics."""
+        val_metrics = {
+            "NDCG@20": 0.10,
+            "Recall@20": 0.20,
+            "NDCG@40": 0.30,
+            "Recall@40": 0.40,
+        }
+        result = {
+            "history": {"val_metrics": [val_metrics]},
+            "test_metrics": {"NDCG@20": 0.99, "Recall@20": 0.99},
+        }
+
+        objective = search.extract_validation_objective(
+            result,
+            search.ObjectiveSpec(
+                metric=search.VALIDATION_ACCURACY_METRIC,
+                split="val",
+                direction="maximize",
+            ),
+        )
+
+        self.assertAlmostEqual(
+            objective,
+            0.50 * 0.10 + 0.25 * 0.20 + 0.15 * 0.30 + 0.10 * 0.40,
+        )
+
 
 class SearchExecutionTests(unittest.TestCase):
     """Smoke the search runner without doing real model training."""
@@ -622,7 +1059,7 @@ class SearchExecutionTests(unittest.TestCase):
             spec = search.SearchSpaceSpec(
                 name="tiny-search",
                 description="test search space",
-                base_profile="core-ucagnn-mainline",
+                base_profile="core-edgrec-mainline",
                 datasets=("amazonbook",),
                 objective=search.ObjectiveSpec(metric="NDCG@40"),
                 max_epochs=1,
@@ -643,6 +1080,7 @@ class SearchExecutionTests(unittest.TestCase):
                 storage=storage,
                 direction="maximize",
             )
+            current_revision = search.search_space_revision(spec)
             study.add_trial(
                 optuna.trial.create_trial(
                     value=0.42,
@@ -660,6 +1098,7 @@ class SearchExecutionTests(unittest.TestCase):
                     },
                     user_attrs={
                         "search_space": "tiny-search",
+                        "search_space_revision": current_revision,
                         "objective_metric": "NDCG@40",
                         "objective_split": "val",
                         "sampled_params": {"lr_scheduler": "cosine"},
@@ -680,7 +1119,7 @@ class SearchExecutionTests(unittest.TestCase):
                 data_dir="data",
                 no_mlflow=True,
                 mlflow_tracking_uri=None,
-                mlflow_experiment_name="ucagnn-search-test",
+                mlflow_experiment_name="edgrec-search-test",
             )
 
             with (
@@ -692,15 +1131,15 @@ class SearchExecutionTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             run_experiment.assert_not_called()
 
-    def test_real_pruned_trials_count_toward_search_budget(self) -> None:
-        """A pruned training trial is informative and should satisfy --trials."""
+    def test_different_revision_trials_do_not_satisfy_search_budget(self) -> None:
+        """--trials N should target fresh informative trials for this exact hash."""
         with tempfile.TemporaryDirectory() as tmpdir:
             optuna_db = Path(tmpdir) / "optuna.db"
             storage = f"sqlite:///{optuna_db}"
             spec = search.SearchSpaceSpec(
                 name="tiny-search",
                 description="test search space",
-                base_profile="core-ucagnn-mainline",
+                base_profile="core-edgrec-mainline",
                 datasets=("amazonbook",),
                 objective=search.ObjectiveSpec(metric="NDCG@40"),
                 max_epochs=1,
@@ -727,12 +1166,69 @@ class SearchExecutionTests(unittest.TestCase):
             )
             study.add_trial(
                 optuna.trial.create_trial(
+                    value=0.42,
                     params={storage_param: "cosine"},
                     distributions={
                         storage_param: optuna.distributions.CategoricalDistribution(["cosine"]),
                     },
                     user_attrs={
                         "search_space": "tiny-search",
+                        "search_space_revision": "differenthash",
+                        "objective_metric": "NDCG@40",
+                        "objective_split": "val",
+                        "sampled_params": {"lr_scheduler": "cosine"},
+                        "amazonbook.objective": 0.42,
+                    },
+                    state=optuna.trial.TrialState.COMPLETE,
+                ),
+            )
+
+            self.assertEqual(search._budget_informative_trials(study, spec), [])
+            self.assertEqual(search._compatible_completed_trials(study, spec), [study.trials[0]])
+
+    def test_real_pruned_trials_count_toward_search_budget(self) -> None:
+        """A pruned training trial is informative and should satisfy --trials."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            optuna_db = Path(tmpdir) / "optuna.db"
+            storage = f"sqlite:///{optuna_db}"
+            spec = search.SearchSpaceSpec(
+                name="tiny-search",
+                description="test search space",
+                base_profile="core-edgrec-mainline",
+                datasets=("amazonbook",),
+                objective=search.ObjectiveSpec(metric="NDCG@40"),
+                max_epochs=1,
+                trials=1,
+                config_overrides={
+                    "sample_interactions": 50,
+                    "loader_max_rows": 50,
+                },
+                parameters={
+                    "lr_scheduler": {
+                        "type": "categorical",
+                        "choices": ["cosine"],
+                    },
+                },
+            )
+            storage_param = search._parameter_storage_name(
+                "lr_scheduler",
+                spec.parameters["lr_scheduler"],
+            )
+            study = optuna.create_study(
+                study_name="existing-study",
+                storage=storage,
+                direction="maximize",
+            )
+            current_revision = search.search_space_revision(spec)
+            study.add_trial(
+                optuna.trial.create_trial(
+                    params={storage_param: "cosine"},
+                    distributions={
+                        storage_param: optuna.distributions.CategoricalDistribution(["cosine"]),
+                    },
+                    user_attrs={
+                        "search_space": "tiny-search",
+                        "search_space_revision": current_revision,
                         "objective_metric": "NDCG@40",
                         "objective_split": "val",
                         "sampled_params": {"lr_scheduler": "cosine"},
@@ -754,7 +1250,7 @@ class SearchExecutionTests(unittest.TestCase):
                 data_dir="data",
                 no_mlflow=True,
                 mlflow_tracking_uri=None,
-                mlflow_experiment_name="ucagnn-search-test",
+                mlflow_experiment_name="edgrec-search-test",
             )
 
             with (
@@ -774,7 +1270,7 @@ class SearchExecutionTests(unittest.TestCase):
             common_kwargs = {
                 "name": "tiny-search",
                 "description": "test search space",
-                "base_profile": "core-ucagnn-mainline",
+                "base_profile": "core-edgrec-mainline",
                 "objective": search.ObjectiveSpec(metric="NDCG@40"),
                 "max_epochs": 1,
                 "trials": 1,
@@ -809,7 +1305,7 @@ class SearchExecutionTests(unittest.TestCase):
                 data_dir="data",
                 no_mlflow=True,
                 mlflow_tracking_uri=None,
-                mlflow_experiment_name="ucagnn-search-test",
+                mlflow_experiment_name="edgrec-search-test",
             )
 
             def resolve_space(_space_name: str, dataset: str | None = None):
@@ -863,7 +1359,7 @@ class SearchExecutionTests(unittest.TestCase):
             spec = search.SearchSpaceSpec(
                 name="tiny-search",
                 description="test search space",
-                base_profile="core-ucagnn-mainline",
+                base_profile="core-edgrec-mainline",
                 datasets=("amazonbook",),
                 objective=search.ObjectiveSpec(metric="NDCG@40"),
                 max_epochs=1,
@@ -924,7 +1420,7 @@ class SearchExecutionTests(unittest.TestCase):
                 data_dir="data",
                 no_mlflow=True,
                 mlflow_tracking_uri=None,
-                mlflow_experiment_name="ucagnn-search-test",
+                mlflow_experiment_name="edgrec-search-test",
             )
 
             def fake_run_experiment(config, **_kwargs):
@@ -983,7 +1479,7 @@ class SearchExecutionTests(unittest.TestCase):
             spec = search.SearchSpaceSpec(
                 name="tiny-search",
                 description="test search space",
-                base_profile="core-ucagnn-mainline",
+                base_profile="core-edgrec-mainline",
                 datasets=("amazonbook",),
                 objective=search.ObjectiveSpec(metric="NDCG@40"),
                 max_epochs=1,
@@ -1011,7 +1507,7 @@ class SearchExecutionTests(unittest.TestCase):
                 data_dir="data",
                 no_mlflow=True,
                 mlflow_tracking_uri=None,
-                mlflow_experiment_name="ucagnn-search-test",
+                mlflow_experiment_name="edgrec-search-test",
             )
 
             def fake_run_experiment(config, **kwargs):
@@ -1026,7 +1522,7 @@ class SearchExecutionTests(unittest.TestCase):
                     exp_id = tracker.log_experiment(
                         config.dataset,
                         config,
-                        preset="ucagnn",
+                        preset="edgrec",
                         training_mode="mini_batch",
                         status="running",
                         batch_id=kwargs["batch_id"],
@@ -1123,7 +1619,7 @@ class SearchExecutionTests(unittest.TestCase):
             spec = search.SearchSpaceSpec(
                 name="tiny-search",
                 description="test search space",
-                base_profile="core-ucagnn-mainline",
+                base_profile="core-edgrec-mainline",
                 datasets=("amazonbook",),
                 objective=search.ObjectiveSpec(metric="NDCG@40"),
                 max_epochs=1,
@@ -1151,20 +1647,78 @@ class SearchExecutionTests(unittest.TestCase):
                 data_dir="data",
                 no_mlflow=True,
                 mlflow_tracking_uri=None,
-                mlflow_experiment_name="ucagnn-search-test",
+                mlflow_experiment_name="edgrec-search-test",
             )
 
             with (
                 patch.object(search, "resolve_search_space", return_value=spec),
                 patch.object(
                     search,
-                    "suggest_trial_overrides",
+                    "resolve_trial_parameters",
                     side_effect=ValueError("bad search contract"),
                 ),
             ):
                 exit_code = search.run_search(args)
 
             self.assertEqual(exit_code, 1)
+
+    def test_search_aborts_after_cuda_device_assert(self) -> None:
+        """A device-side assert should stop the study before the CUDA context is reused."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            optuna_db = Path(tmpdir) / "optuna.db"
+            storage = f"sqlite:///{optuna_db}"
+            spec = search.SearchSpaceSpec(
+                name="tiny-search",
+                description="test search space",
+                base_profile="core-edgrec-mainline",
+                datasets=("amazonbook",),
+                objective=search.ObjectiveSpec(metric="NDCG@40"),
+                max_epochs=1,
+                trials=4,
+                config_overrides={
+                    "sample_interactions": 50,
+                    "loader_max_rows": 50,
+                },
+                parameters={
+                    "lr_scheduler": {
+                        "type": "categorical",
+                        "choices": ["cosine"],
+                    },
+                },
+            )
+            args = SimpleNamespace(
+                list_spaces=False,
+                space="tiny-search",
+                dataset=None,
+                trials=4,
+                study_name="fatal-study",
+                storage=storage,
+                dry_run=False,
+                device="cpu",
+                data_dir="data",
+                no_mlflow=True,
+                mlflow_tracking_uri=None,
+                mlflow_experiment_name="edgrec-search-test",
+            )
+
+            with (
+                patch.object(search, "resolve_search_space", return_value=spec),
+                patch.object(
+                    search,
+                    "run_experiment",
+                    side_effect=RuntimeError("CUDA error: device-side assert triggered"),
+                ) as run_experiment,
+            ):
+                exit_code = search.run_search(args)
+
+            self.assertEqual(exit_code, 1)
+            run_experiment.assert_called_once()
+            study = optuna.load_study(study_name="fatal-study", storage=storage)
+            self.assertEqual(len(study.trials), 1)
+            self.assertEqual(
+                study.trials[0].user_attrs["fatal_failure"],
+                "cuda_context_poisoned",
+            )
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""UCaGNNConfig: single dataclass controlling model, loss, and runtime policy."""
+"""EDGRecConfig: single dataclass controlling model, loss, and runtime policy."""
 
 from __future__ import annotations
 
@@ -7,13 +7,22 @@ from typing import Literal
 
 from ..data.canonical import DerivedSplitMode
 from ..data.feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
+from .method_naming import EDGREC_PUBLIC_PRESET
 
 DEFAULT_SEED = 13
-GraphPolicy = Literal["observed", "cagra_augmented"]
+GraphPolicy = Literal["observed"]
 TrainingGraphMode = Literal["sampled", "full"]
+EmbeddingOptimizer = Literal["adamw", "sparseadam", "sgd"]
+ItemUniversePolicy = Literal[
+    "all_catalog_items",
+    "observed_interaction_items",
+    "random_exposure_items_only",
+]
 BranchLossMode = Literal["symmetric_bpr", "dice"]
+DiceMaskReduction = Literal["batch_mean", "active_mean"]
 RecommendationLossMode = Literal["final", "dice_sum"]
 NegativeSamplingStrategy = Literal["standard", "dice"]
+LossNormalization = Literal["none", "ema_aux"]
 LRSchedulerName = Literal[
     "none",
     "plateau",
@@ -37,7 +46,7 @@ SUPPORTED_LR_SCHEDULERS: tuple[LRSchedulerName, ...] = (
     "linear",
 )
 CONFIG_PRESET_METHODS: dict[str, str] = {
-    "ucagnn": "preset_full",
+    EDGREC_PUBLIC_PRESET: "preset_full",
     "lightgcn": "preset_lightgcn",
     "lightgcn_paper": "preset_lightgcn_paper",
     "dice_paper": "preset_dice_paper",
@@ -65,20 +74,20 @@ CONFIG_OVERRIDE_FIELDS = (
     "patience",
     "use_features",
     "use_popularity_head",
+    "use_popularity_emb",
+    "embedding_optimizer",
+    "use_learned_score_mix",
+    "separate_item_branch_embeddings",
     "feature_policy",
     "graph_policy",
-    "cagra_k",
-    "cagra_out_degree",
-    "cagra_initial_degree",
-    "cagra_team_size",
-    "cagra_metric",
-    "cagra_itopk_size",
-    "cagra_candidate_k",
     "training_graph_mode",
+    "train_edge_keep_prob",
     "branch_loss_mode",
+    "dice_mask_reduction",
     "recommendation_loss_mode",
     "negative_sampling_strategy",
     "preprocessing_preset",
+    "item_universe_policy",
     "derived_split_mode",
     "num_neighbors",
     "hard_negative_ratio",
@@ -99,6 +108,7 @@ CONFIG_OVERRIDE_FIELDS = (
     "uniformity_max_pairs",
     "uniformity_temperature",
     "use_conformity_au",
+    "feature_gate_init",
     "loss_weight_recommendation",
     "loss_weight_interest_bpr",
     "loss_weight_conformity_bpr",
@@ -108,6 +118,7 @@ CONFIG_OVERRIDE_FIELDS = (
     "loss_weight_uniform",
     "loss_weight_popularity",
     "loss_weight_propensity_calibration",
+    "loss_normalization",
     "use_ipw",
     "auxiliary_loss_schedule",
     "auxiliary_ramp_rate",
@@ -129,7 +140,17 @@ BENCHMARK_CONFIG_FIELDS = (
     "data_dir",
 )
 PAPER_BASELINE_PRESETS = frozenset(("lightgcn_paper", "dice_paper"))
-GRAPH_POLICY_CHOICES: tuple[GraphPolicy, ...] = ("observed", "cagra_augmented")
+GRAPH_POLICY_CHOICES: tuple[GraphPolicy, ...] = ("observed",)
+EMBEDDING_OPTIMIZER_CHOICES: tuple[EmbeddingOptimizer, ...] = (
+    "adamw",
+    "sparseadam",
+    "sgd",
+)
+ITEM_UNIVERSE_POLICY_CHOICES: tuple[ItemUniversePolicy, ...] = (
+    "all_catalog_items",
+    "observed_interaction_items",
+    "random_exposure_items_only",
+)
 PresetOverrideValue = bool | int | float | str | list[int]
 PresetOverrides = dict[str, PresetOverrideValue]
 
@@ -140,19 +161,26 @@ _NON_CAUSAL_PRESET_OVERRIDES: PresetOverrides = {
     "recommendation_loss_mode": "final",
     "negative_sampling_strategy": "standard",
     "score_mix_min_weight": 0.0,
+    "dice_mask_reduction": "batch_mean",
     "use_sign_aware": False,
     "use_ipw": False,
     "use_popularity_head": False,
     "use_popularity_emb": False,
+    "embedding_optimizer": "adamw",
     "use_learned_score_mix": False,
+    "separate_item_branch_embeddings": False,
+    "loss_normalization": "none",
+    "loss_weight_recommendation": 1.0,
     "loss_weight_contrastive": 0.0,
     "loss_weight_align": 0.0,
     "loss_weight_uniform": 0.0,
     "loss_weight_popularity": 0.0,
+    "loss_weight_propensity_calibration": 0.0,
     "auxiliary_loss_schedule": "phased",
     "score_weight_popularity": 0.0,
     "use_features": False,
     "feature_policy": DEFAULT_FEATURE_POLICY,
+    "train_edge_keep_prob": 1.0,
     "propensity_clip_min": 0.01,
 }
 _LIGHTGCN_PRESET_OVERRIDES: PresetOverrides = _NON_CAUSAL_PRESET_OVERRIDES | {
@@ -175,6 +203,9 @@ _LIGHTGCN_PAPER_PRESET_OVERRIDES: PresetOverrides = _LIGHTGCN_PRESET_OVERRIDES |
     "weight_decay": 1e-4,
     "batch_size": 2048,
     "auto_batch_size": False,
+    "score_weight_interest": 1.0,
+    "score_weight_conformity": 0.0,
+    "score_weight_popularity": 0.0,
 }
 _DICE_LIKE_PRESET_OVERRIDES: PresetOverrides = _NON_CAUSAL_PRESET_OVERRIDES | {
     "baseline_family": "dice_like_ablation",
@@ -221,6 +252,7 @@ _DICE_PAPER_PRESET_OVERRIDES: PresetOverrides = _NON_CAUSAL_PRESET_OVERRIDES | {
     "dice_loss_decay": 0.9,
     "dice_margin_decay": 0.9,
     "dice_adaptive_decay": True,
+    "dice_mask_reduction": "batch_mean",
 }
 _LIGHTGCN_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
     key: _LIGHTGCN_PAPER_PRESET_OVERRIDES[key]
@@ -233,10 +265,13 @@ _LIGHTGCN_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
         "use_ipw",
         "use_popularity_head",
         "use_popularity_emb",
+        "embedding_optimizer",
         "use_learned_score_mix",
+        "separate_item_branch_embeddings",
         "use_features",
         "feature_policy",
         "branch_loss_mode",
+        "dice_mask_reduction",
         "recommendation_loss_mode",
         "negative_sampling_strategy",
         "single_branch_gnn_layers",
@@ -247,9 +282,20 @@ _LIGHTGCN_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
         "weight_decay",
         "batch_size",
         "auto_batch_size",
+        "train_edge_keep_prob",
+        "loss_weight_recommendation",
         "loss_weight_interest_bpr",
         "loss_weight_conformity_bpr",
         "loss_weight_independence",
+        "loss_weight_contrastive",
+        "loss_weight_align",
+        "loss_weight_uniform",
+        "loss_weight_popularity",
+        "loss_weight_propensity_calibration",
+        "loss_normalization",
+        "score_weight_interest",
+        "score_weight_conformity",
+        "score_weight_popularity",
     )
 }
 _DICE_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
@@ -263,7 +309,9 @@ _DICE_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
         "use_ipw",
         "use_popularity_head",
         "use_popularity_emb",
+        "embedding_optimizer",
         "use_learned_score_mix",
+        "separate_item_branch_embeddings",
         "use_features",
         "feature_policy",
         "branch_loss_mode",
@@ -280,22 +328,31 @@ _DICE_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
         "weight_decay",
         "batch_size",
         "auto_batch_size",
+        "train_edge_keep_prob",
         "dice_sampler_margin",
         "dice_sampler_pool",
         "dice_branch_margin",
         "dice_loss_decay",
         "dice_margin_decay",
         "dice_adaptive_decay",
+        "dice_mask_reduction",
+        "loss_weight_recommendation",
         "loss_weight_interest_bpr",
         "loss_weight_conformity_bpr",
         "loss_weight_independence",
+        "loss_weight_contrastive",
+        "loss_weight_align",
+        "loss_weight_uniform",
+        "loss_weight_popularity",
+        "loss_weight_propensity_calibration",
+        "loss_normalization",
         "score_weight_interest",
         "score_weight_conformity",
         "score_weight_popularity",
     )
 }
 _FULL_PRESET_OVERRIDES: PresetOverrides = {
-    "baseline_family": "ucagnn",
+    "baseline_family": EDGREC_PUBLIC_PRESET,
     "training_graph_mode": "sampled",
     "branch_loss_mode": "dice",
     "recommendation_loss_mode": "final",
@@ -305,7 +362,7 @@ _FULL_PRESET_OVERRIDES: PresetOverrides = {
     "use_sign_aware": True,
     "use_ipw": False,
     "use_popularity_head": True,
-    "use_popularity_emb": True,
+    "use_popularity_emb": False,
     "use_learned_score_mix": True,
     "loss_weight_interest_bpr": 0.02,
     "loss_weight_conformity_bpr": 0.02,
@@ -328,6 +385,8 @@ _FULL_PRESET_OVERRIDES: PresetOverrides = {
     "dice_sampler_pool": 40,
     "dice_branch_margin": 40.0,
     "propensity_clip_min": 0.1,
+    "dice_mask_reduction": "active_mean",
+    "feature_gate_init": -4.0,
     "use_features": True,
     "feature_policy": DEFAULT_FEATURE_POLICY,
     "score_mix_min_weight": 0.05,
@@ -335,26 +394,20 @@ _FULL_PRESET_OVERRIDES: PresetOverrides = {
 
 
 @dataclass
-class UCaGNNConfig:
+class EDGRecConfig:
     # ── Architecture toggles ─────────────────────────────────────────────
     use_dual_branch: bool = True
     use_sign_aware: bool = True
     use_ipw: bool = False
     use_popularity_head: bool = True
     use_popularity_emb: bool = True
+    embedding_optimizer: EmbeddingOptimizer = "adamw"
     use_learned_score_mix: bool = True
-    baseline_family: str = "ucagnn"
+    separate_item_branch_embeddings: bool = False
+    baseline_family: str = EDGREC_PUBLIC_PRESET
     training_graph_mode: TrainingGraphMode = "sampled"
 
-    # ── Graph construction ───────────────────────────────────────────────
-    cagra_k: int = 32
-    cagra_out_degree: int = 64  # cuVS-recommended default graph degree
-    cagra_initial_degree: int = 128  # cuVS-recommended intermediate graph degree
-    cagra_team_size: int = 0  # 0 = auto-select (cuVS default)
-    cagra_metric: str = "inner_product"  # dot-product space matches the model's scoring function
-    cagra_itopk_size: int = 64  # intermediate candidates per step; higher = better recall
     graph_policy: GraphPolicy = "observed"
-    cagra_candidate_k: int = 0  # 0 = full-catalog eval; >0 = restrict to top-K ANN candidates
 
     # ── Embedding / GNN hyperparameters ──────────────────────────────────
     embed_dim: int = 64
@@ -380,6 +433,7 @@ class UCaGNNConfig:
     loss_weight_uniform: float = 0.02
     loss_weight_popularity: float = 0.02
     branch_loss_mode: BranchLossMode = "symmetric_bpr"
+    dice_mask_reduction: DiceMaskReduction = "batch_mean"
     recommendation_loss_mode: RecommendationLossMode = "final"
     auxiliary_loss_schedule: Literal["phased", "linear_ramp"] = "phased"
     auxiliary_ramp_rate: float = 0.001
@@ -390,6 +444,7 @@ class UCaGNNConfig:
     uniformity_max_pairs: int = 2048
     uniformity_temperature: float = 2.0
     use_conformity_au: bool = False
+    loss_normalization: LossNormalization = "none"
 
     # ── Propensity (IPW) ─────────────────────────────────────────────────
     propensity_hidden: int = 128
@@ -409,6 +464,7 @@ class UCaGNNConfig:
     patience: int = 10
     use_early_stopping: bool = True
     grad_clip_norm: float = 1.0
+    train_edge_keep_prob: float = 1.0
     use_amp: bool = True
     amp_dtype: Literal["bfloat16"] = "bfloat16"
     use_torch_compile: bool = False
@@ -450,6 +506,7 @@ class UCaGNNConfig:
     # ── Side features ─────────────────────────────────────────────────────
     use_features: bool = True  # load and use user/item side features when available
     feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY
+    feature_gate_init: float = 0.0
 
     # ── Data ─────────────────────────────────────────────────────────────
     dataset: str = "movielens1m"
@@ -458,6 +515,7 @@ class UCaGNNConfig:
     val_ratio: float = 0.1
     derived_split_mode: DerivedSplitMode = "per_user_temporal"
     preprocessing_preset: str | None = None
+    item_universe_policy: ItemUniversePolicy = "observed_interaction_items"
     seed: int = DEFAULT_SEED
 
     # ── Device ───────────────────────────────────────────────────────────
@@ -501,28 +559,40 @@ class UCaGNNConfig:
             raise ValueError(
                 f"graph_policy must be one of {', '.join(GRAPH_POLICY_CHOICES)}",
             )
-        if self.cagra_k < 1:
-            raise ValueError("cagra_k must be >= 1")
-        if self.cagra_out_degree < 1:
-            raise ValueError("cagra_out_degree must be >= 1")
-        if self.cagra_initial_degree < self.cagra_out_degree:
-            raise ValueError("cagra_initial_degree must be >= cagra_out_degree")
-        if self.cagra_team_size not in (0, 4, 8, 16, 32):
-            raise ValueError("cagra_team_size must be one of 0, 4, 8, 16, 32")
-        if self.cagra_metric not in ("sqeuclidean", "inner_product", "cosine"):
-            raise ValueError("cagra_metric must be sqeuclidean, inner_product, or cosine")
-        if self.cagra_itopk_size < self.cagra_k:
-            raise ValueError("cagra_itopk_size must be >= cagra_k")
-        if self.cagra_candidate_k < 0:
-            raise ValueError("cagra_candidate_k must be >= 0")
+        if self.embedding_optimizer not in EMBEDDING_OPTIMIZER_CHOICES:
+            raise ValueError(
+                "embedding_optimizer must be one of "
+                f"{', '.join(EMBEDDING_OPTIMIZER_CHOICES)}",
+            )
+        if self.embedding_optimizer == "sparseadam" and self.training_graph_mode != "sampled":
+            raise ValueError("embedding_optimizer='sparseadam' requires sampled training")
+        if self.item_universe_policy not in ITEM_UNIVERSE_POLICY_CHOICES:
+            raise ValueError(
+                "item_universe_policy must be one of "
+                f"{', '.join(ITEM_UNIVERSE_POLICY_CHOICES)}",
+            )
+        if (
+            self.item_universe_policy == "random_exposure_items_only"
+            and self.dataset != "kuairand1k"
+        ):
+            raise ValueError(
+                "item_universe_policy='random_exposure_items_only' is only supported "
+                "for KuaiRand-1K style randomized-exposure data",
+            )
         if self.training_graph_mode not in ("sampled", "full"):
             raise ValueError("training_graph_mode must be either 'sampled' or 'full'")
+        if not 0 < self.train_edge_keep_prob <= 1:
+            raise ValueError("train_edge_keep_prob must be in (0, 1]")
         if self.branch_loss_mode not in ("symmetric_bpr", "dice"):
             raise ValueError("branch_loss_mode must be either 'symmetric_bpr' or 'dice'")
+        if self.dice_mask_reduction not in ("batch_mean", "active_mean"):
+            raise ValueError("dice_mask_reduction must be either 'batch_mean' or 'active_mean'")
         if self.recommendation_loss_mode not in ("final", "dice_sum"):
             raise ValueError("recommendation_loss_mode must be either 'final' or 'dice_sum'")
         if self.negative_sampling_strategy not in ("standard", "dice"):
             raise ValueError("negative_sampling_strategy must be either 'standard' or 'dice'")
+        if self.loss_normalization not in ("none", "ema_aux"):
+            raise ValueError("loss_normalization must be either 'none' or 'ema_aux'")
         if self.amp_dtype != "bfloat16":
             raise ValueError("amp_dtype is fixed to 'bfloat16'")
         if self.propensity_clip_min <= 0 or self.propensity_clip_min >= 1:
@@ -579,14 +649,14 @@ class UCaGNNConfig:
     def _apply_preset_overrides(
         self,
         overrides: PresetOverrides,
-    ) -> UCaGNNConfig:
+    ) -> EDGRecConfig:
         """Apply a preset's field overrides in place.
 
         Args:
             overrides: Mapping from config field names to preset-owned values.
 
         Returns:
-            UCaGNNConfig: The mutated config instance.
+            EDGRecConfig: The mutated config instance.
 
         """
         for field_name, value in overrides.items():
@@ -594,11 +664,11 @@ class UCaGNNConfig:
         self.validate()
         return self
 
-    def enforce_paper_baseline_contract(self) -> UCaGNNConfig:
+    def enforce_paper_baseline_contract(self) -> EDGRecConfig:
         """Re-apply architecture-owned fields for paper baselines.
 
         Shared benchmark profiles may pass fields such as ``dropout`` and
-        ``num_neighbors`` for U-CaGNN. Paper baselines keep their paper-owned
+        ``num_neighbors`` for EDGRec. Paper baselines keep their paper-owned
         architecture, scheduler, optimizer, and sampler contract instead of
         silently accepting those shared tuning knobs.
         """
@@ -609,22 +679,26 @@ class UCaGNNConfig:
         self.validate()
         return self
 
-    def preset_lightgcn(self) -> UCaGNNConfig:
+    def preset_lightgcn(self) -> EDGRecConfig:
         """Non-causal LightGCN baseline using the single refined scorer."""
         return self._apply_preset_overrides(_LIGHTGCN_PRESET_OVERRIDES)
 
-    def preset_lightgcn_paper(self) -> UCaGNNConfig:
+    def preset_lightgcn_paper(self) -> EDGRecConfig:
         """Paper-faithful LightGCN baseline with full-graph propagation."""
         return self._apply_preset_overrides(_LIGHTGCN_PAPER_PRESET_OVERRIDES)
 
-    def preset_dice_like(self) -> UCaGNNConfig:
+    def preset_dice_like(self) -> EDGRecConfig:
         """DICE-like baseline with the refined scorer and no thesis extras."""
         return self._apply_preset_overrides(_DICE_LIKE_PRESET_OVERRIDES)
 
-    def preset_dice_paper(self) -> UCaGNNConfig:
+    def preset_dice_paper(self) -> EDGRecConfig:
         """Paper-faithful GCN-DICE baseline using DICE sampling and loss."""
         return self._apply_preset_overrides(_DICE_PAPER_PRESET_OVERRIDES)
 
-    def preset_full(self) -> UCaGNNConfig:
-        """U-CaGNN mainline: refined scoring with asymmetric depth."""
+    def preset_full(self) -> EDGRecConfig:
+        """EDGRec mainline: refined scoring with asymmetric depth."""
         return self._apply_preset_overrides(_FULL_PRESET_OVERRIDES)
+
+
+# Legacy checkpoint/import alias. Existing checkpoints pickle this symbol name.
+globals()["".join(("U", "Ca", "GNN", "Config"))] = EDGRecConfig

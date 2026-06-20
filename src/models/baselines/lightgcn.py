@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from ...utils.config import UCaGNNConfig
+from ...utils.config import EDGRecConfig
 from ..lightgcn import LightGCNBranch
 from .common import (
     CanonicalBaselineRecommender,
@@ -20,16 +20,16 @@ class PaperLightGCN(CanonicalBaselineRecommender):
     """LightGCN as the paper equation: embeddings + normalized propagation + BPR.
 
     This class intentionally omits feature transforms, activations, learned
-    score mixing, dropout, and CAGRA-specific logic. It accepts the same
-    canonical graph and batch tensors as U-CaGNN so comparisons share data,
-    splits, negative sampling, and evaluation.
+    score mixing, and dropout. It accepts the same canonical graph and batch
+    tensors as EDGRec so comparisons share data, splits, negative sampling,
+    and evaluation.
     """
 
     def __init__(
         self,
         n_users: int,
         n_items: int,
-        config: UCaGNNConfig,
+        config: EDGRecConfig,
     ) -> None:
         super().__init__(n_users, n_items, config)
         if config.dropout != 0.0:

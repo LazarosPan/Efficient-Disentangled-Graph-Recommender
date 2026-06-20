@@ -1,10 +1,10 @@
 #!/usr/bin/env python
-"""Main single-experiment CLI runner for U-CaGNN.
+"""Main single-experiment CLI runner for EDGRec.
 
 Usage:
     uv run experiment --list-recipes
-    uv run experiment --dataset movielens1m --recipe ucagnn
-    uv run experiment --dataset kuairec_v2 --preset ucagnn --overwrite-checkpoint
+    uv run experiment --dataset movielens1m --recipe edgrec
+    uv run experiment --dataset kuairec_v2 --preset edgrec --overwrite-checkpoint
 """
 
 from __future__ import annotations
@@ -33,12 +33,12 @@ if "PYTORCH_ALLOC_CONF" not in os.environ:
 import numpy as np
 import torch
 from scripts._workflow_helpers import configure_cli_logging
-from src.data.canonical import sample_canonical_interactions
+from src.data.canonical import filter_canonical_interactions, sample_canonical_interactions
 from src.data.graph_builder import build_graph
 from src.data.loaders import default_preprocessing_preset, load_dataset
 from src.losses.loss_suite import LossSuite
 from src.models.baselines import PaperGCNDICE, PaperLightGCN
-from src.models.ucagnn import UCaGNN
+from src.models.edgrec import EDGRec
 from src.profiling.gpu_profiler import (
     reset_cuda_peak_memory_stats as _reset_cuda_peak_memory_stats,
 )
@@ -46,14 +46,20 @@ from src.training.mini_batch_trainer import MiniBatchTrainer
 from src.utils.config import (
     BENCHMARK_CONFIG_FIELDS,
     CONFIG_OVERRIDE_FIELDS,
+    CONFIG_PRESET_CHOICES,
     CONFIG_PRESET_METHODS,
     DEFAULT_SEED,
-    UCaGNNConfig,
+    EDGRecConfig,
 )
 from src.utils.experiment_logger import ExperimentLogger
 from src.utils.experiment_naming import (
     build_canonical_experiment_name,
     format_num_neighbors_payload,
+)
+from src.utils.method_naming import (
+    canonical_preset_for_identity,
+    method_identifier_aliases,
+    public_preset_name,
 )
 from src.utils.project_paths import (
     CHECKPOINT_DIR,
@@ -72,6 +78,7 @@ from experiments.benchmark_resolvers import (
     normalize_benchmark_lr_scheduler_override,
     normalize_benchmark_num_neighbors_override,
     normalize_benchmark_preprocessing_override,
+    resolve_benchmark_item_universe_policy_value,
 )
 from experiments.cli_parsers import build_run_experiment_parser
 from experiments.recipes import (
@@ -79,7 +86,7 @@ from experiments.recipes import (
     recipe_summary_lines,
 )
 
-logger = logging.getLogger("ucagnn")
+logger = logging.getLogger("edgrec")
 
 DB_PATH = THESIS_DB_PATH
 
@@ -93,12 +100,6 @@ _TRAINING_IDENTITY_FIELDS = (
     "auto_batch_size",
     "batch_size",
     "batch_size_candidates",
-    "cagra_initial_degree",
-    "cagra_itopk_size",
-    "cagra_k",
-    "cagra_metric",
-    "cagra_out_degree",
-    "cagra_team_size",
     "conformity_gnn_layers",
     "contrastive_max_pairs",
     "contrastive_temperature",
@@ -111,12 +112,14 @@ _TRAINING_IDENTITY_FIELDS = (
     "dropout",
     "ema_decay",
     "embed_dim",
+    "embedding_optimizer",
     "epochs",
     "feature_policy",
     "graph_policy",
     "grad_clip_norm",
     "hard_negative_ratio",
     "score_mix_min_weight",
+    "separate_item_branch_embeddings",
     "training_graph_mode",
     "branch_loss_mode",
     "recommendation_loss_mode",
@@ -137,6 +140,7 @@ _TRAINING_IDENTITY_FIELDS = (
     "loss_weight_popularity",
     "loss_weight_recommendation",
     "loss_weight_uniform",
+    "loss_normalization",
     "loader_max_rows",
     "loss_schedule",
     "lr",
@@ -145,6 +149,7 @@ _TRAINING_IDENTITY_FIELDS = (
     "lr_scheduler_patience",
     "n_negatives",
     "num_neighbors",
+    "item_universe_policy",
     "popularity_embedding_dimensions",
     "preprocessing_preset",
     "propensity_clip_max",
@@ -156,6 +161,7 @@ _TRAINING_IDENTITY_FIELDS = (
     "score_weight_popularity",
     "seed",
     "single_branch_gnn_layers",
+    "train_edge_keep_prob",
     "train_ratio",
     "uniformity_temperature",
     "use_amp",
@@ -188,7 +194,7 @@ def _stable_identity_hash(payload: dict[str, Any]) -> str:
 
 
 def _build_training_identity(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     preset: str | None,
     intervention: str | None,
 ) -> tuple[dict[str, Any], str]:
@@ -197,7 +203,7 @@ def _build_training_identity(
     identity = {
         "identity_version": _CHECKPOINT_IDENTITY_VERSION,
         "identity_kind": "training",
-        "preset": preset or "custom",
+        "preset": canonical_preset_for_identity(preset) or "custom",
         "intervention": intervention,
         "training_mode": "mini_batch",
         "config": {
@@ -208,7 +214,7 @@ def _build_training_identity(
 
 
 def _build_evaluation_identity(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     training_hash: str,
 ) -> tuple[dict[str, Any], str]:
     """Build the comparability identity for same-checkpoint evaluation runs."""
@@ -225,7 +231,7 @@ def _build_evaluation_identity(
 
 
 def _default_checkpoint_path(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     preset: str | None,
     intervention: str | None,
     training_hash: str,
@@ -233,6 +239,23 @@ def _default_checkpoint_path(
     """Return the default checkpoint path for a semantic training identity."""
     canonical_name = build_canonical_experiment_name(config, preset, intervention)
     return CHECKPOINT_DIR / f"{canonical_name}_train-{training_hash}.pt"
+
+
+def _default_checkpoint_path_candidates(
+    config: EDGRecConfig,
+    preset: str | None,
+    intervention: str | None,
+    training_hash: str,
+) -> list[Path]:
+    """Return public and legacy checkpoint paths for one semantic identity."""
+    candidates = [_default_checkpoint_path(config, preset, intervention, training_hash)]
+    if preset is None:
+        return candidates
+    for preset_alias in method_identifier_aliases(preset):
+        alias_path = _default_checkpoint_path(config, preset_alias, intervention, training_hash)
+        if alias_path not in candidates:
+            candidates.append(alias_path)
+    return candidates
 
 
 def _load_checkpoint_payload(
@@ -256,15 +279,59 @@ def _load_checkpoint_payload(
 
     if require_config:
         config = payload.get("config")
-        if not isinstance(config, UCaGNNConfig):
+        if not isinstance(config, EDGRecConfig):
             raise TypeError(
-                "checkpoint does not contain a UCaGNNConfig under the 'config' field",
+                "checkpoint does not contain an EDGRecConfig under the 'config' field",
             )
 
     return payload
 
 
-def load_runtime_data(config: UCaGNNConfig) -> tuple[Any, Any]:
+def _apply_item_universe_policy(canonical: Any, config: EDGRecConfig) -> Any:
+    """Apply configured item-universe compaction before graph/model construction."""
+    policy = config.item_universe_policy
+    if policy == "all_catalog_items":
+        return canonical
+
+    if policy == "observed_interaction_items":
+        keep_mask = np.ones(len(canonical), dtype=bool)
+    elif policy == "random_exposure_items_only":
+        exposure_flag = getattr(canonical, "exposure_flag", None)
+        if exposure_flag is None:
+            raise ValueError(
+                "item_universe_policy='random_exposure_items_only' requires exposure flags",
+            )
+        keep_mask = np.asarray(exposure_flag, dtype=bool)
+    else:
+        raise ValueError(f"Unsupported item_universe_policy {policy!r}.")
+
+    if not np.any(keep_mask):
+        raise ValueError(f"item_universe_policy={policy!r} selected no interactions")
+
+    before_items = int(canonical.n_items)
+    before_interactions = len(canonical)
+    compacted = filter_canonical_interactions(
+        canonical,
+        keep_mask,
+        metadata_overrides={
+            "item_universe_policy": policy,
+            "item_universe_original_n_items": before_items,
+            "item_universe_original_interactions": before_interactions,
+        },
+    )
+    if compacted.n_items != before_items or len(compacted) != before_interactions:
+        logger.info(
+            "Applied item_universe_policy=%s: interactions %d -> %d, items %d -> %d.",
+            policy,
+            before_interactions,
+            len(compacted),
+            before_items,
+            compacted.n_items,
+        )
+    return compacted
+
+
+def load_runtime_data(config: EDGRecConfig) -> tuple[Any, Any]:
     """Load canonical interactions and build the matching runtime graph."""
     canonical = load_dataset(
         config.dataset,
@@ -274,6 +341,7 @@ def load_runtime_data(config: UCaGNNConfig) -> tuple[Any, Any]:
         feature_policy=config.feature_policy,
         preprocessing_preset=config.preprocessing_preset,
     )
+    canonical = _apply_item_universe_policy(canonical, config)
     canonical = sample_canonical_interactions(
         canonical,
         config.sample_interactions,
@@ -282,50 +350,7 @@ def load_runtime_data(config: UCaGNNConfig) -> tuple[Any, Any]:
         config.val_ratio,
         config.derived_split_mode,
     )
-    observed_data = build_graph(canonical, config, embeddings=None)
-    if config.graph_policy == "observed":
-        return canonical, observed_data
-
-    bootstrap_embeddings = _bootstrap_cagra_embeddings(config, canonical, observed_data)
-    return canonical, build_graph(canonical, config, embeddings=bootstrap_embeddings)
-
-
-def _bootstrap_cagra_embeddings(
-    config: UCaGNNConfig,
-    canonical: Any,
-    observed_data: Any,
-) -> torch.Tensor:
-    """Return the bootstrap node embeddings used for CAGRA augmentation.
-
-    Args:
-        config: Active runtime configuration.
-        canonical: Loaded canonical interactions.
-        observed_data: Graph payload for the observed train-interaction graph.
-
-    Returns:
-        torch.Tensor: CPU float tensor with shape ``(n_users + n_items, d)``.
-
-    Raises:
-        ValueError: If the current bootstrap path lacks item features and would
-            therefore build ANN edges from untrained ID-only embeddings.
-
-    """
-    item_features = getattr(observed_data, "item_features", None)
-    if item_features is None or item_features.numel() == 0:
-        raise ValueError(
-            "graph_policy='cagra_augmented' combines CAGRA edges with the observed "
-            "train-interaction graph, but the current bootstrap path still needs "
-            "item features. Without them, load_runtime_data() would build ANN edges "
-            "from untrained ID-only embeddings before training begins.",
-        )
-
-    bootstrap_model = build_runtime_model(config, canonical, observed_data)
-    with torch.no_grad():
-        bootstrap_embeddings = (
-            bootstrap_model.embedding.get_stacked_embeddings().detach().float().cpu()
-        )
-    del bootstrap_model
-    return bootstrap_embeddings
+    return canonical, build_graph(canonical, config)
 
 
 def _train_mask_numpy_from_data(data: Any) -> np.ndarray:
@@ -348,7 +373,7 @@ def _train_mask_numpy_from_data(data: Any) -> np.ndarray:
 
 
 def build_runtime_model(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     canonical: Any,
     data: Any,
 ) -> torch.nn.Module:
@@ -383,7 +408,7 @@ def build_runtime_model(
         if canonical.item_propensity_targets is not None
         else None
     )
-    return UCaGNN(
+    return EDGRec(
         canonical.n_users,
         canonical.n_items,
         config,
@@ -455,7 +480,7 @@ def _validate_resume_identity(
 
 def _checkpoint_ready_for_evaluation(
     checkpoint_state: dict[str, Any],
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
 ) -> bool:
     """Return whether a checkpoint can be evaluated without more training."""
     if bool(checkpoint_state.get("training_finished")):
@@ -477,15 +502,15 @@ def _checkpoint_ready_for_evaluation(
 
 
 def _checkpoint_lookup_configs(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     *,
     checkpoint_path: str | Path | None = None,
-) -> list[UCaGNNConfig]:
+) -> list[EDGRecConfig]:
     """Return config variants whose checkpoint identities are worth checking."""
     if checkpoint_path is not None or not bool(config.auto_batch_size):
         return [config]
 
-    configs: list[UCaGNNConfig] = []
+    configs: list[EDGRecConfig] = []
     seen_batch_sizes: set[int] = set()
     for candidate_batch_size in _auto_batch_probe_candidates(config):
         batch_size = int(candidate_batch_size)
@@ -497,12 +522,12 @@ def _checkpoint_lookup_configs(
 
 
 def recoverable_checkpoint_for_config(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     *,
     preset: str | None = None,
     intervention: str | None = None,
     checkpoint_path: str | Path | None = None,
-) -> tuple[UCaGNNConfig, Path] | None:
+) -> tuple[EDGRecConfig, Path] | None:
     """Return the compatible config/path pair for an evaluation-ready checkpoint."""
     for checkpoint_config in _checkpoint_lookup_configs(
         config,
@@ -513,28 +538,29 @@ def recoverable_checkpoint_for_config(
             preset,
             intervention,
         )
-        resolved_checkpoint_path = (
-            Path(checkpoint_path)
+        resolved_checkpoint_paths = (
+            [Path(checkpoint_path)]
             if checkpoint_path is not None
-            else _default_checkpoint_path(
+            else _default_checkpoint_path_candidates(
                 checkpoint_config,
                 preset,
                 intervention,
                 training_hash,
             )
         )
-        checkpoint_state = _validate_resume_identity(
-            _load_checkpoint_metadata(resolved_checkpoint_path, "cpu"),
-            checkpoint_path=resolved_checkpoint_path,
-            explicit_checkpoint_path=checkpoint_path is not None,
-            training_identity=training_identity,
-            training_hash=training_hash,
-        )
-        if checkpoint_state is None:
-            continue
-        if not _checkpoint_ready_for_evaluation(checkpoint_state, checkpoint_config):
-            continue
-        return checkpoint_config, resolved_checkpoint_path
+        for resolved_checkpoint_path in resolved_checkpoint_paths:
+            checkpoint_state = _validate_resume_identity(
+                _load_checkpoint_metadata(resolved_checkpoint_path, "cpu"),
+                checkpoint_path=resolved_checkpoint_path,
+                explicit_checkpoint_path=checkpoint_path is not None,
+                training_identity=training_identity,
+                training_hash=training_hash,
+            )
+            if checkpoint_state is None:
+                continue
+            if not _checkpoint_ready_for_evaluation(checkpoint_state, checkpoint_config):
+                continue
+            return checkpoint_config, resolved_checkpoint_path
     return None
 
 
@@ -705,7 +731,7 @@ def _release_cuda_probe_memory() -> None:
         torch.cuda.empty_cache()
 
 
-def _auto_batch_probe_candidates(config: UCaGNNConfig) -> list[int]:
+def _auto_batch_probe_candidates(config: EDGRecConfig) -> list[int]:
     """Return batch-size probe candidates in descending order.
 
     Args:
@@ -729,7 +755,7 @@ def _auto_batch_probe_candidates(config: UCaGNNConfig) -> list[int]:
 def _auto_batch_probe_interactions(
     train_users: torch.Tensor,
     train_items: torch.Tensor,
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return the epoch-0 shuffled training interactions used by auto-batch probing."""
     if train_users.numel() <= 1:
@@ -743,7 +769,7 @@ def _auto_batch_probe_interactions(
 
 
 def _probe_batch_size_candidate(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     canonical: Any,
     data: Any,
     candidate_batch_size: int,
@@ -824,7 +850,7 @@ def _probe_batch_size_candidate(
 
 
 def _resolve_auto_batch_size(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     canonical: Any,
     data: Any,
 ) -> None:
@@ -908,7 +934,7 @@ def _resolve_auto_batch_size(
 
 
 def _verify_selected_auto_batch_size(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     canonical: Any,
     data: Any,
 ) -> None:
@@ -1012,7 +1038,7 @@ def _resume_auto_batch_fallback(
 
 
 def _build_mlflow_params(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     preset: str | None,
     intervention: str | None,
     recipe_name: str | None,
@@ -1041,7 +1067,10 @@ def _build_mlflow_params(
         "use_features": config.use_features,
         "feature_policy": config.feature_policy,
         "preprocessing_preset": config.preprocessing_preset or "default",
+        "item_universe_policy": config.item_universe_policy,
         "derived_split_mode": config.derived_split_mode,
+        "embedding_optimizer": config.embedding_optimizer,
+        "train_edge_keep_prob": config.train_edge_keep_prob,
         "use_dual_branch": config.use_dual_branch,
         "use_sign_aware": config.use_sign_aware,
         "use_ipw": config.use_ipw,
@@ -1069,8 +1098,79 @@ def _build_mlflow_params(
     return params
 
 
+def _embedding_table_parameter_count(model: torch.nn.Module) -> int:
+    """Return number of trainable scalar parameters in embedding tables."""
+    embedding = getattr(model, "embedding", None)
+    if embedding is None:
+        return 0
+    total = 0
+    for module in embedding.modules():
+        if isinstance(module, torch.nn.Embedding):
+            total += sum(param.numel() for param in module.parameters() if param.requires_grad)
+    return total
+
+
+def _estimate_optimizer_state_mb(
+    model: torch.nn.Module,
+    loss_suite: LossSuite,
+    config: EDGRecConfig,
+) -> float:
+    """Estimate persistent optimizer-state memory in MiB."""
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params += sum(p.numel() for p in loss_suite.parameters() if p.requires_grad)
+    embedding_params = _embedding_table_parameter_count(model)
+    state_scalars = 0
+
+    if (
+        config.baseline_family in {"lightgcn_paper", "dice_paper"}
+        or config.embedding_optimizer == "adamw"
+    ):
+        state_scalars = 2 * total_params
+    else:
+        dense_params = max(0, total_params - embedding_params)
+        state_scalars = 2 * dense_params
+        if config.embedding_optimizer == "sparseadam":
+            state_scalars += 2 * embedding_params
+
+    return state_scalars * 4 / 1024**2
+
+
+def _log_resource_contract(
+    *,
+    config: EDGRecConfig,
+    model: torch.nn.Module,
+    loss_suite: LossSuite,
+    data: Any,
+    experiment_logger: ExperimentLogger,
+    exp_id: int,
+) -> None:
+    """Log static resource-shaping fields before training starts."""
+    model_parameter_count = sum(p.numel() for p in model.parameters())
+    optimizer_state_mb = _estimate_optimizer_state_mb(model, loss_suite, config)
+    resource_fields = {
+        "model_parameter_count": float(model_parameter_count),
+        "optimizer_state_estimate_mb": optimizer_state_mb,
+        "item_embedding_count": float(data.n_items),
+        "train_edge_count": float(data.edge_index.size(1)),
+    }
+    logger.info(
+        (
+            "Resource contract: item embeddings=%d | train edges=%d | "
+            "model params=%d | optimizer state estimate=%.1f MB | "
+            "embedding optimizer=%s"
+        ),
+        int(data.n_items),
+        int(data.edge_index.size(1)),
+        model_parameter_count,
+        optimizer_state_mb,
+        config.embedding_optimizer,
+    )
+    for metric_name, metric_value in resource_fields.items():
+        experiment_logger.log_metric(exp_id, metric_name, metric_value, split="train")
+
+
 def _start_mlflow_run(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     preset: str | None,
     intervention: str | None,
     experiment_id: str | None,
@@ -1253,14 +1353,21 @@ def build_benchmark_config_inputs(
     graph_policy: str | None = None,
 ) -> dict[str, object]:
     """Build one run's config inputs from normalized benchmark arguments."""
+    copied_fields = _present_field_mapping(
+        benchmark_args,
+        BENCHMARK_CONFIG_FIELDS,
+    )
+    item_universe_policy = resolve_benchmark_item_universe_policy_value(
+        benchmark_args,
+        dataset=dataset,
+    )
+    if item_universe_policy is not None:
+        copied_fields["item_universe_policy"] = item_universe_policy
     return _build_config_input_mapping(
         dataset=dataset,
         preset=preset,
         seed=DEFAULT_SEED,
-        copied_fields=_present_field_mapping(
-            benchmark_args,
-            BENCHMARK_CONFIG_FIELDS,
-        ),
+        copied_fields=copied_fields,
         extra_overrides={
             "lr_scheduler": lr_scheduler,
             "num_neighbors": num_neighbors,
@@ -1284,7 +1391,7 @@ def normalize_benchmark_config_overrides(
             "Use the current config surface only; removed fields are not supported: "
             + ", ".join(removed_fields),
         )
-    default_config = UCaGNNConfig()
+    default_config = EDGRecConfig()
     normalized: dict[str, object] = {
         field_name: raw_config.get(field_name) for field_name in BENCHMARK_CONFIG_FIELDS
     }
@@ -1322,8 +1429,10 @@ def normalize_benchmark_config_overrides(
     for string_field in (
         "training_graph_mode",
         "branch_loss_mode",
+        "dice_mask_reduction",
         "recommendation_loss_mode",
         "negative_sampling_strategy",
+        "loss_normalization",
     ):
         value = raw_config.get(string_field)
         normalized[string_field] = str(value) if value is not None else None
@@ -1370,19 +1479,17 @@ def normalize_benchmark_config_overrides(
     normalized["num_neighbors"] = normalize_benchmark_num_neighbors_override(
         raw_config.get("num_neighbors"),
     )
-    optional_int_fields = (
-        "cagra_k",
-        "cagra_out_degree",
-        "cagra_initial_degree",
-        "cagra_team_size",
-        "cagra_itopk_size",
-        "cagra_candidate_k",
+    embedding_optimizer = raw_config.get("embedding_optimizer")
+    normalized["embedding_optimizer"] = (
+        str(embedding_optimizer) if embedding_optimizer is not None else None
     )
-    for field_name in optional_int_fields:
-        field_value = raw_config.get(field_name)
-        normalized[field_name] = int(field_value) if field_value is not None else None
-    cagra_metric = raw_config.get("cagra_metric")
-    normalized["cagra_metric"] = str(cagra_metric) if cagra_metric is not None else None
+    item_universe_policy = raw_config.get("item_universe_policy")
+    if isinstance(item_universe_policy, Mapping):
+        normalized["item_universe_policy"] = dict(item_universe_policy)
+    else:
+        normalized["item_universe_policy"] = (
+            str(item_universe_policy) if item_universe_policy is not None else None
+        )
     normalized["hard_negative_ratio"] = float(
         raw_config.get("hard_negative_ratio", default_config.hard_negative_ratio),
     )
@@ -1404,12 +1511,20 @@ def normalize_benchmark_config_overrides(
         "independence_ramp_rate",
         "contrastive_temperature",
         "uniformity_temperature",
+        "feature_gate_init",
+        "train_edge_keep_prob",
     )
     for field_name in optional_float_fields:
         field_value = raw_config.get(field_name)
         normalized[field_name] = float(field_value) if field_value is not None else None
 
-    optional_bool_fields = ("use_ipw", "use_conformity_au", "use_popularity_head")
+    optional_bool_fields = (
+        "use_ipw",
+        "use_conformity_au",
+        "use_popularity_head",
+        "use_learned_score_mix",
+        "separate_item_branch_embeddings",
+    )
     for field_name in optional_bool_fields:
         field_value = raw_config.get(field_name)
         normalized[field_name] = bool(field_value) if field_value is not None else None
@@ -1477,8 +1592,8 @@ def normalize_benchmark_config_overrides(
     return normalized
 
 
-def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfig:
-    """Build UCaGNNConfig from CLI args or mapping-style overrides.
+def build_config(args: argparse.Namespace | Mapping[str, object]) -> EDGRecConfig:
+    """Build EDGRecConfig from CLI args or mapping-style overrides.
 
     Precedence is: defaults -> preset -> recipe overrides -> explicit CLI flags.
     Conflicts between recipe-owned overrides and explicit CLI/config overrides are
@@ -1493,7 +1608,12 @@ def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfi
     if recipe is not None:
         cli_preset = config_inputs.get("preset")
         recipe_preset = recipe.get("preset")
-        if cli_preset is not None and recipe_preset is not None and cli_preset != recipe_preset:
+        if (
+            cli_preset is not None
+            and recipe_preset is not None
+            and canonical_preset_for_identity(str(cli_preset))
+            != canonical_preset_for_identity(str(recipe_preset))
+        ):
             raise ValueError(
                 (
                     f"preset={cli_preset!r} conflicts with recipe preset={recipe_preset!r}. "
@@ -1504,9 +1624,11 @@ def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfi
         recipe_overrides.update(recipe.get("overrides", {}))
         if effective_preset is None:
             effective_preset = recipe.get("preset")
+    if effective_preset is not None:
+        effective_preset = public_preset_name(str(effective_preset))
 
     if effective_preset is not None and effective_preset not in CONFIG_PRESET_METHODS:
-        available = ", ".join(sorted(CONFIG_PRESET_METHODS))
+        available = ", ".join(sorted(CONFIG_PRESET_CHOICES))
         raise ValueError(
             f"Unknown preset '{effective_preset}'. Available presets: {available}",
         )
@@ -1535,7 +1657,7 @@ def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfi
             "loss_schedule only supports 'baseline'; fused BPR stays active from epoch 0.",
         )
 
-    config = UCaGNNConfig()
+    config = EDGRecConfig()
 
     # Apply preset
     if effective_preset in CONFIG_PRESET_METHODS:
@@ -1555,13 +1677,13 @@ def build_config(args: argparse.Namespace | Mapping[str, object]) -> UCaGNNConfi
 
 
 def run_experiment(
-    config: UCaGNNConfig,
+    config: EDGRecConfig,
     preset: str | None = None,
     intervention: str | None = None,
     save_checkpoint: bool = True,
     enable_mlflow: bool = True,
     mlflow_tracking_uri: str | None = None,
-    mlflow_experiment_name: str = "ucagnn-thesis",
+    mlflow_experiment_name: str = "edgrec-thesis",
     mlflow_run_name: str | None = None,
     experiment_id: str | None = None,
     recipe_name: str | None = None,
@@ -1694,16 +1816,25 @@ def run_experiment(
         )
     checkpoint_state = None
     if effective_auto_resume:
-        checkpoint_state = _validate_resume_identity(
-            _load_checkpoint_metadata(
-                resolved_checkpoint_path,
-                config.device,
-            ),
-            checkpoint_path=resolved_checkpoint_path,
-            explicit_checkpoint_path=explicit_checkpoint_path,
-            training_identity=training_identity,
-            training_hash=training_hash,
+        candidate_paths = (
+            [resolved_checkpoint_path]
+            if explicit_checkpoint_path or pre_resolved_checkpoint_path is not None
+            else _default_checkpoint_path_candidates(config, preset, intervention, training_hash)
         )
+        for candidate_path in candidate_paths:
+            checkpoint_state = _validate_resume_identity(
+                _load_checkpoint_metadata(
+                    candidate_path,
+                    config.device,
+                ),
+                checkpoint_path=candidate_path,
+                explicit_checkpoint_path=explicit_checkpoint_path,
+                training_identity=training_identity,
+                training_hash=training_hash,
+            )
+            if checkpoint_state is not None:
+                resolved_checkpoint_path = candidate_path
+                break
     checkpoint_ready_for_eval = (
         _checkpoint_ready_for_evaluation(checkpoint_state, config)
         if checkpoint_state is not None
@@ -1780,6 +1911,14 @@ def run_experiment(
     else:
         experiment_logger.update_experiment_status(exp_id, status="running")
     logger.info(f"Experiment ID: {exp_id}")
+    _log_resource_contract(
+        config=config,
+        model=model,
+        loss_suite=loss_suite,
+        data=data,
+        experiment_logger=experiment_logger,
+        exp_id=exp_id,
+    )
 
     mlflow_module = None
     mlflow_status = "FAILED"
@@ -1849,6 +1988,13 @@ def run_experiment(
         if not checkpoint_ready_for_eval and start_epoch < config.epochs:
             logger.info(f"Training for {config.epochs} epochs...")
             if config.auto_batch_size and cuda_ and checkpoint_state is None:
+                # The parameter-count model above is only diagnostic on this path.
+                # Release it before constructing candidate trainers so large catalogs
+                # do not pay a transient duplicate-model CUDA footprint.
+                model = None
+                loss_suite = None
+                trainer = None
+                _release_cuda_probe_memory()
                 candidates = _auto_batch_probe_candidates(config)
                 try:
                     start_index = candidates.index(int(config.batch_size))
@@ -1920,6 +2066,17 @@ def run_experiment(
                             intervention,
                         )
                         if candidate != selected_batch_size:
+                            logger.info(
+                                (
+                                    "Auto batch-size training fallback selected %d for %s "
+                                    "after selected batch_size %d failed at runtime; "
+                                    "canonical name now %s."
+                                ),
+                                candidate,
+                                config.dataset,
+                                selected_batch_size,
+                                canonical_name,
+                            )
                             if exp_id is not None:
                                 experiment_logger.conn.execute(
                                     (
@@ -2172,6 +2329,9 @@ def main() -> int:
     config = build_config(args)
     recipe = get_recipe(args.recipe) if args.recipe else None
     resolved_preset = args.preset or (recipe.get("preset") if recipe else None)
+    if resolved_preset is not None:
+        resolved_preset = public_preset_name(str(resolved_preset))
+    recipe_name = public_preset_name(str(args.recipe)) if args.recipe else None
     result = run_experiment(
         config,
         preset=resolved_preset,
@@ -2182,7 +2342,7 @@ def main() -> int:
         mlflow_experiment_name=args.mlflow_experiment_name,
         mlflow_run_name=args.mlflow_run_name,
         experiment_id=args.experiment_id,
-        recipe_name=args.recipe,
+        recipe_name=recipe_name,
         checkpoint_path=args.checkpoint_path,
         checkpoint_every=args.checkpoint_every,
         auto_resume=args.auto_resume,

@@ -30,6 +30,11 @@ def _format_int_part(value: object) -> str:
     return str(int(value))
 
 
+def _format_float_part(value: object) -> str:
+    """Format a float config value as a filesystem-safe name fragment."""
+    return f"{float(value):g}".replace(".", "p")
+
+
 def _optional_name_part(
     value: object,
     prefix: str,
@@ -41,11 +46,16 @@ def _optional_name_part(
     return f"{prefix}{formatter(value)}"
 
 
-def _non_default_name_part(value: object, default: object, prefix: str) -> str | None:
+def _non_default_name_part(
+    value: object,
+    default: object,
+    prefix: str,
+    formatter: NamePartFormatter = str,
+) -> str | None:
     """Return a prefixed name fragment only when ``value`` differs from default."""
     if value in (None, default):
         return None
-    return f"{prefix}{value}"
+    return f"{prefix}{formatter(value)}"
 
 
 def _extend_name_parts(parts: list[str], candidates: list[str | None]) -> None:
@@ -102,7 +112,7 @@ def build_canonical_experiment_name(
 ) -> str:
     """Build a descriptive canonical experiment name from an effective config.
 
-    The function accepts both live ``UCaGNNConfig`` objects and stored
+    The function accepts both live ``EDGRecConfig`` objects and stored
     ``config_json`` dictionaries so checkpoint names and result-table labels
     cannot drift apart.
     """
@@ -126,6 +136,9 @@ def build_canonical_experiment_name(
     sample_interactions = _config_value(config, "sample_interactions")
     loader_max_rows = _config_value(config, "loader_max_rows")
     preprocessing_preset = _config_value(config, "preprocessing_preset")
+    item_universe_policy = str(
+        _config_value(config, "item_universe_policy", "observed_interaction_items"),
+    )
     graph_policy = str(_config_value(config, "graph_policy", "observed"))
     derived_split_mode = str(
         _config_value(config, "derived_split_mode", "per_user_temporal"),
@@ -138,6 +151,11 @@ def build_canonical_experiment_name(
             _optional_name_part(sample_interactions, "sample", _format_int_part),
             _optional_name_part(loader_max_rows, "loadrows", _format_int_part),
             _optional_name_part(preprocessing_preset, "ppreset"),
+            _non_default_name_part(
+                item_universe_policy,
+                "observed_interaction_items",
+                "iuniv",
+            ),
             _non_default_name_part(graph_policy, "observed", "graph"),
             _non_default_name_part(
                 derived_split_mode,
@@ -146,6 +164,17 @@ def build_canonical_experiment_name(
             ),
             "feat" if _config_bool(config, "use_features", False) else None,
             _non_default_name_part(feature_policy, "thesis_default", "fpolicy"),
+            _non_default_name_part(
+                _config_value(config, "embedding_optimizer", "adamw"),
+                "adamw",
+                "embopt",
+            ),
+            _non_default_name_part(
+                _config_value(config, "train_edge_keep_prob", 1.0),
+                1.0,
+                "edgekeep",
+                _format_float_part,
+            ),
             f"lr-{_config_value(config, 'lr_scheduler', 'none')}",
             intervention,
             f"seed{_config_int(config, 'seed')}",

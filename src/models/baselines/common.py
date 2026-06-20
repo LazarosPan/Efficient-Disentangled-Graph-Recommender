@@ -1,7 +1,7 @@
 """Shared canonical baseline helpers.
 
 The paper-baseline modules use these helpers to expose the same trainer and
-evaluator surface as U-CaGNN while keeping their architecture code separate.
+evaluator surface as EDGRec while keeping their architecture code separate.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import torch
 from torch import nn
 from torch_geometric.utils import coalesce, degree
 
-from ...utils.config import UCaGNNConfig
+from ...utils.config import EDGRecConfig
 from ..common import training_output_payload
 from ..lightgcn import DualBranchGCN
 
@@ -179,7 +179,7 @@ def score_dict(
 class CanonicalBaselineRecommender(nn.Module):
     """Common metadata and output helpers for canonical baseline models."""
 
-    def __init__(self, n_users: int, n_items: int, config: UCaGNNConfig) -> None:
+    def __init__(self, n_users: int, n_items: int, config: EDGRecConfig) -> None:
         super().__init__()
         self.n_users = n_users
         self.n_items = n_items

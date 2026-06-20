@@ -21,10 +21,18 @@ from experiments.run_search import (
 from optuna.importance import FanovaImportanceEvaluator, get_param_importances
 from optuna.trial import FrozenTrial, TrialState
 from src.utils.crru import (
+    VALIDATION_ACCURACY_METRIC,
     VALIDATION_ONLINE_CRRU_K_METRICS,
     VALIDATION_ONLINE_CRRU_METRIC,
     compute_crru_efficiency_scores,
     compute_crru_scores_for_k,
+    compute_validation_online_crru_for_k,
+    compute_validation_online_crru_objective,
+)
+from src.utils.method_naming import (
+    display_method_label,
+    method_identifier_aliases,
+    public_method_identifier,
 )
 from src.utils.project_paths import RESULTS_DIR
 
@@ -32,13 +40,18 @@ OPTUNA_OPTIMIZATION_MARKDOWN_PATH = RESULTS_DIR / "optuna_optimization.md"
 OPTUNA_FIGURES_DIR = RESULTS_DIR / "optuna_figures"
 DEFAULT_TOP_N = 10
 MIN_IMPORTANCE_TRIALS = 10
-PAPER_FIGURE_FILENAMES = (
-    "optuna_progress_by_dataset.png",
-    "optuna_importance_by_dataset.png",
-    "optuna_crru_components_by_dataset.png",
-    "optuna_lr_branchmix_landscape.png",
-    "optuna_branch_depth_heatmaps.png",
-    "optuna_fanout_runtime_tradeoffs.png",
+DEFAULT_SOURCE_OBJECTIVE_METRICS = (
+    VALIDATION_ONLINE_CRRU_METRIC,
+    VALIDATION_ACCURACY_METRIC,
+)
+CRRU_FIGURE_STEMS = (
+    "component_correlations_by_dataset",
+    "selection_frontier_by_dataset",
+    "importance_by_dataset",
+    "components_by_dataset",
+    "lr_branchmix_landscape",
+    "branch_depth_heatmaps",
+    "fanout_runtime_tradeoffs",
 )
 PARAMETER_PRIORITY = (
     "lr",
@@ -46,6 +59,7 @@ PARAMETER_PRIORITY = (
     "batch_size",
     "lr_scheduler",
     "lr_scheduler_factor",
+    "embedding_optimizer",
     "num_neighbors",
     "num_neighbors_depth_1",
     "num_neighbors_depth_2",
@@ -65,13 +79,8 @@ PARAMETER_PRIORITY = (
     "auxiliary_losses_start_epoch",
     "popularity_supervision_start_epoch",
     "graph_policy",
-    "cagra_candidate_k",
-    "cagra_k",
-    "cagra_out_degree",
-    "cagra_initial_degree",
-    "cagra_team_size",
-    "cagra_metric",
-    "cagra_itopk_size",
+    "item_universe_policy",
+    "train_edge_keep_prob",
     "hard_negative_ratio",
     "dice_sampler_margin",
     "grad_clip_norm",
@@ -116,25 +125,63 @@ DATASET_METRICS = (
 )
 
 
+def objective_metric_label(metric: str) -> str:
+    """Return a compact display label for a validation objective metric."""
+    return {
+        VALIDATION_ONLINE_CRRU_METRIC: "OnlineCRRU@20_40 (validation)",
+        VALIDATION_ACCURACY_METRIC: "Validation Accuracy",
+    }.get(metric, metric)
+
+
+PAPER_FIGURE_FILENAMES = tuple(f"optuna_crru_{stem}.png" for stem in CRRU_FIGURE_STEMS)
+
+
+def _completed_finite_trial(trial: FrozenTrial) -> bool:
+    """Return whether an Optuna trial has a completed finite objective value."""
+    return (
+        trial.state == TrialState.COMPLETE
+        and trial.value is not None
+        and math.isfinite(float(trial.value))
+    )
+
+
+def _raw_trial_objective_metric(trial: FrozenTrial) -> str:
+    """Return the raw stored objective metric label for one trial."""
+    metric = trial.user_attrs.get("objective_metric")
+    return str(metric) if metric else "-"
+
+
+def _study_has_default_objective_metric(study: optuna.Study) -> bool:
+    """Return whether a study belongs in default thesis Optuna outputs."""
+    return any(
+        _completed_finite_trial(trial)
+        and _raw_trial_objective_metric(trial) in DEFAULT_SOURCE_OBJECTIVE_METRICS
+        for trial in study.trials
+    )
+
+
 def load_studies(storage: str, study_name: str | None = None) -> list[optuna.Study]:
-    """Load one or all studies from Optuna RDB storage."""
+    """Load one requested study or every default thesis study from Optuna storage."""
+    summaries = sorted(
+        optuna.get_all_study_summaries(storage=storage),
+        key=lambda summary: summary.study_name,
+    )
     if study_name:
-        return [optuna.load_study(study_name=study_name, storage=storage)]
-    return [
-        optuna.load_study(study_name=summary.study_name, storage=storage)
-        for summary in optuna.get_all_study_summaries(storage=storage)
+        existing = {summary.study_name for summary in summaries}
+        resolved_name = next(
+            (alias for alias in method_identifier_aliases(study_name) if alias in existing),
+            study_name,
+        )
+        return [optuna.load_study(study_name=resolved_name, storage=storage)]
+    studies = [
+        optuna.load_study(study_name=summary.study_name, storage=storage) for summary in summaries
     ]
+    return [study for study in studies if _study_has_default_objective_metric(study)]
 
 
 def completed_trials(study: optuna.Study) -> list[FrozenTrial]:
     """Return completed single-objective trials with finite values."""
-    return [
-        trial
-        for trial in study.trials
-        if trial.state == TrialState.COMPLETE
-        and trial.value is not None
-        and math.isfinite(float(trial.value))
-    ]
+    return [trial for trial in study.trials if _completed_finite_trial(trial)]
 
 
 def trial_origin(trial: FrozenTrial) -> str:
@@ -166,18 +213,16 @@ def trial_sort_key(study: optuna.Study, trial: FrozenTrial) -> tuple[float, int]
 
 
 def dataset_trial_sort_key(
-    study: optuna.Study,
+    _study: optuna.Study,
     trial: FrozenTrial,
     *,
     dataset: str,
 ) -> tuple[float, int]:
-    """Sort trials by one dataset-local objective."""
-    value = dataset_metric(trial, dataset, "objective")
+    """Sort trials by the default dataset-local OnlineCRRU objective."""
+    value = dataset_metric(trial, dataset, VALIDATION_ONLINE_CRRU_METRIC)
     if value is None:
         value = float("nan")
-    direction = study.direction.name.lower()
-    objective_rank = value if direction == "minimize" else -value
-    return objective_rank, int(trial.number)
+    return -value, int(trial.number)
 
 
 def ordered_params(params: Mapping[str, Any]) -> list[tuple[str, Any]]:
@@ -204,7 +249,7 @@ def logical_param_name(param_name: str) -> str:
 
 
 def logical_trial_params(trial: FrozenTrial) -> Mapping[str, Any]:
-    """Return logical sampled params, preferring stored U-CaGNN config fields."""
+    """Return logical sampled params, preferring stored EDGRec config fields."""
     sampled_params = trial.user_attrs.get("sampled_params")
     if isinstance(sampled_params, Mapping):
         return sampled_params
@@ -225,6 +270,13 @@ def format_param_value(value: Any) -> str:
     if isinstance(value, dict | list | tuple):
         return json.dumps(value, sort_keys=True, separators=(",", ":"))
     return str(value)
+
+
+def format_effective_param_value(key: str, value: Any) -> str:
+    """Return a public report value for one effective config parameter."""
+    if key in {"baseline_family", "preset"}:
+        return display_method_label(value)
+    return format_param_value(value)
 
 
 def format_params(params: Mapping[str, Any]) -> str:
@@ -320,7 +372,8 @@ def format_effective_params(
     if not params:
         return "-"
     return ", ".join(
-        f"{key}={format_param_value(value)}" for key, value in ordered_effective_params(params)
+        f"{key}={format_effective_param_value(key, value)}"
+        for key, value in ordered_effective_params(params)
     )
 
 
@@ -359,7 +412,80 @@ def dataset_metric(trial: FrozenTrial, dataset: str, metric_name: str) -> float 
     """Return a dataset validation metric stored in Optuna user attrs."""
     if metric_name == "objective":
         return attr_float(trial, f"{dataset}.objective")
-    return attr_float(trial, f"{dataset}.val.{metric_name}")
+    stored = attr_float(trial, f"{dataset}.val.{metric_name}")
+    if stored is not None:
+        return stored
+    if metric_name == VALIDATION_ONLINE_CRRU_METRIC:
+        return _derived_online_crru_objective(trial, dataset)
+    for k, k_metric_name in VALIDATION_ONLINE_CRRU_K_METRICS.items():
+        if metric_name == k_metric_name:
+            return _derived_online_crru_for_k(trial, dataset, k)
+    return None
+
+
+def _primary_validation_metrics(trial: FrozenTrial, dataset: str) -> dict[str, float]:
+    """Return stored validation metrics needed to derive OnlineCRRU."""
+    names = (
+        "NDCG@20",
+        "Recall@20",
+        "HitRatio@20",
+        "Personalization@20",
+        "AveragePopularity@20",
+        "NDCG@40",
+        "Recall@40",
+        "HitRatio@40",
+        "Personalization@40",
+        "AveragePopularity@40",
+    )
+    metrics: dict[str, float] = {}
+    for name in names:
+        value = attr_float(trial, f"{dataset}.val.{name}")
+        if value is None:
+            return {}
+        metrics[name] = value
+    return metrics
+
+
+def _derived_online_crru_for_k(trial: FrozenTrial, dataset: str, k: int) -> float | None:
+    """Derive per-K OnlineCRRU from stored validation and runtime attrs."""
+    metrics = _primary_validation_metrics(trial, dataset)
+    if not metrics:
+        return None
+    try:
+        return compute_validation_online_crru_for_k(
+            metrics,
+            k=k,
+            peak_vram_mb=attr_float(trial, f"{dataset}.peak_vram_mb"),
+            epoch_time_s=trial_epoch_time_s(trial, dataset),
+        )
+    except ValueError:
+        return None
+
+
+def _derived_online_crru_objective(trial: FrozenTrial, dataset: str) -> float | None:
+    """Derive scalar OnlineCRRU from stored validation and runtime attrs."""
+    metrics = _primary_validation_metrics(trial, dataset)
+    if not metrics:
+        return None
+    try:
+        return compute_validation_online_crru_objective(
+            metrics,
+            peak_vram_mb=attr_float(trial, f"{dataset}.peak_vram_mb"),
+            epoch_time_s=trial_epoch_time_s(trial, dataset),
+        )
+    except ValueError:
+        return None
+
+
+def trial_objective_metric(trial: FrozenTrial) -> str:
+    """Return the objective metric stored for one Optuna trial."""
+    return _raw_trial_objective_metric(trial)
+
+
+def trial_objective_split(trial: FrozenTrial) -> str:
+    """Return the objective split stored for one Optuna trial."""
+    split = trial.user_attrs.get("objective_split")
+    return str(split) if split else "-"
 
 
 def average_trial_attr(trial: FrozenTrial, suffix: str) -> float | None:
@@ -451,6 +577,23 @@ def format_float(value: float | None, digits: int = 6) -> str:
 
 
 @dataclass(frozen=True)
+class DatasetTrialCandidate:
+    """One dataset-scoped completed Optuna trial candidate."""
+
+    dataset: str
+    objective_metric: str
+    objective_split: str
+    source_objective_metric: str
+    source_objective_split: str
+    study_name: str
+    study_display_name: str
+    study_direction: str
+    trial: FrozenTrial
+    objective_value: float
+    study_objective_value: float | None
+
+
+@dataclass(frozen=True)
 class ImportanceResult:
     """One reliable-or-omitted Optuna importance result."""
 
@@ -458,6 +601,148 @@ class ImportanceResult:
     revision: str | None
     trial_count: int
     reason: str | None = None
+
+
+def dataset_trial_candidates(studies: Sequence[optuna.Study]) -> list[DatasetTrialCandidate]:
+    """Return every dataset-scoped completed candidate from loaded studies."""
+    candidates: list[DatasetTrialCandidate] = []
+    for study in studies:
+        display_name = public_method_identifier(study.study_name) or study.study_name
+        for trial in completed_trials(study):
+            study_objective = float(trial.value) if trial.value is not None else None
+            source_metric = trial_objective_metric(trial)
+            source_split = trial_objective_split(trial)
+            for dataset in dataset_names(trial):
+                objective = dataset_metric(trial, dataset, VALIDATION_ONLINE_CRRU_METRIC)
+                if objective is None or not math.isfinite(float(objective)):
+                    continue
+                candidates.append(
+                    DatasetTrialCandidate(
+                        dataset=dataset,
+                        objective_metric=VALIDATION_ONLINE_CRRU_METRIC,
+                        objective_split="val",
+                        source_objective_metric=source_metric,
+                        source_objective_split=source_split,
+                        study_name=study.study_name,
+                        study_display_name=display_name,
+                        study_direction="maximize",
+                        trial=trial,
+                        objective_value=float(objective),
+                        study_objective_value=study_objective,
+                    ),
+                )
+    return candidates
+
+
+def objective_group_sort_key(group: tuple[str, str, str]) -> tuple[int, str, str]:
+    """Return a stable order for objective groups in thesis reports."""
+    metric, split, direction = group
+    priority = {
+        VALIDATION_ONLINE_CRRU_METRIC: 0,
+        VALIDATION_ACCURACY_METRIC: 1,
+        "NDCG@40": 2,
+    }.get(metric, 10)
+    return priority, split, direction
+
+
+def candidate_sort_key(candidate: DatasetTrialCandidate) -> tuple[float, str, int]:
+    """Sort candidates by their own objective direction and provenance."""
+    objective_rank = (
+        candidate.objective_value
+        if candidate.study_direction == "minimize"
+        else -candidate.objective_value
+    )
+    return objective_rank, candidate.study_name, int(candidate.trial.number)
+
+
+def compute_global_posthoc_validation_crru(
+    candidates: Sequence[DatasetTrialCandidate],
+) -> dict[tuple[str, int, str], dict[int, float]]:
+    """Return dataset-local post-hoc CRRU over every loaded candidate."""
+    result: dict[tuple[str, int, str], dict[int, float]] = {}
+    for dataset in sorted({candidate.dataset for candidate in candidates}):
+        dataset_candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.dataset == dataset
+            and dataset_metric(candidate.trial, dataset, "NDCG@20") is not None
+            and dataset_metric(candidate.trial, dataset, "Recall@20") is not None
+            and dataset_metric(candidate.trial, dataset, "HitRatio@20") is not None
+            and dataset_metric(candidate.trial, dataset, "Personalization@20") is not None
+            and dataset_metric(candidate.trial, dataset, "AveragePopularity@20") is not None
+            and dataset_metric(candidate.trial, dataset, "NDCG@40") is not None
+            and dataset_metric(candidate.trial, dataset, "Recall@40") is not None
+            and dataset_metric(candidate.trial, dataset, "HitRatio@40") is not None
+            and dataset_metric(candidate.trial, dataset, "Personalization@40") is not None
+            and dataset_metric(candidate.trial, dataset, "AveragePopularity@40") is not None
+        ]
+        if not dataset_candidates:
+            continue
+
+        efficiency_scores = compute_crru_efficiency_scores(
+            [
+                attr_float(candidate.trial, f"{dataset}.peak_vram_mb")
+                for candidate in dataset_candidates
+            ],
+            [trial_epoch_time_s(candidate.trial, dataset) for candidate in dataset_candidates],
+        )
+        crru_20 = compute_crru_scores_for_k(
+            ndcg=[
+                dataset_metric(candidate.trial, dataset, "NDCG@20")
+                for candidate in dataset_candidates
+            ],
+            recall=[
+                dataset_metric(candidate.trial, dataset, "Recall@20")
+                for candidate in dataset_candidates
+            ],
+            hit=[
+                dataset_metric(candidate.trial, dataset, "HitRatio@20")
+                for candidate in dataset_candidates
+            ],
+            personalization=[
+                dataset_metric(candidate.trial, dataset, "Personalization@20")
+                for candidate in dataset_candidates
+            ],
+            average_popularity=[
+                dataset_metric(candidate.trial, dataset, "AveragePopularity@20")
+                for candidate in dataset_candidates
+            ],
+            efficiency_scores=efficiency_scores,
+        )
+        crru_40 = compute_crru_scores_for_k(
+            ndcg=[
+                dataset_metric(candidate.trial, dataset, "NDCG@40")
+                for candidate in dataset_candidates
+            ],
+            recall=[
+                dataset_metric(candidate.trial, dataset, "Recall@40")
+                for candidate in dataset_candidates
+            ],
+            hit=[
+                dataset_metric(candidate.trial, dataset, "HitRatio@40")
+                for candidate in dataset_candidates
+            ],
+            personalization=[
+                dataset_metric(candidate.trial, dataset, "Personalization@40")
+                for candidate in dataset_candidates
+            ],
+            average_popularity=[
+                dataset_metric(candidate.trial, dataset, "AveragePopularity@40")
+                for candidate in dataset_candidates
+            ],
+            efficiency_scores=efficiency_scores,
+        )
+        for candidate, value_20, value_40 in zip(
+            dataset_candidates,
+            crru_20,
+            crru_40,
+            strict=True,
+        ):
+            result[(candidate.study_name, int(candidate.trial.number), dataset)] = {
+                20: value_20,
+                40: value_40,
+            }
+    return result
 
 
 def _importance_candidate_trials(
@@ -658,11 +943,12 @@ def study_report_sort_key(study: optuna.Study) -> tuple[int, str]:
     trials = completed_trials(study)
     datasets = sorted({dataset for trial in trials for dataset in dataset_names(trial)})
     objective_metric = str(trials[0].user_attrs.get("objective_metric", "")) if trials else ""
+    display_name = public_method_identifier(study.study_name) or study.study_name
     if objective_metric == VALIDATION_ONLINE_CRRU_METRIC and len(datasets) == 1:
-        return (0, study.study_name)
+        return (0, display_name)
     if objective_metric == VALIDATION_ONLINE_CRRU_METRIC:
-        return (1, study.study_name)
-    return (2, study.study_name)
+        return (1, display_name)
+    return (2, display_name)
 
 
 def render_failure_summary(study: optuna.Study) -> list[str]:
@@ -733,9 +1019,9 @@ def render_trial_accounting(study: optuna.Study) -> list[str]:
     lines.extend(
         [
             "",
-            f"- Fresh informative budget count: `{fresh_informative}` "
+            f"- Fresh informative target count: `{fresh_informative}` "
             "(fresh COMPLETE + real fresh PRUNED).",
-            f"- Duplicate-skip pruned trials excluded from that budget: "
+            f"- Duplicate-skip pruned trials excluded from that target count: "
             f"`{fresh_duplicate_pruned}`.",
             "",
         ],
@@ -814,7 +1100,7 @@ def render_dataset_best_trials(
             [
                 f"#### Dataset: `{dataset}`",
                 "",
-                "| Rank | Trial | Origin | Dataset objective | Study objective | "
+                "| Rank | Trial | Origin | OnlineCRRU@20_40 | Study objective | "
                 "PosthocCRRU@20 | PosthocCRRU@40 | Time/epoch (s) | Peak VRAM (MB) | Batch | "
                 "Revision | Effective config |",
                 "|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---|",
@@ -824,7 +1110,7 @@ def render_dataset_best_trials(
             trial_crru = posthoc_crru.get(dataset, {}).get(int(trial.number), {})
             lines.append(
                 f"| {rank} | {trial.number} | {trial_origin(trial)} | "
-                f"{format_float(dataset_metric(trial, dataset, 'objective'))} | "
+                f"{format_float(dataset_metric(trial, dataset, VALIDATION_ONLINE_CRRU_METRIC))} | "
                 f"{format_float(float(trial.value) if trial.value is not None else None)} | "
                 f"{format_float(trial_crru.get(20))} | "
                 f"{format_float(trial_crru.get(40))} | "
@@ -856,6 +1142,81 @@ def render_dataset_importance_tables(
     return lines
 
 
+def render_global_best_trials(
+    studies: Sequence[optuna.Study],
+) -> list[str]:
+    """Render cross-study best completed trials by dataset and objective."""
+    candidates = dataset_trial_candidates(studies)
+    lines = [
+        "## Global best trials by dataset",
+        "",
+        "This section scans every loaded study in the Optuna storage. Study names are "
+        "provenance only; selection is by dataset-local `ValidationOnlineCRRU@20_40`, "
+        "using the stored value when available and deriving it from validation metrics, "
+        "time/epoch, and peak VRAM otherwise.",
+        "",
+        f"- Loaded studies: `{len(studies)}`",
+        f"- Dataset-scoped completed candidates: `{len(candidates)}`",
+        "",
+    ]
+    if not candidates:
+        lines.extend(["No completed dataset-scoped candidates found.", ""])
+        return lines
+
+    posthoc_crru = compute_global_posthoc_validation_crru(candidates)
+    grouped: dict[tuple[str, str, str], dict[str, list[DatasetTrialCandidate]]] = {}
+    for candidate in candidates:
+        objective_key = (
+            candidate.objective_metric,
+            candidate.objective_split,
+            candidate.study_direction,
+        )
+        grouped.setdefault(objective_key, {}).setdefault(candidate.dataset, []).append(candidate)
+
+    for objective_key, by_dataset in sorted(
+        grouped.items(), key=lambda item: objective_group_sort_key(item[0])
+    ):
+        metric, split, direction = objective_key
+        lines.extend(
+            [
+                f"### Objective: `{split} {metric}`",
+                "",
+                f"Direction: `{direction}`.",
+                "",
+                "| Dataset | Best objective | Source study | Trial | Origin | Revision | "
+                "Source objective | Study objective | Global PosthocCRRU@20 | "
+                "Global PosthocCRRU@40 | "
+                "NDCG@40 | Recall@40 | Time/epoch (s) | Peak VRAM (MB) | Batch | "
+                "Effective config |",
+                "|---|---:|---|---:|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+            ],
+        )
+        for dataset, dataset_candidates in sorted(by_dataset.items()):
+            best = sorted(dataset_candidates, key=candidate_sort_key)[0]
+            trial_crru = posthoc_crru.get(
+                (best.study_name, int(best.trial.number), dataset),
+                {},
+            )
+            lines.append(
+                f"| {dataset} | {format_float(best.objective_value)} | "
+                f"`{best.study_display_name}` | {best.trial.number} | "
+                f"{trial_origin(best.trial)} | "
+                f"`{format_revision_label(trial_search_revision(best.trial))}` | "
+                f"`{best.source_objective_split} {best.source_objective_metric}` | "
+                f"{format_float(best.study_objective_value)} | "
+                f"{format_float(trial_crru.get(20))} | "
+                f"{format_float(trial_crru.get(40))} | "
+                f"{format_float(dataset_metric(best.trial, dataset, 'NDCG@40'))} | "
+                f"{format_float(dataset_metric(best.trial, dataset, 'Recall@40'))} | "
+                f"{format_float(trial_epoch_time_s(best.trial, dataset), digits=2)} | "
+                f"{format_float(attr_float(best.trial, f'{dataset}.peak_vram_mb'), digits=1)} | "
+                f"{format_float(attr_float(best.trial, f'{dataset}.batch_size'), digits=0)} | "
+                f"`{format_effective_params(best.trial, dataset=dataset)}` |",
+            )
+        lines.append("")
+    return lines
+
+
 def render_study_report(study: optuna.Study, *, top_n: int) -> str:
     """Render one Optuna study as markdown."""
     trials = completed_trials(study)
@@ -863,11 +1224,12 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
     objective_metric = "-"
     objective_split = "-"
     if trials:
-        objective_metric = str(trials[0].user_attrs.get("objective_metric", "-"))
-        objective_split = str(trials[0].user_attrs.get("objective_split", "-"))
+        objective_metric = trial_objective_metric(trials[0])
+        objective_split = trial_objective_split(trials[0])
 
+    display_study_name = public_method_identifier(study.study_name) or study.study_name
     lines = [
-        f"## Study: `{study.study_name}`",
+        f"## Study: `{display_study_name}`",
         "",
         f"- Direction: `{study.direction.name.lower()}`",
         f"- Objective: `{objective_split} {objective_metric}`",
@@ -904,9 +1266,10 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
             [
                 "### Best trial dataset metrics",
                 "",
-                "| Dataset | Objective | NDCG@20 | Recall@20 | Hit@20 | Pers@20 | AvgPop@20 | "
+                "| Dataset | Source objective | NDCG@20 | Recall@20 | Hit@20 | Pers@20 | "
+                "AvgPop@20 | "
                 "NDCG@40 | Recall@40 | Hit@40 | Pers@40 | AvgPop@40 | "
-                "ValCRRU@20 | ValCRRU@40 | ValCRRU@20_40 | PosthocCRRU@20 | "
+                "OnlineCRRU@20 | OnlineCRRU@40 | OnlineCRRU@20_40 | PosthocCRRU@20 | "
                 "PosthocCRRU@40 | Time/epoch (s) | Peak VRAM (MB) | Batch |",
                 "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
                 "---:|---:|---:|---:|---:|",
@@ -993,9 +1356,12 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
             )
             for trial in ranked[:3]:
                 trial_crru = posthoc_crru.get(dataset, {}).get(int(trial.number), {})
+                crru_proxy = dataset_metric(trial, dataset, VALIDATION_ONLINE_CRRU_METRIC)
                 lines.append(
-                    f"- `{dataset}` trial `{trial.number}`: dataset objective "
-                    f"`{format_float(dataset_metric(trial, dataset, 'objective'))}`; "
+                    f"- `{dataset}` trial `{trial.number}`: OnlineCRRU@20_40 "
+                    f"`{format_float(crru_proxy)}`; "
+                    f"study objective "
+                    f"`{format_float(float(trial.value) if trial.value is not None else None)}`; "
                     f"posthoc CRRU@20/40 "
                     f"`{format_float(trial_crru.get(20))}`/"
                     f"`{format_float(trial_crru.get(40))}`; "
@@ -1004,8 +1370,6 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
                     f"`{format_float(attr_float(trial, f'{dataset}.peak_vram_mb'), digits=1)}`MB; "
                     f"batch "
                     f"`{format_float(attr_float(trial, f'{dataset}.batch_size'), digits=0)}`; "
-                    f"study objective "
-                    f"`{format_float(float(trial.value) if trial.value is not None else None)}`; "
                     f"effective config `{format_effective_params(trial, dataset=dataset)}`",
                 )
     else:
@@ -1032,28 +1396,44 @@ def render_report(studies: Sequence[optuna.Study], *, storage: str, top_n: int) 
         "## Interpretation notes",
         "",
         "- Search objectives use validation metrics only; test metrics remain for formal reruns.",
-        "- New search-space definitions use `ValidationOnlineCRRU@20_40`, an online validation "
-        "proxy with the same CRRU component/exponent structure as thesis CRRU.",
+        "- The default report scans every useful Optuna study in storage. Use `--study-name` "
+        "only for narrow forensic inspection of excluded historical studies.",
+        "- `ValidationOnlineCRRU@20_40` is the single default ranking and figure metric. "
+        "It combines validation ranking/popularity-diversity metrics with time/epoch and "
+        "peak VRAM. The name is legacy: `online` means computable for one trial during "
+        "Optuna search, not an online-serving or A/B-test metric.",
+        "- Accuracy-optimized studies are still loaded as provenance, but their candidates "
+        "are compared through their stored-or-derived `ValidationOnlineCRRU@20_40` so the report "
+        "has one cross-study source of truth.",
         "- Exact thesis CRRU uses dataset-local section-row min-max normalization and is "
         "recomputed after rows exist; it is not a stable live Optuna objective because "
         "future trials change the min/max range.",
-        "- Historical studies may still show `val NDCG@40` or other older objectives.",
+        "- Historical `val NDCG@40` studies are excluded from default thesis outputs because "
+        "they are small early screens and are less useful than the CRRU and accuracy studies.",
+        "- Default figures aggregate loaded trials by dataset under `ValidationOnlineCRRU@20_40`. "
+        "Study names are provenance fields in the tables, not separate figure facets.",
+        "- Inactive CAGRA-only knobs are omitted from overview figure heatmaps, while historical "
+        "CAGRA trial provenance remains visible in the report tables.",
         "- Lower average popularity and higher personalization are supporting diagnostics, "
-        "not causal-effect estimates.",
+        "not standalone fairness or exposure-effect estimates.",
         "- If Optuna dashboard importances differ, first confirm the same storage URI, "
         "study name, objective target, and completed-trial subset.",
         "- Optuna RDB storage is the canonical owner for search trials; the thesis SQLite "
         "database keeps formal experiment and training logs.",
-        "- Current default multi-dataset searches expand into one independent study per "
+        "- Current multi-dataset searches expand into one independent study per "
         "dataset; older `*-all-*` studies are historical global-mean screens.",
-        "- `--trials N` now means N fresh informative finished trials by default: "
-        "COMPLETE plus real PRUNED, excluding FAIL/RUNNING, historically imported rows, "
-        "and duplicate-skip prunes. Imported rows are reported separately for provenance.",
+        "- Removed CAGRA graph-augmentation studies are included for provenance when "
+        "present in storage, but they should not be promoted as active thesis candidates "
+        "without a current-code rerun.",
+        "- `--trials N` means N fresh informative finished trials for the current "
+        "`search_space_revision`: COMPLETE plus real PRUNED, excluding FAIL/RUNNING, "
+        "historically imported rows, duplicate-skip prunes, and other revision hashes. "
+        "Imported rows are reported separately for provenance.",
         "- Hyperparameter importances are computed only within one homogeneous, "
         "non-imported `search_space_revision` subset with enough completed trials. "
         "Mixed unrevisioned/revision studies are marked unreliable instead of showing a "
         "misleading one-parameter importance table.",
-        "- The current second-pass grid tunes active U-CaGNN loss weights and schedule "
+        "- The current second-pass grid tunes active EDGRec loss weights and schedule "
         "knobs only; inactive DirectAU/IPW-only weights remain out of the default "
         "search to avoid changing the thesis model family without a separate ablation.",
         "- Schedule-conditioned parameters are sampled only when they affect the resolved "
@@ -1062,13 +1442,51 @@ def render_report(studies: Sequence[optuna.Study], *, storage: str, top_n: int) 
         "parameters. Future trials store the resolved dataset config directly; older "
         "trials fall back to sampled params plus any runtime attrs present in Optuna.",
         "",
-        "## Paper-ready figures",
-        "",
-        "Generated by `uv run scripts/export_optuna_figures.py`. The default exporter "
-        "writes a compact figure set and removes stale per-study PNGs from the figure "
-        "directory.",
-        "",
     ]
+    lines.extend(render_global_best_trials(studies))
+    lines.extend(
+        [
+            "## Paper-ready figures",
+            "",
+            "Generated by `uv run scripts/export_optuna_figures.py`. The default exporter "
+            "writes one unified validation CRRU PNG figure set and removes stale generated "
+            "figure files, including older PNG/HTML artifacts, from the figure directory. "
+            "The Optuna storage name is "
+            "`ValidationOnlineCRRU@20_40`; the figures use CRRU wording because `online` "
+            "only means single-trial search-time computation, not online serving or "
+            "A/B testing. Accuracy-only and historical NDCG figure sets are not generated "
+            "by default.",
+            "",
+            "The importance heatmap is a global overview diagnostic: each row "
+            "aggregates all loaded completed trials for one dataset/objective and uses normalized "
+            "univariate association scores. Use the study tables, not the overview heatmaps, for "
+            "strict same-revision importance claims. Colored cells always print a numeric "
+            "association value; gray cells mean no detected association among the displayed "
+            "top parameters.",
+            "The selection-frontier figure summarizes the trade-off behind each selected "
+            "trial: accuracy component on x, popularity-diversity component on y, "
+            "resource-efficiency percentile within the same dataset as color, and a gold "
+            "star for the selected trial. Colors are not comparable as absolute efficiency "
+            "values across datasets.",
+            "The component-response figure plots each component as a dataset-local percentile "
+            "against the dataset-local CRRU percentile. This avoids comparing raw component "
+            "magnitudes across datasets with different metric scales.",
+            "The component-correlation figure reports Spearman rank associations between "
+            "`ValidationOnlineCRRU@20_40` and its reconstructed accuracy, popularity-diversity, "
+            "and efficiency components. Treat it as a descriptive association diagnostic, "
+            "not a controlled attribution estimate.",
+            "Absolute resource-efficiency component values can cluster below 0.3 because "
+            "the search-time score uses inverse-log transforms of time/epoch and peak VRAM. "
+            "The default final CRRU exponent for this component is 0.15, so low absolute "
+            "efficiency values do not by themselves imply that resource cost dominates the "
+            "selection.",
+            "The branch-depth heatmap uses completed trials because pruned trials do not "
+            "have a comparable final validation objective and cannot be selected as global "
+            "best. Cells with an asterisk after `n` contain fewer than 10 completed trials "
+            "and should be treated as low-support diagnostics.",
+            "",
+        ],
+    )
     for filename in PAPER_FIGURE_FILENAMES:
         lines.append(f"- `{OPTUNA_FIGURES_DIR / filename}`")
     lines.extend(
@@ -1082,11 +1500,11 @@ def render_report(studies: Sequence[optuna.Study], *, storage: str, top_n: int) 
             "- Dataset-local top-3 candidate profile plot: NDCG, Recall, personalization, "
             "low-popularity score, epoch time, and VRAM for the formal-promotion trials.",
             "- Loss-weight response surface: interest-BPR weight vs conformity-BPR weight, "
-            "colored by validation CRRU, one panel per dataset.",
+            "colored by the selected validation objective, one panel per dataset.",
             "- Schedule ablation strip: `linear_ramp` vs `phased`, with active ramp/start "
             "knobs annotated beside each dataset's best trial.",
-            "- CRRU frontier plot: accuracy component vs bias/diversity component, bubble "
-            "size for efficiency and star markers for promotion candidates.",
+            "- Top-candidate effective-config strip: the selected LR, branch depths, fanout, "
+            "batch size, schedule, and loss weights for the best trial in each dataset.",
             "",
         ],
     )
@@ -1094,8 +1512,8 @@ def render_report(studies: Sequence[optuna.Study], *, storage: str, top_n: int) 
         [
             "## Studies",
             "",
-            "Active dataset-local CRRU studies are listed first; historical/global screens "
-            "remain below for provenance and failure diagnosis.",
+            "Detailed per-study sections below are provenance and diagnostics. Use the "
+            "global best section above as the cross-study candidate source of truth.",
             "",
         ],
     )

@@ -1,14 +1,38 @@
-"""LossSuite: fused BPR plus branch-local auxiliaries for U-CaGNN."""
+"""LossSuite: fused BPR plus branch-local auxiliaries for EDGRec."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import cast
 
 import torch
 from torch import nn
 from torch.nn import functional
 
-from ..utils.config import UCaGNNConfig
+from ..utils.config import DiceMaskReduction, EDGRecConfig
+
+_AUXILIARY_LOSS_KEYS = (
+    "interest_bpr",
+    "conformity_bpr",
+    "independence",
+    "contrastive",
+    "align",
+    "uniform",
+    "pop",
+    "prop_calib",
+)
+_AUXILIARY_LOSS_LOG_NAMES = {
+    "interest_bpr": "interest_bpr",
+    "conformity_bpr": "conformity_bpr",
+    "independence": "independence",
+    "contrastive": "contrastive",
+    "align": "align",
+    "uniform": "uniform",
+    "pop": "popularity",
+    "prop_calib": "propensity_calibration",
+}
+_SCORE_MIX_COMPONENTS = ("interest", "conformity", "context")
+_AUXILIARY_LOSS_EMA_DECAY = 0.99
 
 
 def _bpr_loss(
@@ -38,12 +62,16 @@ def _masked_bpr_loss(
     pos_scores: torch.Tensor,
     neg_scores: torch.Tensor,
     mask: torch.Tensor,
+    reduction: DiceMaskReduction,
 ) -> torch.Tensor:
-    """Compute DICE's mask-weighted BPR, averaging over the full batch."""
+    """Compute DICE's mask-weighted BPR with the configured reduction."""
     pos_scores = pos_scores.float()
     neg_scores = neg_scores.float()
     mask = mask.to(device=pos_scores.device, dtype=pos_scores.dtype)
-    return -(mask * functional.logsigmoid(pos_scores - neg_scores)).mean()
+    loss = -(mask * functional.logsigmoid(pos_scores - neg_scores))
+    if reduction == "active_mean":
+        return loss.sum() / mask.sum().clamp_min(1.0)
+    return loss.mean()
 
 
 def _independence_loss(
@@ -356,9 +384,81 @@ def _au_branch_contrib(
 class LossSuite(nn.Module):
     """Combine fused ranking loss with branch-local auxiliary objectives."""
 
-    def __init__(self, config: UCaGNNConfig) -> None:
+    def __init__(self, config: EDGRecConfig) -> None:
         super().__init__()
         self.config = config
+        self._auxiliary_loss_index = {
+            loss_name: index for index, loss_name in enumerate(_AUXILIARY_LOSS_KEYS)
+        }
+        self.register_buffer(
+            "_aux_loss_ema",
+            torch.ones(len(_AUXILIARY_LOSS_KEYS), dtype=torch.float32),
+        )
+        self.register_buffer(
+            "_aux_loss_ema_initialized",
+            torch.zeros(len(_AUXILIARY_LOSS_KEYS), dtype=torch.bool),
+        )
+
+    def _normalize_auxiliary_loss(
+        self,
+        loss_name: str,
+        raw_loss: torch.Tensor,
+        weight: float,
+    ) -> torch.Tensor:
+        """Return an optionally EMA-normalized auxiliary loss."""
+        if self.config.loss_normalization != "ema_aux" or weight <= 0:
+            return raw_loss
+
+        safe_loss = torch.nan_to_num(raw_loss, nan=0.0, posinf=0.0, neginf=0.0)
+        detached_loss = torch.nan_to_num(
+            safe_loss.detach().float().abs(),
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        )
+        loss_index = self._auxiliary_loss_index[loss_name]
+        if self.training:
+            current = self._aux_loss_ema[loss_index]
+            initialized = self._aux_loss_ema_initialized[loss_index]
+            updated = torch.where(
+                initialized,
+                current * _AUXILIARY_LOSS_EMA_DECAY
+                + detached_loss * (1.0 - _AUXILIARY_LOSS_EMA_DECAY),
+                detached_loss,
+            )
+            should_update = detached_loss > 0
+            self._aux_loss_ema[loss_index].copy_(torch.where(should_update, updated, current))
+            self._aux_loss_ema_initialized[loss_index].copy_(initialized | should_update)
+
+        denominator = (
+            self._aux_loss_ema[loss_index]
+            .detach()
+            .to(
+                device=safe_loss.device,
+                dtype=safe_loss.dtype,
+            )
+        )
+        return safe_loss / denominator.clamp_min(1e-6)
+
+    def _attach_loss_logging_aliases(
+        self,
+        losses: dict[str, torch.Tensor],
+        normalized_losses: dict[str, torch.Tensor],
+        aux_weights: Mapping[str, float],
+    ) -> None:
+        """Add stable raw/normalized/weighted scalar aliases for epoch logging."""
+        losses["raw_rec_loss"] = losses["rec"]
+        if "embedding_reg" in losses:
+            losses["weighted_embedding_reg"] = self.config.weight_decay * losses["embedding_reg"]
+        for loss_name in _AUXILIARY_LOSS_KEYS:
+            raw_loss = losses[loss_name]
+            log_name = _AUXILIARY_LOSS_LOG_NAMES[loss_name]
+            normalized_loss = normalized_losses[loss_name]
+            weight = aux_weights[loss_name]
+            losses[f"raw_{log_name}"] = raw_loss
+            if self.config.loss_normalization == "ema_aux":
+                losses[f"normalized_{log_name}"] = normalized_loss
+            losses[f"weighted_{log_name}"] = weight * normalized_loss
 
     def _resolve_auxiliary_weight(
         self,
@@ -400,7 +500,7 @@ class LossSuite(nn.Module):
         """Compute all active losses.
 
         Args:
-            model_output: Output from UCaGNN.forward().
+            model_output: Output from EDGRec.forward().
             item_popularity: (I,) normalized popularity array.
             pos_item_ids: (B,) positive item indices (for popularity lookup).
             epoch: Current epoch (for curriculum scheduling).
@@ -549,19 +649,25 @@ class LossSuite(nn.Module):
                     cfg.dice_margin_decay ** max(epoch, 0) if cfg.dice_adaptive_decay else 1.0
                 )
                 popular_negative_mask = neg_popularity > (pos_popularity + branch_margin)
+            high_mask_rate = popular_negative_mask.float().mean()
+            losses["dice_high_mask_rate"] = high_mask_rate.detach()
+            losses["dice_low_mask_rate"] = (1.0 - high_mask_rate).detach()
             losses["interest_bpr"] = _masked_bpr_loss(
                 pos_interest_branch,
                 neg_interest_branch,
                 popular_negative_mask,
+                cfg.dice_mask_reduction,
             )
             losses["conformity_bpr"] = _masked_bpr_loss(
                 neg_conformity_branch,
                 pos_conformity_branch,
                 popular_negative_mask,
+                cfg.dice_mask_reduction,
             ) + _masked_bpr_loss(
                 pos_conformity_branch,
                 neg_conformity_branch,
                 ~popular_negative_mask,
+                cfg.dice_mask_reduction,
             )
         else:
             if use_dual_branch and interest_weight > 0:
@@ -708,19 +814,44 @@ class LossSuite(nn.Module):
         else:
             losses["prop_calib"] = zero
 
-        # Weighted sum
+        score_mix_weights = pos_scores.get("score_mix_weights")
+        if score_mix_weights is not None:
+            score_mix_means = score_mix_weights.detach().float().mean(dim=0)
+            for component_index, component_name in enumerate(_SCORE_MIX_COMPONENTS):
+                losses[f"score_mix_{component_name}_mean"] = score_mix_means[component_index]
+
+        aux_weights = {
+            "interest_bpr": interest_weight,
+            "conformity_bpr": conformity_weight,
+            "independence": independence_weight,
+            "contrastive": contrastive_weight,
+            "align": align_weight,
+            "uniform": uniform_weight,
+            "pop": popularity_weight,
+            "prop_calib": prop_calib_weight,
+        }
+        normalized_losses = {
+            loss_name: self._normalize_auxiliary_loss(
+                loss_name,
+                losses[loss_name],
+                aux_weights[loss_name],
+            )
+            for loss_name in _AUXILIARY_LOSS_KEYS
+        }
+
         total = (
             cfg.loss_weight_recommendation * losses["rec"]
-            + interest_weight * losses["interest_bpr"]
-            + conformity_weight * losses["conformity_bpr"]
-            + independence_weight * losses["independence"]
-            + contrastive_weight * losses["contrastive"]
-            + align_weight * losses["align"]
-            + uniform_weight * losses["uniform"]
-            + popularity_weight * losses["pop"]
-            + prop_calib_weight * losses["prop_calib"]
+            + interest_weight * normalized_losses["interest_bpr"]
+            + conformity_weight * normalized_losses["conformity_bpr"]
+            + independence_weight * normalized_losses["independence"]
+            + contrastive_weight * normalized_losses["contrastive"]
+            + align_weight * normalized_losses["align"]
+            + uniform_weight * normalized_losses["uniform"]
+            + popularity_weight * normalized_losses["pop"]
+            + prop_calib_weight * normalized_losses["prop_calib"]
             + cfg.weight_decay * losses["embedding_reg"]
         )
         losses["total"] = total
+        self._attach_loss_logging_aliases(losses, normalized_losses, aux_weights)
 
         return losses

@@ -27,7 +27,7 @@ from src.data.loaders.movielens20m import load_movielens20m
 from src.data.loaders.taobao import load_taobao
 from src.data.negative_sampler import NegativeSampler
 from src.data.subgraph_sampler import SubgraphSampler
-from src.data_exploration.data_exploration import _derive_ucagnn_requirements
+from src.data_exploration.data_exploration import _derive_edgrec_requirements
 from src.data_exploration.explore_all_datasets import (
     build_dataset_summary_payload,
 )
@@ -78,6 +78,27 @@ class DataContractTests(unittest.TestCase):
         )
         self.assertEqual(canonical.n_users, indexed.n_users)
         self.assertEqual(canonical.n_items, indexed.n_items)
+
+    def test_canonical_repr_formats_user_and_item_counts(self) -> None:
+        """Dataset summaries should show concrete counts, not template placeholders."""
+        canonical = CanonicalInteractions(
+            user_id=np.array([0, 1], dtype=np.int64),
+            item_id=np.array([0, 1], dtype=np.int64),
+            label=np.array([1.0, 0.0], dtype=np.float32),
+            timestamp=np.array([1, 2], dtype=np.int64),
+            sign=np.array([1.0, -1.0], dtype=np.float32),
+            popularity=np.array([1.0, 0.0], dtype=np.float32),
+            n_users=2,
+            n_items=2,
+            user_map={10: 0, 20: 1},
+            item_map={100: 0, 200: 1},
+        )
+
+        summary = repr(canonical)
+
+        self.assertIn("n_users=2", summary)
+        self.assertIn("n_items=2", summary)
+        self.assertNotIn("{self.n_users}", summary)
 
     def test_kuairand_comment_rows_keep_neutral_sign(self) -> None:
         """Comment-only interactions should stay neutral until sentiment is known."""
@@ -406,7 +427,7 @@ class DataContractTests(unittest.TestCase):
     def test_dice_negative_sampler_fast_pool_routing_still_filters_known_positives(
         self,
     ) -> None:
-        """Fast U-CaGNN DICE routing should rely on vectorized positive filtering."""
+        """Fast EDGRec DICE routing should rely on vectorized positive filtering."""
         popularity = torch.tensor([1.0, 2.0, 3.0, 4.0, 10.0, 11.0, 12.0, 13.0])
         sampler = NegativeSampler(
             n_items=8,
@@ -798,9 +819,9 @@ class DataContractTests(unittest.TestCase):
             ),
         )
 
-    def test_ucagnn_requirements_track_predefined_splits_separately(self) -> None:
+    def test_edgrec_requirements_track_predefined_splits_separately(self) -> None:
         """Train/test files should not be mistaken for real timestamp support."""
-        requirements = _derive_ucagnn_requirements(
+        requirements = _derive_edgrec_requirements(
             {
                 "name": "AmazonBook",
                 "kind": "interaction_lists",

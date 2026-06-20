@@ -1268,7 +1268,7 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 80)
-    print("U-CaGNN DATASET VISUALIZATION")
+    print("EDGRec DATASET VISUALIZATION")
     print("=" * 80)
     print(f"Output directory: {args.output_dir}")
 

@@ -15,7 +15,7 @@ from torch_geometric.metrics import (
 )
 
 from ..data.interaction_masks import positive_interaction_mask
-from ..utils.config import UCaGNNConfig
+from ..utils.config import EDGRecConfig
 from ..utils.trainer_runtime import (
     autocast_context,
     model_device,
@@ -260,7 +260,7 @@ class Evaluator:
     D2H transfers.
     """
 
-    def __init__(self, config: UCaGNNConfig) -> None:
+    def __init__(self, config: EDGRecConfig) -> None:
         self.config = config
         # Cache keyed by mask tensor identity (id()) to avoid rebuilding per epoch.
         self._split_cache: dict[int, dict] = {}
@@ -534,32 +534,6 @@ class Evaluator:
                 embedding_dtype=torch.bfloat16 if use_eval_amp else None,
             )
 
-        # CAGRA candidate pre-filtering (opt-in, GPU-native ANN via cuVS).
-        # When cagra_candidate_k > 0 we restrict per-user scoring to the top-K
-        # nearest-neighbor items, drastically reducing eval VRAM.
-        cagra_candidate_k = self.config.cagra_candidate_k
-        cagra_index = None
-        if cagra_candidate_k > 0 and cagra_candidate_k < n_items:
-            if device.type != "cuda":
-                raise RuntimeError("cagra_candidate_k > 0 requires CUDA evaluation.")
-            try:
-                import cupy as cp
-                from cuvs.neighbors import cagra as cuvs_cagra
-
-                item_key = "item_interest" if "item_interest" in propagated else "item"
-                item_embs = propagated[item_key].float().contiguous()
-                item_cp = cp.asarray(item_embs.detach())
-                index_params = cuvs_cagra.IndexParams(
-                    metric=self.config.cagra_metric,
-                    graph_degree=self.config.cagra_out_degree,
-                    intermediate_graph_degree=self.config.cagra_initial_degree,
-                )
-                cagra_index = cuvs_cagra.build(index_params, item_cp)
-            except Exception as exc:
-                raise RuntimeError(
-                    "cagra_candidate_k > 0 requires a working CAGRA candidate pre-filter.",
-                ) from exc
-
         max_k = max(THESIS_EVAL_KS)
         for start in range(0, unique_users.size(0), effective_batch):
             batch_users = unique_users[start : start + effective_batch]
@@ -580,32 +554,6 @@ class Evaluator:
                 else:
                     scores = score_components["final_score"]
             scores = scores.float()
-
-            # Mask out non-candidate items from CAGRA index (if built).
-            if cagra_index is not None:
-                try:
-                    import cupy as cp
-                    from cuvs.neighbors import cagra as cuvs_cagra
-
-                    user_key = "user_interest" if "user_interest" in propagated else "user"
-                    user_embs = propagated[user_key][batch_users].float().contiguous()
-                    user_cp = cp.asarray(user_embs.detach())
-                    search_params = cuvs_cagra.SearchParams(
-                        team_size=self.config.cagra_team_size,
-                        itopk_size=max(cagra_candidate_k, self.config.cagra_itopk_size),
-                    )
-                    _, neighbors_cp = cuvs_cagra.search(
-                        search_params, cagra_index, user_cp, cagra_candidate_k
-                    )
-                    # neighbors_cp: (B, cagra_candidate_k) cupy int64
-                    neighbors_t = torch.as_tensor(neighbors_cp, device=device)
-                    candidate_mask = torch.zeros(
-                        scores.size(0), n_items, dtype=torch.bool, device=device
-                    )
-                    candidate_mask.scatter_(1, neighbors_t, True)
-                    scores[~candidate_mask] = float("-inf")
-                except Exception as exc:
-                    raise RuntimeError("CAGRA candidate search failed.") from exc
 
             seen_row_parts: list[torch.Tensor] = []
             seen_col_parts: list[torch.Tensor] = []

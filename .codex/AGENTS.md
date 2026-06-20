@@ -37,17 +37,16 @@ You are working on a thesis project about causal embeddings for recommendation. 
 Before each implementation iteration read the following files:
 
 - `.agents/skills/` - Useful skills for implementation, project structure, and existing work (see the detailed list below).
-- `.agents/skills/existing-work/full_summary.md` - This file is very important, as it is the scientific source of truth for the project; it synthesizes all the relevant papers and prior implementations that the project builds on. It is not a routing target, but it should be read before any other files to understand the scientific context and motivation for the implementation. The goal of this project is to synthesize the best ideas from the existing work into a single, unified codebase that implements the U-CaGNN model and its training protocol.
+- `.agents/skills/existing-work/full_summary.md` - This file is very important, as it is the scientific source of truth for the project; it synthesizes all the relevant papers and prior implementations that the project builds on. It is not a routing target, but it should be read before any other files to understand the scientific context and motivation for the implementation. The goal of this project is to synthesize the best ideas from the existing work into a single, unified codebase that implements the EDGRec model and its training protocol.
 
 - Target system / development tracking files (not source of truth):
 
-1. `.agents/skills/ucagnn-implementation/`.
-2. `.agents/skills/ucagnn-implementation/ucagnn_full.md`.
+1. `.agents/skills/edgrec-implementation/`.
+2. `.agents/skills/edgrec-implementation/edgrec_full.md`.
 
 After each iteration, update the target system files so they match the code; do not treat them as the primary theory source:
 
-- `.agents/skills/ucagnn-implementation/`
-- `.agents/skills/ucagnn-implementation/ucagnn_full.md`
+- `.agents/skills/edgrec-implementation/` - These files should contain as much information as possible about the project, with the least amount of words possible.
 - `pyproject.toml` (for dependencies and versioning if applicable)
 
 ## Project Rules
@@ -102,7 +101,7 @@ Read the SKILL.md files and choose which files that they point to are relevant f
 - `.agents/skills/causal-inference/SKILL.md` - key causal inference techniques and their implementation mechanics.
 - `.agents/skills/recsys/SKILL.md` - key recommendation techniques and their implementation mechanics.
 - `.agents/skills/graph-neural-networks/SKILL.md` - GNN architecture, training and optimization methods.
-- `.agents/skills/ucagnn-implementation/SKILL.md` - U-CaGNN implementation guide.
+- `.agents/skills/edgrec-implementation/SKILL.md` - EDGRec implementation guide.
 
 ### Core project folders:
 

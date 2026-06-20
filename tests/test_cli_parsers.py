@@ -136,10 +136,10 @@ class AblationConfigTests(unittest.TestCase):
             dataset="movielens1m",
             data_dir="data",
             device="cpu",
-            graph_policy="cagra_augmented",
+            graph_policy="observed",
         )
 
-        self.assertEqual(kwargs["graph_policy"], "cagra_augmented")
+        self.assertEqual(kwargs["graph_policy"], "observed")
 
 
 class FormalRunParserTests(unittest.TestCase):
@@ -180,7 +180,7 @@ class SearchParserTests(unittest.TestCase):
         self.assertFalse(hasattr(args, "overwrite_checkpoint"))
         self.assertEqual(args.device, "cuda")
         self.assertEqual(args.data_dir, "data")
-        self.assertEqual(args.mlflow_experiment_name, "ucagnn-optuna")
+        self.assertEqual(args.mlflow_experiment_name, "edgrec-optuna")
 
     def test_search_parser_mlflow_is_explicit_opt_in(self) -> None:
         """Search should avoid MLflow artifacts unless requested explicitly."""
@@ -195,14 +195,14 @@ class SearchParserTests(unittest.TestCase):
         args = build_search_parser().parse_args(
             [
                 "--space",
-                "ucagnn-core-optimization",
+                "edgrec-core-optimization",
                 "--trials",
                 "1",
                 "--dry-run",
             ],
         )
 
-        self.assertEqual(args.space, "ucagnn-core-optimization")
+        self.assertEqual(args.space, "edgrec-core-optimization")
         self.assertEqual(args.trials, 1)
         self.assertTrue(args.dry_run)
         self.assertFalse(hasattr(args, "overwrite_checkpoint"))
@@ -308,7 +308,7 @@ class UtilityParserTests(unittest.TestCase):
         recipe_config = quick_validate._build_tiny_recipe_config(
             args,
             "movielens1m",
-            recipe="ucagnn",
+            recipe="edgrec",
         )
         ablation_config = quick_validate._build_tiny_ablation_config(
             args,
@@ -369,10 +369,10 @@ class UtilityParserTests(unittest.TestCase):
             quick_validate._run_single_case(
                 category="recipes",
                 dataset="movielens1m",
-                label="recipe:ucagnn",
+                label="recipe:edgrec",
                 config=config,
-                preset="ucagnn",
-                intervention="quick_recipe_ucagnn",
+                preset="edgrec",
+                intervention="quick_recipe_edgrec",
             )
 
         self.assertFalse(run_experiment.call_args.kwargs["include_refined_diagnostics"])
