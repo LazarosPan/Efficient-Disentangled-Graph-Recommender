@@ -1,5 +1,171 @@
 {
     "search_spaces": {
+        "edgrec-lite-kuairec-search": {
+            "description": "Compact KuaiRec_v2 EDGRec-lite thesis search over feature use, 1/2-layer conformity depth, shallow fanout, negative count, and a small loss-weight grid.",
+            "base_profile": "edgrec-lite-kuairec",
+            "datasets": ["kuairec_v2"],
+            "config_overrides": {
+                "use_early_stopping": true,
+                "patience": 8,
+                "auto_batch_size": true,
+                "use_features": false,
+                "use_popularity_head": true,
+                "interest_gnn_layers": 1,
+                "validation_every_n_epochs": 2
+            },
+            "objective": {
+                "metric": "ValidationOnlineCRRU@20_40",
+                "split": "val",
+                "direction": "maximize"
+            },
+            "sampler": {
+                "name": "tpe",
+                "seed": 42,
+                "n_startup_trials": 8,
+                "multivariate": false,
+                "group": false,
+                "constant_liar": false
+            },
+            "pruner": {
+                "name": "hyperband",
+                "min_resource": 6,
+                "reduction_factor": 3,
+                "bootstrap_count": 1
+            },
+            "max_epochs": 60,
+            "trials": 36,
+            "parameters": {
+                "use_features": {"type": "categorical", "choices": [false, true]},
+                "conformity_gnn_layers": {"type": "categorical", "choices": [1, 2]},
+                "num_neighbors": {
+                    "type": "fanout",
+                    "choices_by_depth": {
+                        "1": [[8]],
+                        "2": [[8, 4], [10, 5]]
+                    }
+                },
+                "n_negatives": {"type": "categorical", "choices": [1, 2]},
+                "loss_weight_interest_bpr": {"type": "categorical", "choices": [0.01, 0.02, 0.05]},
+                "loss_weight_conformity_bpr": {"type": "categorical", "choices": [0.01, 0.02, 0.05]},
+                "loss_weight_independence": {"type": "categorical", "choices": [0.0, 0.005]},
+                "loss_weight_popularity": {"type": "categorical", "choices": [0.0, 0.02]}
+            }
+        },
+        "edgrec-lite-movielens-search": {
+            "description": "Compact MovieLens1M EDGRec-lite sanity search with features off by default, shallow fanout, and independence loss disabled.",
+            "base_profile": "edgrec-lite-movielens",
+            "datasets": ["movielens1m"],
+            "config_overrides": {
+                "use_early_stopping": true,
+                "patience": 8,
+                "auto_batch_size": true,
+                "use_features": false,
+                "use_popularity_head": true,
+                "interest_gnn_layers": 1,
+                "loss_weight_independence": 0.0,
+                "validation_every_n_epochs": 2
+            },
+            "objective": {
+                "metric": "ValidationOnlineCRRU@20_40",
+                "split": "val",
+                "direction": "maximize"
+            },
+            "sampler": {
+                "name": "tpe",
+                "seed": 42,
+                "n_startup_trials": 6,
+                "multivariate": false,
+                "group": false,
+                "constant_liar": false
+            },
+            "pruner": {
+                "name": "hyperband",
+                "min_resource": 6,
+                "reduction_factor": 3,
+                "bootstrap_count": 1
+            },
+            "max_epochs": 50,
+            "trials": 24,
+            "parameters": {
+                "conformity_gnn_layers": {"type": "categorical", "choices": [1, 2]},
+                "num_neighbors": {
+                    "type": "fanout",
+                    "choices_by_depth": {
+                        "1": [[8]],
+                        "2": [[8, 4], [10, 5]]
+                    }
+                },
+                "n_negatives": {"type": "categorical", "choices": [1, 2]},
+                "loss_weight_interest_bpr": {"type": "categorical", "choices": [0.01, 0.02, 0.05]},
+                "loss_weight_conformity_bpr": {"type": "categorical", "choices": [0.01, 0.02, 0.05]},
+                "loss_weight_popularity": {"type": "categorical", "choices": [0.0, 0.02]}
+            }
+        },
+        "edgrec-lite-kuairand-search": {
+            "description": "Compact KuaiRand-1K diagnostic EDGRec-lite search for label-mode and randomized-exposure item-universe sensitivity.",
+            "base_profile": "edgrec-lite-kuairand",
+            "datasets": ["kuairand1k"],
+            "config_overrides": {
+                "use_early_stopping": true,
+                "patience": 6,
+                "auto_batch_size": true,
+                "use_features": false,
+                "use_popularity_head": true,
+                "interest_gnn_layers": 1,
+                "label_mode": "current",
+                "item_universe_policy": "random_exposure_items_only",
+                "validation_every_n_epochs": 2
+            },
+            "objective": {
+                "metric": "ValidationOnlineCRRU@20_40",
+                "split": "val",
+                "direction": "maximize"
+            },
+            "sampler": {
+                "name": "tpe",
+                "seed": 42,
+                "n_startup_trials": 4,
+                "multivariate": false,
+                "group": false,
+                "constant_liar": false
+            },
+            "pruner": {
+                "name": "hyperband",
+                "min_resource": 4,
+                "reduction_factor": 3,
+                "bootstrap_count": 1
+            },
+            "max_epochs": 40,
+            "trials": 16,
+            "parameters": {
+                "label_mode": {
+                    "type": "categorical",
+                    "choices": [
+                        "current",
+                        "strict_like_follow",
+                        "strict_longview_like_follow",
+                        "watch_ratio_proxy"
+                    ]
+                },
+                "item_universe_policy": {
+                    "type": "categorical",
+                    "choices": ["observed_interaction_items", "random_exposure_items_only"]
+                },
+                "conformity_gnn_layers": {"type": "categorical", "choices": [1, 2]},
+                "num_neighbors": {
+                    "type": "fanout",
+                    "choices_by_depth": {
+                        "1": [[8]],
+                        "2": [[8, 4], [10, 5]]
+                    }
+                },
+                "n_negatives": {"type": "categorical", "choices": [1, 2, 3]},
+                "loss_weight_interest_bpr": {"type": "categorical", "choices": [0.01, 0.02, 0.05]},
+                "loss_weight_conformity_bpr": {"type": "categorical", "choices": [0.01, 0.02, 0.05]},
+                "loss_weight_independence": {"type": "categorical", "choices": [0.0, 0.005]},
+                "loss_weight_popularity": {"type": "categorical", "choices": [0.0, 0.02]}
+            }
+        },
         "edgrec-mechanism-coarse": {
             "description": "Focused mechanism-level EDGRec discovery search. Profile parameters are Optuna/search-layer labels that resolve to concrete EDGRecConfig overrides before the model config is built; they are also recorded in sampled_params and resolved_config_overrides for reproducibility. Use --dataset kuairec_v2 for the main confirmation search, --dataset movielens1m for the secondary sanity search, and --dataset kuairand1k for the randomized-exposure regime only. AmazonBook is intentionally excluded from this broad pass. Auto-batch uses a largest-feasible throughput ladder and records the selected batch as runtime metadata.",
             "base_profile": "core-edgrec-mainline",

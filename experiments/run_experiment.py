@@ -152,6 +152,7 @@ _TRAINING_IDENTITY_FIELDS = (
     "item_universe_policy",
     "popularity_embedding_dimensions",
     "preprocessing_preset",
+    "propagation_backend",
     "propensity_clip_max",
     "propensity_clip_min",
     "propensity_hidden",
@@ -161,6 +162,7 @@ _TRAINING_IDENTITY_FIELDS = (
     "score_weight_popularity",
     "seed",
     "single_branch_gnn_layers",
+    "sampler_residency_policy",
     "train_edge_keep_prob",
     "train_ratio",
     "uniformity_temperature",
@@ -176,6 +178,7 @@ _TRAINING_IDENTITY_FIELDS = (
     "use_popularity_head",
     "use_sign_aware",
     "use_torch_compile",
+    "validation_every_n_epochs",
     "val_ratio",
     "weight_decay",
 )
@@ -200,15 +203,22 @@ def _build_training_identity(
 ) -> tuple[dict[str, Any], str]:
     """Build the resume-compatibility identity for a training run."""
     config_values = dataclasses.asdict(config)
+    config_identity = {
+        field_name: config_values[field_name] for field_name in _TRAINING_IDENTITY_FIELDS
+    }
+    if config.dataset == "kuairand1k":
+        config_identity["label_mode"] = config_values["label_mode"]
+        config_identity["watch_ratio_proxy_threshold"] = config_values[
+            "watch_ratio_proxy_threshold"
+        ]
+
     identity = {
         "identity_version": _CHECKPOINT_IDENTITY_VERSION,
         "identity_kind": "training",
         "preset": canonical_preset_for_identity(preset) or "custom",
         "intervention": intervention,
         "training_mode": "mini_batch",
-        "config": {
-            field_name: config_values[field_name] for field_name in _TRAINING_IDENTITY_FIELDS
-        },
+        "config": config_identity,
     }
     return identity, _stable_identity_hash(identity)
 
@@ -333,6 +343,14 @@ def _apply_item_universe_policy(canonical: Any, config: EDGRecConfig) -> Any:
 
 def load_runtime_data(config: EDGRecConfig) -> tuple[Any, Any]:
     """Load canonical interactions and build the matching runtime graph."""
+    label_kwargs = (
+        {
+            "label_mode": config.label_mode,
+            "watch_ratio_proxy_threshold": config.watch_ratio_proxy_threshold,
+        }
+        if config.dataset == "kuairand1k"
+        else {}
+    )
     canonical = load_dataset(
         config.dataset,
         config.data_dir,
@@ -340,6 +358,7 @@ def load_runtime_data(config: EDGRecConfig) -> tuple[Any, Any]:
         include_optional_features=config.use_features,
         feature_policy=config.feature_policy,
         preprocessing_preset=config.preprocessing_preset,
+        **label_kwargs,
     )
     canonical = _apply_item_universe_policy(canonical, config)
     canonical = sample_canonical_interactions(
@@ -1070,6 +1089,10 @@ def _build_mlflow_params(
         "item_universe_policy": config.item_universe_policy,
         "derived_split_mode": config.derived_split_mode,
         "embedding_optimizer": config.embedding_optimizer,
+        "embedding_sparse_optimizer": config.embedding_sparse_optimizer,
+        "propagation_backend": config.propagation_backend,
+        "validation_every_n_epochs": config.validation_every_n_epochs,
+        "sampler_residency_policy": config.sampler_residency_policy,
         "train_edge_keep_prob": config.train_edge_keep_prob,
         "use_dual_branch": config.use_dual_branch,
         "use_sign_aware": config.use_sign_aware,
@@ -1091,6 +1114,9 @@ def _build_mlflow_params(
         params["batch_id"] = batch_id
     if profile_name:
         params["profile_name"] = profile_name
+    if config.dataset == "kuairand1k":
+        params["label_mode"] = config.label_mode
+        params["watch_ratio_proxy_threshold"] = config.watch_ratio_proxy_threshold
     if change_note:
         params["change_note"] = change_note
     params["num_neighbors"] = format_num_neighbors_payload(config.num_neighbors) or "-"
@@ -1121,9 +1147,8 @@ def _estimate_optimizer_state_mb(
     embedding_params = _embedding_table_parameter_count(model)
     state_scalars = 0
 
-    if (
-        config.baseline_family in {"lightgcn_paper", "dice_paper"}
-        or config.embedding_optimizer == "adamw"
+    if config.baseline_family in {"lightgcn_paper", "dice_paper"} or (
+        config.embedding_optimizer == "adamw"
     ):
         state_scalars = 2 * total_params
     else:
@@ -1428,11 +1453,14 @@ def normalize_benchmark_config_overrides(
     )
     for string_field in (
         "training_graph_mode",
+        "sampler_residency_policy",
+        "propagation_backend",
         "branch_loss_mode",
         "dice_mask_reduction",
         "recommendation_loss_mode",
         "negative_sampling_strategy",
         "loss_normalization",
+        "label_mode",
     ):
         value = raw_config.get(string_field)
         normalized[string_field] = str(value) if value is not None else None
@@ -1513,6 +1541,7 @@ def normalize_benchmark_config_overrides(
         "uniformity_temperature",
         "feature_gate_init",
         "train_edge_keep_prob",
+        "watch_ratio_proxy_threshold",
     )
     for field_name in optional_float_fields:
         field_value = raw_config.get(field_name)
@@ -1524,6 +1553,8 @@ def normalize_benchmark_config_overrides(
         "use_popularity_head",
         "use_learned_score_mix",
         "separate_item_branch_embeddings",
+        "embedding_sparse_optimizer",
+        "profile_training_stages",
     )
     for field_name in optional_bool_fields:
         field_value = raw_config.get(field_name)
@@ -1581,6 +1612,10 @@ def normalize_benchmark_config_overrides(
             "popularity_supervision_start_epoch",
             default_config.popularity_supervision_start_epoch,
         ),
+    )
+    validation_every_n_epochs = raw_config.get("validation_every_n_epochs")
+    normalized["validation_every_n_epochs"] = (
+        int(validation_every_n_epochs) if validation_every_n_epochs is not None else None
     )
     normalized["loss_schedule"] = raw_config.get("loss_schedule")
     loader_max_rows = raw_config.get("loader_max_rows")
@@ -1850,9 +1885,13 @@ def run_experiment(
     )
 
     logger.info(
-        "Dataset: %s | Preset: %s | Device: %s | Canonical name: %s | training hash: %s",
+        (
+            "Dataset: %s | Preset: %s | Profile: %s | Device: %s | "
+            "Canonical name: %s | training hash: %s"
+        ),
         config.dataset,
         preset,
+        profile_name or "direct",
         config.device,
         canonical_name,
         training_hash,
