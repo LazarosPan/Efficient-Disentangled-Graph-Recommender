@@ -262,26 +262,35 @@ def _build_interaction_graph(
     user_nodes: torch.Tensor,
     item_nodes: torch.Tensor,
     train_mask: torch.Tensor,
-    all_signs: torch.Tensor,
+    interaction_signs: torch.Tensor,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Direct bipartite edges from training interactions (undirected).
 
     Returns ``(edge_index, edge_sign)`` where both tensors are aligned:
     undirected edges duplicate the train signs for both directions.
     """
-    src = user_nodes[train_mask]
-    dst = item_nodes[train_mask]
-    train_signs = all_signs[train_mask]
+    train_user_nodes = user_nodes[train_mask]
+    train_item_nodes = item_nodes[train_mask]
+    train_edge_signs = interaction_signs[train_mask]
+    num_train_edges = train_user_nodes.numel()
 
-    # Undirected: add both directions
-    edge_index = torch.stack(
-        [
-            torch.cat([src, dst]),
-            torch.cat([dst, src]),
-        ],
-        dim=0,
+    edge_index = torch.empty(
+        (2, num_train_edges * 2),
+        dtype=user_nodes.dtype,
+        device=user_nodes.device,
     )
-    edge_sign = torch.cat([train_signs, train_signs])
+    edge_index[0, :num_train_edges] = train_user_nodes
+    edge_index[1, :num_train_edges] = train_item_nodes
+    edge_index[0, num_train_edges:] = train_item_nodes
+    edge_index[1, num_train_edges:] = train_user_nodes
+
+    edge_sign = torch.empty(
+        num_train_edges * 2,
+        dtype=train_edge_signs.dtype,
+        device=train_edge_signs.device,
+    )
+    edge_sign[:num_train_edges] = train_edge_signs
+    edge_sign[num_train_edges:] = train_edge_signs
 
     return edge_index, edge_sign
 

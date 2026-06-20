@@ -14,7 +14,14 @@ if TYPE_CHECKING:
 
 from .amazonbook import load_amazonbook
 from .kuairand1k import load_kuairand1k
-from .kuairec_v2 import load_kuairec_v2
+from .kuairec_v2 import (
+    KUIREC_BIG_MATRIX_WATCH_RATIO_RAW,
+    KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_5,
+    KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_75,
+    KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_1_0,
+    KUIREC_SMALL_MATRIX_FULL_OBSERVATION,
+    load_kuairec_v2,
+)
 from .movielens1m import load_movielens1m
 from .movielens20m import load_movielens20m
 from .taobao import load_taobao
@@ -31,7 +38,7 @@ _DEFAULT_PREPROCESSING_PRESETS: dict[str, str] = {
     "movielens1m": "movielens_explicit",
     "movielens20m": "movielens_explicit",
     "taobao": "taobao_multibehavior",
-    "kuairec_v2": "kuairec_watchratio",
+    "kuairec_v2": KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_5,
     "amazonbook": "amazonbook_graph_only",
     "kuairand1k": "kuairand_causal",
 }
@@ -54,14 +61,20 @@ _PREPROCESSING_PRESETS: dict[str, dict[str, dict[str, object]]] = {
         },
     },
     "kuairec_v2": {
-        "kuairec_watchratio": {
-            "preprocessing_preset": "kuairec_watchratio",
+        KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_5: {
+            "preprocessing_preset": KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_5,
         },
-        "kuairec_watchratio_raw": {
-            "preprocessing_preset": "kuairec_watchratio_raw",
+        KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_75: {
+            "preprocessing_preset": KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_75,
         },
-        "kuairec_fullobs": {
-            "preprocessing_preset": "kuairec_fullobs",
+        KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_1_0: {
+            "preprocessing_preset": KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_1_0,
+        },
+        KUIREC_BIG_MATRIX_WATCH_RATIO_RAW: {
+            "preprocessing_preset": KUIREC_BIG_MATRIX_WATCH_RATIO_RAW,
+        },
+        KUIREC_SMALL_MATRIX_FULL_OBSERVATION: {
+            "preprocessing_preset": KUIREC_SMALL_MATRIX_FULL_OBSERVATION,
         },
     },
     "amazonbook": {
@@ -70,6 +83,15 @@ _PREPROCESSING_PRESETS: dict[str, dict[str, dict[str, object]]] = {
     "kuairand1k": {
         "kuairand_causal": {"preprocessing_preset": "kuairand_causal"},
         "kuairand_random_only": {"preprocessing_preset": "kuairand_random_only"},
+    },
+}
+_PREPROCESSING_PRESET_ALIASES: dict[str, dict[str, str]] = {
+    "kuairec_v2": {
+        "kuairec_watchratio": KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_5,
+        "kuairec_watchratio_wr_0_75": KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_75,
+        "kuairec_watchratio_wr_1_0": KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_1_0,
+        "kuairec_watchratio_raw": KUIREC_BIG_MATRIX_WATCH_RATIO_RAW,
+        "kuairec_fullobs": KUIREC_SMALL_MATRIX_FULL_OBSERVATION,
     },
 }
 
@@ -108,7 +130,11 @@ def resolve_preprocessing_preset(
     if preprocessing_preset is None:
         return {}
     dataset_presets = _PREPROCESSING_PRESETS.get(name, {})
-    if preprocessing_preset not in dataset_presets:
+    effective_preset = _PREPROCESSING_PRESET_ALIASES.get(name, {}).get(
+        preprocessing_preset,
+        preprocessing_preset,
+    )
+    if effective_preset not in dataset_presets:
         available = ", ".join(sorted(dataset_presets)) or "none"
         raise ValueError(
             (
@@ -116,7 +142,7 @@ def resolve_preprocessing_preset(
                 f"dataset '{name}'. Available presets: {available}"
             ),
         )
-    return dict(dataset_presets[preprocessing_preset])
+    return dict(dataset_presets[effective_preset])
 
 
 def _load_dataset(
