@@ -74,7 +74,6 @@ from src.utils.reproducibility import (
 from src.utils.trainer_runtime import REQUIRED_CHECKPOINT_KEYS, is_cuda_oom_error
 
 from experiments.benchmark_resolvers import (
-    normalize_benchmark_graph_policy_override,
     normalize_benchmark_lr_scheduler_override,
     normalize_benchmark_num_neighbors_override,
     normalize_benchmark_preprocessing_override,
@@ -1431,14 +1430,12 @@ def normalize_benchmark_config_overrides(
     normalized["use_features"] = bool(use_features) if use_features is not None else None
     feature_policy = raw_config.get("feature_policy")
     normalized["feature_policy"] = str(feature_policy) if feature_policy is not None else None
-    raw_graph_policy = raw_config.get("graph_policy_options")
-    if raw_graph_policy is None:
-        raw_graph_policy = raw_config.get("graph_policy")
-    graph_policy, graph_policy_options = normalize_benchmark_graph_policy_override(
-        raw_graph_policy,
-    )
+    graph_policy = raw_config.get("graph_policy")
+    if graph_policy is not None and not isinstance(graph_policy, str):
+        raise ValueError(
+            "graph_policy must be a string; graph-policy sweeps are not supported.",
+        )
     normalized["graph_policy"] = graph_policy
-    normalized["graph_policy_options"] = graph_policy_options
     (
         preprocessing_preset,
         preprocessing_preset_options,

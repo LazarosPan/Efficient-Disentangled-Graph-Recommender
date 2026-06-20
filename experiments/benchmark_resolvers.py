@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from src.utils.benchmark_datasets import benchmark_dataset_lookup_keys
-from src.utils.config import GRAPH_POLICY_CHOICES, SUPPORTED_LR_SCHEDULERS, EDGRecConfig
+from src.utils.config import SUPPORTED_LR_SCHEDULERS, EDGRecConfig
 
 from experiments.recipes import resolve_profile_num_neighbors
 
@@ -22,37 +22,6 @@ def normalize_benchmark_lr_scheduler_override(
     if isinstance(raw_value, (list, tuple)):
         return [str(value) for value in raw_value]
     return "plateau"
-
-
-def normalize_benchmark_graph_policy_override(
-    raw_value: object,
-) -> tuple[str | None, list[str] | None]:
-    """Normalize benchmark ``graph_policy`` overrides to one value or a sweep list."""
-    if raw_value is None:
-        return None, None
-    if isinstance(raw_value, str):
-        if raw_value not in GRAPH_POLICY_CHOICES:
-            raise ValueError(
-                f"graph_policy must be one of {GRAPH_POLICY_CHOICES}, got {raw_value!r}",
-            )
-        return raw_value, None
-    if isinstance(raw_value, (list, tuple)):
-        if not raw_value:
-            raise ValueError("graph_policy sweep must be a non-empty list.")
-        graph_policy_options: list[str] = []
-        for index, value in enumerate(raw_value):
-            graph_policy = str(value)
-            if graph_policy not in GRAPH_POLICY_CHOICES:
-                raise ValueError(
-                    f"graph_policy[{index}] must be one of {GRAPH_POLICY_CHOICES}, "
-                    f"got {graph_policy!r}",
-                )
-            if graph_policy not in graph_policy_options:
-                graph_policy_options.append(graph_policy)
-        return graph_policy_options[0], graph_policy_options
-    raise ValueError(
-        "graph_policy must be a string or a list of graph-policy strings.",
-    )
 
 
 def normalize_benchmark_preprocessing_override(
@@ -150,19 +119,6 @@ def resolve_benchmark_lr_scheduler_values(
     return scheduler_values
 
 
-def resolve_benchmark_graph_policy_values(
-    benchmark_args: Mapping[str, object],
-) -> list[str]:
-    """Return the resolved graph-policy values for one benchmark-like plan."""
-    graph_policy_options = benchmark_args.get("graph_policy_options")
-    if isinstance(graph_policy_options, (list, tuple)) and graph_policy_options:
-        return [str(graph_policy) for graph_policy in graph_policy_options]
-    graph_policy = benchmark_args.get("graph_policy")
-    if graph_policy is not None:
-        return [str(graph_policy)]
-    return [EDGRecConfig().graph_policy]
-
-
 def resolve_benchmark_num_neighbor_values(
     benchmark_args: Mapping[str, object],
     *,
@@ -208,11 +164,9 @@ def resolve_benchmark_preprocessing_preset_values(
 
 
 __all__ = [
-    "normalize_benchmark_graph_policy_override",
     "normalize_benchmark_lr_scheduler_override",
     "normalize_benchmark_num_neighbors_override",
     "normalize_benchmark_preprocessing_override",
-    "resolve_benchmark_graph_policy_values",
     "resolve_benchmark_item_universe_policy_value",
     "resolve_benchmark_lr_scheduler_values",
     "resolve_benchmark_num_neighbor_values",

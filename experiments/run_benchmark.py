@@ -41,7 +41,6 @@ from src.utils.method_naming import public_method_identifier, public_preset_name
 from src.utils.project_paths import FORMAL_RUN_STATE_PATH, THESIS_DB_PATH
 
 from experiments.benchmark_resolvers import (
-    resolve_benchmark_graph_policy_values,
     resolve_benchmark_lr_scheduler_values,
     resolve_benchmark_num_neighbor_values,
     resolve_benchmark_preprocessing_preset_values,
@@ -102,7 +101,6 @@ RUNTIME_ONLY_BENCHMARK_FIELDS = (
 NORMALIZED_BENCHMARK_FIELDS = (
     *BENCHMARK_MATRIX_FIELDS,
     *BENCHMARK_CONFIG_FIELDS,
-    "graph_policy_options",
     "preprocessing_preset_options",
     "change_note",
     "no_mlflow",
@@ -431,6 +429,8 @@ def _resolve_saved_benchmark_args(
     profile_slug: str,
 ) -> tuple[dict[str, object], str, bool]:
     """Resolve whether a saved plan can resume or must restart fresh."""
+    saved_benchmark_args = _coerce_benchmark_args(saved_benchmark_args)
+    expected_args = _coerce_benchmark_args(expected_args)
     if _benchmark_plan_signature(saved_benchmark_args) != _benchmark_plan_signature(
         expected_args,
     ):
@@ -622,7 +622,7 @@ def build_benchmark_plan(
         preset: ["none"] if preset in PAPER_BASELINE_PRESETS else lr_scheduler_values
         for preset in presets
     }
-    graph_policy_values = resolve_benchmark_graph_policy_values(benchmark_args)
+    graph_policy = str(benchmark_args.get("graph_policy") or EDGRecConfig().graph_policy)
     preprocessing_preset_values = resolve_benchmark_preprocessing_preset_values(
         benchmark_args,
     )
@@ -632,14 +632,13 @@ def build_benchmark_plan(
             preset,
             lr_scheduler,
             None if preprocessing_preset is None else str(preprocessing_preset),
-            str(graph_policy),
+            graph_policy,
             tuple(num_neighbors),
         )
         for preset in presets
         for dataset in datasets
         for lr_scheduler in lr_scheduler_values_by_preset[preset]
         for preprocessing_preset in preprocessing_preset_values
-        for graph_policy in graph_policy_values
         for num_neighbors in num_neighbor_values_by_dataset[dataset]
     ]
 
@@ -721,8 +720,8 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
         if isinstance(schedulers, str):
             schedulers = [schedulers]
         print(f"  LR schedulers: {', '.join(schedulers)}")
-    graph_policies = resolve_benchmark_graph_policy_values(benchmark_args)
-    print(f"  Graph policies: {', '.join(str(policy) for policy in graph_policies)}")
+    graph_policy = str(benchmark_args.get("graph_policy") or EDGRecConfig().graph_policy)
+    print(f"  Graph policy: {graph_policy}")
     preprocessing_presets = resolve_benchmark_preprocessing_preset_values(benchmark_args)
     resolved_preprocessing_presets = [
         preset for preset in preprocessing_presets if preset is not None
