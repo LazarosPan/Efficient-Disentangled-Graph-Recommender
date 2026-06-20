@@ -34,6 +34,7 @@ class SubgraphBatch:
     batch_pos_local: torch.Tensor  # local indices for batch pos items
     batch_neg_local: torch.Tensor  # local indices for batch neg items
     dice_negative_mask: torch.Tensor | None = None  # (B,) high-pop DICE mask, if used
+    stage_times_s: dict[str, float] | None = None
 
     def _map_tensors(
         self,
@@ -61,6 +62,7 @@ class SubgraphBatch:
             batch_pos_local=fn(self.batch_pos_local),  # type: ignore[arg-type]
             batch_neg_local=fn(self.batch_neg_local),  # type: ignore[arg-type]
             dice_negative_mask=fn(self.dice_negative_mask),
+            stage_times_s=self.stage_times_s,
         )
 
     def to(

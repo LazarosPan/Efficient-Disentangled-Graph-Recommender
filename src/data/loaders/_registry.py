@@ -126,6 +126,8 @@ def _load_dataset(
     include_optional_features: bool,
     feature_policy: FeaturePolicyName,
     preprocessing_preset: str | None,
+    label_mode: str = "current",
+    watch_ratio_proxy_threshold: float = 0.5,
 ) -> CanonicalInteractions:
     """Load a dataset once after resolving preset-specific loader kwargs."""
     effective_preprocessing_preset = preprocessing_preset or _DEFAULT_PREPROCESSING_PRESETS.get(
@@ -136,6 +138,9 @@ def _load_dataset(
         effective_preprocessing_preset,
     )
     loader_kwargs.setdefault("preprocessing_preset", effective_preprocessing_preset)
+    if name == "kuairand1k":
+        loader_kwargs.setdefault("label_mode", label_mode)
+        loader_kwargs.setdefault("watch_ratio_proxy_threshold", watch_ratio_proxy_threshold)
     effective_feature_policy = loader_kwargs.pop("feature_policy", feature_policy)
     return LOADERS[name](
         data_dir,
@@ -154,6 +159,8 @@ def _load_dataset_cached(
     include_optional_features: bool,
     feature_policy: FeaturePolicyName,
     preprocessing_preset: str | None,
+    label_mode: str = "current",
+    watch_ratio_proxy_threshold: float = 0.5,
 ) -> CanonicalInteractions:
     """Cached variant of ``_load_dataset`` keyed on all arguments."""
     return _load_dataset(
@@ -163,6 +170,8 @@ def _load_dataset_cached(
         include_optional_features=include_optional_features,
         feature_policy=feature_policy,
         preprocessing_preset=preprocessing_preset,
+        label_mode=label_mode,
+        watch_ratio_proxy_threshold=watch_ratio_proxy_threshold,
     )
 
 
@@ -173,6 +182,8 @@ def load_dataset(
     include_optional_features: bool = True,
     feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY,
     preprocessing_preset: str | None = None,
+    label_mode: str = "current",
+    watch_ratio_proxy_threshold: float = 0.5,
 ) -> CanonicalInteractions:
     """Load a dataset by name.
 
@@ -188,6 +199,9 @@ def load_dataset(
         feature_policy: Feature-policy preset name.
         preprocessing_preset: Optional named preprocessing preset. When omitted,
             the repository default for the dataset is used automatically.
+        label_mode: KuaiRand-only label ablation mode. Other datasets reject it.
+        watch_ratio_proxy_threshold: KuaiRand watch-ratio threshold for
+            ``label_mode="watch_ratio_proxy"``.
 
     Returns:
         Fully preprocessed ``CanonicalInteractions`` for the requested dataset.
@@ -198,6 +212,8 @@ def load_dataset(
     """
     if name not in LOADERS:
         raise ValueError(f"Unknown dataset '{name}'. Available: {list(LOADERS.keys())}")
+    if name != "kuairand1k" and (label_mode != "current" or watch_ratio_proxy_threshold != 0.5):
+        raise ValueError("label_mode and watch_ratio_proxy_threshold are KuaiRand-only")
     if max_rows is None:
         return _load_dataset(
             name,
@@ -206,6 +222,8 @@ def load_dataset(
             include_optional_features=include_optional_features,
             feature_policy=feature_policy,
             preprocessing_preset=preprocessing_preset,
+            label_mode=label_mode,
+            watch_ratio_proxy_threshold=watch_ratio_proxy_threshold,
         )
     return _load_dataset_cached(
         name,
@@ -214,4 +232,6 @@ def load_dataset(
         include_optional_features,
         feature_policy,
         preprocessing_preset,
+        label_mode,
+        watch_ratio_proxy_threshold,
     )

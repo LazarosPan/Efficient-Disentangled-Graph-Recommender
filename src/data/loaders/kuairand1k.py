@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from ...utils.config import KUAIRAND_LABEL_MODE_CHOICES
 from ...utils.csv_features import (
     PolicyCsvFeatureSpec,
     load_policy_csv_feature_blocks,
@@ -147,18 +148,25 @@ def load_kuairand1k(
     include_optional_features: bool = True,
     feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY,
     preprocessing_preset: str | None = None,
+    label_mode: str = "current",
+    watch_ratio_proxy_threshold: float = 0.5,
 ) -> CanonicalInteractions:
     """Load KuaiRand-1K from ``data_dir/KuaiRand-1K/data/``.
 
     Scans for ``log_standard*.csv`` and ``log_random*.csv`` files.
     The random-exposure logs (is_rand=1) are critical for causal analysis.
-    Uses expanded engagement signals for richer label/sign computation:
-    - Label: click OR like OR follow -> positive
+    Uses configurable engagement labels with the current historical mode as default:
+    - Label current mode: click OR like OR follow -> positive
     - Sign (graded): like=1.0, follow=0.7, comment=0.0, click+long_view=0.3,
       neutral=0.0, hate=-1.0
     - is_rand flag preserved as metadata for causal analysis
     """
     base = Path(data_dir) / "KuaiRand-1K" / "data"
+    if label_mode not in KUAIRAND_LABEL_MODE_CHOICES:
+        choices = ", ".join(KUAIRAND_LABEL_MODE_CHOICES)
+        raise ValueError(f"label_mode must be one of {choices}; got {label_mode!r}.")
+    if not 0.0 <= watch_ratio_proxy_threshold <= 5.0:
+        raise ValueError("watch_ratio_proxy_threshold must be in [0, 5].")
     if not base.exists():
         raise FileNotFoundError(
             f"KuaiRand-1K not found at {base}. Download from https://kuairand.com/",
@@ -351,8 +359,15 @@ def load_kuairand1k(
     n_users = indexed.n_users
     n_items = indexed.n_items
 
-    # Expanded label: click OR like OR follow
-    label = ((clicks_arr > 0) | (likes_arr > 0) | (follows_arr > 0)).astype(np.float32)
+    if label_mode == "current":
+        label_mask = (clicks_arr > 0) | (likes_arr > 0) | (follows_arr > 0)
+    elif label_mode == "strict_like_follow":
+        label_mask = (likes_arr > 0) | (follows_arr > 0)
+    elif label_mode == "strict_longview_like_follow":
+        label_mask = (long_views_arr > 0) | (likes_arr > 0) | (follows_arr > 0)
+    else:
+        label_mask = raw_target >= float(watch_ratio_proxy_threshold)
+    label = label_mask.astype(np.float32)
 
     # Graded sign: like=1.0 > follow=0.7 > click+long_view=0.3 > neutral/comment=0.0 > hate=-1.0
     sign = np.full(len(indexed.user_id), 0.0, dtype=np.float32)
@@ -436,6 +451,8 @@ def load_kuairand1k(
                     "standard_count": int(np.sum(is_rand_arr == 0)),
                     "view": effective_preset,
                 },
+                "label_mode": label_mode,
+                "watch_ratio_proxy_threshold": float(watch_ratio_proxy_threshold),
             },
         ),
         user_features=user_features,
