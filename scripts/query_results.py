@@ -81,10 +81,7 @@ def connect() -> sqlite3.Connection:
         print(
             "Run a real experiment first to create the persistent database in results/.",
         )
-        print(
-            "Quick-validate uses the same database, but its smoke runs are filtered "
-            "out of the default summary via sample_interactions/loader_max_rows.",
-        )
+        print("Quick-validate is non-persistent and does not write smoke rows.")
         sys.exit(1)
 
     conn = sqlite3.connect(f"{DB_PATH.resolve().as_uri()}?mode=ro", uri=True)

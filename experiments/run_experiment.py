@@ -592,7 +592,7 @@ def _build_run_provenance(
     """Return lightweight code-version provenance for one run."""
     try:
         project_version = importlib_metadata.version(
-            "causal-embeddings-for-recommendations",
+            "efficient-disentangled-graph-recommender",
         )
     except importlib_metadata.PackageNotFoundError:
         project_version = "unknown"
@@ -1696,6 +1696,7 @@ def run_experiment(
     overwrite_checkpoint: bool = False,
     include_refined_diagnostics: bool = True,
     evaluate_test: bool = True,
+    log_to_sqlite: bool = True,
     training_epoch_callback: Callable[[int, Mapping[str, float], float], None] | None = None,
 ) -> dict:
     """Run a single experiment end-to-end.
@@ -1730,17 +1731,21 @@ def run_experiment(
             diagnostics during final test evaluation. Quick smoke validation can
             disable this so undefined tiny-slice diagnostics do not mask runtime
             coverage.
+        evaluate_test: If True, run the final test evaluation and log test
+            metrics. Exploratory validation-only workflows can disable this so
+            test data stays reserved for promoted formal runs.
+        log_to_sqlite: If True, persist experiment metadata and metrics in the
+            thesis SQLite database. Quick validation sets this to False so the
+            shared runtime path can execute without creating smoke rows.
         training_epoch_callback: Optional callback invoked after each validation
             epoch with ``(epoch, val_metrics, epoch_time_s)``. Search workflows
             use this for Optuna pruning; normal experiment entry points leave it
             unset.
-        evaluate_test: If True, run the final test evaluation and log test
-            metrics. Exploratory validation-only workflows can disable this so
-            test data stays reserved for promoted formal runs.
 
     Returns:
         Dict with keys:
-            - ``exp_id``: SQLite experiment row ID.
+            - ``exp_id``: SQLite experiment row ID, or None when
+              ``log_to_sqlite=False``.
             - ``test_metrics``: Metric name → value mapping from the test split.
             - ``history``: Training history dict (``train_loss``, ``val_metrics``).
             - ``checkpoint_path``: Path to the saved checkpoint, or None.
@@ -1748,6 +1753,9 @@ def run_experiment(
             - ``resumed``: True if training was resumed from an existing checkpoint.
 
     """
+    if experiment_id is not None and not log_to_sqlite:
+        raise ValueError("experiment_id requires log_to_sqlite=True")
+
     seed_everything(config.seed)
     configure_torch_runtime()
 
@@ -1888,37 +1896,41 @@ def run_experiment(
             "train_batches_per_epoch": None,
         }
 
-    experiment_logger = ExperimentLogger(db_path=str(DB_PATH))
+    experiment_logger: ExperimentLogger | None = None
     exp_id = checkpoint_state.get("exp_id") if checkpoint_state is not None else None
-    if exp_id is None:
-        exp_id = experiment_logger.log_experiment(
-            config.dataset,
-            config,
-            preset=preset,
-            intervention=intervention,
-            training_mode="mini_batch",
-            status="running",
-            batch_id=batch_id,
-            profile_name=profile_name,
-            project_version=run_provenance["project_version"],
-            git_commit=run_provenance["git_commit"],
-            training_hash=training_hash,
-            evaluation_hash=evaluation_hash,
-            change_note=change_note,
-            gpu_name=gpu_name,
-            gpu_vram_gb=gpu_vram_gb,
+    if log_to_sqlite:
+        experiment_logger = ExperimentLogger(db_path=str(DB_PATH))
+        if exp_id is None:
+            exp_id = experiment_logger.log_experiment(
+                config.dataset,
+                config,
+                preset=preset,
+                intervention=intervention,
+                training_mode="mini_batch",
+                status="running",
+                batch_id=batch_id,
+                profile_name=profile_name,
+                project_version=run_provenance["project_version"],
+                git_commit=run_provenance["git_commit"],
+                training_hash=training_hash,
+                evaluation_hash=evaluation_hash,
+                change_note=change_note,
+                gpu_name=gpu_name,
+                gpu_vram_gb=gpu_vram_gb,
+            )
+        else:
+            experiment_logger.update_experiment_status(exp_id, status="running")
+        logger.info(f"Experiment ID: {exp_id}")
+        _log_resource_contract(
+            config=config,
+            model=model,
+            loss_suite=loss_suite,
+            data=data,
+            experiment_logger=experiment_logger,
+            exp_id=exp_id,
         )
     else:
-        experiment_logger.update_experiment_status(exp_id, status="running")
-    logger.info(f"Experiment ID: {exp_id}")
-    _log_resource_contract(
-        config=config,
-        model=model,
-        loss_suite=loss_suite,
-        data=data,
-        experiment_logger=experiment_logger,
-        exp_id=exp_id,
-    )
+        logger.info("SQLite experiment logging disabled for this run.")
 
     mlflow_module = None
     mlflow_status = "FAILED"
@@ -2077,7 +2089,7 @@ def run_experiment(
                                 selected_batch_size,
                                 canonical_name,
                             )
-                            if exp_id is not None:
+                            if experiment_logger is not None and exp_id is not None:
                                 experiment_logger.conn.execute(
                                     (
                                         "UPDATE experiments SET config_json = ?, "
@@ -2179,10 +2191,11 @@ def run_experiment(
                 if training_peak_vram_mb is not None
                 else torch.cuda.max_memory_allocated() / 1024**2
             )
-        experiment_logger.log_metric(
-            exp_id, "training_time_s", total_training_time_s, split="train"
-        )
-        if cuda_:
+        if experiment_logger is not None and exp_id is not None:
+            experiment_logger.log_metric(
+                exp_id, "training_time_s", total_training_time_s, split="train"
+            )
+        if cuda_ and experiment_logger is not None and exp_id is not None:
             experiment_logger.log_metric(exp_id, "peak_vram_mb", peak_vram_mb, split="train")
         if history["train_loss"]:
             logger.info(f"Final train loss: {history['train_loss'][-1]:.4f}")
@@ -2219,7 +2232,8 @@ def run_experiment(
             )
             for metric, value in sorted(test_metrics.items()):
                 logger.info(f"  {metric}: {value:.4f}")
-                experiment_logger.log_metric(exp_id, metric, value, split="test")
+                if experiment_logger is not None and exp_id is not None:
+                    experiment_logger.log_metric(exp_id, metric, value, split="test")
         else:
             logger.info("Skipping test evaluation for validation-only run.")
 
@@ -2259,7 +2273,8 @@ def run_experiment(
             except Exception as exc:
                 logger.warning("Failed to log MLflow metrics or artifacts: %s", exc)
 
-        experiment_logger.update_experiment_status(exp_id, status="completed")
+        if experiment_logger is not None and exp_id is not None:
+            experiment_logger.update_experiment_status(exp_id, status="completed")
         mlflow_status = "FINISHED"
         return {
             "exp_id": exp_id,
@@ -2281,12 +2296,13 @@ def run_experiment(
         is_oom = is_cuda_oom_error(exc)
         is_pruned = exc.__class__.__name__ == "TrialPruned"
         failure_reason = f"{type(exc).__name__}: {exc}"
-        experiment_logger.update_experiment_status(
-            exp_id,
-            status="pruned" if is_pruned else ("oom" if is_oom else "failed"),
-            failure_reason=failure_reason,
-            oom_flag=is_oom,
-        )
+        if experiment_logger is not None and exp_id is not None:
+            experiment_logger.update_experiment_status(
+                exp_id,
+                status="pruned" if is_pruned else ("oom" if is_oom else "failed"),
+                failure_reason=failure_reason,
+                oom_flag=is_oom,
+            )
         if mlflow_module is not None:
             try:
                 mlflow_module.set_tags(
@@ -2301,7 +2317,8 @@ def run_experiment(
                 logger.debug("Failed to set MLflow failure tags: %s", exc)
         raise
     finally:
-        experiment_logger.close()
+        if experiment_logger is not None:
+            experiment_logger.close()
         if mlflow_module is not None:
             try:
                 if "is_pruned" in locals() and is_pruned:
