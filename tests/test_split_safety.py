@@ -2407,6 +2407,21 @@ class CausalTrainingContractTests(unittest.TestCase):
         self.assertTrue(torch.equal(weights, torch.ones(3)))
         self.assertFalse(weights.requires_grad)
 
+    def test_sign_aware_weighting_avoids_tensor_item_when_compiling(self) -> None:
+        """Compiled propagation should avoid tensor-to-Python scalar syncs."""
+        config = EDGRecConfig(device="cuda", use_dual_branch=False, use_sign_aware=True)
+        model = DualBranchGCN(config)
+
+        with (
+            patch("torch.compiler.is_compiling", return_value=True),
+            patch.object(torch.Tensor, "item", side_effect=AssertionError("tensor.item sync")),
+        ):
+            weights = model._compute_edge_weights_impl(torch.tensor([1.0, 1.0, 0.0]))
+
+        self.assertIsNotNone(weights)
+        assert weights is not None
+        self.assertTrue(torch.equal(weights.detach(), torch.ones(3)))
+
     def test_lightgcn_branch_matches_sparse_adjacency_matmul(self) -> None:
         """LightGCNBranch should equal repeated sparse adjacency matmuls."""
         branch = LightGCNBranch(n_layers=2)
@@ -2419,7 +2434,7 @@ class CausalTrainingContractTests(unittest.TestCase):
             dtype=torch.long,
         )
         edge_weight = torch.tensor([0.5, 0.5, 1.0, 1.0], dtype=torch.float32)
-        sparse_adjacency = DualBranchGCN._build_sparse_adjacency(
+        sparse_adjacency = DualBranchGCN._build_sparse_adjacency_tensor(
             edge_index,
             edge_weight,
             num_nodes=3,
@@ -2446,7 +2461,7 @@ class CausalTrainingContractTests(unittest.TestCase):
             dtype=torch.long,
         )
         edge_weight = torch.tensor([0.5, 0.5, 1.0, 1.0], dtype=torch.float32)
-        sparse_adjacency = DualBranchGCN._build_sparse_adjacency(
+        sparse_adjacency = DualBranchGCN._build_sparse_adjacency_tensor(
             edge_index,
             edge_weight,
             num_nodes=3,

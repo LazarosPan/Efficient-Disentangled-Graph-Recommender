@@ -219,9 +219,12 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         """Default config assembly should pin the causal-ready KuaiRec view."""
         config = build_config(_experiment_args(dataset="kuairec_v2"))
 
-        self.assertEqual(config.preprocessing_preset, "kuairec_watchratio")
+        self.assertEqual(
+            config.preprocessing_preset,
+            "kuairec_big_matrix_watch_ratio_threshold_0_5",
+        )
         self.assertIn(
-            "ppresetkuairec_watchratio",
+            "ppresetkuairec_big_matrix_watch_ratio_threshold_0_5",
             build_canonical_experiment_name(config, None, None),
         )
 
@@ -1195,7 +1198,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             },
         )
         self.assertEqual(benchmark_args["graph_policy"], "observed")
-        self.assertIsNone(benchmark_args["graph_policy_options"])
+        self.assertNotIn("graph_policy_options", benchmark_args)
         self.assertEqual(benchmark_args["hard_negative_ratio"], 0.0)
         self.assertIsNone(benchmark_args["loss_schedule"])
         self.assertEqual(benchmark_args["auxiliary_losses_start_epoch"], 15)
@@ -1827,6 +1830,30 @@ class FormalTrainingPolicyTests(unittest.TestCase):
                 fallback_profile_name="development",
             )
 
+    def test_normalize_benchmark_args_rejects_removed_graph_policy_options_field(self) -> None:
+        """Saved formal-run state should reject the removed graph_policy_options field."""
+        with self.assertRaises(ValueError):
+            formal_main._normalize_benchmark_args(
+                {
+                    "datasets": ["small"],
+                    "presets": ["edgrec"],
+                    "epochs": 60,
+                    "batch_size": 4096,
+                    "lr": 1e-3,
+                    "num_neighbors": [10, 5],
+                    "graph_policy_options": ["observed"],
+                    "device": "cuda",
+                    "data_dir": "data",
+                    "no_mlflow": False,
+                    "mlflow_tracking_uri": None,
+                    "mlflow_experiment_name": "edgrec-formal",
+                    "batch_id": "formal-dev-batch",
+                    "resume_batch": True,
+                    "dry_run": False,
+                },
+                fallback_profile_name="development",
+            )
+
     def test_saved_benchmark_resolution_resumes_matching_plan_with_runtime_overrides(self) -> None:
         """Shared saved-run resolution should resume matching plans and apply runtime overrides."""
         cli_args = SimpleNamespace(overwrite_checkpoint=True)
@@ -1862,10 +1889,9 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             "dry_run": True,
             "overwrite_checkpoint": False,
             "change_note": None,
-            "graph_policy_options": None,
             "preprocessing_preset_options": None,
         }
-        expected_args = dict(saved_args)
+        expected_args = formal_main._coerce_benchmark_args(saved_args)
 
         resolved_args, profile_name, resumed = formal_main._resolve_saved_benchmark_args(
             saved_args,
@@ -1884,6 +1910,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertIsNone(resolved_args["loader_max_rows"])
         self.assertEqual(resolved_args["profile_name"], "development")
         self.assertEqual(resolved_args["profile_slug"], "development-signature")
+        self.assertNotIn("graph_policy_options", resolved_args)
 
     def test_saved_benchmark_resolution_falls_back_when_plan_differs(self) -> None:
         """Saved-run resolution should restart when the semantic plan no longer matches."""
@@ -1920,10 +1947,9 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             "dry_run": False,
             "overwrite_checkpoint": False,
             "change_note": None,
-            "graph_policy_options": None,
             "preprocessing_preset_options": None,
         }
-        expected_args = dict(saved_args, epochs=60)
+        expected_args = formal_main._coerce_benchmark_args(dict(saved_args, epochs=60))
 
         resolved_args, profile_name, resumed = formal_main._resolve_saved_benchmark_args(
             saved_args,
@@ -2024,7 +2050,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(normalized["use_early_stopping"], EDGRecConfig().use_early_stopping)
         self.assertEqual(normalized["patience"], EDGRecConfig().patience)
         self.assertIsNone(normalized["graph_policy"])
-        self.assertIsNone(normalized["graph_policy_options"])
+        self.assertNotIn("graph_policy_options", normalized)
         self.assertEqual(normalized["hard_negative_ratio"], 0.25)
         self.assertEqual(normalized["dice_mask_reduction"], "active_mean")
         self.assertEqual(normalized["feature_gate_init"], -4.0)
@@ -2054,19 +2080,16 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         """Benchmark payload normalization should reject removed graph policies."""
         normalized = normalize_benchmark_config_overrides(
             {
-                "graph_policy": ["observed", "observed"],
+                "graph_policy": "observed",
             },
         )
 
         self.assertEqual(normalized["graph_policy"], "observed")
-        self.assertEqual(
-            normalized["graph_policy_options"],
-            ["observed"],
-        )
-        with self.assertRaisesRegex(ValueError, "graph_policy\\[1\\]"):
+        self.assertNotIn("graph_policy_options", normalized)
+        with self.assertRaisesRegex(ValueError, "graph-policy sweeps are not supported"):
             normalize_benchmark_config_overrides(
                 {
-                    "graph_policy": ["observed", "augmented"],
+                    "graph_policy": ["observed", "observed"],
                 },
             )
 
@@ -2075,17 +2098,23 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         normalized = normalize_benchmark_config_overrides(
             {
                 "preprocessing_preset": [
-                    "kuairec_fullobs",
-                    "kuairec_watchratio",
-                    "kuairec_fullobs",
+                    "kuairec_small_matrix_full_observation",
+                    "kuairec_big_matrix_watch_ratio_threshold_0_5",
+                    "kuairec_small_matrix_full_observation",
                 ],
             },
         )
 
-        self.assertEqual(normalized["preprocessing_preset"], "kuairec_fullobs")
+        self.assertEqual(
+            normalized["preprocessing_preset"],
+            "kuairec_small_matrix_full_observation",
+        )
         self.assertEqual(
             normalized["preprocessing_preset_options"],
-            ["kuairec_fullobs", "kuairec_watchratio"],
+            [
+                "kuairec_small_matrix_full_observation",
+                "kuairec_big_matrix_watch_ratio_threshold_0_5",
+            ],
         )
 
     def test_runtime_does_not_stop_when_early_stopping_disabled(self) -> None:
@@ -2541,7 +2570,11 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             "train_loss": [1.0, 0.5],
             "val_metrics": [{"NDCG@40": 0.1}, {"NDCG@40": 0.2}],
         }
-        trainer = Mock(completed_epoch=1, resume_history=history)
+        trainer = Mock(
+            completed_epoch=1,
+            config=SimpleNamespace(epochs=5),
+            resume_history=history,
+        )
 
         start_epoch, resumed_history = _resume_auto_batch_fallback(
             trainer,
@@ -2838,7 +2871,6 @@ class BenchmarkPlanTests(unittest.TestCase):
             datasets=["movielens1m"],
             presets=["edgrec"],
             graph_policy="observed",
-            graph_policy_options=["observed"],
             num_neighbors=[10, 5],
             lr_scheduler="plateau",
         )
@@ -2858,7 +2890,10 @@ class BenchmarkPlanTests(unittest.TestCase):
             SimpleNamespace(
                 datasets=["kuairec_v2"],
                 presets=["edgrec"],
-                preprocessing_preset=["kuairec_fullobs", "kuairec_watchratio"],
+                preprocessing_preset=[
+                    "kuairec_small_matrix_full_observation",
+                    "kuairec_big_matrix_watch_ratio_threshold_0_5",
+                ],
                 num_neighbors=[10, 5],
                 lr_scheduler="plateau",
             ),
@@ -2873,7 +2908,7 @@ class BenchmarkPlanTests(unittest.TestCase):
                     "kuairec_v2",
                     "edgrec",
                     "plateau",
-                    "kuairec_fullobs",
+                    "kuairec_small_matrix_full_observation",
                     "observed",
                     (10, 5),
                 ),
@@ -2881,7 +2916,7 @@ class BenchmarkPlanTests(unittest.TestCase):
                     "kuairec_v2",
                     "edgrec",
                     "plateau",
-                    "kuairec_watchratio",
+                    "kuairec_big_matrix_watch_ratio_threshold_0_5",
                     "observed",
                     (10, 5),
                 ),

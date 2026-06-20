@@ -162,6 +162,96 @@ class SearchSpaceValidationTests(unittest.TestCase):
             ["random_exposure_items_only"],
         )
 
+    def test_lite_kuairec_search_samples_watch_ratio_threshold_presets(self) -> None:
+        """KuaiRec-lite Optuna should test the sparse watch-ratio threshold labels."""
+        spec = search.resolve_search_space(
+            "edgrec-lite-kuairec-search",
+            dataset="kuairec_v2",
+        )
+
+        self.assertEqual(
+            spec.parameters["preprocessing_preset"]["choices"],
+            [
+                "kuairec_big_matrix_watch_ratio_threshold_0_5",
+                "kuairec_big_matrix_watch_ratio_threshold_0_75",
+                "kuairec_big_matrix_watch_ratio_threshold_1_0",
+            ],
+        )
+
+        base_config = search.build_search_config(
+            spec,
+            dataset="kuairec_v2",
+            device="cpu",
+            data_dir="data",
+        )
+        fixed_trial = optuna.trial.FixedTrial(
+            {
+                search._parameter_storage_name(
+                    "preprocessing_preset",
+                    spec.parameters["preprocessing_preset"],
+                ): "kuairec_big_matrix_watch_ratio_threshold_0_75",
+                search._parameter_storage_name(
+                    "use_features",
+                    spec.parameters["use_features"],
+                ): False,
+                search._parameter_storage_name(
+                    "conformity_gnn_layers",
+                    spec.parameters["conformity_gnn_layers"],
+                ): 1,
+                search._parameter_storage_name(
+                    "num_neighbors",
+                    spec.parameters["num_neighbors"],
+                    depth=1,
+                ): "[8]",
+                search._parameter_storage_name(
+                    "n_negatives",
+                    spec.parameters["n_negatives"],
+                ): 1,
+                search._parameter_storage_name(
+                    "loss_weight_interest_bpr",
+                    spec.parameters["loss_weight_interest_bpr"],
+                ): 0.01,
+                search._parameter_storage_name(
+                    "loss_weight_conformity_bpr",
+                    spec.parameters["loss_weight_conformity_bpr"],
+                ): 0.01,
+                search._parameter_storage_name(
+                    "loss_weight_independence",
+                    spec.parameters["loss_weight_independence"],
+                ): 0.0,
+                search._parameter_storage_name(
+                    "loss_weight_popularity",
+                    spec.parameters["loss_weight_popularity"],
+                ): 0.0,
+            },
+        )
+
+        resolution = search.resolve_trial_parameters(
+            fixed_trial,
+            spec,
+            base_config=base_config,
+        )
+        config = search.build_search_config(
+            spec,
+            dataset="kuairec_v2",
+            sampled_overrides=resolution.config_overrides,
+            device="cpu",
+            data_dir="data",
+        )
+
+        self.assertEqual(
+            resolution.sampled_params["preprocessing_preset"],
+            "kuairec_big_matrix_watch_ratio_threshold_0_75",
+        )
+        self.assertEqual(
+            config.preprocessing_preset,
+            "kuairec_big_matrix_watch_ratio_threshold_0_75",
+        )
+        self.assertEqual(
+            len(search.search_space_revision(spec)),
+            search.SEARCH_SPACE_REVISION_HASH_LENGTH,
+        )
+
     def test_search_parser_accepts_comma_separated_space_queue(self) -> None:
         """search-experiments should mirror formal-run's queue syntax."""
         parser = search.build_search_parser()
