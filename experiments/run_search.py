@@ -44,7 +44,6 @@ from src.utils.method_naming import (
 from src.utils.project_paths import THESIS_DB_PATH
 
 from experiments.benchmark_resolvers import (
-    resolve_benchmark_graph_policy_values,
     resolve_benchmark_lr_scheduler_values,
     resolve_benchmark_num_neighbor_values,
     resolve_benchmark_preprocessing_preset_values,
@@ -99,6 +98,8 @@ SEARCH_PARAMETER_FIELDS = frozenset(
         "embedding_optimizer",
         "train_edge_keep_prob",
         "item_universe_policy",
+        "preprocessing_preset",
+        "label_mode",
         "score_mix_min_weight",
         "score_fusion_profile",
         "item_branch_profile",
@@ -786,10 +787,7 @@ def build_search_config_inputs(
             "preprocessing_preset",
             resolve_benchmark_preprocessing_preset_values(benchmark_args),
         ),
-        graph_policy=_single_search_value(
-            "graph_policy",
-            resolve_benchmark_graph_policy_values(benchmark_args),
-        ),
+        graph_policy=str(benchmark_args.get("graph_policy") or EDGRecConfig().graph_policy),
     )
 
 

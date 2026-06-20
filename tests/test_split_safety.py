@@ -330,13 +330,38 @@ class SplitSafetyTests(unittest.TestCase):
         self.assertEqual(data.edge_index.size(1) % 2, 0)
         self.assertEqual(data.train_edge_keep_prob, 0.5)
 
+    def test_new_runtime_config_fields_validate_values(self) -> None:
+        """New optional runtime fields should reject unsupported values early."""
+        with self.assertRaisesRegex(ValueError, "validation_every_n_epochs"):
+            EDGRecConfig(device="cpu", validation_every_n_epochs=0)
+        with self.assertRaisesRegex(ValueError, "label_mode"):
+            EDGRecConfig(device="cpu", label_mode="bad")
+        with self.assertRaisesRegex(ValueError, "sampler_residency_policy"):
+            EDGRecConfig(device="cpu", sampler_residency_policy="bad")
+        with self.assertRaisesRegex(ValueError, "propagation_backend"):
+            EDGRecConfig(device="cpu", propagation_backend="bad")
+        EDGRecConfig(device="cpu", propagation_backend="cuda_sparse_adjacency")
+        EDGRecConfig(device="cpu", propagation_backend="chunked_edge_index_aggregation")
+        sparse_alias_config = EDGRecConfig(device="cpu", embedding_sparse_optimizer=True)
+        self.assertEqual(sparse_alias_config.embedding_optimizer, "sparseadam")
+        sparse_string_config = EDGRecConfig(device="cpu", embedding_optimizer="sparseadam")
+        self.assertTrue(sparse_string_config.embedding_sparse_optimizer)
+        with self.assertRaisesRegex(ValueError, "Use either embedding_sparse_optimizer"):
+            EDGRecConfig(
+                device="cpu",
+                embedding_sparse_optimizer=True,
+                embedding_optimizer="sgd",
+            )
+        with self.assertRaisesRegex(ValueError, "KuaiRand-only"):
+            EDGRecConfig(device="cpu", label_mode="strict_like_follow")
+
     def test_sparse_embedding_optimizer_splits_sparse_tables(self) -> None:
         """Sparse embedding modes should not put giant tables in AdamW."""
         canonical = _small_memory_canonical()
         config = EDGRecConfig(
             device="cpu",
             embed_dim=4,
-            embedding_optimizer="sparseadam",
+            embedding_sparse_optimizer=True,
             use_features=False,
             use_popularity_emb=False,
             use_popularity_head=False,
@@ -364,6 +389,93 @@ class SplitSafetyTests(unittest.TestCase):
         grad = model.embedding.item_embed.weight.grad
         self.assertIsNotNone(grad)
         self.assertTrue(grad.is_sparse)
+
+    def test_sparse_embedding_optimizer_falls_back_on_dense_table_gradients(self) -> None:
+        """Sparse optimizer mode should return to AdamW if tables get dense grads."""
+        canonical = _small_memory_canonical()
+        config = EDGRecConfig(
+            device="cpu",
+            embed_dim=4,
+            embedding_sparse_optimizer=True,
+            use_features=False,
+            use_popularity_emb=False,
+            use_popularity_head=False,
+            num_neighbors=[4, 2],
+        )
+        data = build_graph(canonical, config)
+        model = build_runtime_model(config, canonical, data)
+        trainer = MiniBatchTrainer(
+            model=model,
+            loss_suite=LossSuite(config),
+            data=data,
+            config=config,
+        )
+
+        self.assertIsInstance(trainer.embedding_optimizer, torch.optim.SparseAdam)
+        loss = model.embedding.item_embed.weight.sum()
+        loss = loss + model.embedding.user_interest(torch.tensor([0, 1], dtype=torch.long)).sum()
+        trainer._apply_optimization_step(loss)
+
+        self.assertIsNone(trainer.embedding_optimizer)
+        self.assertIsInstance(trainer.optimizer, torch.optim.AdamW)
+        self.assertFalse(model.embedding.item_embed.sparse)
+        for parameter in model.parameters():
+            self.assertIsNone(parameter.grad)
+
+    def test_validation_cadence_skips_early_stopping_on_non_validation_epochs(self) -> None:
+        """Skipped validation epochs should not advance scheduler or early stopping."""
+        canonical = _small_memory_canonical()
+        config = EDGRecConfig(
+            device="cpu",
+            embed_dim=4,
+            epochs=2,
+            batch_size=2,
+            validation_every_n_epochs=2,
+            sampler_residency_policy="keep_resident",
+            lr_scheduler="none",
+            show_progress_bar=False,
+            use_features=False,
+            use_popularity_emb=False,
+            use_popularity_head=False,
+            loss_weight_contrastive=0.0,
+            loss_weight_align=0.0,
+            loss_weight_uniform=0.0,
+            loss_weight_popularity=0.0,
+            num_neighbors=[4, 2],
+        )
+        data = build_graph(canonical, config)
+        model = build_runtime_model(config, canonical, data)
+        trainer = MiniBatchTrainer(
+            model=model,
+            loss_suite=LossSuite(config),
+            data=data,
+            config=config,
+        )
+
+        with (
+            patch.object(
+                trainer,
+                "_evaluate_validation_metrics",
+                return_value={"NDCG@40": 0.5},
+            ) as evaluate_validation,
+            patch.object(
+                trainer,
+                "_update_early_stopping",
+                wraps=trainer._update_early_stopping,
+            ) as update_early_stopping,
+            patch.object(
+                trainer,
+                "_release_cuda_sampler_for_eval",
+                wraps=trainer._release_cuda_sampler_for_eval,
+            ) as release_sampler,
+        ):
+            history = trainer.train(checkpoint_every=0)
+
+        self.assertEqual(evaluate_validation.call_count, 1)
+        self.assertEqual(update_early_stopping.call_count, 1)
+        self.assertEqual(release_sampler.call_count, 0)
+        self.assertEqual(len(history["train_loss"]), 2)
+        self.assertEqual(len(history["val_metrics"]), 1)
 
     def test_get_splits_keeps_predefined_test_mask_intact(self) -> None:
         """Validation must be carved from train without touching test rows."""
@@ -2295,10 +2407,25 @@ class CausalTrainingContractTests(unittest.TestCase):
         self.assertTrue(torch.equal(weights, torch.ones(3)))
         self.assertFalse(weights.requires_grad)
 
+    def test_sign_aware_weighting_avoids_tensor_item_when_compiling(self) -> None:
+        """Compiled propagation should avoid tensor-to-Python scalar syncs."""
+        config = EDGRecConfig(device="cuda", use_dual_branch=False, use_sign_aware=True)
+        model = DualBranchGCN(config)
+
+        with (
+            patch("torch.compiler.is_compiling", return_value=True),
+            patch.object(torch.Tensor, "item", side_effect=AssertionError("tensor.item sync")),
+        ):
+            weights = model._compute_edge_weights_impl(torch.tensor([1.0, 1.0, 0.0]))
+
+        self.assertIsNotNone(weights)
+        assert weights is not None
+        self.assertTrue(torch.equal(weights.detach(), torch.ones(3)))
+
     def test_lightgcn_branch_matches_sparse_adjacency_matmul(self) -> None:
         """LightGCNBranch should equal repeated sparse adjacency matmuls."""
         branch = LightGCNBranch(n_layers=2)
-        x = torch.tensor(
+        node_embeddings = torch.tensor(
             [[1.0, 0.0], [0.5, 1.0], [0.0, 2.0]],
             dtype=torch.float32,
         )
@@ -2307,25 +2434,25 @@ class CausalTrainingContractTests(unittest.TestCase):
             dtype=torch.long,
         )
         edge_weight = torch.tensor([0.5, 0.5, 1.0, 1.0], dtype=torch.float32)
-        adj = DualBranchGCN._build_sparse_adjacency(
+        sparse_adjacency = DualBranchGCN._build_sparse_adjacency_tensor(
             edge_index,
             edge_weight,
             num_nodes=3,
-            dtype=x.dtype,
+            dtype=node_embeddings.dtype,
         )
 
-        x_1 = torch.sparse.mm(adj, x)
-        x_2 = torch.sparse.mm(adj, x_1)
-        expected = (x + x_1 + x_2) / 3.0
+        first_layer_embeddings = torch.sparse.mm(sparse_adjacency, node_embeddings)
+        second_layer_embeddings = torch.sparse.mm(sparse_adjacency, first_layer_embeddings)
+        expected = (node_embeddings + first_layer_embeddings + second_layer_embeddings) / 3.0
 
-        actual = branch(x, adj)
+        actual = branch(node_embeddings, sparse_adjacency)
 
         self.assertTrue(torch.allclose(actual, expected))
 
     def test_lightgcn_edge_propagation_matches_sparse_adjacency_matmul(self) -> None:
         """Chunked edge-list propagation should preserve LightGCN math."""
         branch = LightGCNBranch(n_layers=2)
-        x = torch.tensor(
+        node_embeddings = torch.tensor(
             [[1.0, 0.0], [0.5, 1.0], [0.0, 2.0]],
             dtype=torch.float32,
         )
@@ -2334,16 +2461,16 @@ class CausalTrainingContractTests(unittest.TestCase):
             dtype=torch.long,
         )
         edge_weight = torch.tensor([0.5, 0.5, 1.0, 1.0], dtype=torch.float32)
-        adj = DualBranchGCN._build_sparse_adjacency(
+        sparse_adjacency = DualBranchGCN._build_sparse_adjacency_tensor(
             edge_index,
             edge_weight,
             num_nodes=3,
-            dtype=x.dtype,
+            dtype=node_embeddings.dtype,
         )
 
-        expected = branch(x, adj)
+        expected = branch(node_embeddings, sparse_adjacency)
         actual = branch.forward_edges(
-            x,
+            node_embeddings,
             edge_index,
             edge_weight,
             num_nodes=3,

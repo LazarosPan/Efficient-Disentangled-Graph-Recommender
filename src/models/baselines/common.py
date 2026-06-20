@@ -57,7 +57,7 @@ def build_sparse_adjacency(
         add_self_loops=add_self_loops,
         dtype=dtype,
     )
-    return DualBranchGCN._build_sparse_adjacency(
+    return DualBranchGCN._build_sparse_adjacency_tensor(
         resolved_edge_index,
         weights,
         num_nodes=num_nodes,
@@ -91,7 +91,7 @@ def propagate_user_item_channels(
     if not channel_specs:
         return {}
 
-    adj = build_sparse_adjacency(
+    sparse_adjacency = build_sparse_adjacency(
         edge_index,
         edge_norm,
         num_nodes=n_users + n_items,
@@ -101,7 +101,7 @@ def propagate_user_item_channels(
     propagated: dict[str, torch.Tensor] = {}
     for user_key, item_key, user_emb, item_emb, propagation in channel_specs:
         channel_x = torch.cat([user_emb, item_emb], dim=0)
-        channel_prop = propagation(channel_x, adj)
+        channel_prop = propagation(channel_x, sparse_adjacency)
         propagated[user_key] = channel_prop[:n_users]
         propagated[item_key] = channel_prop[n_users:]
     return propagated

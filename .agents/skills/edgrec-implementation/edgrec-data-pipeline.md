@@ -39,7 +39,7 @@ Boundary: loaders emit `CanonicalInteractions`; graph build uses observed train 
 | `movielens1m` | `movielens_explicit` | none |
 | `movielens20m` | `movielens_explicit` | `movielens_explicit_dense_genome` |
 | `taobao` | `taobao_multibehavior` | `taobao_multibehavior_raw` |
-| `kuairec_v2` | `kuairec_watchratio` | `kuairec_watchratio_raw`, `kuairec_fullobs` |
+| `kuairec_v2` | `kuairec_big_matrix_watch_ratio_threshold_0_5` | `kuairec_big_matrix_watch_ratio_threshold_0_75`, `kuairec_big_matrix_watch_ratio_threshold_1_0`, `kuairec_big_matrix_watch_ratio_raw`, `kuairec_small_matrix_full_observation` |
 | `amazonbook` | `amazonbook_graph_only` | none |
 | `kuairand1k` | `kuairand_causal` | `kuairand_random_only` |
 
@@ -47,8 +47,9 @@ Dataset semantic notes:
 
 | Dataset/view | Live contract |
 | --- | --- |
-| `kuairec_watchratio` | default KuaiRec; `big_matrix`; watch-ratio ranking signal |
-| `kuairec_fullobs` | explicit `small_matrix` comparison; near-full observation; not default ranking story |
+| `kuairec_big_matrix_watch_ratio_threshold_0_5` | default KuaiRec; `big_matrix`; positive label is clipped `watch_ratio >= 0.5` |
+| `kuairec_big_matrix_watch_ratio_threshold_0_75` / `kuairec_big_matrix_watch_ratio_threshold_1_0` | sparse `big_matrix` threshold diagnostics; same clipping/collapse path as default |
+| `kuairec_small_matrix_full_observation` | explicit `small_matrix` comparison; near-full observation; not default ranking story |
 | `kuairand_causal` | default KuaiRand; standard + randomized exposure rows |
 | `kuairand_random_only` | explicit randomized-exposure diagnostic view |
 | `amazonbook_graph_only` | graph-only default; no side-feature thesis story |

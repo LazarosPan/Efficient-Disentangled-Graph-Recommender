@@ -59,7 +59,7 @@ _EPOCH_LOSS_METRIC_NAMES = frozenset(
         "score_mix_context_mean",
     },
 )
-_EPOCH_LOSS_METRIC_PREFIXES = ("normalized_", "weighted_")
+_EPOCH_LOSS_METRIC_PREFIXES = ("normalized_", "weighted_", "stage_")
 
 
 class MiniBatchTrainer(TrainerRuntime):
@@ -260,6 +260,8 @@ class MiniBatchTrainer(TrainerRuntime):
                 self.sampler_device,
             )
 
+        profile_stages = self.config.profile_training_stages
+        sampling_start = time.perf_counter() if profile_stages else None
         generator = build_torch_generator(random_seed, self.sampler_device)
         batch_size = batch_users.size(0)
         batch_neg_items, dice_negative_mask = self.sampler.sample_with_metadata(
@@ -279,6 +281,10 @@ class MiniBatchTrainer(TrainerRuntime):
                 batch_size,
             )
         )
+        sampling_time_s = (
+            time.perf_counter() - sampling_start if sampling_start is not None else None
+        )
+        subgraph_start = time.perf_counter() if profile_stages else None
         prepared = self.subgraph_sampler.sample(
             batch_users,
             batch_pos_items,
@@ -286,6 +292,11 @@ class MiniBatchTrainer(TrainerRuntime):
             generator=generator,
             dice_negative_mask=dice_negative_mask,
         )
+        if subgraph_start is not None:
+            prepared.stage_times_s = {
+                "sampling": float(sampling_time_s or 0.0),
+                "subgraph": time.perf_counter() - subgraph_start,
+            }
         if self.sampler_device.type == "cpu" and self.device.type == "cuda":
             return prepared.pin_memory()
         return prepared
@@ -343,6 +354,21 @@ class MiniBatchTrainer(TrainerRuntime):
                 propensity_targets=local_prop_targets,
                 branch_item_popularity=local_branch_popularity,
             )
+            if self.config.profile_training_stages:
+                stage_times = dict(sub_batch.stage_times_s or {})
+                model_stage_times = output.get("stage_times_s")
+                if isinstance(model_stage_times, dict):
+                    stage_times.update(
+                        {
+                            key: float(value)
+                            for key, value in model_stage_times.items()
+                            if isinstance(value, (int, float))
+                        },
+                    )
+                for stage_name, stage_time_s in stage_times.items():
+                    losses[f"stage_{stage_name}_s"] = losses["total"].new_tensor(
+                        stage_time_s,
+                    )
 
         if logger.isEnabledFor(logging.DEBUG):
             debug_losses = {
@@ -484,7 +510,12 @@ class MiniBatchTrainer(TrainerRuntime):
                 progress_bar.update(1)
                 progress_bar.set_postfix(skipped=n_skipped + 1)
             return None
+        optimization_start = time.perf_counter() if self.config.profile_training_stages else None
         self._apply_optimization_step(losses["total"])
+        if optimization_start is not None:
+            losses["stage_backward_s"] = losses["total"].new_tensor(
+                time.perf_counter() - optimization_start,
+            )
         if progress_bar is not None:
             progress_bar.update(1)
             if batch_idx + 1 == n_batches or batch_idx % self.config.progress_bar_loss_cadence == 0:
@@ -523,7 +554,12 @@ class MiniBatchTrainer(TrainerRuntime):
                 progress_bar.update(1)
                 progress_bar.set_postfix(skipped=n_skipped + 1)
             return None
+        optimization_start = time.perf_counter() if self.config.profile_training_stages else None
         self._apply_optimization_step(losses["total"])
+        if optimization_start is not None:
+            losses["stage_backward_s"] = losses["total"].new_tensor(
+                time.perf_counter() - optimization_start,
+            )
         if progress_bar is not None:
             progress_bar.update(1)
             if batch_idx + 1 == n_batches or batch_idx % self.config.progress_bar_loss_cadence == 0:
@@ -669,6 +705,7 @@ class MiniBatchTrainer(TrainerRuntime):
 
             sub_batch: SubgraphBatch | None = None
             total_loss: torch.Tensor | None = None
+            losses: dict[str, torch.Tensor] | None = None
             resource_monitor = TrainingResourceMonitor(self.device).start()
             resource_stats = None
             try:
@@ -742,24 +779,37 @@ class MiniBatchTrainer(TrainerRuntime):
                 epoch_loss_metric_sums,
                 completed_batches,
             )
+            train_metrics["effective_batch_size"] = float(batch_sz)
 
             history["train_loss"].append(avg_loss)
             history.setdefault("train_metrics", []).append(train_metrics)
-            released_cuda_sampler = False
-            if self.config.training_graph_mode == "sampled":
-                released_cuda_sampler = self._release_cuda_sampler_for_eval()
-            elif self.config.training_graph_mode == "full":
-                self._release_full_graph_cache_for_eval()
-            try:
-                val_metrics = self._evaluate_validation_metrics()
-            finally:
-                if released_cuda_sampler:
-                    self._ensure_subgraph_sampler()
-            history["val_metrics"].append(val_metrics)
+            is_validation_epoch = (epoch + 1) % self.config.validation_every_n_epochs == 0
+            is_final_epoch = epoch + 1 == self.config.epochs
+            should_validate = is_validation_epoch or is_final_epoch
+            val_metrics: dict[str, float] = {}
+            validation_time_s = 0.0
+            if should_validate:
+                released_cuda_sampler = False
+                if self.config.sampler_residency_policy == "release_for_validation":
+                    if self.config.training_graph_mode == "sampled":
+                        released_cuda_sampler = self._release_cuda_sampler_for_eval()
+                    elif self.config.training_graph_mode == "full":
+                        self._release_full_graph_cache_for_eval()
+                validation_start = time.perf_counter()
+                try:
+                    val_metrics = self._evaluate_validation_metrics()
+                finally:
+                    validation_time_s = time.perf_counter() - validation_start
+                    if released_cuda_sampler:
+                        self._ensure_subgraph_sampler()
+                history["val_metrics"].append(val_metrics)
             epoch_time_s = time.perf_counter() - epoch_start
+            train_metrics["validation_time_s"] = validation_time_s
+            train_metrics["epoch_time_s"] = epoch_time_s
             primary_metric = self._primary_metric_name()
-            current_ndcg = val_metrics.get(primary_metric, 0.0)
-            self._step_scheduler(current_ndcg, epoch)
+            current_ndcg = val_metrics.get(primary_metric, self.best_ndcg)
+            if should_validate:
+                self._step_scheduler(current_ndcg, epoch)
             self._log_epoch_summary(
                 epoch,
                 avg_loss,
@@ -767,6 +817,10 @@ class MiniBatchTrainer(TrainerRuntime):
                 primary_metric,
                 skipped_batches=skipped_batches,
                 resource_stats=resource_stats,
+                epoch_time_s=epoch_time_s,
+                validation_time_s=validation_time_s,
+                validation_ran=should_validate,
+                effective_batch_size=batch_sz,
             )
             self._log_epoch_to_sqlite(
                 epoch,
@@ -780,7 +834,7 @@ class MiniBatchTrainer(TrainerRuntime):
             self.resume_history = history
             if epoch_callback is not None:
                 epoch_callback(epoch, val_metrics, epoch_time_s)
-            if self._update_early_stopping(
+            if should_validate and self._update_early_stopping(
                 current_ndcg,
                 primary_metric,
                 epoch,

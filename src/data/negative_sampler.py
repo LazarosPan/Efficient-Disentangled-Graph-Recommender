@@ -362,62 +362,62 @@ class NegativeSampler:
     def _known_positive_collision_mask(
         self,
         expanded_user_ids: torch.Tensor,
-        neg_items: torch.Tensor,
+        negative_items: torch.Tensor,
         device: torch.device,
     ) -> torch.Tensor:
         """Return collisions between sampled negatives and train positives.
 
         Args:
             expanded_user_ids: User IDs repeated to align with ``neg_items``.
-            neg_items: Flattened sampled negatives.
+            negative_items: Flattened sampled negatives.
             device: Active sampling device.
 
         Returns:
-            Boolean mask with shape matching ``neg_items``.
+            Boolean mask with shape matching ``negative_items``.
 
         """
         positive_keys = self._positive_keys_for(device)
         if positive_keys is None or positive_keys.numel() == 0:
-            return torch.zeros_like(neg_items, dtype=torch.bool)
+            return torch.zeros_like(negative_items, dtype=torch.bool)
 
-        sampled_keys = expanded_user_ids * self.n_items + neg_items
+        sampled_keys = expanded_user_ids * self.n_items + negative_items
         positions = torch.searchsorted(positive_keys, sampled_keys)
         safe_positions = positions.clamp(max=positive_keys.numel() - 1)
         return (positions < positive_keys.numel()) & (positive_keys[safe_positions] == sampled_keys)
 
     def _collision_mask(
         self,
-        neg_items: torch.Tensor,
-        pos_expanded: torch.Tensor | None,
+        negative_items: torch.Tensor,
+        positive_items_expanded: torch.Tensor | None,
         expanded_user_ids: torch.Tensor | None,
         device: torch.device,
     ) -> torch.Tensor:
         """Return sampled negatives that violate current or known positives.
 
         Args:
-            neg_items: Flattened sampled negatives.
-            pos_expanded: Flattened current positive item IDs, if available.
+            negative_items: Flattened sampled negatives.
+            positive_items_expanded: Flattened current positive item IDs, if available.
             expanded_user_ids: User IDs repeated to align with ``neg_items``.
             device: Active sampling device.
 
         Returns:
-            Boolean mask with shape matching ``neg_items``.
+            Boolean mask with shape matching ``negative_items``.
 
         """
-        collision_mask = torch.zeros_like(neg_items, dtype=torch.bool)
-        if pos_expanded is not None:
-            collision_mask |= neg_items == pos_expanded
+        collision_mask = torch.zeros_like(negative_items, dtype=torch.bool)
+        if positive_items_expanded is not None:
+            collision_mask |= negative_items == positive_items_expanded
         if expanded_user_ids is not None:
             collision_mask |= self._known_positive_collision_mask(
                 expanded_user_ids,
-                neg_items,
+                negative_items,
                 device,
             )
         return collision_mask
 
     def _duplicate_negative_mask(
         self,
-        neg_items: torch.Tensor,
+        negative_items: torch.Tensor,
         batch_size: int,
     ) -> torch.Tensor:
         """Return repeated negatives within each positive row.
@@ -428,14 +428,43 @@ class NegativeSampler:
         redrawn without changing already-valid samples.
         """
         if self.n_negatives <= 1:
-            return torch.zeros_like(neg_items, dtype=torch.bool)
-        neg_matrix = neg_items.view(batch_size, self.n_negatives)
-        duplicate_mask = torch.zeros_like(neg_matrix, dtype=torch.bool)
+            return torch.zeros_like(negative_items, dtype=torch.bool)
+        negative_item_matrix = negative_items.view(batch_size, self.n_negatives)
+        duplicate_mask = torch.zeros_like(negative_item_matrix, dtype=torch.bool)
         for column in range(1, self.n_negatives):
             duplicate_mask[:, column] = (
-                neg_matrix[:, :column] == neg_matrix[:, column : column + 1]
+                negative_item_matrix[:, :column]
+                == negative_item_matrix[:, column : column + 1]
             ).any(dim=1)
         return duplicate_mask.reshape(-1)
+
+    def _negative_violation_mask(
+        self,
+        negative_items: torch.Tensor,
+        batch_size: int,
+        positive_items_expanded: torch.Tensor | None,
+        expanded_user_ids: torch.Tensor | None,
+        device: torch.device,
+    ) -> torch.Tensor:
+        """Return negatives that collide with positives or repeat within a row.
+
+        Args:
+            negative_items: Flattened sampled negatives.
+            batch_size: Number of positive rows represented by ``negative_items``.
+            positive_items_expanded: Current positives repeated per negative slot.
+            expanded_user_ids: User IDs repeated per negative slot.
+            device: Active sampling device.
+
+        Returns:
+            Boolean mask with shape matching ``negative_items``.
+
+        """
+        return self._collision_mask(
+            negative_items,
+            positive_items_expanded,
+            expanded_user_ids,
+            device,
+        ) | self._duplicate_negative_mask(negative_items, batch_size)
 
     def sample_with_metadata(
         self,
@@ -471,9 +500,9 @@ class NegativeSampler:
             )
         device = torch.device(device)
 
-        total = batch_size * self.n_negatives
-        neg_items, dice_mask = self._draw_negatives_for_strategy_with_mask(
-            total,
+        total_negative_count = batch_size * self.n_negatives
+        negative_items, dice_negative_mask = self._draw_negatives_for_strategy_with_mask(
+            total_negative_count,
             device,
             generator,
             positive_items,
@@ -481,71 +510,88 @@ class NegativeSampler:
             epoch,
         )
 
-        if positive_items is not None or user_ids is not None or self.n_negatives > 1:
-            pos_expanded = (
-                positive_items.repeat_interleave(self.n_negatives).to(device=device)
-                if positive_items is not None
-                else None
-            )
-            expanded_user_ids = (
-                user_ids.to(device=device).repeat_interleave(self.n_negatives)
-                if user_ids is not None
-                else None
-            )
+        positive_items_expanded = (
+            positive_items.repeat_interleave(self.n_negatives).to(device=device)
+            if positive_items is not None
+            else None
+        )
+        expanded_user_ids = (
+            user_ids.to(device=device).repeat_interleave(self.n_negatives)
+            if user_ids is not None
+            else None
+        )
+
+        if (
+            positive_items_expanded is not None
+            or expanded_user_ids is not None
+            or self.n_negatives > 1
+        ):
             for _ in range(self.max_resample_attempts):
-                collision_mask = self._collision_mask(
-                    neg_items,
-                    pos_expanded,
+                violation_mask = self._negative_violation_mask(
+                    negative_items,
+                    batch_size,
+                    positive_items_expanded,
                     expanded_user_ids,
                     device,
                 )
-                duplicate_mask = self._duplicate_negative_mask(neg_items, batch_size)
-                violation_mask = collision_mask | duplicate_mask
                 replacements, replacement_mask = self._draw_negatives_for_strategy_with_mask(
-                    total,
+                    total_negative_count,
                     device,
                     generator,
                     positive_items,
                     user_ids,
                     epoch,
                 )
-                neg_items = torch.where(violation_mask, replacements, neg_items)
-                dice_mask = torch.where(violation_mask, replacement_mask, dice_mask)
+                negative_items = torch.where(
+                    violation_mask,
+                    replacements,
+                    negative_items,
+                )
+                dice_negative_mask = torch.where(
+                    violation_mask,
+                    replacement_mask,
+                    dice_negative_mask,
+                )
 
-            collision_mask = self._collision_mask(
-                neg_items,
-                pos_expanded,
+            violation_mask = self._negative_violation_mask(
+                negative_items,
+                batch_size,
+                positive_items_expanded,
                 expanded_user_ids,
                 device,
             )
-            duplicate_mask = self._duplicate_negative_mask(neg_items, batch_size)
-            violation_mask = collision_mask | duplicate_mask
             if violation_mask.any():
                 for _ in range(min(self.n_items, 64)):
-                    next_items = (neg_items + 1) % self.n_items
-                    neg_items = torch.where(violation_mask, next_items, neg_items)
-                    collision_mask = self._collision_mask(
-                        neg_items,
-                        pos_expanded,
+                    next_items = (negative_items + 1) % self.n_items
+                    negative_items = torch.where(
+                        violation_mask,
+                        next_items,
+                        negative_items,
+                    )
+                    violation_mask = self._negative_violation_mask(
+                        negative_items,
+                        batch_size,
+                        positive_items_expanded,
                         expanded_user_ids,
                         device,
                     )
-                    duplicate_mask = self._duplicate_negative_mask(neg_items, batch_size)
-                    violation_mask = collision_mask | duplicate_mask
 
         if self.strategy == "dice" and positive_items is not None:
-            pos_expanded = positive_items.repeat_interleave(self.n_negatives).to(device=device)
-            dice_mask = self._dice_high_popularity_mask(
-                pos_expanded,
-                neg_items,
+            assert positive_items_expanded is not None
+            dice_negative_mask = self._dice_high_popularity_mask(
+                positive_items_expanded,
+                negative_items,
                 device,
                 epoch,
             )
-            resolved_mask: torch.Tensor | None = dice_mask.view(batch_size, self.n_negatives)
+            resolved_mask: torch.Tensor | None = dice_negative_mask.view(
+                batch_size,
+                self.n_negatives,
+            )
         else:
             resolved_mask = None
 
-        return neg_items.view(batch_size, self.n_negatives), resolved_mask
+        return negative_items.view(batch_size, self.n_negatives), resolved_mask
 
     def sample(
         self,

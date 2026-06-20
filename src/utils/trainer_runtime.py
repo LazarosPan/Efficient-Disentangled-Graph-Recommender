@@ -290,11 +290,13 @@ class TrainerRuntime:
             for attr in ("alpha_pos", "alpha_neg")
             for p in ([getattr(gcn, attr)] if gcn is not None and hasattr(gcn, attr) else [])
         ]
-        split_embedding_optimizer = (
-            config.baseline_family not in {"lightgcn_paper", "dice_paper"}
-            and config.embedding_optimizer in {"sparseadam", "sgd"}
-        )
+        split_embedding_optimizer = config.baseline_family not in {
+            "lightgcn_paper",
+            "dice_paper",
+        } and config.embedding_optimizer in {"sparseadam", "sgd"}
         embedding_params = _embedding_table_parameters(model) if split_embedding_optimizer else []
+        self._embedding_params = embedding_params
+        self._sign_params = sign_params
         sign_param_ids = {id(p) for p in sign_params}
         embedding_param_ids = {id(p) for p in embedding_params}
         main_params = [
@@ -478,6 +480,32 @@ class TrainerRuntime:
         for optimizer in self._optimizers():
             optimizer.zero_grad(set_to_none=True)
         loss.backward(retain_graph=retain_graph)
+        dense_embedding_grads = [
+            parameter
+            for parameter in getattr(self, "_embedding_params", [])
+            if parameter.grad is not None and not parameter.grad.is_sparse
+        ]
+        if isinstance(self.embedding_optimizer, optim.SparseAdam) and dense_embedding_grads:
+            logger.warning(
+                (
+                    "Sparse embedding optimizer requested, but %d embedding parameter(s) "
+                    "produced dense gradients; falling back to shared AdamW and "
+                    "skipping the current batch."
+                ),
+                len(dense_embedding_grads),
+            )
+            sign_param_ids = {id(p) for p in getattr(self, "_sign_params", [])}
+            main_params = [p for p in self.trainable_parameters if id(p) not in sign_param_ids]
+            embedding = getattr(self.model, "embedding", None)
+            if embedding is not None:
+                for module in embedding.modules():
+                    if isinstance(module, torch.nn.Embedding):
+                        module.sparse = False
+            self.embedding_optimizer = None
+            self.optimizer = self._build_optimizer(main_params, getattr(self, "_sign_params", []))
+            self.scheduler = self._build_scheduler()
+            self.optimizer.zero_grad(set_to_none=True)
+            return
         self._clip_gradients()
         for optimizer in self._optimizers():
             optimizer.step()
@@ -532,9 +560,7 @@ class TrainerRuntime:
             sparse_grads.append(values)
             grad_norm = values.norm(2)
             total_sq_norm = (
-                grad_norm.square()
-                if total_sq_norm is None
-                else total_sq_norm + grad_norm.square()
+                grad_norm.square() if total_sq_norm is None else total_sq_norm + grad_norm.square()
             )
         if total_sq_norm is None:
             return
@@ -774,6 +800,10 @@ class TrainerRuntime:
         primary_metric: str,
         skipped_batches: int = 0,
         resource_stats: TrainingResourceStats | None = None,
+        epoch_time_s: float | None = None,
+        validation_time_s: float | None = None,
+        validation_ran: bool = True,
+        effective_batch_size: int | None = None,
     ) -> None:
         """Emit the per-epoch training summary."""
         peak_vram_mb = (
@@ -782,14 +812,32 @@ class TrainerRuntime:
             else GPUProfiler.peak_vram_mb()
         )
         vram_str = f" | VRAM: {peak_vram_mb:.0f} MB" if peak_vram_mb is not None else ""
+        time_str = f" | Epoch: {epoch_time_s:.2f}s" if epoch_time_s is not None else ""
+        validation_str = (
+            f" | Val: {validation_time_s:.2f}s"
+            if validation_ran and validation_time_s is not None
+            else " | Val: skipped"
+        )
+        batch_str = f" | Batch: {effective_batch_size}" if effective_batch_size is not None else ""
+        branch_str = (
+            f" | Layers: interest={self.config.interest_gnn_layers}, "
+            f"conformity={self.config.conformity_gnn_layers}"
+            if self.config.use_dual_branch
+            else f" | Layers: {self.config.single_branch_gnn_layers}"
+        )
         logger.info(
-            "Epoch %3d/%d | Loss: %.4f | %s: %.4f%s",
+            "Epoch %3d/%d | Loss: %.4f | %s: %.4f%s%s%s%s%s | features=%s",
             epoch + 1,
             self.config.epochs,
             avg_loss,
             primary_metric,
             current_ndcg,
+            time_str,
+            validation_str,
             vram_str,
+            batch_str,
+            branch_str,
+            self.config.use_features,
         )
         if skipped_batches > 0:
             logger.warning(

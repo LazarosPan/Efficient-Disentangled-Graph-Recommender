@@ -34,6 +34,7 @@ class SubgraphBatch:
     batch_pos_local: torch.Tensor  # local indices for batch pos items
     batch_neg_local: torch.Tensor  # local indices for batch neg items
     dice_negative_mask: torch.Tensor | None = None  # (B,) high-pop DICE mask, if used
+    stage_times_s: dict[str, float] | None = None
 
     def _map_tensors(
         self,
@@ -61,6 +62,7 @@ class SubgraphBatch:
             batch_pos_local=fn(self.batch_pos_local),  # type: ignore[arg-type]
             batch_neg_local=fn(self.batch_neg_local),  # type: ignore[arg-type]
             dice_negative_mask=fn(self.dice_negative_mask),
+            stage_times_s=self.stage_times_s,
         )
 
     def to(
@@ -102,9 +104,10 @@ class SubgraphSampler:
 
     When ``max_neighbors_per_hop`` is provided the sampler uses a vectorised
     sampled-BFS that applies per-hop fan-out *during* expansion.  For each hop
-    a CSR adjacency precomputed at construction time lets frontier nodes be
-    processed with bounded random CSR offsets, so memory scales with the fan-out
-    budget rather than the frontier's total incident degree.
+    a compressed sparse row adjacency precomputed at construction time lets
+    frontier nodes be processed with bounded random row offsets, so memory
+    scales with the fan-out budget rather than the frontier's total incident
+    degree.
 
     Without ``max_neighbors_per_hop`` the original PyG ``k_hop_subgraph`` path
     is used unchanged (full k-hop neighbourhood, no sampling).
@@ -140,17 +143,18 @@ class SubgraphSampler:
         self._num_nodes = n_users + n_items
 
         if max_neighbors_per_hop is not None:
-            self._precompute_csr_adjacency()
+            self._precompute_compressed_sparse_row_adjacency()
 
     # ------------------------------------------------------------------
-    # CSR adjacency (used by sampled-BFS path)
+    # Compressed sparse row adjacency (used by sampled-BFS path)
     # ------------------------------------------------------------------
 
-    def _precompute_csr_adjacency(self) -> None:
-        """Build a CSR adjacency indexed by source node.
+    def _precompute_compressed_sparse_row_adjacency(self) -> None:
+        """Build a compressed sparse row adjacency indexed by source node.
 
-        ``_csr_ptr[u] : _csr_ptr[u+1]`` is the range of positions in
-        ``_csr_col`` / ``_csr_edge_id`` that describe the neighbours of
+        ``_compressed_sparse_row_offsets[u] : _compressed_sparse_row_offsets[u+1]``
+        is the range of positions in ``_compressed_sparse_neighbor_nodes`` /
+        ``_compressed_sparse_original_edge_ids`` that describe the neighbours of
         node u (outgoing edges from u in the undirected bipartite graph).
         """
         device = self.edge_index.device
@@ -158,13 +162,21 @@ class SubgraphSampler:
         src = self.edge_index[0]
 
         sort_order = src.argsort()
-        self._csr_col = self.edge_index[1][sort_order]  # (num_edges,) destination nodes
-        self._csr_edge_id = sort_order  # (num_edges,) original edge indices
+        self._compressed_sparse_neighbor_nodes = self.edge_index[1][
+            sort_order
+        ]  # (num_edges,) destination nodes
+        self._compressed_sparse_original_edge_ids = (
+            sort_order  # (num_edges,) original edge indices
+        )
 
-        ptr = torch.zeros(self._num_nodes + 1, dtype=torch.long, device=device)
-        ptr.scatter_add_(0, src + 1, torch.ones(num_edges, dtype=torch.long, device=device))
-        ptr.cumsum_(0)
-        self._csr_ptr = ptr  # (N+1,)
+        row_offsets = torch.zeros(self._num_nodes + 1, dtype=torch.long, device=device)
+        row_offsets.scatter_add_(
+            0,
+            src + 1,
+            torch.ones(num_edges, dtype=torch.long, device=device),
+        )
+        row_offsets.cumsum_(0)
+        self._compressed_sparse_row_offsets = row_offsets  # (N+1,)
 
     # ------------------------------------------------------------------
     # Sampled-BFS path
@@ -173,18 +185,18 @@ class SubgraphSampler:
     def _sample_one_hop(
         self,
         frontier: torch.Tensor,
-        max_nb: int,
+        max_neighbors: int,
         generator: torch.Generator | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Sample up to ``max_nb`` neighbours for every node in ``frontier``.
+        """Sample up to ``max_neighbors`` neighbours for every node in ``frontier``.
 
-        All frontier nodes are processed simultaneously with bounded CSR offset
-        gathers; there is no Python loop over nodes and no sort over the full
-        incident edge set.
+        All frontier nodes are processed simultaneously with bounded compressed
+        sparse row offset gathers; there is no Python loop over nodes and no
+        sort over the full incident edge set.
 
         Args:
             frontier: (F,) global node IDs to expand from.
-            max_nb: Maximum neighbours per frontier node.
+            max_neighbors: Maximum neighbours per frontier node.
 
         Returns:
             Tuple of ``(sampled_edge_orig_ids, sampled_neighbor_nodes)``
@@ -197,39 +209,53 @@ class SubgraphSampler:
             empty = frontier.new_empty(0)
             return empty, empty
 
-        ptr_start = self._csr_ptr[frontier]  # (F,)
-        ptr_end = self._csr_ptr[frontier + 1]  # (F,)
-        degrees = ptr_end - ptr_start  # (F,)
+        row_start_offsets = self._compressed_sparse_row_offsets[frontier]  # (F,)
+        row_end_offsets = self._compressed_sparse_row_offsets[frontier + 1]  # (F,)
+        degrees = row_end_offsets - row_start_offsets  # (F,)
 
-        has_nb = degrees > 0
-        if not has_nb.any():
+        has_neighbors = degrees > 0
+        if not has_neighbors.any():
             empty = frontier.new_empty(0)
             return empty, empty
 
-        active_starts = ptr_start[has_nb]
-        active_degrees = degrees[has_nb]
-        n_active = active_starts.size(0)
-        max_take = min(max_nb, int(active_degrees.max().item()))
+        active_starts = row_start_offsets[has_neighbors]
+        active_degrees = degrees[has_neighbors]
+        active_node_count = active_starts.size(0)
+        if active_degrees.device.type == "cuda":
+            fanout_width = max_neighbors
+        else:
+            fanout_width = min(max_neighbors, int(active_degrees.max().item()))
 
-        offsets = torch.arange(max_take, device=device).expand(n_active, max_take)
+        offsets = torch.arange(fanout_width, device=device).expand(
+            active_node_count,
+            fanout_width,
+        )
         keep = offsets < active_degrees.unsqueeze(1)
-        overcrowded = active_degrees > max_take
-        if overcrowded.any():
+        oversubscribed_nodes = active_degrees > fanout_width
+        if oversubscribed_nodes.any():
             random_offsets = torch.floor(
                 torch.rand(
-                    (n_active, max_take),
+                    (active_node_count, fanout_width),
                     device=device,
                     generator=generator,
                 )
                 * active_degrees.unsqueeze(1),
             ).to(dtype=torch.long)
-            offsets = torch.where(overcrowded.unsqueeze(1), random_offsets, offsets)
+            offsets = torch.where(
+                oversubscribed_nodes.unsqueeze(1),
+                random_offsets,
+                offsets,
+            )
 
-        flat_csr = (active_starts.unsqueeze(1) + offsets)[keep]
-        all_edge_ids = self._csr_edge_id[flat_csr]
-        all_neighbors = self._csr_col[flat_csr]
+        flattened_sparse_positions = (active_starts.unsqueeze(1) + offsets)[keep]
+        sampled_edge_ids = self._compressed_sparse_original_edge_ids[
+            flattened_sparse_positions
+        ]
+        sampled_neighbors = self._compressed_sparse_neighbor_nodes[
+            flattened_sparse_positions
+        ]
 
-        return all_edge_ids, all_neighbors
+        return sampled_edge_ids, sampled_neighbors
 
     def _sampled_k_hop(
         self,
@@ -239,9 +265,10 @@ class SubgraphSampler:
         """Sampled BFS from ``seed_nodes`` with per-hop fan-out limits.
 
         Returns:
-            ``(all_nodes, sub_ei, all_edge_orig_ids)`` where
+            ``(all_nodes, subgraph_edge_index, all_edge_orig_ids)`` where
             ``all_nodes`` are global node IDs in discovery order,
-            ``sub_ei`` is the (2, E) edge index with local node indices, and
+            ``subgraph_edge_index`` is the (2, E) edge index with local node
+            indices, and
             ``all_edge_orig_ids`` are the original edge indices (for sign lookup).
 
         """
@@ -254,10 +281,10 @@ class SubgraphSampler:
 
         all_edge_orig_ids: list[torch.Tensor] = []
 
-        for hop_max_nb in self.max_neighbors_per_hop:
+        for max_neighbors_for_hop in self.max_neighbors_per_hop:
             edge_ids, neighbors = self._sample_one_hop(
                 frontier,
-                hop_max_nb,
+                max_neighbors_for_hop,
                 generator=generator,
             )
             if edge_ids.numel() > 0:
@@ -278,8 +305,12 @@ class SubgraphSampler:
         all_nodes = in_subgraph.nonzero(as_tuple=True)[0]
 
         if all_edge_orig_ids:
-            cat_ids = torch.cat(all_edge_orig_ids)
-            all_edge_ids = cat_ids.unique() if cat_ids.numel() > 0 else cat_ids
+            combined_edge_ids = torch.cat(all_edge_orig_ids)
+            all_edge_ids = (
+                combined_edge_ids.unique()
+                if combined_edge_ids.numel() > 0
+                else combined_edge_ids
+            )
         else:
             all_edge_ids = seed_nodes.new_empty(0)
 
@@ -293,16 +324,19 @@ class SubgraphSampler:
         node_to_local[all_nodes] = torch.arange(all_nodes.size(0), device=device)
 
         if all_edge_ids.numel() > 0:
-            orig_src = self.edge_index[0][all_edge_ids]
-            orig_dst = self.edge_index[1][all_edge_ids]
-            sub_ei = torch.stack(
-                [node_to_local[orig_src], node_to_local[orig_dst]],
+            original_source_nodes = self.edge_index[0][all_edge_ids]
+            original_destination_nodes = self.edge_index[1][all_edge_ids]
+            subgraph_edge_index = torch.stack(
+                [
+                    node_to_local[original_source_nodes],
+                    node_to_local[original_destination_nodes],
+                ],
                 dim=0,
             )
         else:
-            sub_ei = torch.zeros((2, 0), dtype=torch.long, device=device)
+            subgraph_edge_index = torch.zeros((2, 0), dtype=torch.long, device=device)
 
-        return all_nodes, sub_ei, all_edge_ids
+        return all_nodes, subgraph_edge_index, all_edge_ids
 
     # ------------------------------------------------------------------
     # Public API
@@ -330,37 +364,43 @@ class SubgraphSampler:
             SubgraphBatch with users-first layout and local indices.
 
         """
-        pos_global = batch_pos_items + self.n_users
-        neg_global = batch_neg_items + self.n_users
-        seed_nodes = torch.cat([batch_users, pos_global, neg_global]).unique()
+        positive_item_global_nodes = batch_pos_items + self.n_users
+        negative_item_global_nodes = batch_neg_items + self.n_users
+        seed_nodes = torch.cat(
+            [batch_users, positive_item_global_nodes, negative_item_global_nodes],
+        ).unique()
 
         if self.max_neighbors_per_hop is not None:
             # Sampled BFS: O(fan-out budget) regardless of dataset density.
-            subset, sub_ei, all_edge_ids = self._sampled_k_hop(
+            subset, subgraph_edge_index, all_edge_ids = self._sampled_k_hop(
                 seed_nodes,
                 generator=generator,
             )
-            sub_sign = (
+            subgraph_edge_sign = (
                 self.edge_sign[all_edge_ids]
                 if self.edge_sign is not None and all_edge_ids.numel() > 0
                 else None
             )
-            sub_norm = (
+            subgraph_edge_norm = (
                 self.edge_norm[all_edge_ids]
                 if self.edge_norm is not None and all_edge_ids.numel() > 0
                 else None
             )
         else:
             # Full k-hop subgraph (original path, no sampling).
-            subset, sub_ei, _mapping, edge_mask = k_hop_subgraph(
+            subset, subgraph_edge_index, _mapping, edge_mask = k_hop_subgraph(
                 seed_nodes.to(self.edge_index.device),
                 self.num_hops,
                 self.edge_index,
                 relabel_nodes=True,
                 num_nodes=self._num_nodes,
             )
-            sub_sign = self.edge_sign[edge_mask] if self.edge_sign is not None else None
-            sub_norm = self.edge_norm[edge_mask] if self.edge_norm is not None else None
+            subgraph_edge_sign = (
+                self.edge_sign[edge_mask] if self.edge_sign is not None else None
+            )
+            subgraph_edge_norm = (
+                self.edge_norm[edge_mask] if self.edge_norm is not None else None
+            )
 
         # Separate users and items; rearrange to users-first layout.
         is_user = subset < self.n_users
@@ -370,7 +410,7 @@ class SubgraphSampler:
         perm = torch.cat([user_positions, item_positions])
         inv_perm = torch.empty_like(perm)
         inv_perm[perm] = torch.arange(len(perm), device=perm.device)
-        sub_ei_reordered = inv_perm[sub_ei]
+        reordered_subgraph_edge_index = inv_perm[subgraph_edge_index]
 
         user_global_ids = subset[user_positions]
         item_global_ids = subset[item_positions] - self.n_users
@@ -378,9 +418,9 @@ class SubgraphSampler:
         sorted_item_ids, item_sort_idx = self._sorted_local_index(item_global_ids)
 
         return SubgraphBatch(
-            sub_edge_index=sub_ei_reordered,
-            sub_edge_sign=sub_sign,
-            sub_edge_norm=sub_norm,
+            sub_edge_index=reordered_subgraph_edge_index,
+            sub_edge_sign=subgraph_edge_sign,
+            sub_edge_norm=subgraph_edge_norm,
             user_global_ids=user_global_ids,
             item_global_ids=item_global_ids,
             n_sub_users=user_positions.size(0),

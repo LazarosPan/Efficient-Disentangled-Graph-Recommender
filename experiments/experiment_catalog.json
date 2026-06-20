@@ -48,11 +48,106 @@
                 "conformity_gnn_layers": 2,
                 "dropout": 0.1,
                 "graph_policy": "observed",
-                "num_neighbors": {"small": [[6, 3], [4, 2]], "medium": [[10, 5], [8, 4], [6, 3], [4, 2]]},
+                "num_neighbors": {
+                    "small": [[6, 3], [4, 2]],
+                    "medium": [[10, 5], [8, 4], [6, 3], [4, 2]]
+                },
                 "item_universe_policy": {
                     "all": "observed_interaction_items",
                     "kuairand1k": "random_exposure_items_only"
                 },
+                "auxiliary_losses_start_epoch": 15,
+                "popularity_supervision_start_epoch": 30
+            }
+        },
+        {
+            "id": "edgrec-lite-kuairec",
+            "aliases": ["edgrec_lite_kuairec"],
+            "description": "Dataset-local lightweight EDGRec profile for KuaiRec_v2 big-matrix/watch-ratio thesis runs.",
+            "matrix": {"datasets": ["kuairec_v2"], "presets": ["edgrec"]},
+            "config_overrides": {
+                "epochs": 200,
+                "use_early_stopping": true,
+                "patience": 8,
+                "lr": 0.01,
+                "lr_scheduler": "cosine",
+                "auto_batch_size": true,
+                "batch_size_candidates": [
+                    1048576,
+                    524288,
+                    262144,
+                    131072,
+                    65536,
+                    32768,
+                    16384,
+                    8192,
+                    4096,
+                    2048,
+                    1024,
+                    512,
+                    256
+                ],
+                "use_features": false,
+                "use_popularity_head": true,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 2,
+                "graph_policy": "observed",
+                "num_neighbors": [8, 4],
+                "n_negatives": 1,
+                "validation_every_n_epochs": 2,
+                "auxiliary_losses_start_epoch": 15,
+                "popularity_supervision_start_epoch": 30
+            }
+        },
+        {
+            "id": "edgrec-lite-movielens",
+            "aliases": ["edgrec_lite_movielens"],
+            "description": "Dataset-local lightweight EDGRec profile for MovieLens1M secondary sanity runs.",
+            "matrix": {"datasets": ["movielens1m"], "presets": ["edgrec"]},
+            "config_overrides": {
+                "epochs": 160,
+                "use_early_stopping": true,
+                "patience": 8,
+                "lr": 0.01,
+                "lr_scheduler": "cosine",
+                "auto_batch_size": true,
+                "batch_size_candidates": [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+                "use_features": false,
+                "use_popularity_head": true,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 2,
+                "graph_policy": "observed",
+                "num_neighbors": [8, 4],
+                "loss_weight_independence": 0.0,
+                "n_negatives": 1,
+                "validation_every_n_epochs": 2,
+                "auxiliary_losses_start_epoch": 15,
+                "popularity_supervision_start_epoch": 30
+            }
+        },
+        {
+            "id": "edgrec-lite-kuairand",
+            "aliases": ["edgrec_lite_kuairand"],
+            "description": "Dataset-local lightweight EDGRec diagnostic profile for KuaiRand-1K label and randomized-exposure checks.",
+            "matrix": {"datasets": ["kuairand1k"], "presets": ["edgrec"]},
+            "config_overrides": {
+                "epochs": 120,
+                "use_early_stopping": true,
+                "patience": 6,
+                "lr": 0.01,
+                "lr_scheduler": "cosine",
+                "auto_batch_size": true,
+                "batch_size_candidates": [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+                "use_features": false,
+                "use_popularity_head": true,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 2,
+                "graph_policy": "observed",
+                "num_neighbors": [8, 4],
+                "item_universe_policy": "random_exposure_items_only",
+                "label_mode": "current",
+                "n_negatives": 1,
+                "validation_every_n_epochs": 2,
                 "auxiliary_losses_start_epoch": 15,
                 "popularity_supervision_start_epoch": 30
             }
@@ -303,7 +398,7 @@
         },
         {
             "id": "kuairec-v2-preprocessing-sweep",
-            "description": "KuaiRec_v2 preprocessing comparison across the available causal-ready views so one repository default can be selected and then kept stable.",
+            "description": "KuaiRec_v2 preprocessing comparison across the sparse watch-ratio threshold views plus diagnostic raw and small-matrix full-observation views.",
             "matrix": {"datasets": ["kuairec_v2"], "presets": ["edgrec"]},
             "config_overrides": {
                 "epochs": 120,
@@ -318,9 +413,11 @@
                 "graph_policy": "observed",
                 "num_neighbors": [20, 10],
                 "preprocessing_preset": [
-                    "kuairec_fullobs",
-                    "kuairec_watchratio",
-                    "kuairec_watchratio_raw"
+                    "kuairec_big_matrix_watch_ratio_threshold_0_5",
+                    "kuairec_big_matrix_watch_ratio_threshold_0_75",
+                    "kuairec_big_matrix_watch_ratio_threshold_1_0",
+                    "kuairec_small_matrix_full_observation",
+                    "kuairec_big_matrix_watch_ratio_raw"
                 ],
                 "auxiliary_losses_start_epoch": 30,
                 "popularity_supervision_start_epoch": 60

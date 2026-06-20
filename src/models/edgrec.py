@@ -6,6 +6,8 @@ Every component is toggleable via EDGRecConfig.
 
 from __future__ import annotations
 
+import time
+
 import torch
 from torch import nn
 
@@ -135,6 +137,7 @@ class EDGRec(nn.Module):
         pos_item_ids: torch.Tensor,
         neg_item_ids: torch.Tensor,
         dice_negative_mask: torch.Tensor | None = None,
+        stage_times_s: dict[str, float] | None = None,
     ) -> dict[str, torch.Tensor | dict[str, torch.Tensor]]:
         """Build the shared training payload from propagated embeddings."""
         scoring_inputs = propagated
@@ -142,6 +145,7 @@ class EDGRec(nn.Module):
         if recent_train_item_interest is not None:
             scoring_inputs = dict(propagated)
             scoring_inputs["recent_train_item_interest"] = recent_train_item_interest
+        scoring_start = time.perf_counter() if self.config.profile_training_stages else None
         pos_scores = self.scoring(
             scoring_inputs,
             user_ids,
@@ -161,7 +165,7 @@ class EDGRec(nn.Module):
             propensity = None
             ipw_weights = None
 
-        return training_output_payload(
+        output = training_output_payload(
             embeddings=embeddings,
             propagated=propagated,
             pos_scores=pos_scores,
@@ -172,6 +176,12 @@ class EDGRec(nn.Module):
             dice_negative_mask=dice_negative_mask,
             propensity_scores=propensity,
         )
+        if scoring_start is not None:
+            output["stage_times_s"] = {
+                **(stage_times_s or {}),
+                "scoring": time.perf_counter() - scoring_start,
+            }
+        return output
 
     def forward(
         self,
@@ -241,6 +251,7 @@ class EDGRec(nn.Module):
 
         """
         # Index into embedding tables for subgraph nodes only
+        embedding_start = time.perf_counter() if self.config.profile_training_stages else None
         sub_embs = self.embedding.get_embeddings(
             batch.user_global_ids,
             batch.item_global_ids,
@@ -248,6 +259,9 @@ class EDGRec(nn.Module):
         sub_embs["recent_train_item_interest"] = self.embedding.get_recent_train_item_interest(
             batch.user_global_ids,
         )
+        stage_times_s = {}
+        if embedding_start is not None:
+            stage_times_s["embedding_lookup"] = time.perf_counter() - embedding_start
 
         # GCN on subgraph
         propagated = self.propagate_embeddings(
@@ -258,6 +272,8 @@ class EDGRec(nn.Module):
             n_items=batch.n_sub_items,
             edge_norm=batch.sub_edge_norm,
         )
+        if self.config.profile_training_stages:
+            stage_times_s.update(getattr(self.gcn, "last_stage_times_s", {}))
 
         return self.build_training_output(
             sub_embs,
@@ -266,6 +282,7 @@ class EDGRec(nn.Module):
             batch.batch_pos_local,
             batch.batch_neg_local,
             dice_negative_mask=batch.dice_negative_mask,
+            stage_times_s=stage_times_s,
         )
 
     def get_propagated_for_eval(

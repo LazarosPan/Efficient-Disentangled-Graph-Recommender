@@ -32,14 +32,41 @@ from ..feature_policy import (
 
 logger = logging.getLogger(__name__)
 
+KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_5 = "kuairec_big_matrix_watch_ratio_threshold_0_5"
+KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_75 = "kuairec_big_matrix_watch_ratio_threshold_0_75"
+KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_1_0 = "kuairec_big_matrix_watch_ratio_threshold_1_0"
+KUIREC_BIG_MATRIX_WATCH_RATIO_RAW = "kuairec_big_matrix_watch_ratio_raw"
+KUIREC_SMALL_MATRIX_FULL_OBSERVATION = "kuairec_small_matrix_full_observation"
+
+_KUIREC_LEGACY_PRESET_ALIASES = {
+    "kuairec_watchratio": KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_5,
+    "kuairec_watchratio_wr_0_75": KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_75,
+    "kuairec_watchratio_wr_1_0": KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_1_0,
+    "kuairec_watchratio_raw": KUIREC_BIG_MATRIX_WATCH_RATIO_RAW,
+    "kuairec_fullobs": KUIREC_SMALL_MATRIX_FULL_OBSERVATION,
+}
 _KUIREC_PRESET_MATRIX_VARIANTS = {
-    "kuairec_watchratio": "big_matrix",
-    "kuairec_watchratio_raw": "big_matrix",
-    "kuairec_fullobs": "small_matrix",
+    KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_5: "big_matrix",
+    KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_75: "big_matrix",
+    KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_1_0: "big_matrix",
+    KUIREC_BIG_MATRIX_WATCH_RATIO_RAW: "big_matrix",
+    KUIREC_SMALL_MATRIX_FULL_OBSERVATION: "small_matrix",
 }
 _KUIREC_MATRIX_DEFAULT_PRESETS = {
-    "big_matrix": "kuairec_watchratio",
-    "small_matrix": "kuairec_fullobs",
+    "big_matrix": KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_5,
+    "small_matrix": KUIREC_SMALL_MATRIX_FULL_OBSERVATION,
+}
+_KUIREC_CLIPPED_WATCHRATIO_PRESETS = frozenset(
+    (
+        KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_5,
+        KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_75,
+        KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_1_0,
+    ),
+)
+_KUIREC_WATCH_RATIO_THRESHOLDS = {
+    KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_5: 0.5,
+    KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_75: 0.75,
+    KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_1_0: 1.0,
 }
 
 
@@ -203,6 +230,10 @@ def _resolve_kuairec_view(
     kept for direct loader compatibility and must agree when both are supplied.
     """
     if preprocessing_preset is not None:
+        preprocessing_preset = _KUIREC_LEGACY_PRESET_ALIASES.get(
+            preprocessing_preset,
+            preprocessing_preset,
+        )
         if preprocessing_preset not in _KUIREC_PRESET_MATRIX_VARIANTS:
             available = ", ".join(sorted(_KUIREC_PRESET_MATRIX_VARIANTS))
             raise ValueError(
@@ -227,7 +258,7 @@ def _resolve_kuairec_view(
             raise ValueError("matrix_variant must be 'big_matrix' or 'small_matrix'")
         return _KUIREC_MATRIX_DEFAULT_PRESETS[matrix_variant], matrix_variant
 
-    return "kuairec_watchratio", "big_matrix"
+    return KUIREC_BIG_MATRIX_WATCH_RATIO_THRESHOLD_0_5, "big_matrix"
 
 
 def load_kuairec_v2(
@@ -241,12 +272,13 @@ def load_kuairec_v2(
     """Load KuaiRec v2 from ``data_dir/KuaiRec_v2/data/<matrix_variant>.csv``.
 
     Expected columns: user_id, video_id, watch_ratio, timestamp
-    The default view uses ``big_matrix`` / ``kuairec_watchratio`` so the
-    repository uses the sparse, realistic ranking benchmark by default.
-    The ``small_matrix`` / ``kuairec_fullobs`` path remains available via an
+    The default view uses ``big_matrix`` /
+    ``kuairec_big_matrix_watch_ratio_threshold_0_5`` so the repository uses the
+    sparse, realistic ranking benchmark by default. The ``small_matrix`` /
+    ``kuairec_small_matrix_full_observation`` path remains available via an
     explicit ``preprocessing_preset`` when the near-fully-observed variant is
     needed for comparison.
-    Label: watch_ratio >= 0.5 -> positive
+    Label: watch_ratio >= preset threshold -> positive
     Sign:  (watch_ratio clipped to [0,2] - 1) -> [-1, 1]
     """
     effective_preset, matrix_variant = _resolve_kuairec_view(
@@ -298,13 +330,13 @@ def load_kuairec_v2(
     )
 
     stabilized_watch_ratio = (
-        raw_watch_ratio
-        if effective_preset in {"kuairec_fullobs", "kuairec_watchratio_raw"}
-        else np.clip(raw_watch_ratio, 0.0, 5.0)
+        np.clip(raw_watch_ratio, 0.0, 5.0)
+        if effective_preset in _KUIREC_CLIPPED_WATCHRATIO_PRESETS
+        else raw_watch_ratio
     )
     collapsed_rows = 0
     repeat_summary = None
-    if effective_preset == "kuairec_watchratio":
+    if effective_preset in _KUIREC_CLIPPED_WATCHRATIO_PRESETS:
         # Collapse repeated user-item pairs before split construction so one
         # watch-ratio trajectory cannot leak across train/val/test boundaries.
         # The retained row is the strongest stabilized watch-ratio observation,
@@ -333,7 +365,8 @@ def load_kuairec_v2(
     n_users = indexed.n_users
     n_items = indexed.n_items
 
-    label = (stabilized_watch_ratio >= 0.5).astype(np.float32)
+    watch_ratio_threshold = _KUIREC_WATCH_RATIO_THRESHOLDS.get(effective_preset, 0.5)
+    label = (stabilized_watch_ratio >= watch_ratio_threshold).astype(np.float32)
     sign = (np.clip(stabilized_watch_ratio, 0.0, 2.0) - 1.0).astype(np.float32)
 
     user_features = None
@@ -418,7 +451,7 @@ def load_kuairec_v2(
         item_features=item_features,
         **build_repeat_collapse_canonical_payload(
             repeat_summary,
-            applied=effective_preset == "kuairec_watchratio",
+            applied=effective_preset in _KUIREC_CLIPPED_WATCHRATIO_PRESETS,
             dropped_rows=collapsed_rows,
             reason=(
                 "Collapse repeated raw user-item pairs before splitting so the "
@@ -428,10 +461,11 @@ def load_kuairec_v2(
             metadata={
                 "matrix_variant": matrix_variant,
                 "watch_ratio_policy": (
-                    "raw"
-                    if effective_preset in {"kuairec_fullobs", "kuairec_watchratio_raw"}
-                    else "clipped_to_5"
+                    "clipped_to_5"
+                    if effective_preset in _KUIREC_CLIPPED_WATCHRATIO_PRESETS
+                    else "raw"
                 ),
+                "watch_ratio_threshold": watch_ratio_threshold,
             },
         ),
         feedback_type="implicit",
