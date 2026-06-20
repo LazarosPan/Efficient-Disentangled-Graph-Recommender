@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import torch
 from torch import nn
 from torch.nn import functional
@@ -40,13 +42,13 @@ class LightGCNBranch(nn.Module):
     def forward(
         self,
         x: torch.Tensor,
-        adj: torch.Tensor,
+        sparse_adjacency: torch.Tensor,
     ) -> torch.Tensor:
         """Propagate one embedding table through repeated sparse matmuls.
 
         Args:
             x: Node embeddings with shape ``(num_nodes, embed_dim)``.
-            adj: Sparse normalized adjacency matrix with shape
+            sparse_adjacency: Sparse normalized adjacency matrix with shape
                 ``(num_nodes, num_nodes)``.
 
         Returns:
@@ -55,12 +57,12 @@ class LightGCNBranch(nn.Module):
         """
         compute_dtype = torch.float32 if x.dtype in {torch.float16, torch.bfloat16} else x.dtype
         x_work = x.to(dtype=compute_dtype)
-        adj_work = self._cast_sparse_values(adj, compute_dtype)
+        sparse_adjacency_work = self._cast_sparse_values(sparse_adjacency, compute_dtype)
 
         with torch.autocast(device_type=x.device.type, enabled=False):
             out = x_work * self.alpha[0].to(dtype=compute_dtype)
             for i in range(self.n_layers):
-                x_work = torch.sparse.mm(adj_work, x_work)
+                x_work = torch.sparse.mm(sparse_adjacency_work, x_work)
                 if self.dropout > 0:
                     x_work = functional.dropout(x_work, p=self.dropout, training=self.training)
                 out = out + x_work * self.alpha[i + 1].to(dtype=compute_dtype)
@@ -114,7 +116,7 @@ class LightGCNBranch(nn.Module):
         *,
         num_nodes: int,
     ) -> torch.Tensor:
-        """Return ``adj @ x`` using bounded edge chunks and ``index_add_``."""
+        """Return sparse adjacency propagation using bounded edge chunks."""
         out = x.new_zeros((num_nodes, x.size(-1)))
         num_edges = edge_index.size(1)
         if num_edges == 0:
@@ -133,32 +135,32 @@ class LightGCNBranch(nn.Module):
 
     @staticmethod
     def _cast_sparse_values(
-        adj: torch.Tensor,
+        sparse_adjacency: torch.Tensor,
         dtype: torch.dtype,
     ) -> torch.Tensor:
-        """Return ``adj`` with sparse values cast to ``dtype`` when needed.
+        """Return sparse adjacency values cast to ``dtype`` when needed.
 
         Args:
-            adj: COO sparse adjacency matrix.
+            sparse_adjacency: Sparse adjacency matrix.
             dtype: Target value dtype for sparse matmul.
 
         Returns:
             torch.Tensor: Sparse adjacency with values in ``dtype``.
 
         """
-        if adj.dtype == dtype:
-            return adj
-        is_coalesced = adj.is_coalesced()
-        indices = adj.indices() if is_coalesced else adj._indices()
-        values = adj.values() if is_coalesced else adj._values()
-        cast_adj = torch.sparse_coo_tensor(
+        if sparse_adjacency.dtype == dtype:
+            return sparse_adjacency
+        is_coalesced = sparse_adjacency.is_coalesced()
+        indices = sparse_adjacency.indices() if is_coalesced else sparse_adjacency._indices()
+        values = sparse_adjacency.values() if is_coalesced else sparse_adjacency._values()
+        cast_sparse_adjacency = torch.sparse_coo_tensor(
             indices,
             values.to(dtype=dtype),
-            size=adj.size(),
-            device=adj.device,
+            size=sparse_adjacency.size(),
+            device=sparse_adjacency.device,
             dtype=dtype,
         )
-        return cast_adj.coalesce() if is_coalesced else cast_adj
+        return cast_sparse_adjacency.coalesce() if is_coalesced else cast_sparse_adjacency
 
 
 class DualBranchGCN(nn.Module):
@@ -222,37 +224,51 @@ class DualBranchGCN(nn.Module):
             self._compute_edge_weights_impl(edge_sign),
             edge_norm,
         )
+        if self.config.profile_training_stages:
+            self.last_stage_times_s = {}
 
         # Cast edge_weight once to match embedding dtype (prevents AMP scatter mismatch).
         # All branches use the same dtype since all embedding tables share initialization.
-        x_dtype = next(iter(embeddings.values())).dtype
-        ew = edge_weight.to(dtype=x_dtype) if edge_weight is not None else None
+        embedding_dtype = next(iter(embeddings.values())).dtype
+        edge_weight_for_propagation = (
+            edge_weight.to(dtype=embedding_dtype) if edge_weight is not None else None
+        )
         num_nodes = n_users + n_items
-        adj = (
-            self._build_sparse_adjacency(
+        use_cuda_sparse_adjacency = (
+            edge_index.device.type == "cuda"
+            and self.config.propagation_backend
+            in {
+                "auto",
+                "cuda_sparse_adjacency",
+            }
+        )
+        sparse_adjacency = None
+        if use_cuda_sparse_adjacency:
+            adjacency_start = time.perf_counter()
+            sparse_adjacency = self._build_sparse_adjacency(
                 edge_index,
-                ew,
+                edge_weight_for_propagation,
                 num_nodes=num_nodes,
-                dtype=x_dtype,
+                dtype=embedding_dtype,
                 coalesce=False,
             )
-            if edge_index.device.type == "cuda"
-            else None
-        )
+            if self.config.profile_training_stages:
+                self.last_stage_times_s["adjacency"] = time.perf_counter() - adjacency_start
 
         out: dict[str, torch.Tensor] = {}
+        propagation_start = time.perf_counter() if self.config.profile_training_stages else None
 
         if self.config.use_dual_branch:
             item_interest = embeddings.get("item_interest", embeddings["item"])
             item_conformity = embeddings.get("item_conformity", embeddings["item"])
             x_int = torch.cat([embeddings["user_interest"], item_interest], dim=0)
             h_int = (
-                self.interest_branch(x_int, adj)
-                if adj is not None
+                self.interest_branch(x_int, sparse_adjacency)
+                if sparse_adjacency is not None
                 else self.interest_branch.forward_edges(
                     x_int,
                     edge_index,
-                    ew,
+                    edge_weight_for_propagation,
                     num_nodes=num_nodes,
                 )
             )
@@ -261,12 +277,12 @@ class DualBranchGCN(nn.Module):
 
             x_conf = torch.cat([embeddings["user_conformity"], item_conformity], dim=0)
             h_conf = (
-                self.conformity_branch(x_conf, adj)
-                if adj is not None
+                self.conformity_branch(x_conf, sparse_adjacency)
+                if sparse_adjacency is not None
                 else self.conformity_branch.forward_edges(
                     x_conf,
                     edge_index,
-                    ew,
+                    edge_weight_for_propagation,
                     num_nodes=num_nodes,
                 )
             )
@@ -276,18 +292,20 @@ class DualBranchGCN(nn.Module):
         else:
             x = torch.cat([embeddings["user"], embeddings["item"]], dim=0)
             h = (
-                self.single_branch(x, adj)
-                if adj is not None
+                self.single_branch(x, sparse_adjacency)
+                if sparse_adjacency is not None
                 else self.single_branch.forward_edges(
                     x,
                     edge_index,
-                    ew,
+                    edge_weight_for_propagation,
                     num_nodes=num_nodes,
                 )
             )
             out["user"] = h[:n_users]
             out["item"] = h[n_users:]
 
+        if propagation_start is not None:
+            self.last_stage_times_s["propagation"] = time.perf_counter() - propagation_start
         return out
 
     @staticmethod
@@ -307,12 +325,12 @@ class DualBranchGCN(nn.Module):
                 ``edge_index``.
             num_nodes: Total number of nodes in the bipartite graph.
             dtype: Propagation dtype for adjacency values.
-            coalesce: Whether to coalesce the sparse COO tensor. EDGRec's
+            coalesce: Whether to coalesce the sparse tensor. EDGRec's
                 CUDA sampled-subgraph path leaves this False to avoid a large
-                per-batch COO coalescing workspace.
+                per-batch sparse coalescing workspace.
 
         Returns:
-            torch.Tensor: COO sparse adjacency matrix.
+            torch.Tensor: PyTorch sparse adjacency matrix.
 
         """
         values = (
@@ -320,14 +338,14 @@ class DualBranchGCN(nn.Module):
             if edge_weight is not None
             else torch.ones(edge_index.size(1), device=edge_index.device, dtype=dtype)
         )
-        adj = torch.sparse_coo_tensor(
+        sparse_adjacency = torch.sparse_coo_tensor(
             edge_index,
             values,
             size=(num_nodes, num_nodes),
             device=edge_index.device,
             dtype=dtype,
         )
-        return adj.coalesce() if coalesce else adj
+        return sparse_adjacency.coalesce() if coalesce else sparse_adjacency
 
     @staticmethod
     def _combine_weights(
