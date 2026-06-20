@@ -31,7 +31,7 @@ Use this file for current thesis result interpretation. Truth source: `results/t
 | Compare accuracy only on same dataset, split, and full-data status. | Runtime probes and full formal rows have different evidence roles. |
 | Treat CRRU as parameterized utility, not causal effect. | CRRU combines accuracy, popularity-diversity, time, and VRAM under task-specific weights. |
 | Treat inverse AvgPop carefully. | Lower average popularity means lower popularity concentration, not guaranteed fairness or causal debiasing. |
-| Keep KuaiRec `fullobs` separate from `watchratio`. | `fullobs` is near-oracle dense sensitivity; default sparse story is `watchratio`. |
+| Keep KuaiRec `kuairec_small_matrix_full_observation` separate from `kuairec_big_matrix_watch_ratio_threshold_0_5`. | `small_matrix` is near-oracle dense sensitivity; default sparse story is `big_matrix` with `watch_ratio >= 0.5`. |
 | Report DICE paper speed as probe evidence. | No full DICE formal accuracy rows yet. |
 | Distinguish `lightgcn_paper` from sampled `lightgcn`. | Paper fidelity vs scalable approximation. |
 | Explain speed using code paths, not model simplicity. | EDGRec has more components but cheaper training path. |

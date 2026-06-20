@@ -125,7 +125,7 @@ Important runtime details:
 - In sampled mode, on CUDA it first tries to stage the full graph into a CUDA-resident `SubgraphSampler`.
 - If sampled graph staging or later batch preparation reports a CUDA OOM, including plain RuntimeError messages from CUDA kernels, it falls back to the CPU sampler path.
 - Sampled BFS memory scales with `frontier_size * num_neighbors[hop]`, not total incident degree.
-- EDGRec sampled propagation uses uncoalesced CUDA sparse COO plus CPU chunked edge-list fallback.
+- EDGRec sampled propagation uses an uncoalesced CUDA sparse adjacency tensor plus CPU chunked edge-list fallback.
 - Full-graph mode skips subgraph extraction and propagates the full train graph per optimizer step.
 - Full-graph mode is used by `lightgcn_paper` and `dice_paper`.
 - Full-graph mode stages `edge_index`, `edge_sign`, and `edge_norm` once per trainer/device.

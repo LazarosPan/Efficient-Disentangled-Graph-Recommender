@@ -32,7 +32,7 @@ Runtime path: embeddings/metadata -> graph propagation -> refined scorer -> opti
 | Layer | Owner | Current contract |
 | --- | --- | --- |
 | Embedding layer | `EmbeddingModule` | Builds user and item embeddings, optional popularity embeddings, train-split metadata buffers, optional item-feature fusion inputs, and recent-history item-interest lookups for subgraph training. |
-| Propagation layer | `DualBranchGCN` | Runs LightGCN propagation with explicit branch depths and optional sign-aware edge weights; EDGRec uses uncoalesced CUDA sparse COO matmul or CPU chunked edge-list aggregation while paper baselines may still use prebuilt sparse adjacency helpers. |
+| Propagation layer | `DualBranchGCN` | Runs LightGCN propagation with explicit branch depths and optional sign-aware edge weights; EDGRec uses an uncoalesced CUDA sparse adjacency tensor or CPU chunked edge-list aggregation while paper baselines may still use prebuilt sparse adjacency helpers. |
 | Scoring layer | `ScoringModule` | Produces pairwise and full-catalog interest, conformity, context, `score_mix_weights`, and fused final scores. |
 | Propensity layer | `PropensityEstimator` | Optional two-layer MLP over propagated item embeddings, clipped to `[propensity_clip_min, propensity_clip_max]`. |
 | Shared model helpers | `src/models/common.py` | Owns cross-model helper functions such as module dtype lookup and the training payload dictionary consumed by `LossSuite`. |
@@ -56,7 +56,7 @@ Propagation facts:
 | Area | Contract |
 | --- | --- |
 | `LightGCNBranch` | repeated alpha-averaged layer outputs |
-| EDGRec CUDA | uncoalesced sparse COO from `edge_index`/`edge_weight` |
+| EDGRec CUDA | uncoalesced sparse adjacency tensor from `edge_index`/`edge_weight` |
 | EDGRec CPU | chunked `forward_edges()` aggregation |
 | Paper baseline path | coalesced sparse-adjacency `forward()` allowed |
 | EDGRec/LightGCN norm | precomputed `edge_norm` |
