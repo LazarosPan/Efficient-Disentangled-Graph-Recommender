@@ -57,7 +57,7 @@ def build_sparse_adjacency(
         add_self_loops=add_self_loops,
         dtype=dtype,
     )
-    return DualBranchGCN._build_sparse_adjacency(
+    return DualBranchGCN._build_sparse_adjacency_tensor(
         resolved_edge_index,
         weights,
         num_nodes=num_nodes,
