@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import experiments.run_benchmark as formal_main
+import experiments.run_experiment as experiment_main
 import numpy as np
 import torch
 from experiments.cli_parsers import build_benchmark_parser
@@ -2659,6 +2660,111 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         trainer.load_checkpoint.assert_called_once_with(checkpoint_path)
         self.assertEqual(start_epoch, 2)
         self.assertIs(resumed_history, history)
+
+    def test_auto_batch_fallback_cleans_after_oom_before_next_candidate(self) -> None:
+        """Late OOM fallback should purge CUDA cache after the failed traceback exits."""
+        config = EDGRecConfig(
+            dataset="movielens1m",
+            device="cuda",
+            batch_size=524288,
+            batch_size_candidates=[524288, 262144],
+            auto_batch_size=True,
+            epochs=1,
+        )
+        canonical = SimpleNamespace(item_propensity_targets=None)
+        data = SimpleNamespace(
+            num_nodes=2,
+            edge_index=torch.empty((2, 0), dtype=torch.long),
+            train_mask=np.array([True, False]),
+            val_mask=np.array([False, True]),
+            test_mask=np.array([False, False]),
+        )
+        events: list[str] = []
+
+        def fake_release_cuda_memory() -> None:
+            events.append(f"cleanup:{int(config.batch_size)}")
+
+        def fake_build_runtime_model(active_config, _canonical, _data):
+            events.append(f"build:{int(active_config.batch_size)}")
+            return torch.nn.Linear(1, 1, bias=False)
+
+        class FakeTrainer:
+            def __init__(self, **kwargs):
+                self.batch_size = int(kwargs["config"].batch_size)
+                self.subgraph_sampler = object()
+                self.training_peak_vram_mb = 128.0
+
+            def train(self, **_kwargs):
+                events.append(f"train:{self.batch_size}")
+                if self.batch_size == 524288:
+                    raise torch.OutOfMemoryError("simulated cuda oom")
+                return {"train_loss": [0.1], "val_metrics": []}
+
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.empty_cache"),
+            patch("experiments.run_experiment.seed_everything"),
+            patch("experiments.run_experiment.configure_torch_runtime"),
+            patch("experiments.run_experiment.load_runtime_data", return_value=(canonical, data)),
+            patch("experiments.run_experiment._resolve_auto_batch_size"),
+            patch("experiments.run_experiment._verify_selected_auto_batch_size"),
+            patch(
+                "experiments.run_experiment._release_cuda_probe_memory",
+                side_effect=fake_release_cuda_memory,
+            ),
+            patch(
+                "experiments.run_experiment._auto_batch_probe_candidates",
+                return_value=[524288, 262144],
+            ),
+            patch("experiments.run_experiment._reset_cuda_peak_memory_stats"),
+            patch(
+                "experiments.run_experiment._cuda_memory_snapshot", return_value="cuda_memory=fake"
+            ),
+            patch(
+                "experiments.run_experiment._gpu_hardware_metadata", return_value=("Fake GPU", 16.0)
+            ),
+            patch("experiments.run_experiment._build_run_provenance", return_value={}),
+            patch(
+                "experiments.run_experiment._build_training_identity",
+                return_value=({}, "trainhash"),
+            ),
+            patch(
+                "experiments.run_experiment._build_evaluation_identity",
+                return_value=({}, "evalhash"),
+            ),
+            patch(
+                "experiments.run_experiment._default_checkpoint_path",
+                return_value=Path("/tmp/unused.pt"),
+            ),
+            patch(
+                "experiments.run_experiment.build_canonical_experiment_name",
+                return_value="fake-run",
+            ),
+            patch(
+                "experiments.run_experiment.build_runtime_model",
+                side_effect=fake_build_runtime_model,
+            ),
+            patch("experiments.run_experiment.LossSuite", return_value=Mock()),
+            patch(
+                "experiments.run_experiment.MiniBatchTrainer",
+                side_effect=lambda **kwargs: FakeTrainer(**kwargs),
+            ),
+        ):
+            result = experiment_main.run_experiment(
+                config,
+                preset="edgrec",
+                enable_mlflow=False,
+                log_to_sqlite=False,
+                save_checkpoint=False,
+                auto_resume=False,
+                evaluate_test=False,
+            )
+
+        retry_build_index = events.index("build:262144")
+        self.assertEqual(events[retry_build_index - 1], "cleanup:262144")
+        self.assertIn("train:524288", events)
+        self.assertIn("train:262144", events)
+        self.assertEqual(result["batch_size"], 262144)
 
     def test_prepare_batch_falls_back_to_cpu_sampler_after_cuda_oom(self) -> None:
         """Batch preparation should switch back to the CPU sampler after a CUDA OOM."""

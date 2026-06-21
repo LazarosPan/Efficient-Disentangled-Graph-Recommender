@@ -28,11 +28,11 @@
             },
             "pruner": {
                 "name": "hyperband",
-                "min_resource": 6,
+                "min_resource": 15,
                 "reduction_factor": 3,
                 "bootstrap_count": 1
             },
-            "max_epochs": 60,
+            "max_epochs": 150,
             "trials": 36,
             "parameters": {
                 "preprocessing_preset": {
@@ -105,11 +105,11 @@
             },
             "pruner": {
                 "name": "hyperband",
-                "min_resource": 6,
+                "min_resource": 15,
                 "reduction_factor": 3,
                 "bootstrap_count": 1
             },
-            "max_epochs": 50,
+            "max_epochs": 150,
             "trials": 24,
             "parameters": {
                 "graph_profile": {
@@ -174,11 +174,11 @@
             },
             "pruner": {
                 "name": "hyperband",
-                "min_resource": 4,
+                "min_resource": 12,
                 "reduction_factor": 3,
                 "bootstrap_count": 1
             },
-            "max_epochs": 40,
+            "max_epochs": 150,
             "trials": 16,
             "parameters": {
                 "label_mode": {
@@ -258,11 +258,11 @@
             },
             "pruner": {
                 "name": "hyperband",
-                "min_resource": 6,
+                "min_resource": 15,
                 "reduction_factor": 3,
                 "bootstrap_count": 1
             },
-            "max_epochs": 60,
+            "max_epochs": 150,
             "trials": 12,
             "parameters": {
                 "graph_profile": {
@@ -348,11 +348,11 @@
             },
             "pruner": {
                 "name": "hyperband",
-                "min_resource": 6,
+                "min_resource": 15,
                 "reduction_factor": 3,
                 "bootstrap_count": 1
             },
-            "max_epochs": 60,
+            "max_epochs": 150,
             "trials": 30,
             "parameters": {
                 "score_fusion_profile": {
@@ -544,11 +544,11 @@
             },
             "pruner": {
                 "name": "hyperband",
-                "min_resource": 6,
+                "min_resource": 15,
                 "reduction_factor": 3,
                 "bootstrap_count": 1
             },
-            "max_epochs": 60,
+            "max_epochs": 150,
             "trials": 8,
             "parameters": {
                 "lr": {

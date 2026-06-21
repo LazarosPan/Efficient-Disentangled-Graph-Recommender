@@ -344,8 +344,16 @@ class SplitSafetyTests(unittest.TestCase):
         EDGRecConfig(device="cpu", propagation_backend="chunked_edge_index_aggregation")
         sparse_alias_config = EDGRecConfig(device="cpu", embedding_sparse_optimizer=True)
         self.assertEqual(sparse_alias_config.embedding_optimizer, "sparseadam")
+        sparse_alias_config.validate()
         sparse_string_config = EDGRecConfig(device="cpu", embedding_optimizer="sparseadam")
         self.assertTrue(sparse_string_config.embedding_sparse_optimizer)
+        sparse_string_config.validate()
+        redundant_sparse_config = EDGRecConfig(
+            device="cpu",
+            embedding_sparse_optimizer=True,
+            embedding_optimizer="sparseadam",
+        )
+        self.assertEqual(redundant_sparse_config.embedding_optimizer, "sparseadam")
         with self.assertRaisesRegex(ValueError, "Use either embedding_sparse_optimizer"):
             EDGRecConfig(
                 device="cpu",

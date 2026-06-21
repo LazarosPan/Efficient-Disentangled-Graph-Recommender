@@ -608,11 +608,12 @@ class EDGRecConfig:
                 f"embedding_optimizer must be one of {', '.join(EMBEDDING_OPTIMIZER_CHOICES)}",
             )
         if self.embedding_sparse_optimizer:
-            if self.embedding_optimizer != "adamw":
+            if self.embedding_optimizer == "adamw":
+                self.embedding_optimizer = "sparseadam"
+            elif self.embedding_optimizer != "sparseadam":
                 raise ValueError(
                     "Use either embedding_sparse_optimizer=True or embedding_optimizer, not both.",
                 )
-            self.embedding_optimizer = "sparseadam"
         self.embedding_sparse_optimizer = self.embedding_optimizer == "sparseadam"
         if self.embedding_optimizer == "sparseadam" and self.training_graph_mode != "sampled":
             raise ValueError("sparse embedding optimization requires sampled training")

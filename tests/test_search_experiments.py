@@ -40,6 +40,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
     def test_search_spaces_resolve_to_edgrec_configs(self) -> None:
         """All search spaces should resolve through the shared config builder."""
         self.assertIn("edgrec-core-optimization", search_space_names())
+        data_dir = "/tmp/edgrec-search-test-data"
 
         for space_name in search_space_names():
             spec = search.resolve_search_space(space_name)
@@ -47,13 +48,79 @@ class SearchSpaceValidationTests(unittest.TestCase):
                 spec,
                 dataset=spec.datasets[0],
                 device="cpu",
-                data_dir="data",
+                data_dir=data_dir,
             )
 
             self.assertEqual(config.baseline_family, "edgrec")
             self.assertEqual(config.epochs, spec.max_epochs)
             self.assertEqual(config.device, "cpu")
+            self.assertEqual(config.data_dir, data_dir)
             self.assertEqual(len(config.num_neighbors), config.max_gnn_layers)
+
+    def test_search_spaces_resolve_sampled_sparse_embedding_optimizer(self) -> None:
+        """Search spaces that sample sparse optimizers should build valid configs."""
+        for space_name in search_space_names():
+            spec = search.resolve_search_space(space_name)
+            if "embedding_optimizer" not in spec.parameters:
+                continue
+            for dataset in spec.datasets:
+                config = search.build_search_config(
+                    spec,
+                    dataset=dataset,
+                    sampled_overrides={"embedding_optimizer": "sparseadam"},
+                    device="cpu",
+                    data_dir="data",
+                )
+
+                self.assertEqual(config.embedding_optimizer, "sparseadam")
+                self.assertTrue(config.embedding_sparse_optimizer)
+                self.assertEqual(config.training_graph_mode, "sampled")
+
+    def test_mechanism_sparse_optimizer_replays_profile_trial_shape(self) -> None:
+        """Mechanism-search profile labels should build with sparse embedding mode."""
+        spec = search.resolve_search_space("edgrec-mechanism-coarse")
+        data_dir = "/tmp/edgrec-search-test-data"
+        sampled_overrides = {
+            "use_learned_score_mix": False,
+            "score_weight_interest": 0.4,
+            "score_weight_conformity": 0.3,
+            "score_weight_popularity": 0.3,
+            "separate_item_branch_embeddings": True,
+            "use_popularity_head": False,
+            "use_features": False,
+            "loss_weight_interest_bpr": 0.03,
+            "loss_weight_conformity_bpr": 0.03,
+            "loss_weight_independence": 0.0,
+            "loss_weight_contrastive": 0.0,
+            "loss_weight_popularity": 0.025,
+            "interest_gnn_layers": 1,
+            "conformity_gnn_layers": 1,
+            "num_neighbors": [8],
+            "lr": 0.0008,
+            "weight_decay": 0.0,
+            "dropout": 0.1,
+            "grad_clip_norm": 2.0,
+            "embedding_optimizer": "sparseadam",
+            "train_edge_keep_prob": 0.6,
+            "n_negatives": 3,
+            "dice_sampler_margin": 80.0,
+            "score_mix_min_weight": 0.05,
+            "loss_normalization": "none",
+            "item_universe_policy": "random_exposure_items_only",
+        }
+
+        config = search.build_search_config(
+            spec,
+            dataset="kuairand1k",
+            sampled_overrides=sampled_overrides,
+            device="cpu",
+            data_dir=data_dir,
+        )
+
+        self.assertEqual(config.data_dir, data_dir)
+        self.assertEqual(config.embedding_optimizer, "sparseadam")
+        self.assertTrue(config.embedding_sparse_optimizer)
+        self.assertEqual(config.training_graph_mode, "sampled")
 
     def test_old_edgrec_search_space_name_is_not_a_catalog_alias(self) -> None:
         """Catalog CLIs should expose only the public EDGRec search-space names."""
@@ -384,7 +451,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
         self.assertFalse(spec.sampler.multivariate)
         self.assertFalse(spec.sampler.group)
         self.assertEqual(spec.pruner.name, "hyperband")
-        self.assertEqual(spec.pruner.min_resource, 6)
+        self.assertEqual(spec.pruner.min_resource, 15)
 
     def test_auto_batch_search_treats_batch_size_as_runtime_only(self) -> None:
         """Historical sampled batch sizes should not break logical param matching."""
@@ -500,7 +567,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
         base_config = payload["base_configs"]["amazonbook"]
         self.assertEqual(base_config["baseline_family"], "edgrec")
         self.assertEqual(base_config["dataset"], "amazonbook")
-        self.assertEqual(base_config["epochs"], 60)
+        self.assertEqual(base_config["epochs"], 150)
         self.assertEqual(base_config["device"], "cpu")
         self.assertTrue(base_config["auto_batch_size"])
         self.assertEqual(base_config["batch_size"], 4096)

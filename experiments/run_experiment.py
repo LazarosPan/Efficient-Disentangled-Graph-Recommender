@@ -2095,6 +2095,10 @@ def run_experiment(
                 fallback_checkpoint_path: Path | None = None
                 for candidate in candidates[start_index:]:
                     config.batch_size = candidate
+                    # A previous candidate may have failed while its exception
+                    # traceback still held CUDA tensors. Purge here, outside the
+                    # prior ``except`` scope, before allocating the next trainer.
+                    _release_cuda_probe_memory()
                     training_identity, training_hash = _build_training_identity(
                         config,
                         preset,
@@ -2221,7 +2225,6 @@ def run_experiment(
                         trainer = None
                         model = None
                         loss_suite = None
-                        _release_cuda_probe_memory()
                         continue
                 else:
                     raise RuntimeError(

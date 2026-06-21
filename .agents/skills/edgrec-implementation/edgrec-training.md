@@ -272,7 +272,7 @@ Optuna CRRU:
 | Lower-cost inputs | validation AveragePopularity, peak VRAM, seconds/epoch |
 | Lower-cost transform | deterministic trial-local higher-is-better transform |
 | Report CRRU | recomputed after completed rows exist; not live objective |
-| Search shape | short second-pass screen; Hyperband pruning; no exhaustive grid |
+| Search shape | 150-epoch cap guarded by Hyperband pruning and early stopping; no exhaustive grid |
 | Depth guard | four-hop excluded unless separate deep diagnostic justifies cost/risk |
 
 Naming note: `OnlineCRRU` means Optuna-safe single-trial CRRU-style objective on the validation split. It includes validation ranking/popularity metrics, seconds/epoch, and peak VRAM; it is not an online-serving or A/B-test metric.
