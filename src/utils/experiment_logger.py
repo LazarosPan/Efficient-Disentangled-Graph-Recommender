@@ -50,6 +50,7 @@ class ExperimentLogger:
         RUNTIME_PROBE_METRIC_NAMES[-1],
         "test_final_popularity_spearman_40",
         "test_interest_branch_ndcg_20",
+        "test_interest_branch_contribution_ratio_20",
         "max_gpu_utilization_pct",
     )
 
@@ -608,6 +609,16 @@ class ExperimentLogger:
                     THEN m.metric_value
                 END) AS test_conformity_contribution_40,
                 MAX(CASE
+                    WHEN m.metric_name = 'conformity_branch_contribution_ratio@20'
+                        AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_conformity_branch_contribution_ratio_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'conformity_branch_contribution_ratio@40'
+                        AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_conformity_branch_contribution_ratio_40,
+                MAX(CASE
                     WHEN m.metric_name = 'conformity_popularity_spearman@20' AND m.split = 'test'
                     THEN m.metric_value
                 END) AS test_conformity_popularity_spearman_20,
@@ -655,6 +666,16 @@ class ExperimentLogger:
                     WHEN m.metric_name = 'interest_contribution@40' AND m.split = 'test'
                     THEN m.metric_value
                 END) AS test_interest_contribution_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'interest_branch_contribution_ratio@20'
+                        AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_interest_branch_contribution_ratio_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'interest_branch_contribution_ratio@40'
+                        AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_interest_branch_contribution_ratio_40,
                 MAX(CASE
                     WHEN m.metric_name = 'interest_popularity_spearman@20' AND m.split = 'test'
                     THEN m.metric_value

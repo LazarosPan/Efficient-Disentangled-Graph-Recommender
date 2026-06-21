@@ -424,7 +424,7 @@ _FULL_PRESET_OVERRIDES: PresetOverrides = {
     "propensity_clip_min": 0.1,
     "dice_mask_reduction": "active_mean",
     "feature_gate_init": -4.0,
-    "use_features": True,
+    "use_features": False,
     "feature_policy": DEFAULT_FEATURE_POLICY,
     "score_mix_min_weight": 0.05,
 }
@@ -445,7 +445,7 @@ class EDGRecConfig:
     baseline_family: str = EDGREC_PUBLIC_PRESET
     training_graph_mode: TrainingGraphMode = "sampled"
     sampler_residency_policy: SamplerResidencyPolicy = "release_for_validation"
-    propagation_backend: PropagationBackend = "auto"
+    propagation_backend: PropagationBackend = "chunked_edge_index_aggregation"
     profile_training_stages: bool = False
 
     graph_policy: GraphPolicy = "observed"
@@ -469,9 +469,9 @@ class EDGRecConfig:
     loss_weight_interest_bpr: float = 0.02
     loss_weight_conformity_bpr: float = 0.02
     loss_weight_independence: float = 0.005
-    loss_weight_contrastive: float = 0.02
-    loss_weight_align: float = 0.02
-    loss_weight_uniform: float = 0.02
+    loss_weight_contrastive: float = 0.0
+    loss_weight_align: float = 0.0
+    loss_weight_uniform: float = 0.0
     loss_weight_popularity: float = 0.02
     branch_loss_mode: BranchLossMode = "symmetric_bpr"
     dice_mask_reduction: DiceMaskReduction = "batch_mean"
@@ -546,7 +546,7 @@ class EDGRecConfig:
     loss_schedule: Literal["baseline"] = "baseline"
 
     # ── Side features ─────────────────────────────────────────────────────
-    use_features: bool = True  # load and use user/item side features when available
+    use_features: bool = False  # load and use user/item side features when available
     feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY
     feature_gate_init: float = 0.0
 
