@@ -13,8 +13,13 @@ from src.utils.config import DEFAULT_SEED, EDGRecConfig
 # Variants beyond this set require a thesis rationale; do not extend casually.
 ABLATION_VARIANTS: dict[str, dict] = {
     "mainline": {},
+    "with_features": {"use_features": True},
     "with_contrastive": {
         "loss_weight_contrastive": 0.02,
+    },
+    "with_ipw": {
+        "use_ipw": True,
+        "loss_weight_propensity_calibration": 0.02,
     },
     "no_popularity_head": {
         "use_popularity_head": False,
@@ -22,7 +27,6 @@ ABLATION_VARIANTS: dict[str, dict] = {
         "loss_weight_popularity": 0.0,
     },
     "no_independence": {"loss_weight_independence": 0.0},
-    "no_features": {"use_features": False},
 }
 _ABLATION_RECOMMENDED_DEFAULTS: dict[str, object] = {
     "epochs": 100,

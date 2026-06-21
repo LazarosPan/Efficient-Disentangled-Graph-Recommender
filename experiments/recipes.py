@@ -271,10 +271,24 @@ def formal_profile_names() -> list[str]:
 
 
 def default_formal_profile_name() -> str:
-    """Return the default formal profile identifier."""
+    """Return the default candidate formal profile identifier."""
     profiles = _resolved_formal_profiles()
     if not profiles:
         raise ValueError("No formal profiles are defined in the experiment catalog.")
+    catalog = load_experiment_catalog()
+    catalog_default = catalog.get("default_candidate_profile") or catalog.get(
+        "default_formal_profile",
+    )
+    if catalog_default:
+        normalized_default = slugify_fragment(catalog_default)
+        resolved_default = _formal_profile_alias_index().get(normalized_default)
+        if resolved_default is None:
+            available = ", ".join(formal_profile_names())
+            raise ValueError(
+                "default_candidate_profile must name a formal profile or alias. "
+                f"Got {catalog_default!r}. Available profiles: {available}",
+            )
+        return str(resolved_default["id"])
     for profile in profiles:
         if "default" in profile["aliases"]:
             return str(profile["id"])

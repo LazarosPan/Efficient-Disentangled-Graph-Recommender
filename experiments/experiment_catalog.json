@@ -1,4 +1,5 @@
 {
+    "default_candidate_profile": "edgrec-compact-search-prior",
     "formal_profiles": [
         {
             "id": "dev-edgrec",
@@ -29,8 +30,133 @@
             }
         },
         {
+            "id": "edgrec-compact-search-prior",
+            "aliases": [
+                "compact",
+                "compact-search-prior",
+                "edgrec_lite_candidate",
+                "edgrec-lite-default",
+                "edgrec_lite_default"
+            ],
+            "description": "Default compact EDGRec search prior and low-risk formal candidate. This is not a final thesis selection: KuaiRec_v2 has the strongest compact accuracy/speed evidence, MovieLens1M is a near-parity/speed candidate with weaker popularity diagnostics, and KuaiRand1K is diagnostic/stress-test evidence. AmazonBook is excluded only from this shared compact queue; it remains an EDGRec optimization target through dataset-specific compact and deeper/feature candidate profiles plus LightGCN-paper accuracy framing.",
+            "matrix": {
+                "datasets": ["movielens1m", "kuairec_v2", "kuairand1k"],
+                "presets": ["edgrec"]
+            },
+            "config_overrides": {
+                "epochs": 200,
+                "use_early_stopping": true,
+                "patience": 8,
+                "lr": 0.01,
+                "lr_scheduler": "cosine",
+                "auto_batch_size": true,
+                "batch_size_candidates": [1048576, 524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+                "single_branch_gnn_layers": 2,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 2,
+                "dropout": 0.1,
+                "graph_policy": "observed",
+                "use_features": false,
+                "use_popularity_head": true,
+                "num_neighbors": {
+                    "small": [[8, 4], [10, 5]],
+                    "medium": [[8, 4], [10, 5]]
+                },
+                "item_universe_policy": {
+                    "all": "observed_interaction_items",
+                    "kuairand1k": "random_exposure_items_only"
+                },
+                "n_negatives": 1,
+                "validation_every_n_epochs": 2,
+                "auxiliary_losses_start_epoch": 15,
+                "popularity_supervision_start_epoch": 30
+            }
+        },
+        {
+            "id": "amazonbook-edgrec-compact-candidate",
+            "aliases": ["amazonbook_compact_candidate"],
+            "description": "AmazonBook-specific compact graph-only EDGRec candidate. This profile is excluded from the shared compact default queue but keeps AmazonBook inside EDGRec optimization for compact-vs-deep comparison before thesis promotion.",
+            "matrix": {"datasets": ["amazonbook"], "presets": ["edgrec"]},
+            "config_overrides": {
+                "epochs": 200,
+                "use_early_stopping": true,
+                "patience": 8,
+                "lr": 0.01,
+                "lr_scheduler": "cosine",
+                "auto_batch_size": true,
+                "batch_size_candidates": [1048576, 524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+                "single_branch_gnn_layers": 2,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 2,
+                "dropout": 0.1,
+                "graph_policy": "observed",
+                "use_features": false,
+                "use_popularity_head": true,
+                "num_neighbors": [10, 5],
+                "item_universe_policy": "observed_interaction_items",
+                "n_negatives": 1,
+                "validation_every_n_epochs": 2,
+                "auxiliary_losses_start_epoch": 15,
+                "popularity_supervision_start_epoch": 30,
+                "loss_weight_independence": 0.0,
+                "loss_weight_contrastive": 0.0,
+                "loss_weight_align": 0.0,
+                "loss_weight_uniform": 0.0,
+                "use_ipw": false,
+                "loss_weight_propensity_calibration": 0.0
+            }
+        },
+        {
+            "id": "amazonbook-edgrec-deep-features-candidate",
+            "aliases": ["amazonbook_deep_features_candidate"],
+            "description": "AmazonBook EDGRec formal candidate preserved from prior Optuna evidence: deeper 2/3 branch propagation, explicit side features with a controlled feature gate, and bounded contrastive loss. This profile is an AmazonBook-specific candidate to compare against the compact EDGRec candidate and LightGCN-paper accuracy baseline, not part of the compact default search prior.",
+            "matrix": {"datasets": ["amazonbook"], "presets": ["edgrec"]},
+            "config_overrides": {
+                "epochs": 200,
+                "use_early_stopping": true,
+                "patience": 8,
+                "lr": 0.003,
+                "lr_scheduler": "cosine",
+                "lr_scheduler_factor": 0.5,
+                "weight_decay": 0.0,
+                "auto_batch_size": true,
+                "batch_size_candidates": [1048576, 524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+                "embedding_optimizer": "adamw",
+                "single_branch_gnn_layers": 3,
+                "interest_gnn_layers": 2,
+                "conformity_gnn_layers": 3,
+                "dropout": 0.2,
+                "graph_policy": "observed",
+                "use_features": true,
+                "feature_gate_init": -4.0,
+                "use_popularity_head": true,
+                "num_neighbors": [8, 4, 2],
+                "item_universe_policy": "observed_interaction_items",
+                "n_negatives": 1,
+                "validation_every_n_epochs": 2,
+                "auxiliary_loss_schedule": "linear_ramp",
+                "auxiliary_ramp_rate": 0.001,
+                "independence_ramp_rate": 0.00025,
+                "auxiliary_losses_start_epoch": 15,
+                "popularity_supervision_start_epoch": 30,
+                "score_mix_min_weight": 0.02,
+                "loss_weight_interest_bpr": 0.02,
+                "loss_weight_conformity_bpr": 0.05,
+                "loss_weight_independence": 0.005,
+                "loss_weight_contrastive": 0.025,
+                "loss_weight_align": 0.0,
+                "loss_weight_uniform": 0.0,
+                "loss_weight_popularity": 0.025,
+                "use_ipw": false,
+                "loss_weight_propensity_calibration": 0.0,
+                "train_edge_keep_prob": 0.6,
+                "dice_sampler_margin": 10.0,
+                "grad_clip_norm": 2.0
+            }
+        },
+        {
             "id": "core-edgrec-mainline",
-            "aliases": ["default", "latest", "core-paper-architecture-comparison"],
+            "aliases": ["core-paper-architecture-comparison"],
             "description": "Core EDGRec thesis mainline across practical datasets. Paper baselines are split into separate run-once profiles so EDGRec tuning can iterate without rerunning fixed paper defaults.",
             "matrix": {
                 "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
@@ -72,21 +198,7 @@
                 "lr": 0.01,
                 "lr_scheduler": "cosine",
                 "auto_batch_size": true,
-                "batch_size_candidates": [
-                    1048576,
-                    524288,
-                    262144,
-                    131072,
-                    65536,
-                    32768,
-                    16384,
-                    8192,
-                    4096,
-                    2048,
-                    1024,
-                    512,
-                    256
-                ],
+                "batch_size_candidates": [1048576, 524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
                 "use_features": false,
                 "use_popularity_head": true,
                 "interest_gnn_layers": 1,
@@ -155,8 +267,7 @@
         {
             "id": "core-edgrec-mainline-opposite-fanout-smaller-lr",
             "aliases": [
-                "default-opposite-fanout-smaller-lr",
-                "latest-opposite-fanout-smaller-lr",
+                "opposite-fanout-smaller-lr",
                 "core-paper-architecture-comparison-opposite-fanout-smaller-lr"
             ],
             "description": "Core EDGRec thesis mainline across practical datasets. Paper baselines are split into separate run-once profiles so EDGRec tuning can iterate without rerunning fixed paper defaults. Opposite fan-out from the default (smaller for small datasets, larger for medium datasets) and smaller learning rate to check whether the default settings are actually optimal before committing to long runs.",

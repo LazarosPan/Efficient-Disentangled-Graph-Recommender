@@ -2,7 +2,7 @@
 """Formal matrix benchmark runner for dataset x preset.
 
 Usage:
-    uv run formal-run --profile default
+    uv run formal-run --profile edgrec-compact-search-prior
 """
 
 from __future__ import annotations

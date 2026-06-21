@@ -1,7 +1,7 @@
 {
     "search_spaces": {
         "edgrec-lite-kuairec-search": {
-            "description": "Compact KuaiRec_v2 EDGRec-lite thesis search over watch-ratio threshold presets, feature use, 1/2-layer conformity depth, shallow fanout, negative count, and a small loss-weight grid.",
+            "description": "Compact KuaiRec_v2 EDGRec search-prior pass over watch-ratio threshold presets, graph-only branch-depth/fanout profiles, negative count, and a small loss-weight grid. Current evidence supports this compact family as a KuaiRec_v2 formal candidate, pending full formal reruns.",
             "base_profile": "edgrec-lite-kuairec",
             "datasets": ["kuairec_v2"],
             "config_overrides": {
@@ -43,11 +43,9 @@
                         "kuairec_big_matrix_watch_ratio_threshold_1_0"
                     ]
                 },
-                "use_features": {"type": "categorical", "choices": [false, true]},
-                "conformity_gnn_layers": {"type": "categorical", "choices": [1, 2]},
-                "num_neighbors": {
-                    "type": "fanout",
-                    "choices_by_depth": {"1": [[8]], "2": [[8, 4], [10, 5]]}
+                "graph_profile": {
+                    "type": "categorical",
+                    "choices": ["shallow_i1_c1", "lite_i1_c2", "balanced_i2_c2"]
                 },
                 "n_negatives": {"type": "categorical", "choices": [1, 2]},
                 "loss_weight_interest_bpr": {"type": "categorical", "choices": [0.01, 0.02, 0.05]},
@@ -57,10 +55,29 @@
                 },
                 "loss_weight_independence": {"type": "categorical", "choices": [0.0, 0.005]},
                 "loss_weight_popularity": {"type": "categorical", "choices": [0.0, 0.02]}
+            },
+            "profile_overrides": {
+                "graph_profile": {
+                    "shallow_i1_c1": {
+                        "interest_gnn_layers": 1,
+                        "conformity_gnn_layers": 1,
+                        "num_neighbors": [8]
+                    },
+                    "lite_i1_c2": {
+                        "interest_gnn_layers": 1,
+                        "conformity_gnn_layers": 2,
+                        "num_neighbors": [8, 4]
+                    },
+                    "balanced_i2_c2": {
+                        "interest_gnn_layers": 2,
+                        "conformity_gnn_layers": 2,
+                        "num_neighbors": [10, 5]
+                    }
+                }
             }
         },
         "edgrec-lite-movielens-search": {
-            "description": "Compact MovieLens1M EDGRec-lite sanity search with features off by default, shallow fanout, and independence loss disabled.",
+            "description": "Compact MovieLens1M EDGRec search-prior sanity pass with features off, graph-only branch-depth/fanout profiles, and independence loss disabled. Treat selected trials as near-parity/speed candidates, with popularity diagnostics checked before thesis promotion.",
             "base_profile": "edgrec-lite-movielens",
             "datasets": ["movielens1m"],
             "config_overrides": {
@@ -95,10 +112,9 @@
             "max_epochs": 50,
             "trials": 24,
             "parameters": {
-                "conformity_gnn_layers": {"type": "categorical", "choices": [1, 2]},
-                "num_neighbors": {
-                    "type": "fanout",
-                    "choices_by_depth": {"1": [[8]], "2": [[8, 4], [10, 5]]}
+                "graph_profile": {
+                    "type": "categorical",
+                    "choices": ["shallow_i1_c1", "lite_i1_c2", "balanced_i2_c2"]
                 },
                 "n_negatives": {"type": "categorical", "choices": [1, 2]},
                 "loss_weight_interest_bpr": {"type": "categorical", "choices": [0.01, 0.02, 0.05]},
@@ -107,10 +123,29 @@
                     "choices": [0.01, 0.02, 0.05]
                 },
                 "loss_weight_popularity": {"type": "categorical", "choices": [0.0, 0.02]}
+            },
+            "profile_overrides": {
+                "graph_profile": {
+                    "shallow_i1_c1": {
+                        "interest_gnn_layers": 1,
+                        "conformity_gnn_layers": 1,
+                        "num_neighbors": [8]
+                    },
+                    "lite_i1_c2": {
+                        "interest_gnn_layers": 1,
+                        "conformity_gnn_layers": 2,
+                        "num_neighbors": [8, 4]
+                    },
+                    "balanced_i2_c2": {
+                        "interest_gnn_layers": 2,
+                        "conformity_gnn_layers": 2,
+                        "num_neighbors": [10, 5]
+                    }
+                }
             }
         },
         "edgrec-lite-kuairand-search": {
-            "description": "Compact KuaiRand-1K diagnostic EDGRec-lite search for label-mode and randomized-exposure item-universe sensitivity.",
+            "description": "Compact KuaiRand-1K diagnostic EDGRec search-prior pass for label-mode and randomized-exposure item-universe sensitivity. Treat KuaiRand rows as stress-test evidence, not headline accuracy wins.",
             "base_profile": "edgrec-lite-kuairand",
             "datasets": ["kuairand1k"],
             "config_overrides": {
@@ -159,10 +194,9 @@
                     "type": "categorical",
                     "choices": ["observed_interaction_items", "random_exposure_items_only"]
                 },
-                "conformity_gnn_layers": {"type": "categorical", "choices": [1, 2]},
-                "num_neighbors": {
-                    "type": "fanout",
-                    "choices_by_depth": {"1": [[8]], "2": [[8, 4], [10, 5]]}
+                "graph_profile": {
+                    "type": "categorical",
+                    "choices": ["shallow_i1_c1", "lite_i1_c2", "balanced_i2_c2"]
                 },
                 "n_negatives": {"type": "categorical", "choices": [1, 2, 3]},
                 "loss_weight_interest_bpr": {"type": "categorical", "choices": [0.01, 0.02, 0.05]},
@@ -172,32 +206,132 @@
                 },
                 "loss_weight_independence": {"type": "categorical", "choices": [0.0, 0.005]},
                 "loss_weight_popularity": {"type": "categorical", "choices": [0.0, 0.02]}
+            },
+            "profile_overrides": {
+                "graph_profile": {
+                    "shallow_i1_c1": {
+                        "interest_gnn_layers": 1,
+                        "conformity_gnn_layers": 1,
+                        "num_neighbors": [8]
+                    },
+                    "lite_i1_c2": {
+                        "interest_gnn_layers": 1,
+                        "conformity_gnn_layers": 2,
+                        "num_neighbors": [8, 4]
+                    },
+                    "balanced_i2_c2": {
+                        "interest_gnn_layers": 2,
+                        "conformity_gnn_layers": 2,
+                        "num_neighbors": [10, 5]
+                    }
+                }
+            }
+        },
+        "amazonbook-edgrec-candidate-search": {
+            "description": "AmazonBook-specific EDGRec comparison search. AmazonBook is excluded only from the shared compact default queue, not from EDGRec optimization. This space compares compact graph-only and deep_features candidate families under one objective/revision before any thesis promotion.",
+            "base_profile": "amazonbook-edgrec-compact-candidate",
+            "datasets": ["amazonbook"],
+            "config_overrides": {
+                "use_early_stopping": true,
+                "patience": 8,
+                "auto_batch_size": true,
+                "batch_size_candidates": [1048576, 524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+                "use_popularity_emb": false,
+                "use_ipw": false,
+                "loss_weight_propensity_calibration": 0.0,
+                "loss_weight_align": 0.0,
+                "loss_weight_uniform": 0.0,
+                "validation_every_n_epochs": 2
+            },
+            "objective": {
+                "metric": "ValidationOnlineCRRU@20_40",
+                "split": "val",
+                "direction": "maximize"
+            },
+            "sampler": {
+                "name": "tpe",
+                "seed": 42,
+                "n_startup_trials": 4,
+                "multivariate": false,
+                "group": false,
+                "constant_liar": false
+            },
+            "pruner": {
+                "name": "hyperband",
+                "min_resource": 6,
+                "reduction_factor": 3,
+                "bootstrap_count": 1
+            },
+            "max_epochs": 60,
+            "trials": 12,
+            "parameters": {
+                "graph_profile": {
+                    "type": "categorical",
+                    "choices": ["compact", "deep_features"]
+                },
+                "n_negatives": {"type": "categorical", "choices": [1, 2]},
+                "score_mix_min_weight": {"type": "categorical", "choices": [0.0, 0.02]},
+                "loss_weight_popularity": {"type": "categorical", "choices": [0.0, 0.025]}
+            },
+            "profile_overrides": {
+                "graph_profile": {
+                    "compact": {
+                        "lr": 0.01,
+                        "lr_scheduler": "cosine",
+                        "single_branch_gnn_layers": 2,
+                        "interest_gnn_layers": 1,
+                        "conformity_gnn_layers": 2,
+                        "dropout": 0.1,
+                        "use_features": false,
+                        "use_popularity_head": true,
+                        "num_neighbors": [10, 5],
+                        "loss_weight_interest_bpr": 0.02,
+                        "loss_weight_conformity_bpr": 0.02,
+                        "loss_weight_independence": 0.0,
+                        "loss_weight_contrastive": 0.0,
+                        "train_edge_keep_prob": 1.0,
+                        "dice_sampler_margin": 10.0,
+                        "grad_clip_norm": 2.0
+                    },
+                    "deep_features": {
+                        "lr": 0.003,
+                        "lr_scheduler": "cosine",
+                        "lr_scheduler_factor": 0.5,
+                        "single_branch_gnn_layers": 3,
+                        "interest_gnn_layers": 2,
+                        "conformity_gnn_layers": 3,
+                        "dropout": 0.2,
+                        "use_features": true,
+                        "feature_gate_init": -4.0,
+                        "use_popularity_head": true,
+                        "num_neighbors": [8, 4, 2],
+                        "loss_weight_interest_bpr": 0.02,
+                        "loss_weight_conformity_bpr": 0.05,
+                        "loss_weight_independence": 0.005,
+                        "loss_weight_contrastive": 0.025,
+                        "train_edge_keep_prob": 0.6,
+                        "dice_sampler_margin": 10.0,
+                        "grad_clip_norm": 2.0
+                    }
+                }
             }
         },
         "edgrec-mechanism-coarse": {
-            "description": "Focused mechanism-level EDGRec discovery search. Profile parameters are Optuna/search-layer labels that resolve to concrete EDGRecConfig overrides before the model config is built; they are also recorded in sampled_params and resolved_config_overrides for reproducibility. Use --dataset kuairec_v2 for the main confirmation search, --dataset movielens1m for the secondary sanity search, and --dataset kuairand1k for the randomized-exposure regime only. AmazonBook is intentionally excluded from this broad pass. Auto-batch uses a largest-feasible throughput ladder and records the selected batch as runtime metadata.",
-            "base_profile": "core-edgrec-mainline",
+            "description": "Focused mechanism-level EDGRec discovery search. Profile parameters are Optuna/search-layer labels that resolve to concrete EDGRecConfig overrides before the model config is built; they are also recorded in sampled_params and resolved_config_overrides for reproducibility. Use --dataset kuairec_v2 for the main confirmation search, --dataset movielens1m for the secondary sanity search, and --dataset kuairand1k for the randomized-exposure regime only. AmazonBook is excluded from this broad shared compact pass, not from EDGRec optimization; use amazonbook-edgrec-candidate-search for the dataset-specific compact-vs-deep_features comparison. Auto-batch uses a largest-feasible throughput ladder and records the selected batch as runtime metadata.",
+            "base_profile": "edgrec-compact-search-prior",
             "datasets": ["movielens1m", "kuairec_v2", "kuairand1k"],
             "config_overrides": {
                 "use_early_stopping": true,
                 "patience": 8,
                 "auto_batch_size": true,
-                "batch_size_candidates": [
-                    1048576,
-                    524288,
-                    262144,
-                    131072,
-                    65536,
-                    32768,
-                    16384,
-                    8192,
-                    4096,
-                    2048,
-                    1024,
-                    512,
-                    256
-                ],
-                "use_popularity_emb": false
+                "batch_size_candidates": [1048576, 524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+                "use_popularity_emb": false,
+                "use_features": false,
+                "use_ipw": false,
+                "loss_weight_contrastive": 0.0,
+                "loss_weight_align": 0.0,
+                "loss_weight_uniform": 0.0,
+                "loss_weight_propensity_calibration": 0.0
             },
             "objective": {
                 "metric": "ValidationAccuracy@20_40",
@@ -252,7 +386,10 @@
                         "contrastive_off"
                     ]
                 },
-                "graph_profile": {"type": "categorical", "choices": ["shallow", "light_asym"]},
+                "graph_profile": {
+                    "type": "categorical",
+                    "choices": ["shallow", "light_asym", "medium"]
+                },
                 "lr": {"type": "categorical", "choices": [0.0004, 0.0008, 0.0015, 0.003]},
                 "weight_decay": {
                     "type": "categorical",
@@ -323,14 +460,14 @@
                         "loss_weight_interest_bpr": 0.02,
                         "loss_weight_conformity_bpr": 0.05,
                         "loss_weight_independence": 0.005,
-                        "loss_weight_contrastive": 0.025,
+                        "loss_weight_contrastive": 0.0,
                         "loss_weight_popularity": 0.025
                     },
                     "no_independence": {
                         "loss_weight_interest_bpr": 0.03,
                         "loss_weight_conformity_bpr": 0.03,
                         "loss_weight_independence": 0.0,
-                        "loss_weight_contrastive": 0.025,
+                        "loss_weight_contrastive": 0.0,
                         "loss_weight_popularity": 0.025
                     },
                     "contrastive_off": {
@@ -350,7 +487,7 @@
                     "light_asym": {
                         "interest_gnn_layers": 1,
                         "conformity_gnn_layers": 2,
-                        "num_neighbors": [10, 5]
+                        "num_neighbors": [8, 4]
                     },
                     "medium": {
                         "interest_gnn_layers": 2,
@@ -370,7 +507,10 @@
                 },
                 "kuairand1k": {
                     "dice_sampler_margin": {"type": "categorical", "choices": [50.0, 70.0, 80.0]},
-                    "graph_profile": {"type": "categorical", "choices": ["light_asym", "medium"]},
+                    "graph_profile": {
+                        "type": "categorical",
+                        "choices": ["shallow", "light_asym", "medium"]
+                    },
                     "item_universe_policy": {
                         "type": "categorical",
                         "choices": ["random_exposure_items_only"]
@@ -379,28 +519,14 @@
             }
         },
         "edgrec-core-optimization": {
-            "description": "Small dataset-local Optuna screen for EDGRec. Without --dataset, the runner creates one independent study per core thesis dataset, so --trials N means target N fresh informative finished trials for the current search_space_revision per dataset: COMPLETE plus real PRUNED, excluding FAIL/RUNNING, historically imported rows, duplicate-skip prunes, and other revision hashes. For the current causal-stability pass, start with --dataset movielens1m and --dataset kuairec_v2 before promoting a configuration to expensive datasets. The core search uses automatic largest-feasible batch-size probing from a descending throughput ladder as runtime metadata, not as a sampled model-selection parameter. This pass tunes the effective DICE branch-loss scale, feature-gate initialization, negative count, score-mix floor, branch-supervision weights, and context/feature shortcuts. hard_negative_ratio is intentionally excluded because DICE sampling owns the high/low-popularity negative route. Four-hop GNN depth remains excluded: current evidence does not justify extra over-smoothing and compute risk for the thesis budget.",
-            "base_profile": "core-edgrec-mainline",
+            "description": "Small dataset-local Optuna screen for compact EDGRec search-prior candidates. Without --dataset, the runner creates one independent study per listed dataset, so --trials N means target N fresh informative finished trials for the current search_space_revision per dataset: COMPLETE plus real PRUNED, excluding FAIL/RUNNING, historically imported rows, duplicate-skip prunes, and other revision hashes. For the current causal-stability pass, start with --dataset movielens1m and --dataset kuairec_v2 before promoting a configuration to expensive datasets. KuaiRand remains a randomized-exposure stress diagnostic. AmazonBook is present only as a compact exception check in this shared space; use amazonbook-edgrec-candidate-search for the dataset-specific compact-vs-deep_features comparison and keep LightGCN-paper accuracy baseline framing. The core search uses automatic largest-feasible batch-size probing from a descending throughput ladder as runtime metadata, not as a sampled model-selection parameter. This pass tunes the effective DICE branch-loss scale, negative count, score-mix floor, branch-supervision weights, and context shortcuts while keeping side features, IPW, contrastive, and DirectAU off unless a separate explicit profile enables them. hard_negative_ratio is intentionally excluded because DICE sampling owns the high/low-popularity negative route. Four-hop GNN depth remains excluded: current evidence does not justify extra over-smoothing and compute risk for the thesis budget.",
+            "base_profile": "edgrec-compact-search-prior",
             "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
             "config_overrides": {
                 "use_early_stopping": true,
                 "patience": 8,
                 "auto_batch_size": true,
-                "batch_size_candidates": [
-                    1048576,
-                    524288,
-                    262144,
-                    131072,
-                    65536,
-                    32768,
-                    16384,
-                    8192,
-                    4096,
-                    2048,
-                    1024,
-                    512,
-                    256
-                ],
+                "batch_size_candidates": [1048576, 524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
                 "use_popularity_emb": false
             },
             "objective": {
@@ -456,15 +582,9 @@
                     "type": "categorical",
                     "choices": ["adamw", "sgd", "sparseadam"]
                 },
-                "interest_gnn_layers": {"type": "int", "low": 1, "high": 3},
-                "conformity_gnn_layers": {"type": "int", "low": 1, "high": 3},
-                "num_neighbors": {
-                    "type": "fanout",
-                    "choices_by_depth": {
-                        "1": [[8], [16]],
-                        "2": [[4, 2], [5, 3], [6, 3], [8, 4], [10, 5]],
-                        "3": [[5, 3, 2], [8, 4, 2], [10, 5, 3]]
-                    }
+                "graph_profile": {
+                    "type": "categorical",
+                    "choices": ["shallow_i1_c1", "lite_i1_c2", "balanced_i2_c2"]
                 },
                 "dropout": {"type": "grid_float", "low": 0.0, "high": 0.3, "step": 0.05},
                 "train_edge_keep_prob": {"type": "categorical", "choices": [1.0, 0.8, 0.6, 0.4]},
@@ -473,7 +593,6 @@
                     "type": "categorical",
                     "choices": ["batch_mean", "active_mean"]
                 },
-                "feature_gate_init": {"type": "categorical", "choices": [0.0, -2.0, -4.0]},
                 "score_mix_min_weight": {"type": "categorical", "choices": [0.0, 0.02, 0.05]},
                 "loss_weight_interest_bpr": {"type": "categorical", "choices": [0.02, 0.05, 0.1]},
                 "loss_weight_conformity_bpr": {
@@ -481,10 +600,8 @@
                     "choices": [0.01, 0.02, 0.05]
                 },
                 "loss_weight_independence": {"type": "categorical", "choices": [0.0, 0.005]},
-                "loss_weight_contrastive": {"type": "categorical", "choices": [0.0, 0.025]},
                 "loss_weight_popularity": {"type": "categorical", "choices": [0.0, 0.01, 0.025]},
                 "use_popularity_head": {"type": "categorical", "choices": [true, false]},
-                "use_features": {"type": "categorical", "choices": [true, false]},
                 "auxiliary_loss_schedule": {
                     "type": "categorical",
                     "choices": ["linear_ramp", "phased"]
@@ -506,6 +623,25 @@
                     "step": 10.0
                 }
             },
+            "profile_overrides": {
+                "graph_profile": {
+                    "shallow_i1_c1": {
+                        "interest_gnn_layers": 1,
+                        "conformity_gnn_layers": 1,
+                        "num_neighbors": [8]
+                    },
+                    "lite_i1_c2": {
+                        "interest_gnn_layers": 1,
+                        "conformity_gnn_layers": 2,
+                        "num_neighbors": [8, 4]
+                    },
+                    "balanced_i2_c2": {
+                        "interest_gnn_layers": 2,
+                        "conformity_gnn_layers": 2,
+                        "num_neighbors": [10, 5]
+                    }
+                }
+            },
             "parameters_by_dataset": {
                 "amazonbook": {
                     "dice_sampler_margin": {"type": "categorical", "choices": [10.0, 20.0]}
@@ -521,15 +657,9 @@
                 },
                 "kuairand1k": {
                     "dice_sampler_margin": {"type": "categorical", "choices": [20.0, 50.0, 80.0]},
-                    "interest_gnn_layers": {"type": "categorical", "choices": [1, 2]},
-                    "conformity_gnn_layers": {"type": "categorical", "choices": [2]},
-                    "num_neighbors": {
-                        "type": "fanout",
-                        "choices_by_depth": {"2": [[4, 2], [6, 3], [8, 4], [10, 5]]}
-                    },
                     "item_universe_policy": {
                         "type": "categorical",
-                        "choices": ["observed_interaction_items"]
+                        "choices": ["random_exposure_items_only"]
                     }
                 }
             }

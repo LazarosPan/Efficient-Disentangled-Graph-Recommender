@@ -5,7 +5,7 @@ Runs named variants around the EDGRec mainline on specified datasets.
 
 Usage:
     uv run ablation --datasets movielens1m
-    uv run ablation --datasets movielens1m --variants mainline no_independence no_features
+    uv run ablation --datasets movielens1m --variants mainline with_features with_ipw
 """
 
 from __future__ import annotations
