@@ -1738,7 +1738,7 @@ class CausalTrainingContractTests(unittest.TestCase):
         edgrec = EDGRecConfig(device="cuda").preset_dice_like().preset_full()
         baseline = EDGRecConfig(device="cuda").preset_full().preset_dice_like()
 
-        self.assertTrue(edgrec.use_features)
+        self.assertFalse(edgrec.use_features)
         self.assertFalse(hasattr(edgrec, "scoring_weight_mode"))
         self.assertEqual(edgrec.auxiliary_losses_start_epoch, 15)
         self.assertEqual(edgrec.popularity_supervision_start_epoch, 30)
@@ -2477,6 +2477,63 @@ class CausalTrainingContractTests(unittest.TestCase):
         )
 
         self.assertTrue(torch.allclose(actual, expected))
+
+    def test_sparse_adjacency_cache_reuses_coalesced_stable_graph_tensor(self) -> None:
+        """Stable sparse backend inputs should build and reuse one coalesced adjacency."""
+        model = DualBranchGCN(
+            EDGRecConfig(device="cpu", use_dual_branch=False, use_sign_aware=False)
+        )
+        edge_index = torch.tensor(
+            [[0, 0, 1], [1, 1, 0]],
+            dtype=torch.long,
+        )
+        edge_weight = torch.tensor([0.25, 0.25, 1.0], dtype=torch.float32)
+
+        first = model._get_or_build_sparse_adjacency_tensor(
+            edge_index,
+            edge_weight,
+            num_nodes=2,
+            dtype=torch.float32,
+        )
+        second = model._get_or_build_sparse_adjacency_tensor(
+            edge_index,
+            edge_weight,
+            num_nodes=2,
+            dtype=torch.float32,
+        )
+
+        self.assertIs(first, second)
+        self.assertTrue(first.is_coalesced())
+        self.assertEqual(first._nnz(), 2)
+        self.assertTrue(torch.allclose(first.values(), torch.tensor([0.5, 1.0])))
+
+    def test_sparse_adjacency_cache_skips_gradient_edge_weights(self) -> None:
+        """Dynamic sign-aware weights should not be cached across forwards."""
+        model = DualBranchGCN(
+            EDGRecConfig(device="cpu", use_dual_branch=False, use_sign_aware=True)
+        )
+        edge_index = torch.tensor(
+            [[0, 1], [1, 0]],
+            dtype=torch.long,
+        )
+        edge_weight = torch.tensor([0.5, 1.0], dtype=torch.float32, requires_grad=True)
+
+        first = model._get_or_build_sparse_adjacency_tensor(
+            edge_index,
+            edge_weight,
+            num_nodes=2,
+            dtype=torch.float32,
+        )
+        second = model._get_or_build_sparse_adjacency_tensor(
+            edge_index,
+            edge_weight,
+            num_nodes=2,
+            dtype=torch.float32,
+        )
+
+        self.assertIsNot(first, second)
+        self.assertTrue(first.is_coalesced())
+        self.assertTrue(second.is_coalesced())
 
     def test_edge_propagation_backprops_through_sign_weights(self) -> None:
         """Chunked LightGCN propagation should preserve gradients for sign-aware weights."""

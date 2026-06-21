@@ -20,6 +20,7 @@ from experiments.recipes import (
     formal_profile_names,
     get_formal_profile,
     get_recipe,
+    load_experiment_catalog,
 )
 from experiments.run_benchmark import (
     _resolve_benchmark_num_neighbors_for_preset,
@@ -1007,6 +1008,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
     def test_feature_gate_init_controls_initial_side_feature_strength(self) -> None:
         """Feature gates should start from the configured logit value."""
         config = EDGRecConfig(device="cpu", embed_dim=4)
+        config.use_features = True
         config.feature_gate_init = -4.0
         module = EmbeddingModule(
             n_users=2,
@@ -1133,8 +1135,9 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertNotEqual(base_hash, changed_hash)
 
-    def test_default_formal_profile_is_core_edgrec_mainline(self) -> None:
-        """The default formal profile should target the thesis mainline."""
+    def test_default_formal_profile_is_compact_search_prior(self) -> None:
+        """The default candidate profile should target the compact search-prior path."""
+        catalog = load_experiment_catalog()
         profile_name = default_formal_profile_name()
         profile = get_formal_profile(profile_name)
         benchmark_args = formal_main._build_new_run_args(
@@ -1142,22 +1145,40 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             profile_name,
         )
 
+        self.assertEqual(catalog["default_candidate_profile"], "edgrec-compact-search-prior")
+        self.assertNotIn("default_formal_profile", catalog)
         self.assertTrue(profile["config_overrides"]["use_early_stopping"])
-        self.assertEqual(profile["config_overrides"]["patience"], 10)
-        self.assertEqual(profile["id"], "core-edgrec-mainline")
+        self.assertEqual(profile["config_overrides"]["patience"], 8)
+        self.assertEqual(profile["id"], "edgrec-compact-search-prior")
         self.assertEqual(
             profile["matrix"]["datasets"],
-            ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+            ["movielens1m", "kuairec_v2", "kuairand1k"],
         )
+        self.assertNotIn("amazonbook", profile["matrix"]["datasets"])
         self.assertNotIn("taobao", profile["matrix"]["datasets"])
         self.assertNotIn("movielens20m", profile["matrix"]["datasets"])
         self.assertEqual(profile["matrix"]["presets"], ["edgrec"])
         self.assertNotIn("scoring_weight_modes", profile["matrix"])
         self.assertNotIn("batch_size", profile["config_overrides"])
-        self.assertNotIn("auto_batch_size", profile["config_overrides"])
+        self.assertTrue(profile["config_overrides"]["auto_batch_size"])
+        self.assertFalse(profile["config_overrides"]["use_features"])
         self.assertEqual(
             profile["config_overrides"]["batch_size_candidates"],
-            [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+            [
+                1048576,
+                524288,
+                262144,
+                131072,
+                65536,
+                32768,
+                16384,
+                8192,
+                4096,
+                2048,
+                1024,
+                512,
+                256,
+            ],
         )
         self.assertEqual(profile["config_overrides"]["single_branch_gnn_layers"], 2)
         self.assertEqual(profile["config_overrides"]["interest_gnn_layers"], 1)
@@ -1166,17 +1187,19 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(
             profile["config_overrides"]["num_neighbors"],
             {
-                "small": [[6, 3], [4, 2]],
-                "medium": [[10, 5], [8, 4], [6, 3], [4, 2]],
+                "small": [[8, 4], [10, 5]],
+                "medium": [[8, 4], [10, 5]],
             },
         )
+        self.assertEqual(profile["config_overrides"]["n_negatives"], 1)
+        self.assertEqual(profile["config_overrides"]["validation_every_n_epochs"], 2)
         self.assertNotIn("hard_negative_ratio", profile["config_overrides"])
         self.assertNotIn("loss_schedule", profile["config_overrides"])
         self.assertTrue(benchmark_args["use_early_stopping"])
-        self.assertEqual(benchmark_args["patience"], 10)
+        self.assertEqual(benchmark_args["patience"], 8)
         self.assertEqual(
             benchmark_args["datasets"],
-            ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+            ["movielens1m", "kuairec_v2", "kuairand1k"],
         )
         self.assertEqual(benchmark_args["presets"], ["edgrec"])
         self.assertNotIn("scoring_weight_modes", benchmark_args)
@@ -1184,7 +1207,21 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertTrue(benchmark_args["auto_batch_size"])
         self.assertEqual(
             benchmark_args["batch_size_candidates"],
-            [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+            [
+                1048576,
+                524288,
+                262144,
+                131072,
+                65536,
+                32768,
+                16384,
+                8192,
+                4096,
+                2048,
+                1024,
+                512,
+                256,
+            ],
         )
         self.assertEqual(benchmark_args["single_branch_gnn_layers"], 2)
         self.assertEqual(benchmark_args["interest_gnn_layers"], 1)
@@ -1193,16 +1230,45 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(
             benchmark_args["num_neighbors"],
             {
-                "small": [[6, 3], [4, 2]],
-                "medium": [[10, 5], [8, 4], [6, 3], [4, 2]],
+                "small": [[8, 4], [10, 5]],
+                "medium": [[8, 4], [10, 5]],
             },
         )
         self.assertEqual(benchmark_args["graph_policy"], "observed")
+        self.assertFalse(benchmark_args["use_features"])
+        self.assertEqual(benchmark_args["n_negatives"], 1)
+        self.assertEqual(benchmark_args["validation_every_n_epochs"], 2)
         self.assertNotIn("graph_policy_options", benchmark_args)
         self.assertEqual(benchmark_args["hard_negative_ratio"], 0.0)
         self.assertIsNone(benchmark_args["loss_schedule"])
         self.assertEqual(benchmark_args["auxiliary_losses_start_epoch"], 15)
         self.assertEqual(benchmark_args["popularity_supervision_start_epoch"], 30)
+
+    def test_amazonbook_edgrec_candidates_are_dataset_specific(self) -> None:
+        """AmazonBook should keep compact and deep EDGRec candidates outside the default queue."""
+        default_profile = get_formal_profile(default_formal_profile_name())
+        compact = get_formal_profile("amazonbook-edgrec-compact-candidate")
+        deep = get_formal_profile("amazonbook-edgrec-deep-features-candidate")
+
+        self.assertNotIn("amazonbook", default_profile["matrix"]["datasets"])
+        self.assertEqual(compact["matrix"]["datasets"], ["amazonbook"])
+        self.assertEqual(compact["matrix"]["presets"], ["edgrec"])
+        self.assertFalse(compact["config_overrides"]["use_features"])
+        self.assertEqual(compact["config_overrides"]["num_neighbors"], [10, 5])
+        self.assertEqual(compact["config_overrides"]["interest_gnn_layers"], 1)
+        self.assertEqual(compact["config_overrides"]["conformity_gnn_layers"], 2)
+        self.assertEqual(compact["config_overrides"]["loss_weight_independence"], 0.0)
+        self.assertEqual(compact["config_overrides"]["loss_weight_contrastive"], 0.0)
+        self.assertFalse(compact["config_overrides"]["use_ipw"])
+
+        self.assertEqual(deep["matrix"]["datasets"], ["amazonbook"])
+        self.assertEqual(deep["matrix"]["presets"], ["edgrec"])
+        self.assertTrue(deep["config_overrides"]["use_features"])
+        self.assertEqual(deep["config_overrides"]["feature_gate_init"], -4.0)
+        self.assertEqual(deep["config_overrides"]["num_neighbors"], [8, 4, 2])
+        self.assertEqual(deep["config_overrides"]["interest_gnn_layers"], 2)
+        self.assertEqual(deep["config_overrides"]["conformity_gnn_layers"], 3)
+        self.assertEqual(deep["config_overrides"]["loss_weight_contrastive"], 0.025)
 
     def test_deeper_comparison_profile_keeps_original_num_neighbors_sweep(self) -> None:
         """The deeper comparison profile should stay on its original fan-out sweep."""
@@ -1247,7 +1313,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.lr_scheduler, "plateau")
         self.assertTrue(config.auto_batch_size)
         self.assertTrue(config.use_early_stopping)
-        self.assertEqual(config.patience, 10)
+        self.assertEqual(config.patience, 8)
         self.assertEqual(config.graph_policy, "observed")
         self.assertEqual(config.num_neighbors, [10, 5])
 
@@ -1351,18 +1417,27 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
     def test_formal_profile_lookup_normalizes_user_facing_labels(self) -> None:
         """Formal profile lookup should normalize user-facing aliases centrally."""
-        default_profile = get_formal_profile("DEFAULT")
+        default_profile = get_formal_profile(default_formal_profile_name())
 
         self.assertEqual(default_profile["id"], default_formal_profile_name())
-        self.assertEqual(default_profile["id"], "core-edgrec-mainline")
+        self.assertEqual(default_profile["id"], "edgrec-compact-search-prior")
         self.assertIn("abauto", default_profile["name"])
-        self.assertEqual(get_formal_profile("latest")["id"], "core-edgrec-mainline")
+        self.assertEqual(get_formal_profile("compact")["id"], "edgrec-compact-search-prior")
+        self.assertEqual(
+            get_formal_profile("edgrec-lite-default")["id"],
+            "edgrec-compact-search-prior",
+        )
         self.assertEqual(get_formal_profile("development")["id"], "dev-edgrec")
         self.assertEqual(get_formal_profile("dev-edgrec")["id"], "dev-edgrec")
 
-    def test_second_formal_profile_is_edgrec_mainline_only(self) -> None:
-        """The main thesis profile should not rerun fixed paper baselines."""
-        profile_name = formal_profile_names()[1]
+    def test_latest_alias_is_not_a_formal_profile_shortcut(self) -> None:
+        """Formal profile aliases should not imply universal newest/best status."""
+        with self.assertRaises(KeyError):
+            get_formal_profile("latest")
+
+    def test_core_formal_profile_is_edgrec_mainline_only(self) -> None:
+        """The core comparison profile should not rerun fixed paper baselines."""
+        profile_name = "core-edgrec-mainline"
         profile = get_formal_profile(profile_name)
         benchmark_args = formal_main._build_new_run_args(
             SimpleNamespace(overwrite_checkpoint=False),

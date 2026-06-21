@@ -35,6 +35,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
         self.assertIn("edgrec-lite-kuairec-search", search_space_names())
         self.assertIn("edgrec-lite-movielens-search", search_space_names())
         self.assertIn("edgrec-lite-kuairand-search", search_space_names())
+        self.assertIn("amazonbook-edgrec-candidate-search", search_space_names())
 
     def test_search_spaces_resolve_to_edgrec_configs(self) -> None:
         """All search spaces should resolve through the shared config builder."""
@@ -191,18 +192,9 @@ class SearchSpaceValidationTests(unittest.TestCase):
                     spec.parameters["preprocessing_preset"],
                 ): "kuairec_big_matrix_watch_ratio_threshold_0_75",
                 search._parameter_storage_name(
-                    "use_features",
-                    spec.parameters["use_features"],
-                ): False,
-                search._parameter_storage_name(
-                    "conformity_gnn_layers",
-                    spec.parameters["conformity_gnn_layers"],
-                ): 1,
-                search._parameter_storage_name(
-                    "num_neighbors",
-                    spec.parameters["num_neighbors"],
-                    depth=1,
-                ): "[8]",
+                    "graph_profile",
+                    spec.parameters["graph_profile"],
+                ): "shallow_i1_c1",
                 search._parameter_storage_name(
                     "n_negatives",
                     spec.parameters["n_negatives"],
@@ -247,10 +239,77 @@ class SearchSpaceValidationTests(unittest.TestCase):
             config.preprocessing_preset,
             "kuairec_big_matrix_watch_ratio_threshold_0_75",
         )
+        self.assertEqual(resolution.sampled_params["graph_profile"], "shallow_i1_c1")
+        self.assertFalse(config.use_features)
+        self.assertEqual(config.interest_gnn_layers, 1)
+        self.assertEqual(config.conformity_gnn_layers, 1)
+        self.assertEqual(config.num_neighbors, [8])
         self.assertEqual(
             len(search.search_space_revision(spec)),
             search.SEARCH_SPACE_REVISION_HASH_LENGTH,
         )
+
+    def test_amazonbook_candidate_search_compares_compact_and_deep_families(self) -> None:
+        """AmazonBook should have a dataset-local compact-vs-deep EDGRec search."""
+        spec = search.resolve_search_space(
+            "amazonbook-edgrec-candidate-search",
+            dataset="amazonbook",
+        )
+        base_config = search.build_search_config(
+            spec,
+            dataset="amazonbook",
+            device="cpu",
+            data_dir="data",
+        )
+        fixed_trial = optuna.trial.FixedTrial(
+            {
+                search._parameter_storage_name(
+                    "graph_profile",
+                    spec.parameters["graph_profile"],
+                ): "deep_features",
+                search._parameter_storage_name(
+                    "n_negatives",
+                    spec.parameters["n_negatives"],
+                ): 1,
+                search._parameter_storage_name(
+                    "score_mix_min_weight",
+                    spec.parameters["score_mix_min_weight"],
+                ): 0.02,
+                search._parameter_storage_name(
+                    "loss_weight_popularity",
+                    spec.parameters["loss_weight_popularity"],
+                ): 0.025,
+            },
+        )
+
+        self.assertEqual(spec.datasets, ("amazonbook",))
+        self.assertEqual(spec.base_profile, "amazonbook-edgrec-compact-candidate")
+        self.assertEqual(spec.parameters["graph_profile"]["choices"], ["compact", "deep_features"])
+        self.assertFalse(base_config.use_features)
+        self.assertEqual(base_config.interest_gnn_layers, 1)
+        self.assertEqual(base_config.conformity_gnn_layers, 2)
+        self.assertEqual(base_config.num_neighbors, [10, 5])
+
+        resolution = search.resolve_trial_parameters(
+            fixed_trial,
+            spec,
+            base_config=base_config,
+        )
+        config = search.build_search_config(
+            spec,
+            dataset="amazonbook",
+            sampled_overrides=resolution.config_overrides,
+            device="cpu",
+            data_dir="data",
+        )
+
+        self.assertEqual(resolution.sampled_params["graph_profile"], "deep_features")
+        self.assertTrue(config.use_features)
+        self.assertEqual(config.feature_gate_init, -4.0)
+        self.assertEqual(config.interest_gnn_layers, 2)
+        self.assertEqual(config.conformity_gnn_layers, 3)
+        self.assertEqual(config.num_neighbors, [8, 4, 2])
+        self.assertEqual(config.loss_weight_contrastive, 0.025)
 
     def test_search_parser_accepts_comma_separated_space_queue(self) -> None:
         """search-experiments should mirror formal-run's queue syntax."""
@@ -466,7 +525,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
         self.assertNotIn("batch_size", payload["parameters"])
         self.assertNotIn("hard_negative_ratio", payload["parameters"])
         self.assertIn("dice_mask_reduction", payload["parameters"])
-        self.assertIn("feature_gate_init", payload["parameters"])
+        self.assertNotIn("feature_gate_init", payload["parameters"])
         self.assertIn("n_negatives", payload["parameters"])
 
     def test_optuna_report_effective_params_include_runtime_batch(self) -> None:
