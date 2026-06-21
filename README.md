@@ -33,6 +33,7 @@ The thesis pipeline is built around canonicalized interaction loading and graph 
 - Edge construction follows strict train-only conventions for the main evaluation contract.
 - The item universe can be configured, including observed-only, full catalog, and KuaiRand random-exposure diagnostic variants.
 - Default feature policy (`thesis_default`) is aligned to avoid post-treatment leakage.
+- The compact EDGRec search-prior path is graph-only; side features are opt-in ablations or explicit dataset/profile candidates.
 
 See [edgrec-data-pipeline](.agents/skills/edgrec-implementation/edgrec-data-pipeline.md) for the dataset and loader contract.
 
@@ -49,6 +50,9 @@ Build precedence is:
 Primary profiles documented in the implementation notes are:
 
 - `edgrec` (`preset_full()`): mainline dual-branch model configuration.
+- `edgrec-compact-search-prior`: default compact graph-only search prior and formal candidate, not a final thesis selection.
+- `amazonbook-edgrec-compact-candidate`: explicit AmazonBook graph-only compact EDGRec candidate outside the shared compact default queue.
+- `amazonbook-edgrec-deep-features-candidate`: explicit AmazonBook candidate preserving prior Optuna evidence for deeper/use_features EDGRec.
 - `lightgcn`: scalable baseline path.
 - `dice_like`: DICE-like ablation.
 - `lightgcn_paper`: paper-faithful LightGCN baseline contract.
@@ -141,6 +145,8 @@ Primary thesis evidence artifacts:
 - `results/query_results.md` (generated report-style tables)
 - `results/optuna_optimization.md` (search summaries)
 - `results/optuna_figures/` (supporting plots)
+
+Evidence note: current Optuna evidence supports compact EDGRec candidates for KuaiRec_v2, a near-parity/speed candidate for MovieLens1M, and KuaiRand1K as a stress-test diagnostic. AmazonBook is not part of the shared compact default queue, but it is still part of EDGRec optimization: compare the AmazonBook compact and deep/features candidates against the LightGCN-paper accuracy baseline before any thesis-profile promotion.
 
 ## Claim boundaries
 
