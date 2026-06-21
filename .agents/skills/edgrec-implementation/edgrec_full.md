@@ -57,7 +57,7 @@ Runtime invariants:
 | DICE independence | hash-sample entities up to `distance_correlation_max_pairs` |
 | DirectAU uniformity | hash-sample rows up to `uniformity_max_pairs` |
 | sampled BFS | bounded CSR offset gathers by hop fanout |
-| EDGRec propagation | uncoalesced CUDA sparse adjacency tensor; CPU chunked edge-list fallback |
+| EDGRec propagation | chunked edge-list aggregation by default; explicit sparse backend uses cached coalesced adjacency for stable non-gradient tensors |
 | EDGRec DICE negatives | fast high/low routing + vectorized known-positive filtering |
 | `dice_paper` negatives | exact per-user pool-count correction retained |
 

@@ -31,8 +31,8 @@ Diagram scope: weighted-sum structure only. Activation depends on preset, config
 | `L_interest_bpr` | Raw `branch_interest_score` when present, otherwise `interest_score`; symmetric branch BPR, or DICE popular-negative masked BPR when `branch_loss_mode="dice"` | `0.02` for EDGRec, `0.1` for GCN-DICE | Dual-branch only |
 | `L_conformity_bpr` | Raw `branch_conformity_score` when present, otherwise `conformity_score`; symmetric branch BPR, or DICE popularity BPR with reversed direction for popular negatives when `branch_loss_mode="dice"` | `0.02` for EDGRec, `0.1` for GCN-DICE | Dual-branch only |
 | `L_independence` | Cosine-squared branch decorrelation, or distance-correlation discrepancy when `branch_loss_mode="dice"` | `0.005` for EDGRec, `0.01` for GCN-DICE | Dual-branch only |
-| `L_contrastive` | Branch-local positive-pair contrastive terms | `0.02` | Dual-branch only and weight > 0; weights are applied outside the log-probability |
-| `L_align` / `L_uniform` | DirectAU-style branch geometry | `0.02` | Dual-branch only and weight > 0 |
+| `L_contrastive` | Branch-local positive-pair contrastive terms | `0.0` by default; explicit ablations/search profiles set nonzero weights | Dual-branch only and weight > 0; weights are applied outside the log-probability |
+| `L_align` / `L_uniform` | DirectAU-style branch geometry | `0.0` by default; explicit ablations/search profiles set nonzero weights | Dual-branch only and weight > 0 |
 | `L_pop` | Raw `raw_context_score(pos)` when present, otherwise `context_score(pos)`, vs train-split item popularity target | `0.02` | Dual branch + context head + weight > 0 |
 | `L_prop_calib` | `propensity_scores(pos)` vs `propensity_targets(pos)` | `0.0` | Weight > 0 and batch propensity targets available |
 | `L_embedding_reg` | LightGCN initial user, positive-item, and negative-item embeddings | `weight_decay=1e-4` for `lightgcn_paper` | `baseline_family="lightgcn_paper"` only |

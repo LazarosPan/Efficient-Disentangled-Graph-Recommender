@@ -72,7 +72,7 @@ Use this file for thesis-facing rationale: which literature-backed ideas justify
 | H1: Dual-branch causal supervision can match or beat LightGCN accuracy on exposure-biased datasets. | Full formal rows where EDGRec >= `lightgcn_paper` on NDCG/Recall/Hit. Currently strongest on `kuairec_v2`; mixed elsewhere. |
 | H2: Sampled causal-branch training is much faster than paper-faithful full-graph causal baselines. | Per-epoch time from SQLite/query report. Current DICE evidence is runtime-probe only. |
 | H3: Learned score mixing can trade accuracy against popularity sensitivity. | Score-mix, AvgPop, branch-rank, and Spearman diagnostics from final test rows. |
-| H4: Safe side features help only when dataset semantics support them. | Ablations (`no_features`) and preprocessing-sweep rows; avoid cross-dataset generalization from one view. |
+| H4: Safe side features help only when dataset semantics support them. | Explicit `with_features` ablations and preprocessing-sweep rows; avoid cross-dataset generalization from one view. |
 
 ## Claim Boundaries
 

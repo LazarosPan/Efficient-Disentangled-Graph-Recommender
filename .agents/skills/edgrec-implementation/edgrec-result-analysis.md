@@ -14,6 +14,15 @@ Use this file for current thesis result interpretation. Truth source: `results/t
 | Optuna caution | Do not use mixed, imported, or unrevisioned Optuna rows as strong thesis evidence; use fresh same-revision importances for strong search claims and formal reruns for final test claims. |
 | Optuna figures | Default Optuna figures aggregate all loaded source studies by dataset using runtime-aware `ValidationOnlineCRRU@20_40`; thesis-facing plots call it the validation CRRU selection score, gold stars mark selected trials, black diamonds mark fan-out medians, gray importance cells mean no detected association, and branch-depth cells marked `n*` have fewer than 10 completed trials. The exporter writes PNG figures only and removes stale generated PNG/HTML artifacts before each run. |
 
+Evidence roles:
+
+| Role | Use |
+| --- | --- |
+| validation search candidate | Optuna validation evidence only; promote into a named formal profile before making test claims. |
+| formal test row | Completed full-data `formal-run` row with test metrics. |
+| runtime probe | Resource/feasibility evidence; accuracy is diagnostic only. |
+| diagnostic-only evidence | Score-mix, branch-rank, contribution, and popularity diagnostics; not causal proof. |
+
 ## Evidence Status
 
 | Baseline | Current status | Thesis use |
@@ -46,6 +55,17 @@ Pairs use current SQLite rows from `core-paper-architecture-comparison` when ava
 | `kuairec_v2` | EDGRec row 8697 vs LightGCN paper row 8701 | 6.0s/epoch vs 226.3s/epoch: 37.9x faster | NDCG@20 0.0868 vs 0.0484: EDGRec 1.79x LightGCN | AvgPop@20 0.3599 vs 0.5754: EDGRec less popularity-heavy | Strongest current EDGRec result. |
 | `movielens1m` | EDGRec row 8696 vs LightGCN paper row 8700 | 2.0s/epoch vs 3.1s/epoch: 1.5x faster | NDCG@20 0.0990 vs 0.0983: near parity/slightly higher | AvgPop@20 0.4235 vs 0.3643: more popularity-heavy in this pair | Accuracy parity, modest speed win, weaker popularity profile. |
 | `kuairand1k` | EDGRec row 8698 vs LightGCN paper probe row 11250 | 46.1s/epoch vs 633.5s/epoch: 13.7x faster | NDCG@20 0.0055 vs 0.0081, but LightGCN row is runtime-probe accuracy | AvgPop@20 0.7214 vs 0.3824: EDGRec architecture row is popularity-heavy | Resource comparison only; final accuracy unresolved. |
+
+## Dataset-Conditioned Profile Policy
+
+| Dataset | Policy |
+| --- | --- |
+| `kuairec_v2` | Compact EDGRec can be the default candidate because current evidence supports both accuracy and speed versus LightGCN paper rows. |
+| `movielens1m` | Compact EDGRec is acceptable as a near-parity/speed candidate, but the weaker popularity profile must stay visible. |
+| `kuairand1k` | Keep as randomized-exposure stress-test and diagnostic evidence; do not headline as an accuracy win. |
+| `amazonbook` | Excluded only from the shared compact default queue, not from EDGRec optimization. Preserve LightGCN-paper accuracy framing and run a dataset-specific compact-vs-deep_features EDGRec comparison before thesis promotion. |
+
+Evidence note: Optuna supports compact defaults for KuaiRec_v2, MovieLens1M, and KuaiRand search/probing. AmazonBook evidence is inconclusive and dataset-specific; current rows do not prove best hyperparameters, so full formal compact-vs-deep comparisons decide any AmazonBook thesis profile.
 
 ## DICE Paper Runtime Evidence
 
@@ -82,8 +102,8 @@ Thesis-safe DICE statement: "Paper-faithful DICE is orders of magnitude slower p
 | --- | --- | --- | --- |
 | Interest/conformity split | popularity-biased interactions hide real preference and branch losses separate useful signals | branches collapse or conformity dominates relevance | `test_interest_conformity_cosine_*`, branch rank metrics |
 | Context head | train-only popularity/recency/feature context matches real exposure effects | context encodes popularity without enough relevance correction | context contribution and final popularity Spearman |
-| Score mix | learned/fixed mix keeps interest primary while preserving useful bias controls | mix shifts too heavily to conformity/context or floor keeps weak branches active | `score_mix_*_mean/std`, contribution stats |
-| Side features | features are pre-treatment and predictive | features are weak, noisy, or dataset has graph-only semantics | `no_features` ablations |
+| Score mix | learned/fixed mix keeps interest primary while preserving useful bias controls | mix shifts too heavily to conformity/context or floor keeps weak branches active | `score_mix_*_mean/std`, contribution ratios, branch-collapse warnings |
+| Side features | features are pre-treatment and predictive | features are weak, noisy, or dataset has graph-only semantics | `with_features` ablations against graph-only default |
 | Fan-out/depth | sampled neighborhood captures enough signal cheaply | fan-out too small loses structure; too deep oversmooths/costs more | neighbor profile rows, branch cosine, time/epoch |
 | DICE losses | popularity-conditioned negatives identify conformity pressure | active masks are sparse or branch loss scale overwhelms recommendation loss | DICE mask rates, weighted losses |
 

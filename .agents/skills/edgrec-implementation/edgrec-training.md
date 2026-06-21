@@ -125,7 +125,7 @@ Important runtime details:
 - In sampled mode, on CUDA it first tries to stage the full graph into a CUDA-resident `SubgraphSampler`.
 - If sampled graph staging or later batch preparation reports a CUDA OOM, including plain RuntimeError messages from CUDA kernels, it falls back to the CPU sampler path.
 - Sampled BFS memory scales with `frontier_size * num_neighbors[hop]`, not total incident degree.
-- EDGRec sampled propagation uses an uncoalesced CUDA sparse adjacency tensor plus CPU chunked edge-list fallback.
+- EDGRec sampled propagation defaults to chunked edge-list aggregation on CPU/CUDA. The explicit sparse-adjacency backend builds coalesced tensors and reuses one stable runtime cache entry when edge weights do not require gradients.
 - Full-graph mode skips subgraph extraction and propagates the full train graph per optimizer step.
 - Full-graph mode is used by `lightgcn_paper` and `dice_paper`.
 - Full-graph mode stages `edge_index`, `edge_sign`, and `edge_norm` once per trainer/device.
@@ -181,13 +181,14 @@ Diagnostic rules:
 | reuse | same propagated state and top-k recommendations as thesis metrics |
 | accumulation | native-dtype top-k slices; float accumulation math |
 | score-mix stats | `score_mix_*` mean/std |
-| contribution stats | weighted branch contributions at `@20/@40` |
+| contribution stats | weighted branch contributions and interest/conformity contribution ratios at `@20/@40` |
 | branch checks | interest-vs-conformity cosine |
 | popularity checks | per-component popularity Spearman |
+| branch-collapse warnings | flag conformity mix above `0.8`, interest mix below `0.1`, or branch cosine magnitude above `0.9` |
 | seen masking | final and standalone branch rankers are masked |
 | context diagnostics | read-only at already-excluded final top-k recommendations |
 | branch rankers | raw interest/conformity PyG `NDCG`, `Recall`, `AveragePopularity` |
-| thesis role | diagnostics only; not primary metrics |
+| thesis role | exploratory diagnostics only; not primary metrics and not causal proof |
 
 Quick validation uses larger tiny caps for sparse-positive Taobao and KuaiRand slices so label-aware validation/test splits contain positive targets.
 
