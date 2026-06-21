@@ -52,6 +52,10 @@ ABLATION_VARIANT_ORDER = {
 }
 FINAL_FORMAL_PROFILE_NAMES = frozenset(
     {
+        "edgrec-compact-search-prior",
+        "edgrec-lite-default",
+        "amazonbook-edgrec-compact-candidate",
+        "amazonbook-edgrec-deep-features-candidate",
         "core-edgrec-mainline",
         "core-paper-architecture-comparison",
         "paper-lightgcn-small-baselines",
@@ -252,6 +256,8 @@ def _query_report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                    {summary_column("test_conformity_branch_average_popularity_40")},
                    s.test_conformity_contribution_20,
                    s.test_conformity_contribution_40,
+                   {summary_column("test_conformity_branch_contribution_ratio_20")},
+                   {summary_column("test_conformity_branch_contribution_ratio_40")},
                    s.test_conformity_popularity_spearman_20,
                    s.test_conformity_popularity_spearman_40,
                    s.test_context_contribution_20,
@@ -264,6 +270,8 @@ def _query_report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                    s.test_interest_conformity_cosine_std,
                    s.test_interest_contribution_20,
                    s.test_interest_contribution_40,
+                   {summary_column("test_interest_branch_contribution_ratio_20")},
+                   {summary_column("test_interest_branch_contribution_ratio_40")},
                    s.test_interest_popularity_spearman_20,
                    s.test_interest_popularity_spearman_40,
                    s.test_score_mix_conformity_mean,
@@ -480,11 +488,21 @@ def _print_causal_diagnostics(row: sqlite3.Row) -> None:
     context_contrib = fmt_pair(
         row["test_context_contribution_20"], row["test_context_contribution_40"]
     )
+    interest_ratio = fmt_pair(
+        _row_value(row, "test_interest_branch_contribution_ratio_20"),
+        _row_value(row, "test_interest_branch_contribution_ratio_40"),
+    )
+    conformity_ratio = fmt_pair(
+        _row_value(row, "test_conformity_branch_contribution_ratio_20"),
+        _row_value(row, "test_conformity_branch_contribution_ratio_40"),
+    )
 
     print(
-        f"  Diagnostics: conformity_contrib={conformity_contrib} | "
+        "  Diagnostics: exploratory, not causal proof | "
+        f"conformity_contrib={conformity_contrib} | "
         f"interest_contrib={interest_contrib} | "
-        f"context_contrib={context_contrib}"
+        f"context_contrib={context_contrib} | "
+        f"branch_ratio(interest={interest_ratio}, conformity={conformity_ratio})"
     )
 
     interest_pop = fmt_pair(
@@ -527,12 +545,14 @@ def _print_causal_diagnostics(row: sqlite3.Row) -> None:
     cosine_sim = fmt_mean_std(
         row["test_interest_conformity_cosine_mean"], row["test_interest_conformity_cosine_std"]
     )
+    warnings = _branch_collapse_warning_label(row)
+    warning_suffix = f" | Warnings={warnings}" if warnings != "-" else ""
 
     print(
         f"  Score Mix:   Interest={score_interest} | "
         f"Conformity={score_conformity} | "
         f"Context={score_context} | "
-        f"Cosine={cosine_sim}"
+        f"Cosine={cosine_sim}{warning_suffix}"
     )
 
     interest_branch_ndcg = fmt_pair(
@@ -568,6 +588,21 @@ def _print_causal_diagnostics(row: sqlite3.Row) -> None:
         f"Conformity NDCG={conformity_branch_ndcg} | "
         f"Recall={conformity_branch_recall} | AvgPop={conformity_branch_pop}"
     )
+
+
+def _branch_collapse_warning_label(row: sqlite3.Row) -> str:
+    """Return compact branch-collapse warning labels for report rows."""
+    warnings: list[str] = []
+    conformity_mix_mean = _row_value(row, "test_score_mix_conformity_mean")
+    interest_mix_mean = _row_value(row, "test_score_mix_interest_mean")
+    branch_cosine_mean = _row_value(row, "test_interest_conformity_cosine_mean")
+    if conformity_mix_mean is not None and conformity_mix_mean > 0.8:
+        warnings.append("conformity_mix>0.8")
+    if interest_mix_mean is not None and interest_mix_mean < 0.1:
+        warnings.append("interest_mix<0.1")
+    if branch_cosine_mean is not None and abs(branch_cosine_mean) > 0.9:
+        warnings.append("|branch_cosine|>0.9")
+    return ", ".join(warnings) if warnings else "-"
 
 
 def _row_value(row: sqlite3.Row, key: str) -> float | None:
@@ -1383,6 +1418,81 @@ def _print_crru_summary() -> None:
     print()
 
 
+def _print_evidence_role_notes() -> None:
+    """Print report-wide evidence role and dataset-policy notes."""
+    print("## Evidence Role Notes")
+    print(
+        "Rows in this report are evidence, not automatic profile promotion. "
+        "Use the role labels below before turning a row into thesis wording."
+    )
+    print()
+    _print_metric_table(
+        "Evidence role legend",
+        (
+            ("Role", 26, "<"),
+            ("Meaning", 90, "<"),
+        ),
+        (
+            (
+                "validation search candidate",
+                "Optuna validation-row candidate from `results/optuna_optimization.md`; "
+                "requires a full formal rerun before test claims.",
+            ),
+            (
+                "formal test row",
+                "Completed full-data `formal-run` row with test metrics in the thesis "
+                "SQLite database.",
+            ),
+            (
+                "runtime probe",
+                "One-epoch or target-epoch feasibility row; use time/VRAM estimates, "
+                "not final accuracy.",
+            ),
+            (
+                "diagnostic-only evidence",
+                "Score-mix, branch-rank, popularity, and contribution diagnostics; "
+                "exploratory and not causal proof.",
+            ),
+        ),
+    )
+    _print_metric_table(
+        "Dataset-conditioned profile policy",
+        (
+            ("Dataset", 14, "<"),
+            ("Current policy", 94, "<"),
+        ),
+        (
+            (
+                "kuairec_v2",
+                "Compact EDGRec is a default candidate because current evidence supports "
+                "EDGRec accuracy plus speed.",
+            ),
+            (
+                "movielens1m",
+                "Compact EDGRec is a near-parity/speed candidate; keep the weaker "
+                "popularity profile visible.",
+            ),
+            (
+                "kuairand1k",
+                "Stress-test and randomized-exposure diagnostic; do not headline as an "
+                "accuracy win.",
+            ),
+            (
+                "amazonbook",
+                "Not in the shared compact default queue, but still an EDGRec target: "
+                "compare compact and deeper/use_features candidates against LightGCN-paper.",
+            ),
+        ),
+    )
+    public_variants = ", ".join(ABLATION_VARIANTS)
+    print(
+        "Historical/internal Optuna labels such as `no_context_no_features` are search "
+        "profile labels, not public ablation variants. Public ablations are: "
+        f"{public_variants}."
+    )
+    print()
+
+
 def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
     """Print the default thesis summary for formal and ablation test runs."""
     print("## THESIS TEST RESULTS — formal and ablation runs only (full-data only)")
@@ -1406,6 +1516,7 @@ def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
         for section_rows in (final_formal_rows, supporting_formal_rows, ablation_rows):
             crru_scores.update(_compute_dataset_crru_scores(section_rows))
         _print_crru_summary()
+        _print_evidence_role_notes()
         _print_paper_baseline_notes(
             reportable_formal_rows=reportable_formal_rows,
             runtime_probe_rows=runtime_probe_rows,
@@ -1414,9 +1525,9 @@ def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
             _select_top_formal_rows(final_formal_rows, n=n, crru_scores=crru_scores),
             crru_scores=crru_scores,
             title=(
-                "FINAL FORMAL FULL-DATA TEST RUNS — thesis profiles ranked by CRRU@20 then CRRU@40"
+                "FORMAL FULL-DATA TEST ROWS — named thesis profiles ranked by CRRU@20 then CRRU@40"
             ),
-            empty_message="No completed final formal full-data runs with test metrics found.",
+            empty_message="No completed formal full-data test rows with metrics found.",
         )
         _print_formal_rows(
             _select_top_formal_rows(

@@ -1339,7 +1339,7 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
         [
             "### Formal-promotion candidates",
             "",
-            "Promote dataset-local winners into formal profiles only after checking runtime "
+            "Promote dataset-local candidates into formal profiles only after checking runtime "
             "and whether popularity diagnostics are acceptable.",
             "",
         ],
@@ -1436,6 +1436,17 @@ def render_report(studies: Sequence[optuna.Study], *, storage: str, top_n: int) 
         "- The current second-pass grid tunes active EDGRec loss weights and schedule "
         "knobs only; inactive DirectAU/IPW-only weights remain out of the default "
         "search to avoid changing the thesis model family without a separate ablation.",
+        "- Compact EDGRec settings are search priors and formal candidates, not final "
+        "thesis selections. Current evidence supports compact candidates most clearly "
+        "for KuaiRec_v2, "
+        "allows a MovieLens1M near-parity/speed candidate with popularity diagnostics, "
+        "and keeps KuaiRand1K as a stress-test diagnostic. AmazonBook is excluded only "
+        "from the shared compact default queue: it still needs a dataset-specific "
+        "compact-vs-deep_features EDGRec comparison against the LightGCN-paper accuracy "
+        "baseline before thesis promotion.",
+        "- Search profile labels such as `no_context_no_features` are historical/internal "
+        "Optuna mechanism labels. They are not public ablation variants unless they appear "
+        "in `experiments/ablation_configs.py`.",
         "- Schedule-conditioned parameters are sampled only when they affect the resolved "
         "training config: ramp rates for `linear_ramp`, start epochs for `phased`.",
         "- Candidate rows print an effective-config view, not just raw Optuna sampled "
