@@ -227,6 +227,10 @@ class DualBranchGCN(nn.Module):
             self.alpha_pos = nn.Parameter(torch.tensor(0.7))
             self.alpha_neg = nn.Parameter(torch.tensor(0.3))
 
+        self._cached_sparse_adjacency_key: tuple[object, ...] | None = None
+        self._cached_sparse_adjacency_inputs: tuple[torch.Tensor, torch.Tensor | None] | None = None
+        self._cached_sparse_adjacency: torch.Tensor | None = None
+
     def forward(
         self,
         embeddings: dict[str, torch.Tensor],
@@ -260,8 +264,9 @@ class DualBranchGCN(nn.Module):
         if self.config.profile_training_stages:
             self.last_stage_times_s = {}
 
-        # Cast edge_weight once to match embedding dtype (prevents AMP scatter mismatch).
-        # All branches use the same dtype since all embedding tables share initialization.
+        # Cast edge weights once for the chunked edge-index backend. The sparse
+        # adjacency backend casts inside its cache builder so stable edge_norm
+        # tensors can still hit the cache across forwards.
         embedding_dtype = next(iter(embeddings.values())).dtype
         edge_weight_for_propagation = (
             edge_weight.to(dtype=embedding_dtype) if edge_weight is not None else None
@@ -278,12 +283,11 @@ class DualBranchGCN(nn.Module):
         propagation_adjacency = None
         if use_cuda_sparse_adjacency:
             adjacency_start = time.perf_counter()
-            propagation_adjacency = self._build_sparse_adjacency_tensor(
+            propagation_adjacency = self._get_or_build_sparse_adjacency_tensor(
                 edge_index,
-                edge_weight_for_propagation,
+                edge_weight,
                 num_nodes=total_nodes,
                 dtype=embedding_dtype,
-                coalesce=False,
             )
             if self.config.profile_training_stages:
                 self.last_stage_times_s["adjacency"] = time.perf_counter() - adjacency_start
@@ -364,16 +368,16 @@ class DualBranchGCN(nn.Module):
                 ``edge_index``.
             num_nodes: Total number of nodes in the bipartite graph.
             dtype: Propagation dtype for adjacency values.
-            coalesce: Whether to coalesce the sparse tensor. EDGRec's
-                CUDA sampled-subgraph path leaves this False to avoid a large
-                per-batch sparse coalescing workspace.
+            coalesce: Whether to coalesce the sparse tensor. EDGRec defaults to
+                the edge-index backend; explicit sparse-adjacency use should
+                normally build a coalesced tensor once and reuse it.
 
         Returns:
             torch.Tensor: PyTorch sparse adjacency matrix.
 
         """
         values = (
-            edge_weight
+            edge_weight.to(dtype=dtype)
             if edge_weight is not None
             else torch.ones(edge_index.size(1), device=edge_index.device, dtype=dtype)
         )
@@ -385,6 +389,80 @@ class DualBranchGCN(nn.Module):
             dtype=dtype,
         )
         return sparse_adjacency.coalesce() if coalesce else sparse_adjacency
+
+    def _get_or_build_sparse_adjacency_tensor(
+        self,
+        edge_index: torch.Tensor,
+        edge_weight: torch.Tensor | None,
+        *,
+        num_nodes: int,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Return a cached coalesced sparse adjacency for stable graph tensors."""
+        cacheable = edge_weight is None or not edge_weight.requires_grad
+        cache_key = self._sparse_adjacency_cache_key(
+            edge_index,
+            edge_weight,
+            num_nodes=num_nodes,
+            dtype=dtype,
+        )
+        cached_inputs = self._cached_sparse_adjacency_inputs
+        if (
+            cacheable
+            and self._cached_sparse_adjacency is not None
+            and self._cached_sparse_adjacency_key == cache_key
+            and cached_inputs is not None
+            and cached_inputs[0] is edge_index
+            and cached_inputs[1] is edge_weight
+        ):
+            return self._cached_sparse_adjacency
+
+        sparse_adjacency = self._build_sparse_adjacency_tensor(
+            edge_index,
+            edge_weight,
+            num_nodes=num_nodes,
+            dtype=dtype,
+            coalesce=True,
+        )
+        if cacheable:
+            self._cached_sparse_adjacency_key = cache_key
+            self._cached_sparse_adjacency_inputs = (edge_index, edge_weight)
+            self._cached_sparse_adjacency = sparse_adjacency
+        else:
+            self._cached_sparse_adjacency_key = None
+            self._cached_sparse_adjacency_inputs = None
+            self._cached_sparse_adjacency = None
+        return sparse_adjacency
+
+    @staticmethod
+    def _sparse_adjacency_cache_key(
+        edge_index: torch.Tensor,
+        edge_weight: torch.Tensor | None,
+        *,
+        num_nodes: int,
+        dtype: torch.dtype,
+    ) -> tuple[object, ...]:
+        """Return a versioned cache key for a sparse adjacency input pair."""
+        edge_weight_key: tuple[object, ...] | None = None
+        if edge_weight is not None:
+            edge_weight_key = (
+                edge_weight.data_ptr(),
+                tuple(edge_weight.shape),
+                str(edge_weight.device),
+                edge_weight.dtype,
+                edge_weight._version,
+                bool(edge_weight.requires_grad),
+            )
+        return (
+            edge_index.data_ptr(),
+            tuple(edge_index.shape),
+            str(edge_index.device),
+            edge_index.dtype,
+            edge_index._version,
+            edge_weight_key,
+            num_nodes,
+            dtype,
+        )
 
     @staticmethod
     def _combine_weights(

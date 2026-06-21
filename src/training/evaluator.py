@@ -229,6 +229,25 @@ class _EvaluatorDiagnosticsAccumulator:
                     self._contribution_sum[key] / count
                 )
 
+        for top_k in self._top_ks:
+            interest_key = ("interest", top_k)
+            conformity_key = ("conformity", top_k)
+            interest_count = self._contribution_count.get(interest_key, 0)
+            conformity_count = self._contribution_count.get(conformity_key, 0)
+            if interest_count == 0 or conformity_count == 0:
+                continue
+            interest_contribution = self._contribution_sum[interest_key] / interest_count
+            conformity_contribution = self._contribution_sum[conformity_key] / conformity_count
+            total_branch_contribution = interest_contribution + conformity_contribution
+            if abs(total_branch_contribution) <= 1e-12:
+                continue
+            diagnostics[f"interest_branch_contribution_ratio@{top_k}"] = (
+                interest_contribution / total_branch_contribution
+            )
+            diagnostics[f"conformity_branch_contribution_ratio@{top_k}"] = (
+                conformity_contribution / total_branch_contribution
+            )
+
         for component_name in ("interest", "conformity", "context", "final"):
             for top_k in self._top_ks:
                 key = (component_name, top_k)
