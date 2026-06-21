@@ -390,6 +390,55 @@ def _train_mask_numpy_from_data(data: Any) -> np.ndarray:
     return train_mask.detach().cpu().numpy()
 
 
+def _train_mask_cache_key(data: Any) -> tuple[int, tuple[int, ...], int]:
+    """Return a lightweight identity key for the immutable runtime train mask."""
+    train_mask = getattr(data, "train_mask", None)
+    if not isinstance(train_mask, torch.Tensor):
+        raise ValueError("Runtime graph data must include a torch train_mask tensor.")
+    return (id(train_mask), tuple(train_mask.shape), int(train_mask.sum().item()))
+
+
+def _runtime_feature_cache(data: Any) -> dict[str, Any]:
+    """Return the private runtime feature cache attached to a graph payload."""
+    cache = getattr(data, "_edgrec_runtime_feature_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        object.__setattr__(data, "_edgrec_runtime_feature_cache", cache)
+    return cache
+
+
+def _train_derived_model_tensors(
+    canonical: Any,
+    data: Any,
+) -> dict[str, torch.Tensor | None]:
+    """Return train-split model tensors, reusing cache across probe model builds."""
+    cache = _runtime_feature_cache(data)
+    cache_key = (id(canonical), _train_mask_cache_key(data))
+    cached = cache.get("train_derived_model_tensors")
+    if isinstance(cached, dict) and cached.get("train_mask_key") == cache_key:
+        return cached["tensors"]
+
+    train_mask = _train_mask_numpy_from_data(data)
+    item_recency = torch.from_numpy(canonical.compute_item_recency(train_mask))
+    recent_train_items, recent_train_mask = canonical.build_recent_train_history(train_mask)
+    item_propensity_targets = (
+        torch.from_numpy(canonical.item_propensity_targets)
+        if canonical.item_propensity_targets is not None
+        else None
+    )
+    tensors = {
+        "item_recency": item_recency,
+        "item_propensity_targets": item_propensity_targets,
+        "recent_train_items": torch.from_numpy(recent_train_items),
+        "recent_train_mask": torch.from_numpy(recent_train_mask),
+    }
+    cache["train_derived_model_tensors"] = {
+        "train_mask_key": cache_key,
+        "tensors": tensors,
+    }
+    return tensors
+
+
 def build_runtime_model(
     config: EDGRecConfig,
     canonical: Any,
@@ -418,24 +467,17 @@ def build_runtime_model(
             config,
         )
 
-    train_mask = _train_mask_numpy_from_data(data)
-    item_recency = torch.from_numpy(canonical.compute_item_recency(train_mask))
-    recent_train_items, recent_train_mask = canonical.build_recent_train_history(train_mask)
-    item_propensity_targets = (
-        torch.from_numpy(canonical.item_propensity_targets)
-        if canonical.item_propensity_targets is not None
-        else None
-    )
+    train_derived_tensors = _train_derived_model_tensors(canonical, data)
     return EDGRec(
         canonical.n_users,
         canonical.n_items,
         config,
         item_features=getattr(data, "item_features", None),
         item_popularity=data.popularity,
-        item_recency=item_recency,
-        item_propensity_targets=item_propensity_targets,
-        recent_train_items=torch.from_numpy(recent_train_items),
-        recent_train_mask=torch.from_numpy(recent_train_mask),
+        item_recency=train_derived_tensors["item_recency"],
+        item_propensity_targets=train_derived_tensors["item_propensity_targets"],
+        recent_train_items=train_derived_tensors["recent_train_items"],
+        recent_train_mask=train_derived_tensors["recent_train_mask"],
     )
 
 

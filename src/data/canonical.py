@@ -420,11 +420,11 @@ class CanonicalInteractions:
         ordered_users = self.user_id[interaction_mask][order]
         ordered_items = self.item_id[interaction_mask][order]
 
-        for user_id in range(self.n_users):
-            user_items = ordered_items[ordered_users == user_id]
-            if user_items.size == 0:
-                continue
-            user_items = user_items[-history_size:]
+        group_starts = np.r_[0, np.flatnonzero(np.diff(ordered_users)) + 1]
+        group_ends = np.r_[group_starts[1:], ordered_users.size]
+        for start, end in zip(group_starts, group_ends, strict=True):
+            user_id = int(ordered_users[start])
+            user_items = ordered_items[start:end][-history_size:]
             recent_items[user_id, : user_items.size] = user_items
             recent_mask[user_id, : user_items.size] = True
         return recent_items, recent_mask

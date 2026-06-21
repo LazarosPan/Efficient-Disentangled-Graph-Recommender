@@ -469,13 +469,18 @@ class SplitSafetyTests(unittest.TestCase):
                 wraps=trainer._release_cuda_sampler_for_eval,
             ) as release_sampler,
         ):
-            history = trainer.train(checkpoint_every=0)
+            callback_epochs: list[int] = []
+            history = trainer.train(
+                checkpoint_every=0,
+                epoch_callback=lambda epoch, metrics, epoch_time_s: callback_epochs.append(epoch),
+            )
 
         self.assertEqual(evaluate_validation.call_count, 1)
         self.assertEqual(update_early_stopping.call_count, 1)
         self.assertEqual(release_sampler.call_count, 0)
         self.assertEqual(len(history["train_loss"]), 2)
         self.assertEqual(len(history["val_metrics"]), 1)
+        self.assertEqual(callback_epochs, [1])
 
     def test_get_splits_keeps_predefined_test_mask_intact(self) -> None:
         """Validation must be carved from train without touching test rows."""
@@ -1287,8 +1292,10 @@ class SplitSafetyTests(unittest.TestCase):
             set(diagnostics),
             {
                 "conformity_contribution@2",
+                "conformity_branch_contribution_ratio@2",
                 "conformity_popularity_spearman@2",
                 "final_popularity_spearman@2",
+                "interest_branch_contribution_ratio@2",
                 "interest_contribution@2",
                 "interest_popularity_spearman@2",
             },
@@ -1961,6 +1968,42 @@ class CausalTrainingContractTests(unittest.TestCase):
             ),
         )
 
+    def test_runtime_model_reuses_train_derived_history_cache(self) -> None:
+        """Auto-batch probe model rebuilds should not recompute train history."""
+        canonical = CanonicalInteractions(
+            user_id=np.array([0, 0, 0, 1], dtype=np.int64),
+            item_id=np.array([0, 1, 2, 3], dtype=np.int64),
+            label=np.ones(4, dtype=np.float32),
+            timestamp=np.array([1, 2, 50, 60], dtype=np.int64),
+            sign=np.ones(4, dtype=np.float32),
+            popularity=np.zeros(4, dtype=np.float32),
+            n_users=2,
+            n_items=4,
+            user_map={0: 0, 1: 1},
+            item_map={0: 0, 1: 1, 2: 2, 3: 3},
+            train_mask=np.array([True, True, False, True]),
+            val_mask=np.array([False, False, True, False]),
+            test_mask=np.array([False, False, False, False]),
+        )
+        config = self._build_dual_branch_config()
+        data = build_graph(canonical, config)
+
+        with patch.object(
+            canonical,
+            "build_recent_train_history",
+            wraps=canonical.build_recent_train_history,
+        ) as build_history:
+            model_a = build_runtime_model(config, canonical, data)
+            model_b = build_runtime_model(config, canonical, data)
+
+        self.assertEqual(build_history.call_count, 1)
+        self.assertTrue(
+            torch.equal(
+                model_a.embedding.recent_train_items,
+                model_b.embedding.recent_train_items,
+            ),
+        )
+
     def test_scoring_exports_context_score_mix_weights_and_item_only_context(self) -> None:
         """The refined scorer should expose context diagnostics and keep context item-only."""
         config = EDGRecConfig(device="cpu", embed_dim=2).preset_full()
@@ -2299,6 +2342,7 @@ class CausalTrainingContractTests(unittest.TestCase):
     def test_embedding_feature_projection_accepts_cpu_fallback_inputs(self) -> None:
         """CPU fallback paths should project bf16 feature buffers without dtype errors."""
         config = EDGRecConfig(device="cpu", embed_dim=4).preset_full()
+        config.use_features = True
         model = EDGRec(
             n_users=1,
             n_items=2,

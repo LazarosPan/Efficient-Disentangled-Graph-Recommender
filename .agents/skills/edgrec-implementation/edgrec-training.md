@@ -94,9 +94,14 @@ Important runtime details:
   `auto_batch_size=True`, the lookup tries the configured candidate batch-size
   identities and binds the saved batch size instead of probing CUDA again,
 - Optuna search can attach a training epoch callback to `MiniBatchTrainer.train()`;
-  the callback reports validation objective values after each epoch and raises
-  `TrialPruned` when the configured Optuna pruner stops an unpromising trial.
-  Normal experiment, formal-run, and baseline paths leave this callback unset,
+  the callback reports validation objective values only on epochs where validation
+  ran and raises `TrialPruned` when the configured Optuna pruner stops an
+  unpromising trial. Normal experiment, formal-run, and baseline paths leave this
+  callback unset,
+- EDGRec train-derived model tensors (`item_recency`, recent-train history, and
+  optional propensity targets) are cached on the runtime graph payload so
+  auto-batch probe model rebuilds reuse split-safe CPU tensors instead of
+  recomputing per candidate,
 - Optuna objectives are validation-only. `ValidationAccuracy@20_40` is the broad
   discovery objective for the coarse mechanism search; every completed search row
   should still store `ValidationOnlineCRRU@20_40` diagnostics so reports and figures
