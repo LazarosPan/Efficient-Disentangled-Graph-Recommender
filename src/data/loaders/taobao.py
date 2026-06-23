@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
+from ...utils.csv_features import make_feature_block
 from ...utils.dataset_loader_utils import downcast_numeric_array, downcast_numeric_arrays
 from ...utils.interaction_indexing import (
     build_repeat_collapse_canonical_payload,
@@ -167,7 +168,7 @@ def load_taobao(
     item_id = indexed.item_id
     n_items = indexed.n_items
 
-    item_cat_reindexed = None
+    item_feature_block = None
     load_item_features, _ = resolve_feature_source(
         feature_policy,
         "taobao",
@@ -184,6 +185,13 @@ def load_taobao(
         item_cat_reindexed = downcast_numeric_array(
             np.array([cat_map[int(c)] for c in item_categories], dtype=np.int64),
         ).reshape(-1, 1)
+        item_feature_block = make_feature_block(
+            item_cat_reindexed,
+            dataset_name="taobao",
+            aspect="item_features",
+            relative_path="raw/UserBehavior.csv",
+            raw_columns=("category_id",),
+        )
 
     return build_indexed_canonical_interactions(
         indexed,
@@ -192,7 +200,14 @@ def load_taobao(
         sign=sign,
         raw_target=raw_target,
         behavior_type=behavior_type,
-        item_features=item_cat_reindexed,
+        item_features=None if item_feature_block is None else item_feature_block.matrix,
+        item_feature_names=None if item_feature_block is None else item_feature_block.names,
+        item_feature_sources=None if item_feature_block is None else item_feature_block.sources,
+        item_feature_raw_columns=(
+            None if item_feature_block is None else item_feature_block.raw_features
+        ),
+        item_feature_roles=None if item_feature_block is None else item_feature_block.roles,
+        item_feature_groups=None if item_feature_block is None else item_feature_block.groups,
         **build_repeat_collapse_canonical_payload(
             repeat_summary,
             applied=effective_preset == "taobao_multibehavior",

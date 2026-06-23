@@ -134,7 +134,21 @@ def _attach_optional_canonical_fields(
         "repeat_behavior_counts",
     )
     array_field_names = ("behavior_type", "source_domain", "repeat_behavior_labels")
-    passthrough_field_names = ("feedback_type", "preprocessing_preset", "metadata")
+    passthrough_field_names = (
+        "feedback_type",
+        "preprocessing_preset",
+        "metadata",
+        "user_feature_names",
+        "item_feature_names",
+        "user_feature_sources",
+        "item_feature_sources",
+        "user_feature_raw_columns",
+        "item_feature_raw_columns",
+        "user_feature_roles",
+        "item_feature_roles",
+        "user_feature_groups",
+        "item_feature_groups",
+    )
 
     for field_name in tensor_field_names:
         value = getattr(canonical, field_name)

@@ -35,6 +35,16 @@ class CanonicalInteractions:
 
     user_features: np.ndarray | None = None  # (n_users, F_u) optional side features
     item_features: np.ndarray | None = None  # (n_items, F_i) optional side features
+    user_feature_names: tuple[str, ...] | None = None
+    item_feature_names: tuple[str, ...] | None = None
+    user_feature_sources: tuple[str, ...] | None = None
+    item_feature_sources: tuple[str, ...] | None = None
+    user_feature_raw_columns: tuple[str, ...] | None = None
+    item_feature_raw_columns: tuple[str, ...] | None = None
+    user_feature_roles: tuple[str, ...] | None = None
+    item_feature_roles: tuple[str, ...] | None = None
+    user_feature_groups: tuple[str, ...] | None = None
+    item_feature_groups: tuple[str, ...] | None = None
 
     raw_target: np.ndarray | None = None  # (N,) float32/float64 optional pre-binarized target
     behavior_type: np.ndarray | None = None  # (N,) optional behavior labels
@@ -68,6 +78,46 @@ class CanonicalInteractions:
     # Per-item exposure proxy for propensity calibration supervision.
     # Shape (n_items,) float32 in [0, 1]; None when unavailable.
     item_propensity_targets: np.ndarray | None = None
+
+    def __post_init__(self) -> None:
+        """Validate side-feature metadata alignment."""
+        self._validate_feature_metadata(
+            "user",
+            self.user_features,
+            (
+                self.user_feature_names,
+                self.user_feature_sources,
+                self.user_feature_raw_columns,
+                self.user_feature_roles,
+                self.user_feature_groups,
+            ),
+        )
+        self._validate_feature_metadata(
+            "item",
+            self.item_features,
+            (
+                self.item_feature_names,
+                self.item_feature_sources,
+                self.item_feature_raw_columns,
+                self.item_feature_roles,
+                self.item_feature_groups,
+            ),
+        )
+
+    @staticmethod
+    def _validate_feature_metadata(
+        entity: str,
+        features: np.ndarray | None,
+        metadata_columns: tuple[tuple[str, ...] | None, ...],
+    ) -> None:
+        """Validate metadata width when both feature matrix and names exist."""
+        if features is None:
+            return
+        if features.ndim != 2:
+            raise ValueError(f"{entity}_features must be a 2-D matrix")
+        for values in metadata_columns:
+            if values is not None and len(values) != features.shape[1]:
+                raise ValueError(f"{entity} feature metadata length must equal feature width")
 
     def __len__(self) -> int:
         return len(self.user_id)
@@ -601,6 +651,16 @@ def _remap_canonical_subset(
         },
         user_features=_slice_optional(canonical.user_features, selected_users),
         item_features=_slice_optional(canonical.item_features, selected_items),
+        user_feature_names=canonical.user_feature_names,
+        item_feature_names=canonical.item_feature_names,
+        user_feature_sources=canonical.user_feature_sources,
+        item_feature_sources=canonical.item_feature_sources,
+        user_feature_raw_columns=canonical.user_feature_raw_columns,
+        item_feature_raw_columns=canonical.item_feature_raw_columns,
+        user_feature_roles=canonical.user_feature_roles,
+        item_feature_roles=canonical.item_feature_roles,
+        user_feature_groups=canonical.user_feature_groups,
+        item_feature_groups=canonical.item_feature_groups,
         train_mask=train_mask,
         val_mask=val_mask,
         test_mask=test_mask,
@@ -716,6 +776,16 @@ def build_indexed_canonical_interactions(
     popularity: np.ndarray | None = None,
     user_features: np.ndarray | None = None,
     item_features: np.ndarray | None = None,
+    user_feature_names: tuple[str, ...] | None = None,
+    item_feature_names: tuple[str, ...] | None = None,
+    user_feature_sources: tuple[str, ...] | None = None,
+    item_feature_sources: tuple[str, ...] | None = None,
+    user_feature_raw_columns: tuple[str, ...] | None = None,
+    item_feature_raw_columns: tuple[str, ...] | None = None,
+    user_feature_roles: tuple[str, ...] | None = None,
+    item_feature_roles: tuple[str, ...] | None = None,
+    user_feature_groups: tuple[str, ...] | None = None,
+    item_feature_groups: tuple[str, ...] | None = None,
     raw_target: np.ndarray | None = None,
     behavior_type: np.ndarray | None = None,
     exposure_flag: np.ndarray | None = None,
@@ -746,6 +816,16 @@ def build_indexed_canonical_interactions(
             max-normalized popularity is derived from ``indexed.item_id``.
         user_features: Optional user side-feature matrix.
         item_features: Optional item side-feature matrix.
+        user_feature_names: Optional user side-feature encoded names.
+        item_feature_names: Optional item side-feature encoded names.
+        user_feature_sources: Optional user side-feature source labels.
+        item_feature_sources: Optional item side-feature source labels.
+        user_feature_raw_columns: Optional user raw feature column labels.
+        item_feature_raw_columns: Optional item raw feature column labels.
+        user_feature_roles: Optional user side-feature leakage roles.
+        item_feature_roles: Optional item side-feature leakage roles.
+        user_feature_groups: Optional user side-feature group labels.
+        item_feature_groups: Optional item side-feature group labels.
         raw_target: Optional pre-binarized target values.
         behavior_type: Optional per-interaction behavior labels.
         exposure_flag: Optional exposure indicator aligned to the interactions.
@@ -791,6 +871,16 @@ def build_indexed_canonical_interactions(
         item_map=indexed.item_map,
         user_features=user_features,
         item_features=item_features,
+        user_feature_names=user_feature_names,
+        item_feature_names=item_feature_names,
+        user_feature_sources=user_feature_sources,
+        item_feature_sources=item_feature_sources,
+        user_feature_raw_columns=user_feature_raw_columns,
+        item_feature_raw_columns=item_feature_raw_columns,
+        user_feature_roles=user_feature_roles,
+        item_feature_roles=item_feature_roles,
+        user_feature_groups=user_feature_groups,
+        item_feature_groups=item_feature_groups,
         raw_target=raw_target,
         behavior_type=behavior_type,
         exposure_flag=exposure_flag,
