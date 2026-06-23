@@ -98,6 +98,9 @@ Item-universe compaction:
 - Post-treatment aggregates stay out of thesis-default model features.
 - Under `thesis_default`, KuaiRand's `video_features_statistic_1k.csv` stays excluded from model features, but its `show_cnt` column is reused separately as a propensity calibration target.
 - Free-text or comment-style columns are not part of the live thesis-default path; the runtime uses only structured numeric, temporal, and categorical-safe features.
+- Current item groups from loaded metadata: MovieLens1M `item_genre`; KuaiRec_v2 and KuaiRand1K `item_author_music`, `item_video_metadata`, `item_resolution`, `item_category`, `item_upload_time`; AmazonBook `graph_only`.
+- KuaiRec_v2 safe descriptors: author/music, type/status, duration, resolution, upload time, and category/tag IDs; engagement counts stay excluded.
+- KuaiRand1K safe descriptors: author/music, type/status, duration, resolution, upload time, and comma-separated `tag` as multi-hot category columns; statistic/engagement features stay excluded.
 
 `src/utils/csv_features.py` encoding policy:
 
@@ -106,6 +109,7 @@ Item-universe compaction:
 | repeated entity rows | first source row wins before encoding |
 | numeric/temporal | min-max to `[0,1]` within source |
 | categorical-like | deterministic codes in `[0,1]`; `0` reserved for missing |
+| list-like category strings | multi-hot token columns with `<source>::<field>=<token>` names |
 | embedding-time buffers | normalized again before context head |
 
 Purpose: daily files cannot overwrite thesis-default static descriptors or reintroduce raw timestamp/ID scale.

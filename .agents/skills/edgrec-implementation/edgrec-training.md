@@ -114,6 +114,9 @@ Important runtime details:
 - `search-experiments --space a,b` runs search spaces sequentially with the same
   `--dataset` and `--trials` applied to each space; omit `--study-name` for queues
   so normal per-space/per-dataset study names remain unambiguous,
+- promoted `formal-run` EDGRec profiles may pass `batch_size` as `[trial batch,
+  2x trial batch]`; the first value is the required formal candidate, while a
+  CUDA OOM on later batch candidates is skipped and the queue continues,
 - completed Optuna trials store sampled params, runtime attrs, and dataset-scoped effective configs,
 - promotion reports should show effective configs so resolved auto-batch size is visible,
 - validation retries once on CUDA after optimizer-state offload, then falls back to CPU if evaluation still OOMs,

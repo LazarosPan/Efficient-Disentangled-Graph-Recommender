@@ -33,6 +33,19 @@ Evidence roles:
 | `dice_like` | Legacy sampled DICE-like ablation rows. | Mechanism/fallback comparison, not paper DICE. |
 | `edgrec` | Full rows across core datasets and ablations. | Main thesis model; compare by dataset/profile. |
 
+## Feature-Subset Search Boundary
+
+| Dataset | Current feature-subset status |
+| --- | --- |
+| `amazonbook` | `graph_only`; feature subset not applicable. |
+| `movielens1m` | Current feature-subset coverage complete; best profile is `none`, so genre side features do not improve the current EDGRec basin. |
+| `kuairec_v2` | Current feature-subset coverage complete; side features help inside the feature-subset search, but global best still comes from graph-only `edgrec-core-optimization` trial 157. |
+| `kuairand1k` | Current feature-subset coverage complete; `item_category` and selected combinations help inside the feature-subset search, but global best still comes from graph-only/non-feature mechanism search. |
+
+Only current `search_space_revision` completed non-probe trials from `edgrec-feature-subset-search` are thesis-facing feature evidence.
+
+Global formal promotion is separate from feature evidence: `edgrec-global-top-<dataset>-r<rank>` profiles are selected across all completed Optuna studies by dataset-local validation `ValidationOnlineCRRU@20_40`.
+
 ## Interpretation Rules
 
 | Rule | Reason |
