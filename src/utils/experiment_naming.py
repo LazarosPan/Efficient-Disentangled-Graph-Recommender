@@ -144,6 +144,9 @@ def build_canonical_experiment_name(
         _config_value(config, "derived_split_mode", "per_user_temporal"),
     )
     feature_policy = _config_value(config, "feature_policy", "thesis_default")
+    feature_subset_mode = _config_value(config, "feature_subset_mode", "all")
+    feature_include_groups = _config_value(config, "feature_include_groups")
+    feature_exclude_groups = _config_value(config, "feature_exclude_groups")
     _extend_name_parts(
         parts,
         [
@@ -164,6 +167,15 @@ def build_canonical_experiment_name(
             ),
             "feat" if _config_bool(config, "use_features", False) else None,
             _non_default_name_part(feature_policy, "thesis_default", "fpolicy"),
+            _non_default_name_part(feature_subset_mode, "all", "fsubset"),
+            _optional_name_part(
+                format_num_neighbors_payload(feature_include_groups),
+                "finclude",
+            ),
+            _optional_name_part(
+                format_num_neighbors_payload(feature_exclude_groups),
+                "fexclude",
+            ),
             _non_default_name_part(
                 _config_value(config, "embedding_optimizer", "adamw"),
                 "adamw",

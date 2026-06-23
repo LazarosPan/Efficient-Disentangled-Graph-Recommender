@@ -8,7 +8,8 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-from ..data.feature_policy import FeaturePolicyName, resolve_feature_source
+from ..data.feature_groups import infer_feature_group
+from ..data.feature_policy import FeaturePolicyName, feature_role_for_column, resolve_feature_source
 from .dataset_loader_utils import downcast_numeric_array
 
 _NUMERIC_DTYPES = (
@@ -28,6 +29,7 @@ _TEMPORAL_COLUMN_MARKERS = {"date", "time", "timestamp", "time_ms", "upload_dt",
 _TEMPORAL_COLUMN_SUFFIXES = ("_dt", "_date", "_time", "_timestamp")
 _CATEGORICAL_COLUMN_NAMES = {"gender", "occupation", "zip_code"}
 _CATEGORICAL_COLUMN_SUFFIXES = ("_id", "_type", "_status")
+_MULTI_HOT_COLUMN_NAMES = {"tag"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +49,93 @@ class PolicyCsvFeatureSpec:
     path: Path
     relative_path: str
     id_col: str
+
+
+@dataclass(frozen=True, slots=True)
+class FeatureBlock:
+    """Store one feature matrix with aligned column metadata."""
+
+    matrix: np.ndarray
+    names: tuple[str, ...]
+    sources: tuple[str, ...]
+    roles: tuple[str, ...]
+    groups: tuple[str, ...]
+    raw_features: tuple[str, ...]
+
+
+def _source_stem(relative_path: str) -> str:
+    """Return the stable feature-source stem used in encoded names."""
+    return Path(relative_path.replace("\\", "/")).stem
+
+
+def _metadata_for_columns(
+    *,
+    dataset_name: str,
+    aspect: str,
+    relative_path: str,
+    columns: tuple[str, ...],
+    encoded_columns: tuple[str, ...] | None = None,
+) -> tuple[
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+    tuple[str, ...],
+]:
+    """Build aligned encoded names, sources, roles, groups, and raw columns."""
+    source_stem = _source_stem(relative_path)
+    encoded = encoded_columns or columns
+    names: list[str] = []
+    sources: list[str] = []
+    roles: list[str] = []
+    groups: list[str] = []
+    raw_features: list[str] = []
+    default_role = "safe_pre_treatment"
+    for raw_column, encoded_column in zip(columns, encoded, strict=True):
+        role = (
+            feature_role_for_column(dataset_name, aspect, relative_path, raw_column) or default_role
+        )
+        names.append(f"{source_stem}::{encoded_column}")
+        sources.append(relative_path)
+        roles.append(role)
+        groups.append(infer_feature_group(dataset_name, relative_path, raw_column, role))
+        raw_features.append(raw_column)
+    return (
+        tuple(names),
+        tuple(sources),
+        tuple(roles),
+        tuple(groups),
+        tuple(raw_features),
+    )
+
+
+def make_feature_block(
+    matrix: np.ndarray,
+    *,
+    dataset_name: str,
+    aspect: str,
+    relative_path: str,
+    raw_columns: tuple[str, ...],
+    encoded_columns: tuple[str, ...] | None = None,
+) -> FeatureBlock:
+    """Return a feature block from a matrix and aligned column labels."""
+    if matrix.shape[1] != len(raw_columns):
+        raise ValueError("Feature metadata length must equal feature matrix width")
+    names, sources, roles, groups, raw_features = _metadata_for_columns(
+        dataset_name=dataset_name,
+        aspect=aspect,
+        relative_path=relative_path,
+        columns=raw_columns,
+        encoded_columns=encoded_columns,
+    )
+    return FeatureBlock(
+        matrix=matrix,
+        names=names,
+        sources=sources,
+        roles=roles,
+        groups=groups,
+        raw_features=raw_features,
+    )
 
 
 def _normalize_feature_name(column_name: str) -> str:
@@ -251,6 +340,27 @@ def _encode_feature_series(column_name: str, series: pl.Series) -> np.ndarray:
     return _encode_numeric_series(series)
 
 
+def _is_multi_hot_feature(column_name: str, series: pl.Series) -> bool:
+    """Return whether a string feature should be expanded into token columns."""
+    return _normalize_feature_name(column_name) in _MULTI_HOT_COLUMN_NAMES and _is_string_dtype(
+        series.dtype,
+    )
+
+
+def _split_multi_hot_tokens(raw_value: object) -> list[str]:
+    """Split one list-like feature cell into stable non-empty tokens."""
+    if raw_value is None:
+        return []
+    cleaned = str(raw_value).strip().strip("[](){}")
+    if not cleaned:
+        return []
+    return [
+        token.strip().strip("'\"")
+        for token in cleaned.replace("|", ",").replace(";", ",").split(",")
+        if token.strip().strip("'\"")
+    ]
+
+
 def load_csv_features(
     path: Path,
     id_col: str,
@@ -275,10 +385,43 @@ def load_csv_features(
         values.
 
     """
+    block = load_csv_feature_block(
+        path,
+        id_col,
+        id_map,
+        n_entities,
+        include_columns=include_columns,
+        dataset_name="unknown",
+        aspect="item_features",
+        relative_path=str(path),
+    )
+    return None if block is None else block.matrix
+
+
+def load_csv_feature_block(
+    path: Path,
+    id_col: str,
+    id_map: dict[int, int],
+    n_entities: int,
+    include_columns: tuple[str, ...] | None = None,
+    *,
+    dataset_name: str,
+    aspect: str,
+    relative_path: str,
+) -> FeatureBlock | None:
+    """Load CSV side features with aligned metadata."""
     if not path.exists():
         return None
 
-    read_columns = [id_col, *include_columns] if include_columns is not None else None
+    read_columns = None
+    if include_columns is not None:
+        available_columns = set(pl.read_csv(path, n_rows=0).columns)
+        if id_col not in available_columns:
+            return None
+        selected_columns = [
+            column for column in include_columns if column in available_columns and column != id_col
+        ]
+        read_columns = [id_col, *selected_columns]
     df = pl.read_csv(path, columns=read_columns, ignore_errors=True)
 
     if id_col not in df.columns:
@@ -293,7 +436,6 @@ def load_csv_features(
 
     df = df.select([id_col, *feat_cols]).with_columns(pl.col(id_col).cast(pl.Int64, strict=False))
 
-    # Inner join against id_map; unrecognised entity ids are dropped.
     id_lut = pl.DataFrame(
         {id_col: list(id_map.keys()), "_mapped_id": list(id_map.values())},
         schema={id_col: pl.Int64, "_mapped_id": pl.Int64},
@@ -310,15 +452,39 @@ def load_csv_features(
     )
 
     mapped_ids = df["_mapped_id"].to_numpy()
-    encoded_columns = [
-        _encode_feature_series(column_name, df[column_name]) for column_name in feat_cols
-    ]
-    feat_matrix = np.column_stack(encoded_columns)
+    blocks: list[FeatureBlock] = []
+    for column_name in feat_cols:
+        series = df[column_name]
+        if _is_multi_hot_feature(column_name, series):
+            token_lists = {
+                int(mapped_id): _split_multi_hot_tokens(raw_value)
+                for mapped_id, raw_value in zip(mapped_ids, series.to_list(), strict=True)
+            }
+            block = build_multi_hot_feature_block(
+                token_lists,
+                n_entities,
+                dataset_name=dataset_name,
+                aspect=aspect,
+                relative_path=relative_path,
+                field_name=column_name,
+            )
+            if block is not None:
+                blocks.append(block)
+            continue
+        encoded = _encode_feature_series(column_name, series)
+        features = np.zeros((n_entities, 1), dtype=encoded.dtype)
+        features[mapped_ids, 0] = encoded
+        blocks.append(
+            make_feature_block(
+                downcast_numeric_array(features, allow_float16=True),
+                dataset_name=dataset_name,
+                aspect=aspect,
+                relative_path=relative_path,
+                raw_columns=(column_name,),
+            ),
+        )
 
-    features = np.zeros((n_entities, len(feat_cols)), dtype=feat_matrix.dtype)
-    features[mapped_ids] = feat_matrix
-
-    return downcast_numeric_array(features, allow_float16=True)
+    return stack_feature_metadata_blocks(*blocks)
 
 
 def stack_feature_blocks(*feature_blocks: np.ndarray | None) -> np.ndarray | None:
@@ -337,6 +503,27 @@ def stack_feature_blocks(*feature_blocks: np.ndarray | None) -> np.ndarray | Non
     if len(present_blocks) == 1:
         return present_blocks[0]
     return downcast_numeric_array(np.hstack(present_blocks), allow_float16=True)
+
+
+def stack_feature_metadata_blocks(*feature_blocks: FeatureBlock | None) -> FeatureBlock | None:
+    """Stack feature blocks while preserving column metadata order."""
+    present_blocks = [block for block in feature_blocks if block is not None]
+    if not present_blocks:
+        return None
+    if len(present_blocks) == 1:
+        return present_blocks[0]
+    matrix = downcast_numeric_array(
+        np.hstack([block.matrix for block in present_blocks]),
+        allow_float16=True,
+    )
+    return FeatureBlock(
+        matrix=matrix,
+        names=tuple(name for block in present_blocks for name in block.names),
+        sources=tuple(source for block in present_blocks for source in block.sources),
+        roles=tuple(role for block in present_blocks for role in block.roles),
+        groups=tuple(group for block in present_blocks for group in block.groups),
+        raw_features=tuple(raw for block in present_blocks for raw in block.raw_features),
+    )
 
 
 def build_multi_hot_features(
@@ -379,6 +566,43 @@ def build_multi_hot_features(
             if token_index is not None:
                 features[mapped_id, token_index] = 1
     return features
+
+
+def build_multi_hot_feature_block(
+    token_lists_by_entity: dict[int, list[str] | tuple[str, ...]],
+    n_entities: int,
+    *,
+    dataset_name: str,
+    aspect: str,
+    relative_path: str,
+    field_name: str,
+    token_order: tuple[str, ...] | None = None,
+) -> FeatureBlock | None:
+    """Build a multi-hot feature matrix with encoded token metadata."""
+    matrix = build_multi_hot_features(
+        token_lists_by_entity,
+        n_entities,
+        token_order=token_order,
+    )
+    if matrix is None:
+        return None
+    resolved_order = token_order
+    if resolved_order is None:
+        resolved_order = tuple(
+            sorted(
+                {token for tokens in token_lists_by_entity.values() for token in tokens if token},
+            ),
+        )
+    raw_columns = tuple(field_name for _token in resolved_order)
+    encoded_columns = tuple(f"{field_name}={token}" for token in resolved_order)
+    return make_feature_block(
+        matrix,
+        dataset_name=dataset_name,
+        aspect=aspect,
+        relative_path=relative_path,
+        raw_columns=raw_columns,
+        encoded_columns=encoded_columns,
+    )
 
 
 def load_policy_csv_features(
@@ -425,6 +649,38 @@ def load_policy_csv_features(
     )
 
 
+def load_policy_csv_feature_block(
+    path: Path,
+    *,
+    feature_policy: FeaturePolicyName,
+    dataset_name: str,
+    aspect: str,
+    relative_path: str,
+    id_col: str,
+    id_map: dict[int, int],
+    n_entities: int,
+) -> FeatureBlock | None:
+    """Load one policy-gated CSV feature block with metadata."""
+    enabled, include_columns = resolve_feature_source(
+        feature_policy,
+        dataset_name,
+        aspect,
+        relative_path,
+    )
+    if not enabled:
+        return None
+    return load_csv_feature_block(
+        path,
+        id_col,
+        id_map,
+        n_entities,
+        include_columns=include_columns,
+        dataset_name=dataset_name,
+        aspect=aspect,
+        relative_path=relative_path,
+    )
+
+
 def load_policy_csv_feature_blocks(
     *,
     feature_policy: FeaturePolicyName,
@@ -451,6 +707,33 @@ def load_policy_csv_feature_blocks(
     return stack_feature_blocks(
         *(
             load_policy_csv_features(
+                source.path,
+                feature_policy=feature_policy,
+                dataset_name=dataset_name,
+                aspect=aspect,
+                relative_path=source.relative_path,
+                id_col=source.id_col,
+                id_map=id_map,
+                n_entities=n_entities,
+            )
+            for source in sources
+        ),
+    )
+
+
+def load_policy_csv_feature_metadata_blocks(
+    *,
+    feature_policy: FeaturePolicyName,
+    dataset_name: str,
+    aspect: str,
+    id_map: dict[int, int],
+    n_entities: int,
+    sources: tuple[PolicyCsvFeatureSpec, ...],
+) -> FeatureBlock | None:
+    """Load and stack policy-gated CSV feature blocks with metadata."""
+    return stack_feature_metadata_blocks(
+        *(
+            load_policy_csv_feature_block(
                 source.path,
                 feature_policy=feature_policy,
                 dataset_name=dataset_name,

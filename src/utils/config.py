@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from ..data.canonical import DerivedSplitMode
+from ..data.feature_groups import FeatureSubsetMode
 from ..data.feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 from .method_naming import EDGREC_PUBLIC_PRESET
 
@@ -92,6 +93,9 @@ CONFIG_OVERRIDE_FIELDS = (
     "use_learned_score_mix",
     "separate_item_branch_embeddings",
     "feature_policy",
+    "feature_subset_mode",
+    "feature_include_groups",
+    "feature_exclude_groups",
     "graph_policy",
     "training_graph_mode",
     "sampler_residency_policy",
@@ -185,7 +189,7 @@ ITEM_UNIVERSE_POLICY_CHOICES: tuple[ItemUniversePolicy, ...] = (
     "observed_interaction_items",
     "random_exposure_items_only",
 )
-PresetOverrideValue = bool | int | float | str | list[int]
+PresetOverrideValue = bool | int | float | str | list[int] | list[str]
 PresetOverrides = dict[str, PresetOverrideValue]
 
 _NON_CAUSAL_PRESET_OVERRIDES: PresetOverrides = {
@@ -549,6 +553,9 @@ class EDGRecConfig:
     use_features: bool = False  # load and use user/item side features when available
     feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY
     feature_gate_init: float = 0.0
+    feature_subset_mode: FeatureSubsetMode = "all"
+    feature_include_groups: list[str] = field(default_factory=list)
+    feature_exclude_groups: list[str] = field(default_factory=list)
 
     # ── Data ─────────────────────────────────────────────────────────────
     dataset: str = "movielens1m"
@@ -654,6 +661,14 @@ class EDGRecConfig:
             raise ValueError("negative_sampling_strategy must be either 'standard' or 'dice'")
         if self.loss_normalization not in ("none", "ema_aux"):
             raise ValueError("loss_normalization must be either 'none' or 'ema_aux'")
+        if self.feature_subset_mode not in ("all", "none", "include_groups", "exclude_groups"):
+            raise ValueError(
+                "feature_subset_mode must be one of all, none, include_groups, exclude_groups",
+            )
+        if self.feature_subset_mode == "include_groups" and not self.feature_include_groups:
+            raise ValueError("include_groups feature subset requires feature_include_groups")
+        if self.feature_subset_mode == "exclude_groups" and not self.feature_exclude_groups:
+            raise ValueError("exclude_groups feature subset requires feature_exclude_groups")
         if self.amp_dtype != "bfloat16":
             raise ValueError("amp_dtype is fixed to 'bfloat16'")
         if self.propensity_clip_min <= 0 or self.propensity_clip_min >= 1:
