@@ -780,6 +780,10 @@ class DataContractTests(unittest.TestCase):
                 "author_id",
                 "music_id",
                 "video_type",
+                "video_duration",
+                "video_width",
+                "video_height",
+                "video_tag_id",
                 "upload_dt",
                 "upload_type",
                 "visible_status",
@@ -797,10 +801,12 @@ class DataContractTests(unittest.TestCase):
                 "upload_dt",
                 "upload_type",
                 "visible_status",
+                "video_duration",
                 "server_width",
                 "server_height",
                 "music_id",
                 "music_type",
+                "tag",
             ),
         )
 

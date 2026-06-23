@@ -24,6 +24,7 @@ from experiments.recipes import (
     load_experiment_catalog,
 )
 from experiments.run_benchmark import (
+    _is_optional_batch_size_candidate,
     _resolve_benchmark_num_neighbors_for_preset,
     build_benchmark_plan,
 )
@@ -2985,9 +2986,17 @@ class BenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(
             build_benchmark_plan(args),
             [
-                ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5)),
-                ("movielens1m", "lightgcn_paper", "none", None, "observed", (10, 5)),
-                ("movielens1m", "dice_paper", "none", None, "observed", (10, 5)),
+                ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5), 4096),
+                (
+                    "movielens1m",
+                    "lightgcn_paper",
+                    "none",
+                    None,
+                    "observed",
+                    (10, 5),
+                    4096,
+                ),
+                ("movielens1m", "dice_paper", "none", None, "observed", (10, 5), 4096),
             ],
         )
 
@@ -3003,8 +3012,16 @@ class BenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(
             build_benchmark_plan(args),
             [
-                ("movielens1m", "lightgcn_paper", "none", None, "observed", (10, 5)),
-                ("movielens1m", "dice_paper", "none", None, "observed", (10, 5)),
+                (
+                    "movielens1m",
+                    "lightgcn_paper",
+                    "none",
+                    None,
+                    "observed",
+                    (10, 5),
+                    4096,
+                ),
+                ("movielens1m", "dice_paper", "none", None, "observed", (10, 5), 4096),
             ],
         )
 
@@ -3035,12 +3052,12 @@ class BenchmarkPlanTests(unittest.TestCase):
         plan = build_benchmark_plan(args)
 
         expected_prefix = [
-            ("amazonbook", "edgrec", "plateau", None, "observed", (10, 5)),
-            ("amazonbook", "edgrec", "plateau", None, "observed", (5, 3)),
-            ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5)),
-            ("movielens1m", "edgrec", "plateau", None, "observed", (5, 3)),
-            ("amazonbook", "lightgcn", "plateau", None, "observed", (10, 5)),
-            ("amazonbook", "lightgcn", "plateau", None, "observed", (5, 3)),
+            ("amazonbook", "edgrec", "plateau", None, "observed", (10, 5), 4096),
+            ("amazonbook", "edgrec", "plateau", None, "observed", (5, 3), 4096),
+            ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5), 4096),
+            ("movielens1m", "edgrec", "plateau", None, "observed", (5, 3), 4096),
+            ("amazonbook", "lightgcn", "plateau", None, "observed", (10, 5), 4096),
+            ("amazonbook", "lightgcn", "plateau", None, "observed", (5, 3), 4096),
         ]
 
         self.assertEqual(plan[: len(expected_prefix)], expected_prefix)
@@ -3061,9 +3078,37 @@ class BenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(
             plan,
             [
-                ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5)),
+                ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5), 4096),
             ],
         )
+
+    def test_build_benchmark_plan_sweeps_fixed_batch_sizes(self) -> None:
+        """A formal profile may try the selected batch and its doubled candidate."""
+        args = SimpleNamespace(
+            datasets=["movielens1m"],
+            presets=["edgrec"],
+            graph_policy="observed",
+            num_neighbors=[10, 5],
+            lr_scheduler="plateau",
+            batch_size=[4096, 8192, 4096],
+        )
+
+        plan = build_benchmark_plan(args)
+
+        self.assertEqual(
+            plan,
+            [
+                ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5), 4096),
+                ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5), 8192),
+            ],
+        )
+
+    def test_first_batch_size_candidate_is_not_optional(self) -> None:
+        """Only larger follow-up batch candidates should be skipped on CUDA OOM."""
+        args = {"batch_size": [4096, 8192]}
+
+        self.assertFalse(_is_optional_batch_size_candidate(args, 4096))
+        self.assertTrue(_is_optional_batch_size_candidate(args, 8192))
 
     def test_build_benchmark_plan_sweeps_preprocessing_presets(self) -> None:
         """Benchmark planning should expand preprocessing sweeps into separate runs."""
@@ -3092,6 +3137,7 @@ class BenchmarkPlanTests(unittest.TestCase):
                     "kuairec_small_matrix_full_observation",
                     "observed",
                     (10, 5),
+                    4096,
                 ),
                 (
                     "kuairec_v2",
@@ -3100,6 +3146,7 @@ class BenchmarkPlanTests(unittest.TestCase):
                     "kuairec_big_matrix_watch_ratio_threshold_0_5",
                     "observed",
                     (10, 5),
+                    4096,
                 ),
             ],
         )
@@ -3116,11 +3163,11 @@ class BenchmarkPlanTests(unittest.TestCase):
         plan = build_benchmark_plan(args)
 
         self.assertIn(
-            ("movielens1m", "edgrec", "cosine", None, "observed", (10, 5)),
+            ("movielens1m", "edgrec", "cosine", None, "observed", (10, 5), 4096),
             plan,
         )
         self.assertIn(
-            ("amazonbook", "edgrec", "cosine", None, "observed", (10, 5)),
+            ("amazonbook", "edgrec", "cosine", None, "observed", (10, 5), 4096),
             plan,
         )
 
@@ -3141,18 +3188,18 @@ class BenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(
             plan[:4],
             [
-                ("amazonbook", "edgrec", "plateau", None, "observed", (6, 3)),
-                ("amazonbook", "edgrec", "plateau", None, "observed", (4, 2)),
-                ("movielens1m", "edgrec", "plateau", None, "observed", (6, 3)),
-                ("movielens1m", "edgrec", "plateau", None, "observed", (4, 2)),
+                ("amazonbook", "edgrec", "plateau", None, "observed", (6, 3), 4096),
+                ("amazonbook", "edgrec", "plateau", None, "observed", (4, 2), 4096),
+                ("movielens1m", "edgrec", "plateau", None, "observed", (6, 3), 4096),
+                ("movielens1m", "edgrec", "plateau", None, "observed", (4, 2), 4096),
             ],
         )
         self.assertIn(
-            ("kuairec_v2", "edgrec", "plateau", None, "observed", (10, 5)),
+            ("kuairec_v2", "edgrec", "plateau", None, "observed", (10, 5), 4096),
             plan,
         )
         self.assertIn(
-            ("kuairand1k", "edgrec", "plateau", None, "observed", (10, 5)),
+            ("kuairand1k", "edgrec", "plateau", None, "observed", (10, 5), 4096),
             plan,
         )
         self.assertEqual(len(plan), 12)
