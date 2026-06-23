@@ -18,6 +18,12 @@ from typing import Any
 
 import optuna
 from scripts._workflow_helpers import configure_cli_logging
+from src.data.feature_groups import (
+    GRAPH_ONLY_PROFILE,
+    feature_subset_profile_matrix,
+    loaded_thesis_safe_item_feature_groups_for_dataset,
+    required_feature_subset_profiles,
+)
 from src.training import THESIS_PRIMARY_METRICS
 from src.utils.benchmark_datasets import (
     normalize_benchmark_datasets_arg,
@@ -130,6 +136,7 @@ SEARCH_PARAMETER_FIELDS = frozenset(
         "dice_sampler_margin",
         "dice_mask_reduction",
         "feature_gate_init",
+        "feature_subset_profile",
         "use_popularity_head",
         "use_features",
     },
@@ -234,10 +241,64 @@ _PROFILE_PARAMETER_FIELDS = frozenset(
         "score_fusion_profile",
         "item_branch_profile",
         "context_feature_profile",
+        "feature_subset_profile",
         "loss_profile",
         "graph_profile",
     },
 )
+FEATURE_SUBSET_SEARCH_SPACE_NAME = "edgrec-feature-subset-search"
+FEATURE_SUBSET_COVERAGE_DEFAULTS = {
+    "feature_gate_init": -4.0,
+    "lr": 0.0015,
+    "weight_decay": 0.000001,
+    "score_mix_min_weight": 0.02,
+    "loss_weight_popularity": 0.01,
+    "dice_sampler_margin": 40.0,
+}
+
+
+def _feature_subset_profile_overrides_for_datasets(
+    datasets: Sequence[str],
+    *,
+    data_dir: str,
+) -> dict[str, dict[str, Any]]:
+    """Return profile overrides for all requested datasets."""
+    overrides: dict[str, dict[str, Any]] = {}
+    for dataset in datasets:
+        groups = loaded_thesis_safe_item_feature_groups_for_dataset(dataset, data_dir=data_dir)
+        overrides.update(feature_subset_profile_matrix(groups))
+    return overrides
+
+
+def _with_feature_subset_profile_support(
+    raw_space: Mapping[str, Any],
+    *,
+    datasets: Sequence[str],
+    data_dir: str,
+    profile_overrides: dict[str, dict[str, dict[str, Any]]],
+) -> tuple[Mapping[str, Any], dict[str, dict[str, dict[str, Any]]]]:
+    """Inject dataset-derived feature-subset choices and overrides."""
+    parameters = raw_space.get("parameters", {})
+    if not isinstance(parameters, Mapping) or "feature_subset_profile" not in parameters:
+        return raw_space, profile_overrides
+    subset_overrides = _feature_subset_profile_overrides_for_datasets(
+        datasets,
+        data_dir=data_dir,
+    )
+    patched_space = dict(raw_space)
+    patched_parameters = dict(_require_mapping(raw_space["parameters"], field_name="parameters"))
+    patched_spec = dict(
+        _require_mapping(
+            patched_parameters["feature_subset_profile"],
+            field_name="parameters.feature_subset_profile",
+        ),
+    )
+    patched_spec["choices"] = list(subset_overrides)
+    patched_parameters["feature_subset_profile"] = patched_spec
+    patched_space["parameters"] = patched_parameters
+    patched_overrides = dict(profile_overrides)
+    patched_overrides["feature_subset_profile"] = subset_overrides
+    return patched_space, patched_overrides
 
 
 def _json_safe(value: Any) -> Any:
@@ -642,6 +703,7 @@ def resolve_search_space(
     space_name: str,
     *,
     dataset: str | None = None,
+    data_dir: str = "data",
 ) -> SearchSpaceSpec:
     """Resolve and validate one catalog search-space definition."""
     raw_space = get_search_space(space_name)
@@ -689,6 +751,12 @@ def resolve_search_space(
         allowed_fields=set(BENCHMARK_CONFIG_FIELDS),
     )
     profile_overrides = _normalize_profile_overrides(raw_space)
+    raw_space, profile_overrides = _with_feature_subset_profile_support(
+        raw_space,
+        datasets=datasets,
+        data_dir=data_dir,
+        profile_overrides=profile_overrides,
+    )
     parameters = _resolve_parameter_specs(
         raw_space,
         all_datasets=all_datasets,
@@ -1102,6 +1170,9 @@ def _parameter_is_conditionally_active(
     sampled_params: Mapping[str, Any],
 ) -> bool:
     """Return whether a conditional parameter changes the resolved config."""
+    if field_name == "feature_gate_init":
+        profile = str(sampled_params.get("feature_subset_profile", ""))
+        return profile not in {GRAPH_ONLY_PROFILE, "none", "all_gate_neg4", "all_gate0"}
     if field_name == "lr_scheduler_factor":
         return sampled_params.get("lr_scheduler") == "plateau"
     schedule = str(sampled_params.get("auxiliary_loss_schedule", "linear_ramp"))
@@ -1250,6 +1321,7 @@ def _build_pruning_epoch_callback(
     search_space: SearchSpaceSpec,
     dataset: str,
     dataset_index: int,
+    allow_pruning: bool = True,
 ) -> Callable[[int, Mapping[str, float], float], None]:
     """Return a trainer callback that reports validation objective values to Optuna."""
 
@@ -1268,7 +1340,7 @@ def _build_pruning_epoch_callback(
         trial.report(value, step=step)
         trial.set_user_attr(f"{dataset}.last_pruning_epoch", epoch + 1)
         trial.set_user_attr(f"{dataset}.last_pruning_objective", value)
-        if trial.should_prune():
+        if allow_pruning and trial.should_prune():
             trial.set_user_attr(f"{dataset}.pruned_epoch", epoch + 1)
             trial.set_user_attr(f"{dataset}.pruned_objective", value)
             raise optuna.TrialPruned(
@@ -1529,7 +1601,11 @@ def _objective_factory(
                 separators=(",", ":"),
             ),
         )
-        if seen_sampled_param_keys is not None and sampled_key in seen_sampled_param_keys:
+        if (
+            seen_sampled_param_keys is not None
+            and sampled_key in seen_sampled_param_keys
+            and trial.user_attrs.get("feature_subset_required_profile") is None
+        ):
             trial.set_user_attr("duplicate_sampled_params", True)
             trial.set_user_attr("duplicate_sampled_params_key", sampled_key)
             raise optuna.TrialPruned(
@@ -1580,6 +1656,10 @@ def _objective_factory(
                         search_space=search_space,
                         dataset=dataset,
                         dataset_index=dataset_index,
+                        allow_pruning=trial.user_attrs.get(
+                            "feature_subset_required_profile",
+                        )
+                        is None,
                     ),
                 )
                 score = extract_validation_objective(result, search_space.objective)
@@ -1658,6 +1738,131 @@ def _resolve_existing_study_name(storage: str, study_name: str) -> str:
 def _canonical_sampled_params(sampled_params: Mapping[str, Any]) -> str:
     """Return a stable key for duplicate logical hyperparameter detection."""
     return json.dumps(_json_safe(sampled_params), sort_keys=True, separators=(",", ":"))
+
+
+def _recorded_feature_subset_profiles(
+    study: optuna.Study,
+    *,
+    search_space_name: str,
+    current_revision: str,
+    storage_param_name: str,
+) -> set[str]:
+    """Return feature-subset profiles already completed, running, or queued."""
+    profiles: set[str] = set()
+    for trial in study.trials:
+        attrs = trial.user_attrs
+        state_name = trial.state.name
+        sampled_params = trial.user_attrs.get("sampled_params")
+        active_or_completed = trial.state in {
+            optuna.trial.TrialState.COMPLETE,
+            optuna.trial.TrialState.RUNNING,
+            optuna.trial.TrialState.WAITING,
+        }
+        current_trial = (
+            active_or_completed
+            and str(attrs.get("search_space")) == search_space_name
+            and attrs.get("search_space_revision") == current_revision
+        )
+        if (
+            current_trial
+            and isinstance(sampled_params, Mapping)
+            and "feature_subset_profile" in sampled_params
+        ):
+            profiles.add(str(sampled_params["feature_subset_profile"]))
+            continue
+        fixed_params = trial.system_attrs.get("fixed_params")
+        queued_current_trial = (
+            state_name == "WAITING"
+            and str(attrs.get("search_space")) == search_space_name
+            and attrs.get("search_space_revision") == current_revision
+        )
+        if queued_current_trial and isinstance(fixed_params, Mapping):
+            if storage_param_name in fixed_params:
+                profiles.add(str(fixed_params[storage_param_name]))
+            elif "feature_subset_profile" in fixed_params:
+                profiles.add(str(fixed_params["feature_subset_profile"]))
+    return profiles
+
+
+def _coverage_default_value(field_name: str, spec: Mapping[str, Any]) -> Any:
+    """Return a deterministic default value for a queued coverage trial."""
+    choices = list(spec.get("choices", ()))
+    preferred = FEATURE_SUBSET_COVERAGE_DEFAULTS.get(field_name)
+    if choices:
+        return preferred if preferred in choices else choices[len(choices) // 2]
+    if preferred is not None:
+        low = spec.get("low")
+        high = spec.get("high")
+        if low is None or high is None:
+            return preferred
+        return min(max(preferred, low), high)
+    if "low" in spec and "high" in spec:
+        return (float(spec["low"]) + float(spec["high"])) / 2.0
+    raise ValueError(f"No deterministic coverage default for {field_name!r}.")
+
+
+def _feature_subset_coverage_fixed_params(
+    search_space: SearchSpaceSpec,
+    profile: str,
+) -> dict[str, Any]:
+    """Return fixed Optuna params for one required feature-subset profile."""
+    fixed: dict[str, Any] = {}
+    active_context: dict[str, Any] = {"feature_subset_profile": profile}
+    active_context.update(
+        _profile_config_overrides(
+            search_space.profile_overrides,
+            "feature_subset_profile",
+            profile,
+        ),
+    )
+    for field_name, spec in search_space.parameters.items():
+        if field_name == "feature_subset_profile":
+            value = profile
+        elif not _parameter_is_conditionally_active(field_name, active_context):
+            continue
+        else:
+            value = _coverage_default_value(field_name, spec)
+            active_context[field_name] = value
+        fixed[_parameter_storage_name(field_name, spec)] = value
+    return fixed
+
+
+def enqueue_required_feature_subset_profiles(
+    study: optuna.Study,
+    search_space: SearchSpaceSpec,
+    *,
+    data_dir: str,
+) -> int:
+    """Queue missing required feature-subset profiles before normal sampling."""
+    if "feature_subset_profile" not in search_space.parameters:
+        return 0
+    if len(search_space.datasets) != 1:
+        return 0
+    dataset = search_space.datasets[0]
+    groups = loaded_thesis_safe_item_feature_groups_for_dataset(dataset, data_dir=data_dir)
+    required_profiles = required_feature_subset_profiles(groups)
+    storage_param_name = _parameter_storage_name(
+        "feature_subset_profile",
+        search_space.parameters["feature_subset_profile"],
+    )
+    present = _recorded_feature_subset_profiles(
+        study,
+        search_space_name=search_space.name,
+        current_revision=search_space_revision(search_space),
+        storage_param_name=storage_param_name,
+    )
+    missing = [profile for profile in required_profiles if profile not in present]
+    for profile in missing:
+        study.enqueue_trial(
+            _feature_subset_coverage_fixed_params(search_space, profile),
+            user_attrs={
+                "search_space": search_space.name,
+                "search_space_revision": search_space_revision(search_space),
+                "feature_subset_required_profile": profile,
+            },
+            skip_if_exists=False,
+        )
+    return len(missing)
 
 
 def is_seeded_trial(trial: optuna.trial.FrozenTrial) -> bool:
@@ -2090,6 +2295,18 @@ def _run_single_search_study(
         pruner=_build_pruner(search_space.pruner, max_epochs=search_space.max_epochs),
         load_if_exists=True,
     )
+    missing_required_profiles = enqueue_required_feature_subset_profiles(
+        study,
+        search_space,
+        data_dir=args.data_dir,
+    )
+    if missing_required_profiles:
+        print(
+            (
+                f"Queued {missing_required_profiles} required feature_subset_profile "
+                "trial(s) before normal Optuna sampling."
+            ),
+        )
     compatible_completed = _compatible_completed_trials(study, search_space)
     budget_informative = _budget_informative_trials(study, search_space)
     print(
@@ -2097,7 +2314,7 @@ def _run_single_search_study(
         f"{_budget_count_fragment(study, search_space)}; "
         f"target={n_trials}."
     )
-    if len(budget_informative) >= n_trials:
+    if len(budget_informative) >= n_trials and missing_required_profiles == 0:
         print(
             (
                 f"Study {public_study_name} already has {len(budget_informative)} fresh "
@@ -2112,7 +2329,7 @@ def _run_single_search_study(
         return 0
 
     starting_trial_count = len(study.trials)
-    target_trials = n_trials
+    target_trials = max(n_trials, len(budget_informative) + missing_required_profiles)
     remaining = target_trials - len(budget_informative)
     max_attempts = max(remaining, remaining * 4)
     seen_sampled_param_keys = {
@@ -2185,7 +2402,11 @@ def _dataset_study_name(
     dataset = dataset_space.datasets[0]
     if explicit_study_name:
         return f"{explicit_study_name}-{dataset}"
-    return default_study_name(space_name, dataset_space.datasets, search_space=dataset_space)
+    return default_study_name(
+        space_name,
+        dataset_space.datasets,
+        search_space=dataset_space,
+    )
 
 
 def _build_per_dataset_dry_run_payload(
@@ -2198,7 +2419,7 @@ def _build_per_dataset_dry_run_payload(
     """Return dry-run details for the default dataset-local search expansion."""
     payloads: dict[str, Any] = {}
     for dataset in search_space.datasets:
-        dataset_space = resolve_search_space(space_name, dataset=dataset)
+        dataset_space = resolve_search_space(space_name, dataset=dataset, data_dir=args.data_dir)
         study_name = _dataset_study_name(
             args.study_name,
             space_name=space_name,
@@ -2238,7 +2459,7 @@ def _build_single_space_dry_run_payload(
     space_name: str,
 ) -> dict[str, Any]:
     """Return dry-run details for one queued search-space entry."""
-    search_space = resolve_search_space(space_name, dataset=args.dataset)
+    search_space = resolve_search_space(space_name, dataset=args.dataset, data_dir=args.data_dir)
     n_trials = int(args.trials or search_space.trials)
     if n_trials < 1:
         raise ValueError("--trials must be >= 1.")
@@ -2291,12 +2512,12 @@ def _validate_search_space_queue(
 ) -> None:
     """Validate every queued search-space entry before training starts."""
     for space_name in space_names:
-        resolve_search_space(space_name, dataset=args.dataset)
+        resolve_search_space(space_name, dataset=args.dataset, data_dir=args.data_dir)
 
 
 def _run_search_space(args: argparse.Namespace, *, space_name: str) -> int:
     """Execute one resolved Optuna search-space entry from parsed CLI args."""
-    search_space = resolve_search_space(space_name, dataset=args.dataset)
+    search_space = resolve_search_space(space_name, dataset=args.dataset, data_dir=args.data_dir)
     n_trials = int(args.trials or search_space.trials)
     if n_trials < 1:
         raise ValueError("--trials must be >= 1.")
@@ -2319,7 +2540,11 @@ def _run_search_space(args: argparse.Namespace, *, space_name: str) -> int:
 
         exit_codes: list[int] = []
         for dataset in search_space.datasets:
-            dataset_space = resolve_search_space(space_name, dataset=dataset)
+            dataset_space = resolve_search_space(
+                space_name,
+                dataset=dataset,
+                data_dir=args.data_dir,
+            )
             study_name = _dataset_study_name(
                 args.study_name,
                 space_name=space_name,

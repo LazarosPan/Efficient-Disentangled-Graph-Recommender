@@ -34,6 +34,7 @@ import numpy as np
 import torch
 from scripts._workflow_helpers import configure_cli_logging
 from src.data.canonical import filter_canonical_interactions, sample_canonical_interactions
+from src.data.feature_groups import apply_graph_item_feature_subset
 from src.data.graph_builder import build_graph
 from src.data.loaders import default_preprocessing_preset, load_dataset
 from src.losses.loss_suite import LossSuite
@@ -114,6 +115,9 @@ _TRAINING_IDENTITY_FIELDS = (
     "embedding_optimizer",
     "epochs",
     "feature_policy",
+    "feature_subset_mode",
+    "feature_include_groups",
+    "feature_exclude_groups",
     "graph_policy",
     "grad_clip_norm",
     "hard_negative_ratio",
@@ -368,7 +372,9 @@ def load_runtime_data(config: EDGRecConfig) -> tuple[Any, Any]:
         config.val_ratio,
         config.derived_split_mode,
     )
-    return canonical, build_graph(canonical, config)
+    data = build_graph(canonical, config)
+    apply_graph_item_feature_subset(data, config)
+    return canonical, data
 
 
 def _train_mask_numpy_from_data(data: Any) -> np.ndarray:
@@ -468,6 +474,7 @@ def build_runtime_model(
         )
 
     train_derived_tensors = _train_derived_model_tensors(canonical, data)
+    apply_graph_item_feature_subset(data, config)
     return EDGRec(
         canonical.n_users,
         canonical.n_items,
@@ -1126,6 +1133,7 @@ def _build_mlflow_params(
         "lr": config.lr,
         "use_features": config.use_features,
         "feature_policy": config.feature_policy,
+        "feature_subset_mode": config.feature_subset_mode,
         "preprocessing_preset": config.preprocessing_preset or "default",
         "item_universe_policy": config.item_universe_policy,
         "derived_split_mode": config.derived_split_mode,
@@ -1417,6 +1425,7 @@ def build_benchmark_config_inputs(
     num_neighbors: list[int],
     preprocessing_preset: str | None = None,
     graph_policy: str | None = None,
+    batch_size: int | None = None,
 ) -> dict[str, object]:
     """Build one run's config inputs from normalized benchmark arguments."""
     copied_fields = _present_field_mapping(
@@ -1439,6 +1448,7 @@ def build_benchmark_config_inputs(
             "num_neighbors": num_neighbors,
             "preprocessing_preset": preprocessing_preset,
             "graph_policy": graph_policy,
+            "batch_size": batch_size,
         },
     )
 
@@ -1500,18 +1510,28 @@ def normalize_benchmark_config_overrides(
         "negative_sampling_strategy",
         "loss_normalization",
         "label_mode",
+        "feature_subset_mode",
     ):
         value = raw_config.get(string_field)
         normalized[string_field] = str(value) if value is not None else None
     batch_size = raw_config.get("batch_size")
-    normalized["batch_size"] = (
-        int(batch_size) if batch_size is not None else default_config.batch_size
-    )
+    if isinstance(batch_size, (list, tuple)):
+        normalized["batch_size"] = [int(value) for value in batch_size]
+    else:
+        normalized["batch_size"] = (
+            int(batch_size) if batch_size is not None else default_config.batch_size
+        )
     normalized["auto_batch_size"] = bool(raw_config.get("auto_batch_size", True))
     batch_size_candidates = raw_config.get("batch_size_candidates")
     normalized["batch_size_candidates"] = (
         list(batch_size_candidates) if isinstance(batch_size_candidates, (list, tuple)) else None
     )
+    for list_field in (
+        "feature_include_groups",
+        "feature_exclude_groups",
+    ):
+        list_value = raw_config.get(list_field)
+        normalized[list_field] = list(list_value) if isinstance(list_value, (list, tuple)) else None
     lr_value = raw_config.get("lr")
     normalized["lr"] = float(lr_value) if lr_value is not None else None
     weight_decay = raw_config.get("weight_decay")

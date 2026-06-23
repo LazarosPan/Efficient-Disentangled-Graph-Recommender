@@ -145,7 +145,7 @@
             }
         },
         "edgrec-lite-kuairand-search": {
-            "description": "Compact KuaiRand-1K diagnostic EDGRec search-prior pass for label-mode and randomized-exposure item-universe sensitivity. Treat KuaiRand rows as stress-test evidence, not headline accuracy wins.",
+            "description": "Compact KuaiRand-1K EDGRec search-prior pass for label-mode and randomized-exposure item-universe sensitivity. Treat KuaiRand as a required randomized-exposure dataset; current rows still need full formal accuracy confirmation before headline claims.",
             "base_profile": "edgrec-lite-kuairand",
             "datasets": ["kuairand1k"],
             "config_overrides": {
@@ -518,8 +518,81 @@
                 }
             }
         },
+        "edgrec-feature-subset-search": {
+            "description": "Dataset-aware EDGRec feature-subset search. The feature_subset_profile choices are derived from thesis-safe item side-feature groups actually loaded by each dataset; graph-only datasets receive only a graph_only control. Scalar hyperparameter ladders are dataset-local trust regions around prior EDGRec Optuna basins, with neighboring values retained because feature subsets can shift the optimum.",
+            "base_profile": "edgrec-compact-search-prior",
+            "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+            "config_overrides": {
+                "use_early_stopping": true,
+                "patience": 8,
+                "auto_batch_size": true,
+                "batch_size_candidates": [1048576, 524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+                "use_popularity_head": true,
+                "use_popularity_emb": false
+            },
+            "objective": {
+                "metric": "ValidationOnlineCRRU@20_40",
+                "split": "val",
+                "direction": "maximize"
+            },
+            "sampler": {
+                "name": "tpe",
+                "seed": 42,
+                "n_startup_trials": 8,
+                "multivariate": false,
+                "group": false,
+                "constant_liar": false
+            },
+            "pruner": {
+                "name": "hyperband",
+                "min_resource": 15,
+                "reduction_factor": 3,
+                "bootstrap_count": 1
+            },
+            "max_epochs": 150,
+            "trials": 32,
+            "parameters": {
+                "feature_subset_profile": {"type": "categorical", "choices": ["none"]},
+                "feature_gate_init": {"type": "categorical", "choices": [-4.0, 0.0]},
+                "lr": {"type": "categorical", "choices": [0.0008, 0.0015, 0.003]},
+                "weight_decay": {"type": "categorical", "choices": [0.0, 0.000001, 0.00001]},
+                "score_mix_min_weight": {"type": "categorical", "choices": [0.0, 0.02, 0.05]},
+                "loss_weight_popularity": {"type": "categorical", "choices": [0.0, 0.01, 0.025]},
+                "dice_sampler_margin": {"type": "categorical", "choices": [20.0, 40.0, 80.0]}
+            },
+            "parameters_by_dataset": {
+                "amazonbook": {
+                    "lr": {"type": "categorical", "choices": [0.003, 0.01]},
+                    "weight_decay": {"type": "categorical", "choices": [0.00001]},
+                    "score_mix_min_weight": {"type": "categorical", "choices": [0.0, 0.02]},
+                    "loss_weight_popularity": {"type": "categorical", "choices": [0.0, 0.025]},
+                    "dice_sampler_margin": {"type": "categorical", "choices": [10.0, 20.0]}
+                },
+                "kuairec_v2": {
+                    "lr": {"type": "categorical", "choices": [0.0003, 0.0004, 0.0008]},
+                    "weight_decay": {"type": "categorical", "choices": [0.0, 0.00000003, 0.000001]},
+                    "score_mix_min_weight": {"type": "categorical", "choices": [0.0, 0.02, 0.05]},
+                    "loss_weight_popularity": {"type": "categorical", "choices": [0.0, 0.01, 0.025]},
+                    "dice_sampler_margin": {"type": "categorical", "choices": [10.0, 20.0, 40.0]}
+                },
+                "kuairand1k": {
+                    "lr": {"type": "categorical", "choices": [0.0004, 0.0008, 0.0015]},
+                    "weight_decay": {"type": "categorical", "choices": [0.0, 0.000001, 0.00001]},
+                    "score_mix_min_weight": {"type": "categorical", "choices": [0.0, 0.02, 0.05]},
+                    "loss_weight_popularity": {"type": "categorical", "choices": [0.0, 0.01, 0.025]},
+                    "dice_sampler_margin": {"type": "categorical", "choices": [50.0, 70.0, 80.0]}
+                },
+                "movielens1m": {
+                    "lr": {"type": "categorical", "choices": [0.0004, 0.0008, 0.0015]},
+                    "weight_decay": {"type": "categorical", "choices": [0.0, 0.00001, 0.0001]},
+                    "score_mix_min_weight": {"type": "categorical", "choices": [0.0, 0.02, 0.05]},
+                    "loss_weight_popularity": {"type": "categorical", "choices": [0.0, 0.01, 0.025]},
+                    "dice_sampler_margin": {"type": "categorical", "choices": [20.0, 40.0, 80.0]}
+                }
+            }
+        },
         "edgrec-core-optimization": {
-            "description": "Small dataset-local Optuna screen for compact EDGRec search-prior candidates. Without --dataset, the runner creates one independent study per listed dataset, so --trials N means target N fresh informative finished trials for the current search_space_revision per dataset: COMPLETE plus real PRUNED, excluding FAIL/RUNNING, historically imported rows, duplicate-skip prunes, and other revision hashes. For the current causal-stability pass, start with --dataset movielens1m and --dataset kuairec_v2 before promoting a configuration to expensive datasets. KuaiRand remains a randomized-exposure stress diagnostic. AmazonBook is present only as a compact exception check in this shared space; use amazonbook-edgrec-candidate-search for the dataset-specific compact-vs-deep_features comparison and keep LightGCN-paper accuracy baseline framing. The core search uses automatic largest-feasible batch-size probing from a descending throughput ladder as runtime metadata, not as a sampled model-selection parameter. This pass tunes the effective DICE branch-loss scale, negative count, score-mix floor, branch-supervision weights, and context shortcuts while keeping side features, IPW, contrastive, and DirectAU off unless a separate explicit profile enables them. hard_negative_ratio is intentionally excluded because DICE sampling owns the high/low-popularity negative route. Four-hop GNN depth remains excluded: current evidence does not justify extra over-smoothing and compute risk for the thesis budget.",
+            "description": "Small dataset-local Optuna screen for compact EDGRec search-prior candidates. Without --dataset, the runner creates one independent study per listed dataset, so --trials N means target N fresh informative finished trials for the current search_space_revision per dataset: COMPLETE plus real PRUNED, excluding FAIL/RUNNING, historically imported rows, duplicate-skip prunes, and other revision hashes. KuaiRand is a required randomized-exposure dataset alongside KuaiRec in the core thesis evidence set, but current KuaiRand rows still need full formal accuracy confirmation before headline claims. AmazonBook is present only as a compact exception check in this shared space; use amazonbook-edgrec-candidate-search for the dataset-specific compact-vs-deep_features comparison and keep LightGCN-paper accuracy baseline framing. The core search uses automatic largest-feasible batch-size probing from a descending throughput ladder as runtime metadata, not as a sampled model-selection parameter. This pass tunes the effective DICE branch-loss scale, negative count, score-mix floor, branch-supervision weights, and context shortcuts while keeping side features, IPW, contrastive, and DirectAU off unless a separate explicit profile enables them. hard_negative_ratio is intentionally excluded because DICE sampling owns the high/low-popularity negative route. Four-hop GNN depth remains excluded: current evidence does not justify extra over-smoothing and compute risk for the thesis budget.",
             "base_profile": "edgrec-compact-search-prior",
             "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
             "config_overrides": {
