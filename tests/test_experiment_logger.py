@@ -598,6 +598,7 @@ class ExperimentLoggerTests(unittest.TestCase):
     def test_query_results_duration_formatter_always_uses_seconds(self) -> None:
         """Runtime report durations should stay in seconds for direct comparison."""
         self.assertEqual(query_results._format_duration(None), "-")
+        self.assertEqual(query_results._format_duration(0.0734), "0.073s")
         self.assertEqual(query_results._format_duration(12.34), "12.3s")
         self.assertEqual(query_results._format_duration(138.0), "138.0s")
         self.assertEqual(query_results._format_duration(122000.0), "122000.0s")
@@ -741,7 +742,7 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertIn("e-06", output)
         self.assertNotIn("|   0.0000 |   0.0000", output)
 
-    def test_query_results_top_completed_shows_only_formal_and_ablation_test_runs(self) -> None:
+    def test_query_results_top_completed_shows_only_reportable_test_runs(self) -> None:
         """Default results output should exclude ad-hoc and smoke-test runs."""
         formal_exp = self.logger.log_experiment(
             dataset="amazonbook",
@@ -1015,10 +1016,14 @@ class ExperimentLoggerTests(unittest.TestCase):
         output = buffer.getvalue()
         self.assertIn("Evidence role legend", output)
         self.assertIn("Dataset-conditioned profile policy", output)
-        self.assertIn("FORMAL FULL-DATA TEST ROWS", output)
-        self.assertIn("SUPPORTING FORMAL FULL-DATA RUNS", output)
-        self.assertIn("ABLATION FULL-DATA TEST RUNS", output)
-        self.assertIn("currently supported variants", output)
+        self.assertIn("TEST-SET RESULT LEADERBOARD", output)
+        self.assertIn("Evidence", output)
+        self.assertIn("supporting", output)
+        self.assertIn("ablation", output)
+        self.assertIn("Preset/Variant", output)
+        self.assertNotIn("FORMAL FULL-DATA TEST ROWS", output)
+        self.assertNotIn("SUPPORTING FORMAL FULL-DATA RUNS", output)
+        self.assertNotIn("ABLATION FULL-DATA TEST RUNS", output)
         self.assertIn("no_context_no_features", output)
         self.assertIn("Composite Resource-aware Recommendation Utility at K", output)
         self.assertIn("CRRU is not a causal-effect estimator", output)
@@ -1057,11 +1062,12 @@ class ExperimentLoggerTests(unittest.TestCase):
         )
         self.assertIn("Resources:  time=12.3s", output)
         self.assertIn(
-            "amazonbook_lightgcn_ep200_bs8192_dim64_layers2_nbr10-5_lr-plateau_seed13",
+            "amazonbook_lightgcn_ep200_bs8192_dim64_layers2_nbr10-5<br>lr-plateau_seed13",
             output,
         )
         self.assertIn(
-            "amazonbook_edgrec_ep300_bs4096_dim64_layers2_branchL1-2_nbr20-10_feat_lr-cosine_no_independence_seed13",
+            "amazonbook_edgrec_ep300_bs4096_dim64_layers2<br>"
+            "branchL1-2_nbr20-10_feat_lr-cosine_no_independence<br>seed13",
             output,
         )
         self.assertNotIn("_train-formalhash", output)
@@ -1138,9 +1144,16 @@ class ExperimentLoggerTests(unittest.TestCase):
         markdown_output = output_path.read_text(encoding="utf-8")
         self.assertIn("# Query Results", markdown_output)
         self.assertNotIn("```text", markdown_output)
-        self.assertIn("| Run | Dataset | Preset | ScoreMix | Neighbors |", markdown_output)
-        self.assertIn("| ---: | --- | --- | --- | --- |", markdown_output)
+        self.assertIn(
+            "| DatasetRank | ExpID | Dataset | Evidence | Preset/Variant | Profile | ScoreMix | "
+            "Neighbors | CRRU@20 | CRRU@40 |",
+            markdown_output,
+        )
+        self.assertIn("| ---: | ---: | --- | --- | --- | --- | --- | --- |", markdown_output)
+        self.assertNotIn("### Accuracy metrics", markdown_output)
+        self.assertNotIn("### Composite utility and resource use", markdown_output)
         self.assertIn("THESIS TEST RESULTS", markdown_output)
+        self.assertIn("TEST-SET RESULT LEADERBOARD", markdown_output)
         self.assertIn(
             "Composite Resource-aware Recommendation Utility at K",
             markdown_output,
@@ -1154,7 +1167,7 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertIn("OPTUNA EDGRec SEARCH REPORT", markdown_output)
         self.assertIn("optuna_optimization.md", markdown_output)
         self.assertIn(
-            "amazonbook_lightgcn_ep100_bs4096_dim64_layers2_nbr10-5_lr-plateau_seed13",
+            "amazonbook_lightgcn_ep100_bs4096_dim64_layers2_nbr10-5<br>lr-plateau_seed13",
             markdown_output,
         )
         self.assertNotIn("CRRU COMPOSITE METRIC", markdown_output)
