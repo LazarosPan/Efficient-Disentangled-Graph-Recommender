@@ -23,6 +23,7 @@ from io import StringIO
 from pathlib import Path
 
 from experiments.ablation_configs import ABLATION_VARIANTS
+from src.reporting.feature_analysis import write_query_feature_analysis_reports
 from src.utils.cli_parsers import build_query_results_parser
 from src.utils.crru import (
     CRRU_REPORT_FORMULA_LINES,
@@ -62,6 +63,7 @@ FINAL_FORMAL_PROFILE_NAMES = frozenset(
         "paper-lightgcn-baselines",
     }
 )
+FINAL_FORMAL_PROFILE_PREFIXES = ("edgrec-global-top-",)
 RUNTIME_PROBE_COLUMNS = RUNTIME_PROBE_METRIC_NAMES
 PAPER_BASELINE_PRESETS = frozenset({"lightgcn_paper", "dice_paper"})
 
@@ -362,7 +364,13 @@ def _is_final_formal_row(row: sqlite3.Row) -> bool:
     return (
         _is_reportable_formal_row(row)
         and isinstance(profile_name, str)
-        and public_profile_name in FINAL_FORMAL_PROFILE_NAMES
+        and (
+            public_profile_name in FINAL_FORMAL_PROFILE_NAMES
+            or (
+                isinstance(public_profile_name, str)
+                and public_profile_name.startswith(FINAL_FORMAL_PROFILE_PREFIXES)
+            )
+        )
     )
 
 
@@ -1577,6 +1585,7 @@ def main() -> int:
         if args.view is None:
             report_text = _render_default_summary(conn)
             _write_default_summary_markdown(report_text)
+            write_query_feature_analysis_reports()
             print(f"Wrote default results summary to {QUERY_RESULTS_MARKDOWN_PATH.resolve()}")
         else:
             list_experiments(

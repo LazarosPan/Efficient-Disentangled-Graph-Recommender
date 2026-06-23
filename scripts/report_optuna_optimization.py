@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 from collections import Counter
@@ -18,8 +19,16 @@ from experiments.run_search import (
     is_duplicate_pruned_trial,
     is_seeded_trial,
 )
-from optuna.importance import FanovaImportanceEvaluator, get_param_importances
+from optuna.importance import (
+    MeanDecreaseImpurityImportanceEvaluator,
+    get_param_importances,
+)
 from optuna.trial import FrozenTrial, TrialState
+from src.reporting.feature_analysis import (
+    build_feature_subset_result_rows,
+    render_feature_subset_report_section,
+    write_feature_subset_search_reports,
+)
 from src.utils.crru import (
     VALIDATION_ACCURACY_METRIC,
     VALIDATION_ONLINE_CRRU_K_METRICS,
@@ -40,6 +49,10 @@ OPTUNA_OPTIMIZATION_MARKDOWN_PATH = RESULTS_DIR / "optuna_optimization.md"
 OPTUNA_FIGURES_DIR = RESULTS_DIR / "optuna_figures"
 DEFAULT_TOP_N = 10
 MIN_IMPORTANCE_TRIALS = 10
+IMPORTANCE_CACHE_VERSION = 1
+IMPORTANCE_CACHE_PATH = RESULTS_DIR / "optuna_importance_cache.json"
+IMPORTANCE_EVALUATOR_NAME = "mean_decrease_impurity_seed_13"
+INCLUDE_OPTUNA_IMPORTANCE_TABLES = False
 DEFAULT_SOURCE_OBJECTIVE_METRICS = (
     VALIDATION_ONLINE_CRRU_METRIC,
     VALIDATION_ACCURACY_METRIC,
@@ -601,6 +614,48 @@ class ImportanceResult:
     revision: str | None
     trial_count: int
     reason: str | None = None
+    subset_count: int = 0
+
+
+_IMPORTANCE_CACHE: dict[str, dict[str, float]] | None = None
+
+
+def _load_importance_cache() -> dict[str, dict[str, float]]:
+    """Return cached deterministic Optuna importances."""
+    global _IMPORTANCE_CACHE
+    if _IMPORTANCE_CACHE is not None:
+        return _IMPORTANCE_CACHE
+    if not IMPORTANCE_CACHE_PATH.exists():
+        _IMPORTANCE_CACHE = {}
+        return _IMPORTANCE_CACHE
+    try:
+        payload = json.loads(IMPORTANCE_CACHE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        _IMPORTANCE_CACHE = {}
+        return _IMPORTANCE_CACHE
+    if payload.get("version") != IMPORTANCE_CACHE_VERSION:
+        _IMPORTANCE_CACHE = {}
+        return _IMPORTANCE_CACHE
+    entries = payload.get("entries", {})
+    _IMPORTANCE_CACHE = {
+        str(key): {str(name): float(value) for name, value in value.items()}
+        for key, value in entries.items()
+        if isinstance(value, Mapping)
+    }
+    return _IMPORTANCE_CACHE
+
+
+def _store_importance_cache(cache: Mapping[str, Mapping[str, float]]) -> None:
+    """Persist cached deterministic Optuna importances."""
+    IMPORTANCE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": IMPORTANCE_CACHE_VERSION,
+        "entries": {key: dict(sorted(value.items())) for key, value in sorted(cache.items())},
+    }
+    IMPORTANCE_CACHE_PATH.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def dataset_trial_candidates(studies: Sequence[optuna.Study]) -> list[DatasetTrialCandidate]:
@@ -632,6 +687,16 @@ def dataset_trial_candidates(studies: Sequence[optuna.Study]) -> list[DatasetTri
                     ),
                 )
     return candidates
+
+
+def render_side_feature_analysis(
+    studies: Sequence[optuna.Study],
+    *,
+    rows: Sequence[Mapping[str, object]] | None = None,
+) -> list[str]:
+    """Render dataset-local feature-subset search evidence."""
+    feature_rows = rows if rows is not None else build_feature_subset_result_rows(studies)
+    return render_feature_subset_report_section(feature_rows)
 
 
 def objective_group_sort_key(group: tuple[str, str, str]) -> tuple[int, str, str]:
@@ -830,6 +895,107 @@ def _homogeneous_revision_subset(
     return revision, trials, None
 
 
+def _eligible_revision_subsets(
+    study: optuna.Study,
+    *,
+    dataset: str | None = None,
+) -> tuple[list[tuple[str, list[FrozenTrial]]], str | None]:
+    """Return comparable completed-trial groups keyed by search-space revision."""
+    candidates = _importance_candidate_trials(study, dataset=dataset)
+    if not candidates:
+        return [], "no completed fresh trials with a stored search_space_revision"
+
+    grouped: dict[str, list[FrozenTrial]] = {}
+    for trial in candidates:
+        revision = trial_search_revision(trial)
+        if revision is not None:
+            grouped.setdefault(revision, []).append(trial)
+
+    eligible: list[tuple[str, list[FrozenTrial]]] = []
+    skipped: list[str] = []
+    for revision, trials in sorted(grouped.items()):
+        if len(trials) < MIN_IMPORTANCE_TRIALS:
+            skipped.append(f"{revision}: {len(trials)} completed trial(s)")
+            continue
+        varying_params = _varying_logical_param_names(trials)
+        if len(varying_params) < 2:
+            skipped.append(f"{revision}: {len(varying_params)} varying parameter(s)")
+            continue
+        eligible.append((revision, trials))
+
+    if eligible:
+        return eligible, None
+    if skipped:
+        return (
+            [],
+            "no revision subset has enough completed trials and varying parameters "
+            f"(minimum {MIN_IMPORTANCE_TRIALS}); skipped {', '.join(skipped)}",
+        )
+    return [], "no homogeneous search_space_revision subset is available"
+
+
+def _aggregate_revision_importances(
+    study: optuna.Study,
+    *,
+    dataset: str | None = None,
+) -> ImportanceResult:
+    """Average deterministic per-revision importances for one study or dataset."""
+    subsets, reason = _eligible_revision_subsets(study, dataset=dataset)
+    if reason is not None or not subsets:
+        total_trials = sum(len(trials) for _revision, trials in subsets)
+        return ImportanceResult({}, None, total_trials, reason)
+
+    totals: dict[str, float] = {}
+    support: dict[str, int] = {}
+    revisions: list[str] = []
+    total_trials = 0
+    for revision, trials in subsets:
+        target = None
+        if dataset is not None:
+
+            def target(trial: FrozenTrial, dataset: str = dataset) -> float:
+                value = dataset_metric(trial, dataset, "objective")
+                if value is None:
+                    raise ValueError(f"Trial {trial.number} has no {dataset} objective.")
+                return float(value)
+
+        importances = cached_logical_importances(
+            study,
+            revision=revision,
+            target=target,
+            trials=trials,
+            dataset=dataset,
+        )
+        if not importances:
+            continue
+        revisions.append(revision)
+        trial_count = len(trials)
+        total_trials += trial_count
+        for name, importance in importances.items():
+            totals[name] = totals.get(name, 0.0) + float(importance) * trial_count
+            support[name] = support.get(name, 0) + trial_count
+
+    if not totals or total_trials == 0:
+        return ImportanceResult(
+            {},
+            None,
+            0,
+            "Optuna could not compute importances for any eligible revision subset",
+        )
+
+    averaged = {name: totals[name] / support[name] for name in totals}
+    normalizer = sum(averaged.values())
+    if normalizer > 0:
+        averaged = {name: value / normalizer for name, value in averaged.items()}
+    ordered = dict(sorted(averaged.items(), key=lambda item: item[1], reverse=True))
+    return ImportanceResult(
+        ordered,
+        ", ".join(revisions),
+        total_trials,
+        subset_count=len(revisions),
+    )
+
+
 def _temporary_study_from_trials(
     study: optuna.Study,
     trials: Sequence[FrozenTrial],
@@ -839,6 +1005,68 @@ def _temporary_study_from_trials(
     for trial in trials:
         temporary.add_trial(trial)
     return temporary
+
+
+def _importance_cache_key(
+    study: optuna.Study,
+    *,
+    revision: str,
+    trials: Sequence[FrozenTrial],
+    dataset: str | None,
+) -> str:
+    """Return a stable cache key for one deterministic fANOVA subset."""
+    trial_signature = [
+        {
+            "number": int(trial.number),
+            "params": logical_trial_params(trial),
+            "value": (
+                dataset_metric(trial, dataset, "objective") if dataset is not None else trial.value
+            ),
+        }
+        for trial in sorted(trials, key=lambda item: int(item.number))
+    ]
+    payload = {
+        "dataset": dataset,
+        "direction": study.direction.name,
+        "evaluator": IMPORTANCE_EVALUATOR_NAME,
+        "revision": revision,
+        "study": study.study_name,
+        "trials": trial_signature,
+    }
+    serialized = json.dumps(payload, default=str, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def cached_logical_importances(
+    study: optuna.Study,
+    *,
+    revision: str,
+    trials: Sequence[FrozenTrial],
+    dataset: str | None = None,
+    target: object | None = None,
+) -> dict[str, float]:
+    """Return deterministic logical importances from cache or fANOVA."""
+    key = _importance_cache_key(
+        study,
+        revision=revision,
+        trials=trials,
+        dataset=dataset,
+    )
+    cache = _load_importance_cache()
+    cached = cache.get(key)
+    if cached is not None:
+        return dict(cached)
+    importances = logical_importances(
+        safe_importances(
+            study,
+            evaluator=MeanDecreaseImpurityImportanceEvaluator(seed=13),
+            target=target,
+            trials=trials,
+        ),
+    )
+    cache[key] = importances
+    _store_importance_cache(cache)
+    return importances
 
 
 def safe_importances(
@@ -867,19 +1095,8 @@ def safe_importances(
 
 
 def dashboard_importance_result(study: optuna.Study) -> ImportanceResult:
-    """Return Optuna's default importance view for one homogeneous revision."""
-    revision, trials, reason = _homogeneous_revision_subset(study)
-    if reason is not None or not trials:
-        return ImportanceResult({}, revision, len(trials), reason)
-    importances = logical_importances(safe_importances(study, trials=trials))
-    if not importances:
-        return ImportanceResult(
-            {},
-            revision,
-            len(trials),
-            "Optuna could not compute importances for the homogeneous subset",
-        )
-    return ImportanceResult(importances, revision, len(trials))
+    """Return deterministic mean importances across eligible revision subsets."""
+    return _aggregate_revision_importances(study)
 
 
 def dashboard_importances(study: optuna.Study) -> dict[str, float]:
@@ -889,39 +1106,19 @@ def dashboard_importances(study: optuna.Study) -> dict[str, float]:
 
 def fanova_importances(study: optuna.Study) -> dict[str, float]:
     """Return deterministic fANOVA importances for sensitivity checking."""
-    _revision, trials, reason = _homogeneous_revision_subset(study)
+    revision, trials, reason = _homogeneous_revision_subset(study)
     if reason is not None or not trials:
         return {}
-    return logical_importances(
-        safe_importances(
-            study,
-            evaluator=FanovaImportanceEvaluator(seed=13),
-            trials=trials,
-        ),
+    return cached_logical_importances(
+        study,
+        revision=revision or "",
+        trials=trials,
     )
 
 
 def dataset_importance_result(study: optuna.Study, dataset: str) -> ImportanceResult:
-    """Return reliable importances for one dataset-local objective."""
-    revision, trials, reason = _homogeneous_revision_subset(study, dataset=dataset)
-    if reason is not None or not trials:
-        return ImportanceResult({}, revision, len(trials), reason)
-
-    def target(trial: FrozenTrial) -> float:
-        value = dataset_metric(trial, dataset, "objective")
-        if value is None:
-            raise ValueError(f"Trial {trial.number} has no {dataset} objective.")
-        return float(value)
-
-    importances = logical_importances(safe_importances(study, target=target, trials=trials))
-    if not importances:
-        return ImportanceResult(
-            {},
-            revision,
-            len(trials),
-            "Optuna could not compute importances for the homogeneous subset",
-        )
-    return ImportanceResult(importances, revision, len(trials))
+    """Return deterministic mean importances for one dataset-local objective."""
+    return _aggregate_revision_importances(study, dataset=dataset)
 
 
 def dataset_importances(study: optuna.Study, dataset: str) -> dict[str, float]:
@@ -1041,12 +1238,29 @@ def render_importance_result(title: str, result: ImportanceResult) -> list[str]:
     lines = [
         f"### {title}",
         "",
-        f"Subset: `{result.trial_count}` fresh completed trial(s) from "
-        f"search-space revision `{result.revision}`.",
-        "",
-        "| Rank | Parameter | Importance |",
-        "|---:|---|---:|",
     ]
+    if result.subset_count > 1:
+        lines.extend(
+            [
+                f"Subset: `{result.trial_count}` fresh completed trial(s) across "
+                f"`{result.subset_count}` eligible search-space revision subsets.",
+                f"Revisions: `{result.revision}`.",
+                "Aggregation: trial-weighted mean of deterministic per-revision fANOVA "
+                "importances; parameters absent from a revision are not counted as zero.",
+            ],
+        )
+    else:
+        lines.append(
+            f"Subset: `{result.trial_count}` fresh completed trial(s) from "
+            f"search-space revision `{result.revision}`.",
+        )
+    lines.extend(
+        [
+            "",
+            "| Rank | Parameter | Importance |",
+            "|---:|---|---:|",
+        ],
+    )
     for rank, (name, importance) in enumerate(result.importances.items(), start=1):
         lines.append(f"| {rank} | `{name}` | {importance:.6f} |")
     lines.append("")
@@ -1135,7 +1349,7 @@ def render_dataset_importance_tables(
         result = dataset_importance_result(study, dataset)
         lines.extend(
             render_importance_result(
-                f"Dashboard-like Optuna importances for `{dataset}` objective",
+                f"Revision-mean Optuna importances for `{dataset}` objective",
                 result,
             ),
         )
@@ -1300,17 +1514,35 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
             ),
         )
 
-    lines.extend(
-        render_importance_result(
-            "Dashboard-like Optuna importances",
-            dashboard_importance_result(study),
-        ),
-    )
-    fanova = fanova_importances(study)
-    if fanova:
-        lines.extend(render_importance_table("Deterministic fANOVA importance sensitivity", fanova))
-    if all_datasets:
-        lines.extend(render_dataset_importance_tables(study, datasets=all_datasets))
+    if INCLUDE_OPTUNA_IMPORTANCE_TABLES:
+        revision_mean_importances = dashboard_importance_result(study)
+        lines.extend(
+            render_importance_result(
+                "Revision-mean Optuna importances",
+                revision_mean_importances,
+            ),
+        )
+        fanova = fanova_importances(study)
+        if fanova and fanova != revision_mean_importances.importances:
+            lines.extend(
+                render_importance_table(
+                    "Deterministic fANOVA importance sensitivity",
+                    fanova,
+                ),
+            )
+        if all_datasets:
+            lines.extend(render_dataset_importance_tables(study, datasets=all_datasets))
+    else:
+        lines.extend(
+            [
+                "### Optuna importances",
+                "",
+                "Skipped in the default report refresh because Optuna post-hoc "
+                "importance evaluation is too slow for routine reporting. "
+                "Feature-subset conclusions use completed profile metrics and deltas.",
+                "",
+            ],
+        )
 
     lines.extend(render_failure_summary(study))
 
@@ -1382,7 +1614,13 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
     return "\n".join(lines)
 
 
-def render_report(studies: Sequence[optuna.Study], *, storage: str, top_n: int) -> str:
+def render_report(
+    studies: Sequence[optuna.Study],
+    *,
+    storage: str,
+    top_n: int,
+    feature_subset_rows: Sequence[Mapping[str, object]] | None = None,
+) -> str:
     """Render all Optuna studies as markdown."""
     lines = [
         "# Optuna Optimization Report",
@@ -1416,8 +1654,9 @@ def render_report(studies: Sequence[optuna.Study], *, storage: str, top_n: int) 
         "CAGRA trial provenance remains visible in the report tables.",
         "- Lower average popularity and higher personalization are supporting diagnostics, "
         "not standalone fairness or exposure-effect estimates.",
-        "- If Optuna dashboard importances differ, first confirm the same storage URI, "
-        "study name, objective target, and completed-trial subset.",
+        "- Optuna parameter importances are post-hoc diagnostics computed from stored "
+        "trial parameters and objectives. Deterministic importance subsets are cached "
+        f"in `{IMPORTANCE_CACHE_PATH}` and overwritten on cache-key changes.",
         "- Optuna RDB storage is the canonical owner for search trials; the thesis SQLite "
         "database keeps formal experiment and training logs.",
         "- Current multi-dataset searches expand into one independent study per "
@@ -1429,10 +1668,11 @@ def render_report(studies: Sequence[optuna.Study], *, storage: str, top_n: int) 
         "`search_space_revision`: COMPLETE plus real PRUNED, excluding FAIL/RUNNING, "
         "historically imported rows, duplicate-skip prunes, and other revision hashes. "
         "Imported rows are reported separately for provenance.",
-        "- Hyperparameter importances are computed only within one homogeneous, "
-        "non-imported `search_space_revision` subset with enough completed trials. "
-        "Mixed unrevisioned/revision studies are marked unreliable instead of showing a "
-        "misleading one-parameter importance table.",
+        "- Hyperparameter importances are computed as dataset-local, trial-weighted means "
+        "over eligible homogeneous, non-imported `search_space_revision` subsets with "
+        "enough completed trials. Parameters absent from a revision are not counted as "
+        "zero, and revision groups with too little support are omitted rather than "
+        "reported as stable evidence.",
         "- The current second-pass grid tunes active EDGRec loss weights and schedule "
         "knobs only; inactive DirectAU/IPW-only weights remain out of the default "
         "search to avoid changing the thesis model family without a separate ablation.",
@@ -1440,7 +1680,8 @@ def render_report(studies: Sequence[optuna.Study], *, storage: str, top_n: int) 
         "thesis selections. Current evidence supports compact candidates most clearly "
         "for KuaiRec_v2, "
         "allows a MovieLens1M near-parity/speed candidate with popularity diagnostics, "
-        "and keeps KuaiRand1K as a stress-test diagnostic. AmazonBook is excluded only "
+        "and treats KuaiRand1K as required randomized-exposure evidence whose current "
+        "accuracy remains unresolved. AmazonBook is excluded only "
         "from the shared compact default queue: it still needs a dataset-specific "
         "compact-vs-deep_features EDGRec comparison against the LightGCN-paper accuracy "
         "baseline before thesis promotion.",
@@ -1455,6 +1696,7 @@ def render_report(studies: Sequence[optuna.Study], *, storage: str, top_n: int) 
         "",
     ]
     lines.extend(render_global_best_trials(studies))
+    lines.extend(render_side_feature_analysis(studies, rows=feature_subset_rows))
     lines.extend(
         [
             "## Paper-ready figures",
@@ -1549,9 +1791,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Write the Optuna optimization markdown report."""
     args = build_parser().parse_args(argv)
     studies = load_studies(args.storage, args.study_name)
-    report = render_report(studies, storage=args.storage, top_n=args.top_n)
+    feature_subset_rows = build_feature_subset_result_rows(studies)
+    report = render_report(
+        studies,
+        storage=args.storage,
+        top_n=args.top_n,
+        feature_subset_rows=feature_subset_rows,
+    )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(report, encoding="utf-8")
+    write_feature_subset_search_reports(studies, rows=feature_subset_rows)
     print(f"Wrote Optuna optimization report to {args.output.resolve()}")
     return 0
 
