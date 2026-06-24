@@ -309,6 +309,7 @@ class Evaluator:
         family and cutoff, but runtime updates happen through a single shared
         collection call.
         """
+        self._validate_average_popularity_counts(popularity)
         metrics: dict[str, object] = {}
         for k in THESIS_EVAL_KS:
             metrics[f"NDCG@{k}"] = LinkPredNDCG(k=k)
@@ -320,6 +321,22 @@ class Evaluator:
             metrics[f"HitRatio@{k}"] = LinkPredHitRatio(k=k)
             metrics[f"Personalization@{k}"] = _SafeLinkPredPersonalization(k=k)
         return LinkPredMetricCollection(metrics)
+
+    @staticmethod
+    def _validate_average_popularity_counts(popularity: torch.Tensor) -> None:
+        """Ensure PyG AveragePopularity receives finite raw train-count values."""
+        if popularity.numel() == 0:
+            return
+        if not torch.isfinite(popularity).all():
+            raise ValueError(
+                "LinkPredAveragePopularity requires finite raw training item-interaction counts.",
+            )
+        min_value = float(popularity.min().item())
+        if min_value < 0.0:
+            raise ValueError(
+                "LinkPredAveragePopularity requires non-negative raw training "
+                f"item-interaction counts; got minimum {min_value}.",
+            )
 
     @staticmethod
     def _mask_ranking_scores(

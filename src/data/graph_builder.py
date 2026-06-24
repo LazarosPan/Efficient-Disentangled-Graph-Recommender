@@ -8,7 +8,7 @@ from torch_geometric.data import Data
 from torch_geometric.utils import degree
 
 from ..utils.config import EDGRecConfig
-from ..utils.interaction_indexing import compute_normalized_popularity
+from ..utils.interaction_indexing import compute_normalized_popularity, compute_popularity_counts
 from .canonical import CanonicalInteractions
 from .interaction_masks import positive_interaction_mask
 
@@ -75,18 +75,20 @@ def _resolve_training_popularity(
     positive_train_mask: np.ndarray,
     n_items: int,
 ) -> torch.Tensor:
-    """Compute positive-train item popularity and return it as a float tensor.
+    """Compute raw positive-train item popularity counts for PyG ARP.
 
     Args:
         canonical: Canonical dataset whose training rows define popularity.
         positive_train_mask: Boolean mask selecting positive training rows.
         n_items: Number of catalog items.
     Returns:
-        torch.Tensor: Float tensor of shape ``(n_items,)`` with train-only
-        popularity values.
+        torch.Tensor: Float tensor of shape ``(n_items,)`` with train-only raw
+        interaction counts. This tensor is passed directly to PyG
+        ``LinkPredAveragePopularity`` so the logged ARP metric keeps PyG
+        semantics.
 
     """
-    popularity_array = compute_normalized_popularity(
+    popularity_array = compute_popularity_counts(
         canonical.item_id[positive_train_mask],
         n_items,
     )
@@ -99,11 +101,21 @@ def _resolve_training_popularity_counts(
     n_items: int,
 ) -> torch.Tensor:
     """Compute raw positive-train item popularity counts."""
-    counts = np.bincount(
-        canonical.item_id[positive_train_mask],
-        minlength=n_items,
-    ).astype(np.float32)
+    counts = compute_popularity_counts(canonical.item_id[positive_train_mask], n_items)
     return torch.from_numpy(counts).float()
+
+
+def _resolve_normalized_training_popularity(
+    canonical: CanonicalInteractions,
+    positive_train_mask: np.ndarray,
+    n_items: int,
+) -> torch.Tensor:
+    """Compute log-normalized train popularity for model/loss targets."""
+    popularity_array = compute_normalized_popularity(
+        canonical.item_id[positive_train_mask],
+        n_items,
+    )
+    return torch.from_numpy(popularity_array).float()
 
 
 def _attach_optional_canonical_fields(
@@ -221,15 +233,20 @@ def build_graph(
         all_signs,
     )
 
-    # Popularity must be derived from positive rows in the final training split
-    # only so held-out validation/test interactions never leak into training or
-    # evaluation.
+    # Popularity for PyG AveragePopularity is raw positive-train item counts.
+    # Held-out validation/test interactions never leak into this tensor. CRRU
+    # normalizes the logged raw ARP post hoc with the largest train item count.
     popularity = _resolve_training_popularity(
         canonical,
         train_positive_mask,
         n_items,
     )
     popularity_count = _resolve_training_popularity_counts(
+        canonical,
+        train_positive_mask,
+        n_items,
+    )
+    normalized_popularity = _resolve_normalized_training_popularity(
         canonical,
         train_positive_mask,
         n_items,
@@ -259,6 +276,10 @@ def build_graph(
     data.test_positive_mask = test_positive_mask_t
     data.popularity = popularity
     data.popularity_count = popularity_count
+    data.normalized_popularity = normalized_popularity
+    data.largest_training_item_interaction_count = float(popularity_count.max().item()) if (
+        popularity_count.numel()
+    ) else 0.0
     data.labels = labels
     data.train_edge_keep_prob = float(config.train_edge_keep_prob)
 

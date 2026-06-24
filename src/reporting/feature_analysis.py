@@ -23,14 +23,18 @@ from src.data.feature_groups import (
 )
 from src.data.loaders import load_dataset
 from src.utils.crru import (
+    CRRU_RECOMMENDATION_METRIC_NAMES,
+    CRRU_REPORT_FORMULA_LINES,
     VALIDATION_ACCURACY_METRIC,
-    VALIDATION_ONLINE_CRRU_K_METRICS,
-    VALIDATION_ONLINE_CRRU_METRIC,
-    compute_crru_efficiency_scores,
-    compute_crru_scores_for_k,
+    VALIDATION_CRRU_K_METRICS,
+    VALIDATION_CRRU_METRIC,
     compute_validation_accuracy_objective,
-    compute_validation_online_crru_for_k,
-    compute_validation_online_crru_objective,
+    compute_validation_crru_metric_value,
+    is_validation_crru_metric_name,
+)
+from src.utils.crru_popularity import (
+    CRRUPopularityReconstructionError,
+    resolve_largest_training_item_interaction_count,
 )
 from src.utils.experiment_logger import RUNTIME_PROBE_METRIC_NAMES
 from src.utils.project_paths import RESULTS_DIR
@@ -56,9 +60,9 @@ FEATURE_SUBSET_RESULT_COLUMNS = (
     ("hit_40", "Hit@40"),
     ("personalization_40", "Pers@40"),
     ("avgpop_40", "AvgPop@40"),
-    ("online_crru_20", "OnlineCRRU@20"),
-    ("online_crru_40", "OnlineCRRU@40"),
-    ("online_crru_20_40", "OnlineCRRU@20_40"),
+    ("validation_crru_20", "ValidationCRRU@20"),
+    ("validation_crru_40", "ValidationCRRU@40"),
+    ("validation_crru_20_40", "ValidationCRRU@20_40"),
     ("posthoc_crru_20", "PosthocCRRU@20"),
     ("posthoc_crru_40", "PosthocCRRU@40"),
     ("time_per_epoch_s", "Time/epoch (s)"),
@@ -67,6 +71,18 @@ FEATURE_SUBSET_RESULT_COLUMNS = (
     ("completed_trials", "CompletedTrials"),
     ("status", "Status"),
 )
+
+
+def _append_crru_formula(lines: list[str]) -> None:
+    """Append the thesis CRRU formula block to a markdown report."""
+    lines.extend(["## CRRU Reporting Utility", ""])
+    for index, line in enumerate(CRRU_REPORT_FORMULA_LINES):
+        prefix = "**" if index == 0 else "- "
+        suffix = "**" if index == 0 else ""
+        lines.append(f"{prefix}{line.strip()}{suffix}")
+    lines.append("")
+
+
 STALE_FEATURE_EFFECT_FILES = (
     "feature_inventory.csv",
     "feature_inventory.md",
@@ -89,18 +105,7 @@ STALE_FEATURE_EFFECT_FILES = (
     "feature_optuna_importance.png",
     "README.md",
 )
-PRIMARY_METRIC_NAMES = (
-    "NDCG@20",
-    "Recall@20",
-    "HitRatio@20",
-    "Personalization@20",
-    "AveragePopularity@20",
-    "NDCG@40",
-    "Recall@40",
-    "HitRatio@40",
-    "Personalization@40",
-    "AveragePopularity@40",
-)
+PRIMARY_METRIC_NAMES = CRRU_RECOMMENDATION_METRIC_NAMES
 METRIC_TO_COLUMN = {
     "NDCG@20": "ndcg_20",
     "Recall@20": "recall_20",
@@ -228,6 +233,30 @@ def _sampled_params(trial: object) -> Mapping[str, Any]:
     return _json_mapping(_trial_attrs(trial).get("sampled_params"))
 
 
+def _effective_trial_config(trial: object, dataset: str) -> Mapping[str, Any]:
+    attrs = _trial_attrs(trial)
+    config = attrs.get(f"{dataset}.effective_config")
+    if isinstance(config, Mapping):
+        return config
+    params = dict(_sampled_params(trial))
+    params.setdefault("dataset", dataset)
+    return params
+
+
+def _largest_training_item_interaction_count(trial: object, dataset: str) -> float | None:
+    try:
+        return resolve_largest_training_item_interaction_count(
+            stored_value=_attr_float(
+                trial,
+                f"{dataset}.largest_training_item_interaction_count",
+            ),
+            config=_effective_trial_config(trial, dataset),
+            dataset=dataset,
+        )
+    except CRRUPopularityReconstructionError:
+        return None
+
+
 def _profile_from_trial(trial: object) -> str | None:
     profile = _sampled_params(trial).get("feature_subset_profile")
     return str(profile) if profile else None
@@ -249,32 +278,53 @@ def _trial_epoch_time_s(trial: object, dataset: str) -> float | None:
 
 
 def _metric_value(trial: object, dataset: str, metric: str) -> float | None:
+    metrics = _primary_metrics(trial, dataset)
+    if metric == VALIDATION_ACCURACY_METRIC:
+        if len(metrics) != len(PRIMARY_METRIC_NAMES):
+            return None
+        try:
+            return compute_validation_accuracy_objective(metrics)
+        except ValueError:
+            return None
+    if is_validation_crru_metric_name(metric):
+        return _validation_crru_metric_value(trial, dataset, metric, metrics)
     stored = _attr_float(trial, f"{dataset}.val.{metric}")
     if stored is not None:
         return stored
-    metrics = _primary_metrics(trial, dataset)
+    return None
+
+
+def _validation_crru_metric_value(
+    trial: object,
+    dataset: str,
+    metric: str,
+    metrics: Mapping[str, float],
+) -> float | None:
+    """Return one formal ValidationCRRU value from complete trial inputs."""
     if len(metrics) != len(PRIMARY_METRIC_NAMES):
         return None
+    peak_vram_mb = _attr_float(trial, f"{dataset}.peak_vram_mb")
+    epoch_time_s = _trial_epoch_time_s(trial, dataset)
+    largest_training_item_interaction_count = _largest_training_item_interaction_count(
+        trial,
+        dataset,
+    )
+    if (
+        peak_vram_mb is None
+        or epoch_time_s is None
+        or largest_training_item_interaction_count is None
+    ):
+        return None
     try:
-        if metric == VALIDATION_ACCURACY_METRIC:
-            return compute_validation_accuracy_objective(metrics)
-        if metric == VALIDATION_ONLINE_CRRU_METRIC:
-            return compute_validation_online_crru_objective(
-                metrics,
-                peak_vram_mb=_attr_float(trial, f"{dataset}.peak_vram_mb"),
-                epoch_time_s=_trial_epoch_time_s(trial, dataset),
-            )
-        for k, name in VALIDATION_ONLINE_CRRU_K_METRICS.items():
-            if metric == name:
-                return compute_validation_online_crru_for_k(
-                    metrics,
-                    k=k,
-                    peak_vram_mb=_attr_float(trial, f"{dataset}.peak_vram_mb"),
-                    epoch_time_s=_trial_epoch_time_s(trial, dataset),
-                )
+        return compute_validation_crru_metric_value(
+            metric,
+            metrics,
+            peak_vram_mb=peak_vram_mb,
+            epoch_time_s=epoch_time_s,
+            largest_training_item_interaction_count=largest_training_item_interaction_count,
+        )
     except ValueError:
         return None
-    return None
 
 
 def _primary_metrics(trial: object, dataset: str) -> dict[str, float]:
@@ -428,38 +478,19 @@ def _posthoc_crru_by_dataset(trials: Sequence[object]) -> dict[tuple[str, int], 
         {dataset for _index, trial in indexed_trials if (dataset := _trial_dataset(trial))},
     )
     for dataset in datasets:
-        scoped = [
-            (index, trial)
-            for index, trial in indexed_trials
-            if _trial_dataset(trial) == dataset
-            and len(_primary_metrics(trial, dataset)) == len(PRIMARY_METRIC_NAMES)
-        ]
-        if not scoped:
-            continue
-        efficiency = compute_crru_efficiency_scores(
-            [_attr_float(trial, f"{dataset}.peak_vram_mb") for _index, trial in scoped],
-            [_trial_epoch_time_s(trial, dataset) for _index, trial in scoped],
-        )
-        crru_by_k = {
-            k: compute_crru_scores_for_k(
-                ndcg=[_metric_value(trial, dataset, f"NDCG@{k}") for _index, trial in scoped],
-                recall=[_metric_value(trial, dataset, f"Recall@{k}") for _index, trial in scoped],
-                hit=[_metric_value(trial, dataset, f"HitRatio@{k}") for _index, trial in scoped],
-                personalization=[
-                    _metric_value(trial, dataset, f"Personalization@{k}")
-                    for _index, trial in scoped
-                ],
-                average_popularity=[
-                    _metric_value(trial, dataset, f"AveragePopularity@{k}")
-                    for _index, trial in scoped
-                ],
-                efficiency_scores=efficiency,
-            )
-            for k in (20, 40)
-        }
-        for row_index, (trial_index, trial) in enumerate(scoped):
+        for trial_index, trial in indexed_trials:
+            if _trial_dataset(trial) != dataset:
+                continue
+            values_by_cutoff = {
+                cutoff: _metric_value(trial, dataset, metric_name)
+                for cutoff, metric_name in VALIDATION_CRRU_K_METRICS.items()
+            }
+            if any(value is None for value in values_by_cutoff.values()):
+                continue
             output[(dataset, _trial_number(trial, trial_index))] = {
-                k: values[row_index] for k, values in crru_by_k.items()
+                cutoff: float(value)
+                for cutoff, value in values_by_cutoff.items()
+                if value is not None
             }
     return output
 
@@ -483,17 +514,17 @@ def _row_from_trial(
         "excluded_groups": _feature_groups_label(excluded),
         "source_objective": _trial_value(trial),
         "validation_accuracy_20_40": _metric_value(trial, dataset, VALIDATION_ACCURACY_METRIC),
-        "online_crru_20": _metric_value(
+        "validation_crru_20": _metric_value(
             trial,
             dataset,
-            VALIDATION_ONLINE_CRRU_K_METRICS[20],
+            VALIDATION_CRRU_K_METRICS[20],
         ),
-        "online_crru_40": _metric_value(
+        "validation_crru_40": _metric_value(
             trial,
             dataset,
-            VALIDATION_ONLINE_CRRU_K_METRICS[40],
+            VALIDATION_CRRU_K_METRICS[40],
         ),
-        "online_crru_20_40": _metric_value(trial, dataset, VALIDATION_ONLINE_CRRU_METRIC),
+        "validation_crru_20_40": _metric_value(trial, dataset, VALIDATION_CRRU_METRIC),
         "time_per_epoch_s": _trial_epoch_time_s(trial, dataset),
         "peak_vram_mb": _attr_float(trial, f"{dataset}.peak_vram_mb"),
         "batch": _attr_float(trial, f"{dataset}.batch_size"),
@@ -643,6 +674,7 @@ def _write_markdown_table(
     lines = [f"# {title}", "", *notes]
     if notes:
         lines.append("")
+    _append_crru_formula(lines)
     labels = [label for _key, label in columns]
     lines.append("| " + " | ".join(labels) + " |")
     lines.append("| " + " | ".join("---" for _label in labels) + " |")
@@ -660,7 +692,7 @@ def _profile_metric(
 ) -> float | None:
     for row in _best_rows_by_profile(rows):
         if row["dataset"] == dataset and row["feature_subset_profile"] == profile:
-            return _finite_float(row.get("online_crru_20_40"))
+            return _finite_float(row.get("validation_crru_20_40"))
     return None
 
 
@@ -686,7 +718,7 @@ def _feature_subset_delta_rows(rows: Sequence[Mapping[str, object]]) -> list[dic
             if row["dataset"] != dataset:
                 continue
             profile = str(row["feature_subset_profile"])
-            value = _finite_float(row.get("online_crru_20_40"))
+            value = _finite_float(row.get("validation_crru_20_40"))
             if value is None:
                 continue
             if profile.startswith("single_") and none is not None:
@@ -730,19 +762,20 @@ def _write_feature_subset_best_by_dataset(rows: Sequence[Mapping[str, object]]) 
     lines = [
         "# Feature Subset Best By Dataset",
         "",
-        "Ranking: validation OnlineCRRU@20_40 within each dataset.",
+        "Ranking: ValidationCRRU@20_40 within each dataset.",
         "Positive side_feature_gain means side features helped.",
         "Positive single_group_gain means that group alone beat no features.",
         "Positive drop_group_effect means removing that group hurt.",
         "Positive pair/triple gain means that combination beat no features.",
         "",
     ]
+    _append_crru_formula(lines)
     for dataset in sorted({str(row["dataset"]) for row in best_rows}):
         dataset_rows = [row for row in best_rows if row["dataset"] == dataset]
         completed = [
             row
             for row in dataset_rows
-            if row["status"] == "completed" and _finite_float(row.get("online_crru_20_40"))
+            if row["status"] == "completed" and _finite_float(row.get("validation_crru_20_40"))
         ]
         pending = sum(1 for row in dataset_rows if row["status"] == "pending")
         lines.extend([f"## {dataset}", ""])
@@ -754,11 +787,11 @@ def _write_feature_subset_best_by_dataset(rows: Sequence[Mapping[str, object]]) 
             )
             lines.extend([status, "", f"Pending required profiles: {pending}.", ""])
             continue
-        best = max(completed, key=lambda row: float(row["online_crru_20_40"]))
+        best = max(completed, key=lambda row: float(row["validation_crru_20_40"]))
         lines.append(
             "Best completed profile: "
             f"`{best['feature_subset_profile']}` "
-            f"(OnlineCRRU@20_40={_format_float(best['online_crru_20_40'])}, "
+            f"(ValidationCRRU@20_40={_format_float(best['validation_crru_20_40'])}, "
             f"ValidationAccuracy@20_40={_format_float(best['validation_accuracy_20_40'])}, "
             f"NDCG@20={_format_float(best['ndcg_20'])}, "
             f"Recall@20={_format_float(best['recall_20'])}, "
@@ -769,7 +802,7 @@ def _write_feature_subset_best_by_dataset(rows: Sequence[Mapping[str, object]]) 
         lines.append(f"Pending required profiles: {pending}.")
         dataset_deltas = [row for row in delta_rows if row["dataset"] == dataset]
         if dataset_deltas:
-            lines.extend(["", "| Effect | Delta OnlineCRRU@20_40 |", "|---|---:|"])
+            lines.extend(["", "| Effect | Delta ValidationCRRU@20_40 |", "|---|---:|"])
             for row in dataset_deltas:
                 lines.append(f"| {row['effect']} | {_format_float(row['delta'])} |")
         lines.append("")
@@ -1069,7 +1102,7 @@ def write_feature_subset_search_reports(
 
 def _feature_subset_source_rows(dataset: str, canonical: object) -> list[dict[str, object]]:
     groups = loaded_thesis_safe_item_feature_groups(canonical)
-    item_status = "pending" if groups else "not_applicable"
+    item_status = "search_candidate" if groups else "not_applicable"
     rows: list[dict[str, object]] = []
     for entity in ("item", "user"):
         names = getattr(canonical, f"{entity}_feature_names", None)
@@ -1148,6 +1181,8 @@ def _write_feature_group_inventory_markdown(rows: Sequence[Mapping[str, object]]
         "",
         "Loaded thesis-default feature columns grouped by dataset and entity.",
         "Feature-effect metrics are intentionally absent from this inventory.",
+        "`search_candidate` means the safe item group is eligible for the feature-subset "
+        "search; it is not a pending experiment status.",
         "",
         "| Dataset | Entity | Group | LoadedColumns | FeatureSubsetStatus |",
         "|---|---|---|---:|---|",

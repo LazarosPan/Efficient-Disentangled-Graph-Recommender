@@ -48,6 +48,7 @@ class ExperimentLogger:
     }
     _SUMMARY_VIEW_SENTINEL_COLUMNS: ClassVar[tuple[str, ...]] = (
         RUNTIME_PROBE_METRIC_NAMES[-1],
+        "largest_training_item_interaction_count",
         "test_final_popularity_spearman_40",
         "test_interest_branch_ndcg_20",
         "test_interest_branch_contribution_ratio_20",
@@ -423,6 +424,11 @@ class ExperimentLogger:
                     WHEN m.metric_name = 'training_time_s' AND m.split = 'train'
                     THEN m.metric_value
                 END) AS training_time_s,
+                MAX(CASE
+                    WHEN m.metric_name = 'largest_training_item_interaction_count'
+                         AND m.split = 'train'
+                    THEN m.metric_value
+                END) AS largest_training_item_interaction_count,
                 MAX(CASE
                     WHEN m.metric_name = 'runtime_probe_target_epochs'
                          AND m.split = 'approximation'
