@@ -104,8 +104,8 @@ Important runtime details:
   recomputing per candidate,
 - Optuna objectives are validation-only. `ValidationAccuracy@20_40` is the broad
   discovery objective for the coarse mechanism search; every completed search row
-  should still store `ValidationOnlineCRRU@20_40` diagnostics so reports and figures
-  can compare all source studies through one OnlineCRRU validation objective,
+  should still store `ValidationCRRU@20_40` diagnostics so reports and figures
+  can compare all source studies through one ValidationCRRU validation objective,
 - `search-experiments --trials N` targets N fresh informative finished trials for the
   current `search_space_revision`: fresh `COMPLETE` plus trainer/pruner-generated
   `PRUNED`, excluding `FAIL`, `RUNNING`, historically imported rows, duplicate-skip
@@ -160,12 +160,12 @@ Trainer family map:
 
 - `NDCG@20`
 - `Recall@20`
-- `AveragePopularity@20`
+- `AveragePopularity@20` (raw PyG ARP from train item counts)
 - `HitRatio@20`
 - `Personalization@20`
 - `NDCG@40`
 - `Recall@40`
-- `AveragePopularity@40`
+- `AveragePopularity@40` (raw PyG ARP from train item counts)
 - `HitRatio@40`
 - `Personalization@40`
 
@@ -195,7 +195,7 @@ Diagnostic rules:
 | branch-collapse warnings | flag conformity mix above `0.8`, interest mix below `0.1`, or branch cosine magnitude above `0.9` |
 | seen masking | final and standalone branch rankers are masked |
 | context diagnostics | read-only at already-excluded final top-k recommendations |
-| branch rankers | raw interest/conformity PyG `NDCG`, `Recall`, `AveragePopularity` |
+| branch rankers | raw interest/conformity PyG `NDCG`, `Recall`, raw-count `AveragePopularity` |
 | thesis role | exploratory diagnostics only; not primary metrics and not causal proof |
 
 Quick validation uses larger tiny caps for sparse-positive Taobao and KuaiRand slices so label-aware validation/test splits contain positive targets.
@@ -207,78 +207,90 @@ CAGRA evaluation filtering and CAGRA graph augmentation are not part of the acti
 Facts:
 
 - `CRRU@K` = Composite Resource-aware Recommendation Utility at K.
-- Use: thesis-facing ranking utility family for completed formal/ablation rows.
+- Use: deterministic bounded post-hoc utility for completed formal/ablation rows.
 - Not: causal-effect estimator.
-- Not: universal recommender metric.
+- Not: standard recommender metric, fairness metric, debiasing proof, or universal cross-dataset quality score.
 - Direction: higher is better.
 - Parameterization: `CRRU@K(m; theta)`; weights encode task/stakeholder preference.
-- Lower-cost raw quantities are inverted: average popularity, VRAM, seconds/epoch.
+- Lower-cost raw quantities are inverted: CRRU-normalized raw AveragePopularity, peak VRAM, seconds/epoch.
 - VRAM is a capacity/resource cost, not a reward.
 - Larger batches can improve CRRU only if time/epoch gains offset VRAM penalty.
-- Normalization scope: dataset-local report section rows.
-- Lower-cost quantities are inverted after min-max normalization.
-- Interpretation scope: relative within a dataset/report section; adding/removing rows can change values.
-- Inverse AvgPop measures lower popularity concentration, not causal fairness.
+- Scope: absolute per-run utility; adding/removing report rows must not change values.
+- No row-set, report-row, dataset, trial, or completed-experiment min-max normalization is used.
+- Missing, NaN, infinite, or out-of-domain formal CRRU inputs raise errors.
+- `CRRU_EPSILON` only prevents exact-zero collapse under fractional powers.
+- Inverse recommendation popularity measures lower popularity concentration, not causal fairness.
+- `query-results` prints a CRRU denominator audit: stored vs reconstructed vs unavailable vs invalid, skipped-row reasons, and assertions that raw ARP does not exceed the denominator and computed CRRU values stay in `[0,1]`.
 
 $$
-\operatorname{Accuracy}@K =
+\operatorname{RankingAccuracy}@K =
 \operatorname{NDCG}@K^{0.50}
 \operatorname{Recall}@K^{0.35}
-\operatorname{Hit}@K^{0.15}
+\operatorname{HitRatio}@K^{0.15}
 $$
 
 $$
-\operatorname{PopularityDiversity}@K =
-\operatorname{Pers}@K^{0.40}
-\left(1 - \operatorname{AvgPop}@K_n\right)^{0.60}
+\operatorname{PopularityAwarePersonalization}@K =
+\operatorname{Personalization}@K^{0.40}
+\operatorname{InverseRecommendationPopularity}@K^{0.60}
 $$
 
 $$
-\operatorname{Efficiency} =
-\left(1 - \log(1+\operatorname{VRAM})_n\right)^{0.50}
-\left(1 - \log(1+\operatorname{time/epoch})_n\right)^{0.50}
+\operatorname{InverseRecommendationPopularity}@K =
+1-\operatorname{CRRUNormalizedAveragePopularity}@K
+$$
+
+$$
+\operatorname{CRRUNormalizedAveragePopularity}@K =
+\frac{\log(1+\operatorname{AveragePopularity}@K)}
+{\log(1+\operatorname{LargestTrainingItemInteractionCount})}
+$$
+
+$$
+\operatorname{TrainingResourceUtility} =
+\operatorname{PeakGpuMemoryCapacityScore}^{0.50}
+\operatorname{EpochDurationEfficiencyScore}^{0.50}
 $$
 
 $$
 \operatorname{CRRU}@K =
-\operatorname{Accuracy}@K^{0.55}
-\operatorname{PopularityDiversity}@K^{0.30}
-\operatorname{Efficiency}^{0.15}
+\operatorname{RankingAccuracy}@K^{0.55}
+\operatorname{PopularityAwarePersonalization}@K^{0.30}
+\operatorname{TrainingResourceUtility}^{0.15}
 $$
 
 Thesis default `theta`:
 
 | Component | Weight |
 | --- | ---: |
-| Accuracy `NDCG/Recall/Hit` | `0.50 / 0.35 / 0.15` |
-| Popularity-Diversity `Personalization/inverse AvgPop` | `0.40 / 0.60` |
-| Efficiency `inverse log VRAM/inverse log time per epoch` | `0.50 / 0.50` |
-| Final `Accuracy/Popularity-Diversity/Efficiency` | `0.55 / 0.30 / 0.15` |
+| RankingAccuracy `NDCG/Recall/HitRatio` | `0.50 / 0.35 / 0.15` |
+| PopularityAwarePersonalization `Personalization/inverse CRRU-normalized raw ARP` | `0.40 / 0.60` |
+| TrainingResourceUtility `peak GPU memory/epoch duration` | `0.50 / 0.50` |
+| Final `RankingAccuracy/PopularityAwarePersonalization/TrainingResourceUtility` | `0.55 / 0.30 / 0.15` |
 
-Implementation normalization:
+Implementation transforms:
 
-$$
-x_n = \frac{x - \min(x)}{\max(x) - \min(x) + \epsilon}
-$$
-
-- `epsilon=1e-8` prevents divide-by-zero and exact-zero fractional-power terms.
-- Min-max is used because CRRU terms must stay bounded in `[0,1]`.
-- Z-score is avoided: negative/unbounded values break fractional-power products.
+- PyG `LinkPredAveragePopularity` receives raw train-only item interaction counts.
+- `LargestTrainingItemInteractionCount` is the maximum positive-train interaction count over items.
+- Model/loss auxiliary popularity targets may use log-normalized train popularity separately; this does not change the logged PyG ARP metric.
+- `PeakGpuMemoryCapacityScore = 1/(1+log(1+PeakGpuMemoryMegabytes))`.
+- `EpochDurationEfficiencyScore = 1/(1+log(1+EpochDurationSeconds))`.
+- `ValidationCRRU@20And40 = arithmetic_mean(CRRU@20, CRRU@40)`.
 
 Optuna CRRU:
 
 | Item | Contract |
 | --- | --- |
-| Live/default report metric | `ValidationOnlineCRRU@20_40` |
-| Per-K attrs | `ValidationOnlineCRRU@20`, `ValidationOnlineCRRU@40` |
-| Accuracy/popularity-diversity inputs | validation NDCG, Recall, Hit, Personalization |
-| Lower-cost inputs | validation AveragePopularity, peak VRAM, seconds/epoch |
-| Lower-cost transform | deterministic trial-local higher-is-better transform |
-| Report CRRU | recomputed after completed rows exist; not live objective |
+| Live/default report metric | `ValidationCRRU@20_40` |
+| Per-K attrs | `ValidationCRRU@20`, `ValidationCRRU@40` |
+| Accuracy/popularity inputs | validation NDCG, Recall, Hit, Personalization |
+| Lower-cost inputs | validation raw PyG AveragePopularity, logged or reconstructed largest train item count, peak VRAM, seconds/epoch |
+| Lower-cost transform | log-normalize raw ARP inside CRRU, then invert; inverse-log resources |
+| Report CRRU | same absolute formula as the validation objective, applied to test rows |
 | Search shape | 150-epoch cap guarded by Hyperband pruning and early stopping; no exhaustive grid |
 | Depth guard | four-hop excluded unless separate deep diagnostic justifies cost/risk |
 
-Naming note: `OnlineCRRU` means Optuna-safe single-trial CRRU-style objective on the validation split. It includes validation ranking/popularity metrics, seconds/epoch, and peak VRAM; it is not an online-serving or A/B-test metric.
+Naming note: `ValidationCRRU` means Optuna-safe single-trial CRRU-style objective on the validation split. It includes validation ranking/popularity metrics, seconds/epoch, and peak VRAM; it is not an online-serving or A/B-test metric.
 
 ## Checkpoints and identity
 
@@ -290,6 +302,9 @@ Naming note: `OnlineCRRU` means Optuna-safe single-trial CRRU-style objective on
 Current rules:
 
 - the default checkpoint filename includes `training_hash`,
+- generated checkpoint filenames preserve the full canonical label when it fits;
+  overlong basenames are byte-bounded with a canonical-name digest plus
+  `training_hash`, while full `canonical_name` remains in checkpoint/SQLite metadata,
 - changing a training-defining field requires a new checkpoint,
 - evaluation cutoffs are fixed by `THESIS_EVAL_KS` in `Evaluator`, so checkpoint
   filenames are keyed by training identity rather than report-display options,
@@ -325,5 +340,5 @@ Current rules:
 - Default `query-results` writes Markdown headings and pipe tables.
 - Report sections: final formal thesis profiles, supporting historical/preprocessing rows, runtime-probe notes, public ablations.
 - Runtime probes are visible but excluded from ranked formal tables.
-- Ranked sections split tables into accuracy, popularity-diversity, and composite-resource blocks.
-- `CRRU@20` and `CRRU@40` stay in composite-resource tables and are dataset-local section-row min-max utilities.
+- Ranked sections use one leaderboard with ranking, log-popularity, personalization, and resource columns.
+- `CRRU@20` and `CRRU@40` stay in composite-resource tables as absolute per-run utilities.

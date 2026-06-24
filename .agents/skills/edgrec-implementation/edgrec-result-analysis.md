@@ -8,13 +8,13 @@ Use this file for current thesis result interpretation. Truth source: `results/t
 | --- | --- |
 | Refresh trigger | Whenever `results/query_results.md`, `results/optuna_optimization.md`, or `results/feature_analysis/` is regenerated, re-check this file before using it for thesis writing. |
 | Report layout | `results/query_results.md` now uses one unified test-set leaderboard for completed full-data rows. `DatasetRank` is dataset-local display order, `ExpID` is the SQLite experiment id, and `Evidence` distinguishes thesis profile, supporting, and ablation rows. Do not call `DatasetRank` a run id. |
-| Test-result source | Use `results/query_results.md` for test-set rows, paper baseline status, runtime probes, CRRU definitions, speed/VRAM values, popularity-diversity diagnostics, and row-level narratives. |
+| Test-result source | Use `results/query_results.md` for test-set rows, paper baseline status, runtime probes, CRRU definitions, speed/VRAM values, popularity-aware personalization diagnostics, and row-level narratives. |
 | Search-result source | Use `results/optuna_optimization.md` for validation objective semantics, trial accounting, search-space revision status, importances, promotion candidates, and hyperparameter-response explanations. |
 | Feature-result source | Use `results/feature_analysis/feature_subset_best_by_dataset.md` for feature-subset interpretation. These are validation/search results unless a matching full-data test row exists. |
 | Conflict rule | If this file disagrees with a generated report, the generated report wins; update this file rather than carrying stale interpretation forward. |
 | Thesis wording | Every result explanation must tie a metric pattern to one generated report, then state the evidence role: full-data test row, runtime probe, validation search candidate, imported trial, or diagnostic-only evidence. |
 | Optuna caution | Do not use mixed, imported, or unrevisioned Optuna rows as strong thesis evidence; use fresh same-revision importances for strong search claims and full-data reruns for final test claims. |
-| Optuna figures | Default Optuna figures aggregate loaded source studies by dataset using runtime-aware `ValidationOnlineCRRU@20_40`; thesis-facing plots call it the validation CRRU selection score. Gray importance cells mean no detected association, and branch-depth cells marked `n*` have fewer than 10 completed trials. |
+| Optuna figures | Default Optuna figures aggregate loaded source studies by dataset using runtime-aware `ValidationCRRU@20_40`; thesis-facing plots call it the validation CRRU selection score. The component-response scatter uses absolute component scores vs absolute ValidationCRRU, while the separate heatmap owns Spearman rank association. Gray importance cells mean no detected association, and branch-depth cells marked `n*` have fewer than 10 completed trials. |
 
 Evidence roles:
 
@@ -32,7 +32,7 @@ Evidence roles:
 | `edgrec-global-top-*` | Full-data test rows now exist for `amazonbook`, `kuairec_v2`, `kuairand1k`, and `movielens1m`. | Main current promoted EDGRec test evidence. These profiles came from dataset-local validation CRRU candidates, but the unified test leaderboard may rank other completed rows above them. |
 | `lightgcn_paper` | Full-data test rows: `amazonbook`, `kuairec_v2`, `movielens1m`; runtime probes: `kuairand1k`, `kuairec_v2`. | Paper-faithful accuracy/resource comparison where full rows exist. Runtime-only rows are feasibility evidence. |
 | `dice_paper` | Runtime probes only: `amazonbook`, `movielens1m`. | Resource feasibility only; do not claim final accuracy against DICE yet. |
-| feature-subset EDGRec search | Completed validation/search coverage for all current feature-subset datasets. | Feature evidence only unless a named full-data test rerun matches the feature profile. |
+| feature-subset EDGRec search | Completed validation/search coverage for all current feature-subset datasets; current report has 0 pending required profiles. | Feature evidence only unless a named full-data test rerun matches the feature profile. |
 | sampled `lightgcn` / `dice_like` | Supporting fast ablation and legacy mechanism rows. | Useful for engineering comparison, not paper-faithful baseline claims. |
 
 ## Feature-Subset Search Boundary
@@ -41,20 +41,21 @@ Feature-subset conclusions use completed, non-probe rows from `edgrec-feature-su
 
 | Dataset | Current feature-subset evidence | Thesis boundary |
 | --- | --- | --- |
-| `amazonbook` | Best completed profile is `graph_only` with validation OnlineCRRU@20_40 0.142527. | No side-feature claim; AmazonBook remains graph-only. |
-| `kuairand1k` | Best completed profile is `triple_item_author_music__item_upload_time__item_category` with OnlineCRRU@20_40 0.061002; side-feature gain is +0.019579 and `item_category` is the strongest single group (+0.017831). | Side features help validation CRRU in the subset search, but current promoted test rows still have weak ranking metrics. |
-| `kuairec_v2` | Best completed profile is `single_item_resolution` with OnlineCRRU@20_40 0.204999; side-feature gain is +0.003935, with strong single-group gains for `item_resolution` and `item_video_metadata`. | Side features are promising validation evidence; the strongest current full-data test rows are ablation/supporting rows, not the promoted global-top EDGRec profiles. |
-| `movielens1m` | Best completed profile is `none` with OnlineCRRU@20_40 0.256069; genre side features hurt (`side_feature_gain` -0.012320). | Do not frame MovieLens genre features as useful under the current EDGRec search basin. |
+| `amazonbook` | Best completed profile is `graph_only` with validation ValidationCRRU@20_40 0.144116 and 0 pending required profiles. | No side-feature claim; AmazonBook remains graph-only. |
+| `kuairand1k` | Best completed profile is `triple_item_author_music__item_upload_time__item_category` with ValidationCRRU@20_40 0.062106; side-feature gain is +0.020024 and `item_category` is the strongest single group (+0.018246). | Side features help validation CRRU in the subset search, but current promoted test rows still have weak ranking metrics. |
+| `kuairec_v2` | Best completed profile is `single_item_resolution` with ValidationCRRU@20_40 0.215856; side-feature gain is +0.002253, with strong single-group gains for `item_resolution` and `item_video_metadata`. | Side features are promising validation evidence; the strongest current full-data test rows are ablation/supporting rows, not the promoted global-top EDGRec profiles. |
+| `movielens1m` | Best completed profile is `none` with ValidationCRRU@20_40 0.262050; genre side features hurt (`side_feature_gain` -0.012534). | Do not frame MovieLens genre features as useful under the current EDGRec search basin. |
 
-Global profile promotion is separate from feature evidence: `edgrec-global-top-<dataset>-r<rank>` profiles are selected across loaded studies by dataset-local validation `ValidationOnlineCRRU@20_40`, then tested through full-data rows.
+Global profile promotion is separate from feature evidence: `edgrec-global-top-<dataset>-r<rank>` profiles are selected across loaded studies by dataset-local validation `ValidationCRRU@20_40`, then tested through full-data rows.
 
 ## Interpretation Rules
 
 | Rule | Reason |
 | --- | --- |
 | Compare accuracy only on same dataset, split, and full-data status. | Runtime probes and full-data test rows have different evidence roles. |
-| Treat CRRU as parameterized utility, not causal effect. | CRRU combines accuracy, popularity-diversity, time, and VRAM under task-specific weights. |
-| Treat inverse AvgPop carefully. | Lower average popularity means lower popularity concentration, not guaranteed fairness or causal debiasing. |
+| Treat CRRU as parameterized utility, not causal effect. | CRRU combines accuracy, popularity-aware personalization, time, and VRAM under task-specific weights. |
+| Treat AvgPop carefully. | Lower raw PyG AveragePopularity means lower raw training-popularity concentration, not guaranteed fairness or causal debiasing. CRRU log-normalizes raw ARP internally. |
+| Reconstruct CRRU denominator when possible. | `LargestTrainingItemInteractionCount` is deterministic training-graph metadata and may be reconstructed from stored dataset/preprocessing/split/item-universe config. Rows still need rerun only when the logged `AveragePopularity@K` was not raw PyG ARP or the exact training graph cannot be reconstructed. |
 | Keep KuaiRec `kuairec_small_matrix_full_observation` separate from `kuairec_big_matrix_watch_ratio_threshold_0_5`. | `small_matrix` is near-oracle dense sensitivity; default sparse story is `big_matrix` with `watch_ratio >= 0.5`. |
 | Report DICE paper speed as probe evidence. | No full-data DICE paper accuracy rows yet. |
 | Distinguish `lightgcn_paper` from sampled `lightgcn`. | Paper fidelity vs scalable approximation. |
@@ -62,14 +63,14 @@ Global profile promotion is separate from feature evidence: `edgrec-global-top-<
 
 ## Current Headline Comparisons
 
-Rows below use the current unified full-data test leaderboard unless marked as a probe. CRRU values are current leaderboard-scope values and will change if the comparison set changes.
+Rows below use the current unified full-data test leaderboard unless marked as a probe. CRRU is an absolute per-run utility, so adding/removing report rows must not change an existing row's CRRU.
 
 | Dataset | EDGRec row | Comparator | EDGRec improves | EDGRec does not improve | Thesis reading |
 | --- | --- | --- | --- | --- | --- |
-| `amazonbook` | ExpID 17200, `edgrec-global-top-amazonbook-r2` | Best LightGCN paper row ExpID 8712 | Time/epoch 3.3s vs 36.2s; AvgPop@20 0.0995 vs 0.1387. | CRRU@20 0.6120 vs 0.8623; NDCG@20 0.0189 vs 0.0246; Recall@20 0.0234 vs 0.0315; Hit@20 0.1546 vs 0.1958; peak VRAM 9380MB vs 931MB. | EDGRec is a speed and lower-popularity-concentration trade-off, not the AmazonBook leaderboard winner. |
-| `kuairec_v2` | ExpID 17213, `edgrec-global-top-kuairec-v2-r3` | LightGCN paper ExpID 8701; leaderboard winner is ablation ExpID 4047 | Against LightGCN paper: CRRU@20 0.3747 vs 0.0443; NDCG@20 0.1181 vs 0.0484; Recall@20 0.0268 vs 0.0108; Hit@20 0.7299 vs 0.4164; AvgPop@20 0.3068 vs 0.5754; time/epoch 4.1s vs 226.3s. | Peak VRAM is higher than LightGCN paper: 3265MB vs 1288MB. The top test row is the public ablation `mainline` with CRRU@20 0.7155 and NDCG@20 0.9195, so the promoted global-top row is not the dataset winner. | KuaiRec remains the strongest positive EDGRec dataset, but the best current full-data row is an ablation/supporting-family result that should be treated as a promotion candidate before thesis headline wording. |
-| `movielens1m` | ExpID 17228, `edgrec-global-top-movielens1m-r1` | Best LightGCN paper row ExpID 8711 | Time/epoch 2.0s vs 3.2s; AvgPop@20 0.2972 vs 0.3351; Personalization@20 0.9447 vs 0.9329. | CRRU@20 0.7343 vs 0.8781; NDCG@20 0.0913 vs 0.0997; Recall@20 0.1282 vs 0.1398; Hit@20 0.4762 vs 0.4977; peak VRAM 2105MB vs 551MB. | EDGRec is a popularity/speed alternative. LightGCN remains the current CRRU and raw-accuracy winner. |
-| `kuairand1k` | ExpID 17226, `edgrec-global-top-kuairand1k-r5` | Best full-data supporting row ExpID 1094; LightGCN paper is probe-only P2 | Recall@20 0.0056 vs 0.0007; AvgPop@20 0.2380 vs 0.3642; time/epoch 0.074s vs 25.3s; peak VRAM 2045MB vs 12008MB. | CRRU@20 0.3173 vs 0.4574; NDCG@20 0.0026 vs 0.0202; Hit@20 0.0110 vs 0.3000. | KuaiRand remains stress-test evidence. The promoted EDGRec rows are extremely cheap under a compact randomized-exposure training contract, but ranking utility is not competitive. |
+| `amazonbook` | ExpID 17201, `edgrec-global-top-amazonbook-r2` | Best LightGCN paper row ExpID 8712 | Time/epoch 3.3s vs 36.2s; denominator can be reconstructed from stored train-graph config. | If the stored AvgPop was legacy normalized rather than raw PyG ARP, rerun is needed for final CRRU; NDCG@20 0.0188 vs 0.0246; Recall@20 0.0236 vs 0.0315; Hit@20 0.1531 vs 0.1958; peak VRAM 14762MB vs 931MB. | EDGRec is a speed and lower-popularity-concentration trade-off, not the AmazonBook leaderboard winner. |
+| `kuairec_v2` | ExpID 17213, `edgrec-global-top-kuairec-v2-r3` | LightGCN paper ExpID 8701; leaderboard winner is supporting ExpID 4037 | Against LightGCN paper: NDCG@20 0.1181 vs 0.0484; Recall@20 0.0268 vs 0.0108; Hit@20 0.7299 vs 0.4164; time/epoch 4.1s vs 226.3s. | Peak VRAM is higher than LightGCN paper: 3265MB vs 1288MB. Legacy normalized AvgPop rows still need rerun for final raw-ARP CRRU claims. | KuaiRec remains the strongest positive EDGRec dataset, but the best current full-data row is a supporting-family result that should be treated as a promotion candidate before thesis headline wording. |
+| `movielens1m` | ExpID 17228, `edgrec-global-top-movielens1m-r1` | Best LightGCN paper row ExpID 8711 | Time/epoch 2.0s vs 3.2s; Personalization@20 0.9447 vs 0.9329; denominator can be reconstructed. | Legacy normalized AvgPop rows still need rerun for final raw-ARP CRRU claims; NDCG@20 0.0913 vs 0.0997; Recall@20 0.1282 vs 0.1398; Hit@20 0.4762 vs 0.4977; peak VRAM 2105MB vs 551MB. | EDGRec is a popularity/speed alternative. LightGCN remains the current raw-accuracy winner. |
+| `kuairand1k` | ExpID 17226, `edgrec-global-top-kuairand1k-r5` | Best full-data supporting row ExpID 1094; LightGCN paper is probe-only P2 | Recall@20 0.0056 vs 0.0007; time/epoch 0.074s vs 25.3s; peak VRAM 2045MB vs 12008MB; denominator can be reconstructed when item-universe policy is stored. | Legacy normalized AvgPop rows still need rerun for final raw-ARP CRRU claims; NDCG@20 0.0026 vs 0.0202; Hit@20 0.0110 vs 0.3000. | KuaiRand remains stress-test evidence. The promoted EDGRec rows are extremely cheap under a compact randomized-exposure training contract, but ranking utility is not competitive. |
 
 ## KuaiRand Timing Interpretation
 
@@ -94,7 +95,7 @@ The `Time/Ep` value in `results/query_results.md` is the CRRU runtime source: it
 
 | Dataset | EDGRec reference | DICE probe | Speed evidence | Resource note | Accuracy status |
 | --- | --- | --- | --- | --- | --- |
-| `amazonbook` | ExpID 17200 | Probe P1 | 3.3s/epoch vs 3426.2s/epoch: about 1038x faster. | EDGRec peak VRAM is higher: 9380MB vs 5197MB. | DICE NDCG@20 is one-epoch diagnostic only. |
+| `amazonbook` | ExpID 17201 | Probe P1 | 3.3s/epoch vs 3426.2s/epoch: about 1038x faster. | EDGRec peak VRAM is higher: 14762MB vs 5197MB. | DICE NDCG@20 is one-epoch diagnostic only. |
 | `movielens1m` | ExpID 17228 | Probe P4 | 2.0s/epoch vs 578.8s/epoch: about 289x faster. | EDGRec peak VRAM is lower: 2105MB vs 2899MB. | DICE NDCG@20 is one-epoch diagnostic only. |
 
 Thesis-safe DICE statement: "Paper-faithful DICE is orders of magnitude slower per epoch under current profiles; final DICE ranking comparison remains open until full rows exist."
@@ -114,9 +115,9 @@ Thesis-safe DICE statement: "Paper-faithful DICE is orders of magnitude slower p
 
 | Dataset | Current pattern | Likely explanation | Thesis wording |
 | --- | --- | --- | --- |
-| `amazonbook` | EDGRec global-top rows lower AvgPop and train about 10x faster than LightGCN paper, but LightGCN has higher CRRU, NDCG, Recall, Hit, and much lower VRAM. Several EDGRec top rows also have high branch-cosine warnings. | Sparse graph-only data gives limited side/context signal; the branch split can reduce popularity concentration without enough relevance gain. | "On AmazonBook, EDGRec is an efficiency and popularity-concentration trade-off, not a ranking-accuracy win in current full-data rows." |
-| `kuairec_v2` | Promoted EDGRec beats LightGCN paper on accuracy, AvgPop, CRRU, and speed, while the best current test row is the public ablation `mainline` rather than a promoted global-top profile. | Watch-ratio video data has strong exposure/popularity structure; EDGRec's sampled training and branch/context terms find useful signal while full-graph LightGCN is costly. The ablation result may reflect a stronger profile than the currently promoted candidates. | "KuaiRec is current evidence for EDGRec-family benefit, but headline claims should identify whether they use the promoted profile or the stronger ablation row." |
-| `movielens1m` | EDGRec global-top rows improve AvgPop and speed but remain below LightGCN paper on CRRU and raw accuracy and above it on VRAM. | Dense explicit ratings make LightGCN strong; EDGRec's fixed/balanced score mix trades some accuracy for lower popularity concentration and speed. | "MovieLens shows a resource/popularity-aware alternative, with the accuracy and VRAM cost reported explicitly." |
+| `amazonbook` | EDGRec global-top rows train about 10x faster than LightGCN paper, but LightGCN has higher NDCG, Recall, Hit, and much lower VRAM. Several EDGRec top rows also have high branch-cosine warnings. | Sparse graph-only data gives limited side/context signal; the branch split can reduce popularity concentration without enough relevance gain. | "On AmazonBook, EDGRec is an efficiency and popularity-concentration trade-off, not a ranking-accuracy win in current full-data rows." |
+| `kuairec_v2` | Promoted EDGRec beats LightGCN paper on accuracy and speed, with AvgPop reported as raw PyG train-count ARP and CRRU normalizing raw ARP internally. The best current test row is supporting ExpID 4037 rather than a promoted global-top profile. | Watch-ratio video data has strong exposure/popularity structure; EDGRec's sampled training and branch/context terms find useful signal while full-graph LightGCN is costly. The supporting result may reflect a stronger profile than the currently promoted candidates. | "KuaiRec is current evidence for EDGRec-family benefit, but headline claims should identify whether they use the promoted profile or the stronger supporting row." |
+| `movielens1m` | EDGRec global-top rows improve speed but remain below LightGCN paper on raw accuracy and above it on VRAM; AvgPop is raw PyG train-count ARP and CRRU normalizes raw ARP internally. | Dense explicit ratings make LightGCN strong; EDGRec's fixed/balanced score mix trades some accuracy for lower popularity concentration and speed. | "MovieLens shows a resource/popularity-aware alternative, with the accuracy and VRAM cost reported explicitly." |
 | `kuairand1k` | EDGRec global-top rows are extremely cheap because they use compact randomized-exposure item-universe training with huge batches and 4,790-7,088 train edges, but ranking metrics remain low. Paper LightGCN evidence is still probe-only. | Randomized exposure and sparse positives make target relevance hard; CRRU can be dominated by efficiency and popularity terms when accuracy is weak. | "KuaiRand remains unresolved; use it as compact-regime stress-test evidence, not a positive accuracy headline." |
 
 ## Why Accuracy Can Improve or Degrade
@@ -148,4 +149,4 @@ Thesis-safe DICE statement: "Paper-faithful DICE is orders of magnitude slower p
 | Multi-seed confirmation for best rows | Current global-top rows are still mostly one-seed evidence. |
 | Full-data reruns for promising feature-subset profiles | Needed before KuaiRec/KuaiRand side-feature validation gains become test-set claims. |
 | Per-dataset branch diagnostic writeup | Explains why score mix, branch rank, and branch cosine differ by dataset. |
-| Pareto/frontier view for accuracy, AvgPop, time, and VRAM | Avoids relying on one scalar CRRU when the thesis claim is trade-off based. |
+| Pareto/frontier view for accuracy, raw AvgPop, time, and VRAM | Avoids relying on one scalar CRRU when the thesis claim is trade-off based. |

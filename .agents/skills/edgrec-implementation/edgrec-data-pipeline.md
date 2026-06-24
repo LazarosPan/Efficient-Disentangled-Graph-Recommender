@@ -125,7 +125,9 @@ Current graph rules:
 - `build_graph()` attaches original observed split masks plus label-aware `*_positive_mask` fields.
 - Interaction graph edges, BPR training positives, and train-time popularity use only positive training labels.
 - Original observed masks remain available for seen-item exclusion and split bookkeeping.
-- `build_graph()` always recomputes `data.popularity` from positive rows in the final training split.
+- `build_graph()` always recomputes raw positive-train item counts from the final training split; validation/test interactions do not enter this tensor.
+- `data.popularity` is the raw-count tensor passed to PyG `LinkPredAveragePopularity`; this keeps logged `AveragePopularity@K` as raw PyG ARP.
+- `data.popularity_count` mirrors raw train counts for DICE-style sampling/masks, `data.normalized_popularity` stores log-normalized train popularity for model/loss auxiliary targets, and `data.largest_training_item_interaction_count` stores the CRRU denominator.
 - `build_graph()` precomputes `data.edge_norm` once, so training and evaluation share the same degree normalization.
 - Optional canonical payloads are copied onto the PyG `Data` object through one shared boundary helper.
 - CAGRA graph augmentation is removed. It materialized ANN edges into the GNN training graph and did not solve the training-time VRAM/epoch bottleneck.

@@ -63,7 +63,7 @@ Use this file for thesis-facing rationale: which literature-backed ideas justify
 | Causal supervision | DICE branch triplets and discrepancy; DCCL/DirectAU geometry as optional add-ons | DICE branch losses are default; contrastive/DirectAU terms are available but disabled unless explicitly tested. |
 | Leakage control | Survey warnings about post-treatment features and exposure bias | `thesis_default` feature policy; train-only popularity/recency; explicit propensity-gate rules. |
 | Systems path | Full-graph vs mini-batch GNN literature; ANN systems papers | Sampled subgraphs, auto-batch, vectorized negative sampling, bounded pairwise losses. |
-| Evaluation | Ranking metrics plus bias/resource diagnostics | NDCG/Recall/Hit/AvgPop/Personalization plus dataset-local CRRU; no causal-effect metric claim. |
+| Evaluation | Ranking metrics plus popularity/resource diagnostics | NDCG/Recall/Hit/raw PyG AveragePopularity/Personalization plus absolute per-run CRRU that internally normalizes raw ARP; no causal-effect metric claim. |
 
 ## Contribution Hypotheses
 
@@ -71,7 +71,7 @@ Use this file for thesis-facing rationale: which literature-backed ideas justify
 | --- | --- |
 | H1: Dual-branch causal supervision can match or beat LightGCN accuracy on exposure-biased datasets. | Full formal rows where EDGRec >= `lightgcn_paper` on NDCG/Recall/Hit. Currently strongest on `kuairec_v2`; mixed elsewhere. |
 | H2: Sampled causal-branch training is much faster than paper-faithful full-graph causal baselines. | Per-epoch time from SQLite/query report. Current DICE evidence is runtime-probe only. |
-| H3: Learned score mixing can trade accuracy against popularity sensitivity. | Score-mix, AvgPop, branch-rank, and Spearman diagnostics from final test rows. |
+| H3: Learned score mixing can trade accuracy against popularity sensitivity. | Score-mix, raw PyG AveragePopularity, branch-rank, and Spearman diagnostics from final test rows. |
 | H4: Safe side features help only when dataset semantics support them. | Explicit `with_features` ablations and preprocessing-sweep rows; avoid cross-dataset generalization from one view. |
 
 ## Claim Boundaries
