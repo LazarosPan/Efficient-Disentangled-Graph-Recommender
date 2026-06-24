@@ -93,6 +93,7 @@ DB_PATH = THESIS_DB_PATH
 
 _CHECKPOINT_IDENTITY_VERSION = 1
 _CHECKPOINT_HASH_LEN = 16
+_CHECKPOINT_FILENAME_BYTE_LIMIT = 240
 _TRAINING_IDENTITY_FIELDS = (
     "amp_dtype",
     "auxiliary_loss_schedule",
@@ -243,6 +244,26 @@ def _build_evaluation_identity(
     return identity, _stable_identity_hash(identity)
 
 
+def _checkpoint_filename(canonical_name: str, training_hash: str) -> str:
+    """Return a checkpoint filename that fits common filesystem byte limits."""
+    suffix = f"_train-{training_hash}.pt"
+    filename = f"{canonical_name}{suffix}"
+    if len(filename.encode("utf-8")) <= _CHECKPOINT_FILENAME_BYTE_LIMIT:
+        return filename
+
+    name_digest = hashlib.sha256(canonical_name.encode("utf-8")).hexdigest()[:8]
+    shortened_suffix = f"_{name_digest}{suffix}"
+    prefix_budget = _CHECKPOINT_FILENAME_BYTE_LIMIT - len(
+        shortened_suffix.encode("utf-8"),
+    )
+    prefix = (
+        canonical_name.encode("utf-8")[:prefix_budget]
+        .decode("utf-8", errors="ignore")
+        .rstrip("._-")
+    )
+    return f"{prefix}{shortened_suffix}"
+
+
 def _default_checkpoint_path(
     config: EDGRecConfig,
     preset: str | None,
@@ -251,7 +272,7 @@ def _default_checkpoint_path(
 ) -> Path:
     """Return the default checkpoint path for a semantic training identity."""
     canonical_name = build_canonical_experiment_name(config, preset, intervention)
-    return CHECKPOINT_DIR / f"{canonical_name}_train-{training_hash}.pt"
+    return CHECKPOINT_DIR / _checkpoint_filename(canonical_name, training_hash)
 
 
 def _default_checkpoint_path_candidates(
@@ -480,7 +501,7 @@ def build_runtime_model(
         canonical.n_items,
         config,
         item_features=getattr(data, "item_features", None),
-        item_popularity=data.popularity,
+        item_popularity=getattr(data, "normalized_popularity", data.popularity),
         item_recency=train_derived_tensors["item_recency"],
         item_propensity_targets=train_derived_tensors["item_propensity_targets"],
         recent_train_items=train_derived_tensors["recent_train_items"],
@@ -1226,6 +1247,9 @@ def _log_resource_contract(
         "optimizer_state_estimate_mb": optimizer_state_mb,
         "item_embedding_count": float(data.n_items),
         "train_edge_count": float(data.edge_index.size(1)),
+        "largest_training_item_interaction_count": float(
+            getattr(data, "largest_training_item_interaction_count", 0.0)
+        ),
     }
     logger.info(
         (
@@ -1989,6 +2013,9 @@ def run_experiment(
             "canonical_name": canonical_name,
             "resumed": True,
             "peak_vram_mb": None,
+            "largest_training_item_interaction_count": float(
+                getattr(data, "largest_training_item_interaction_count", 0.0)
+            ),
             "epochs_stopped_at": len(history.get("train_loss", [])),
             "training_time_s": None,
             "train_batches_per_epoch": None,
@@ -2387,6 +2414,9 @@ def run_experiment(
             "canonical_name": canonical_name,
             "resumed": checkpoint_state is not None,
             "peak_vram_mb": peak_vram_mb,
+            "largest_training_item_interaction_count": float(
+                getattr(data, "largest_training_item_interaction_count", 0.0)
+            ),
             "epochs_stopped_at": len(history["train_loss"]) if history is not None else 0,
             "training_time_s": total_training_time_s,
             "train_batches_per_epoch": train_batches_per_epoch,

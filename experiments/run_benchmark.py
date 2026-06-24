@@ -1072,15 +1072,18 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
         total=len(experiments),
     )
     if sorted_results:
-        print("Note: AvgPop@20 and AvgPop@40 are lower-is-better.")
+        print(
+            "Note: AvgPop@20 and AvgPop@40 are raw PyG AveragePopularity values; "
+            "lower is lower raw training-popularity concentration."
+        )
         print(
             (
                 "\n"
                 + (
                     f"{'Dataset':<15} | {'Preset':<12} | "
                     f"{'Preproc':<24} | {'Graph':<16} | {'Neighbors':<10} | {'NDCG@20':>8} | "
-                    f"{'Recall@20':>10} | {'AvgPop@20':>10} | {'NDCG@40':>8} | "
-                    f"{'Recall@40':>10} | {'AvgPop@40':>10} | {'Epochs':>6} | "
+                    f"{'Recall@20':>10} | {'AvgPop@20':>12} | {'NDCG@40':>8} | "
+                    f"{'Recall@40':>10} | {'AvgPop@40':>12} | {'Epochs':>6} | "
                     f"{'PeakVRAM':>8} | {'Batch':>10} | Time | {'Mode':<8} | "
                     f"{'Experiment':<40}"
                 )
@@ -1108,10 +1111,10 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                     f"{r['graph_policy']:<16} | "
                     f"{neighbor_label:<10} | {metric_values['NDCG@20']:>8.4f} | "
                     f"{metric_values['Recall@20']:>10.4f} | "
-                    f"{metric_values['AveragePopularity@20']:>10.4f} | "
+                    f"{metric_values['AveragePopularity@20']:>12.4f} | "
                     f"{metric_values['NDCG@40']:>8.4f} | "
                     f"{metric_values['Recall@40']:>10.4f} | "
-                    f"{metric_values['AveragePopularity@40']:>10.4f} | "
+                    f"{metric_values['AveragePopularity@40']:>12.4f} | "
                     f"{epochs:>6} | {peak_vram:>8} | {batch_size:>10} | {r['elapsed_s']:.0f}s | "
                     f"{r['run_mode']:<8} | {checkpoint_label:<40}"
                 ),

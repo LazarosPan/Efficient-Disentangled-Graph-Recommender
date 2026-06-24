@@ -31,12 +31,14 @@ from src.utils.benchmark_datasets import (
 )
 from src.utils.config import BENCHMARK_CONFIG_FIELDS, DEFAULT_SEED, EDGRecConfig
 from src.utils.crru import (
+    CRRU_OBJECTIVE_VERSION,
     VALIDATION_ACCURACY_METRIC,
-    VALIDATION_ONLINE_CRRU_K_METRICS,
-    VALIDATION_ONLINE_CRRU_METRIC,
+    VALIDATION_CRRU_K_METRICS,
+    VALIDATION_CRRU_METRIC,
+    VALIDATION_CRRU_METRIC_ALIASES,
     compute_validation_accuracy_objective,
-    compute_validation_online_crru_for_k,
-    compute_validation_online_crru_objective,
+    compute_validation_crru_metric_value,
+    is_validation_crru_metric_name,
 )
 from src.utils.experiment_logger import ExperimentLogger
 from src.utils.method_naming import (
@@ -72,7 +74,7 @@ from experiments.run_experiment import (
 logger = logging.getLogger("edgrec.search")
 
 DEFAULT_STORAGE = "sqlite:///results/optuna_studies.db"
-DEFAULT_OBJECTIVE_METRIC = VALIDATION_ONLINE_CRRU_METRIC
+DEFAULT_OBJECTIVE_METRIC = VALIDATION_CRRU_METRIC
 DEFAULT_OBJECTIVE_SPLIT = "val"
 DEFAULT_MAX_EPOCHS = 80
 DEFAULT_TRIALS = 40
@@ -1016,10 +1018,28 @@ def search_space_revision(search_space: SearchSpaceSpec) -> str:
         "config_overrides": _json_safe(search_space.config_overrides),
         "parameters": _json_safe(search_space.parameters),
     }
+    objective_version = _objective_metric_version(search_space.objective.metric)
+    if objective_version is not None:
+        payload["objective_version"] = objective_version
     if search_space.profile_overrides:
         payload["profile_overrides"] = _json_safe(search_space.profile_overrides)
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:SEARCH_SPACE_REVISION_HASH_LENGTH]
+
+
+def _objective_metric_version(metric: str) -> str | None:
+    """Return the semantic version for objectives whose formula can change."""
+    if metric in VALIDATION_CRRU_METRIC_ALIASES:
+        return CRRU_OBJECTIVE_VERSION
+    return None
+
+
+def _objective_metric_matches(stored_metric: object, requested_metric: str) -> bool:
+    """Return whether a stored objective metric matches a requested metric."""
+    stored = str(stored_metric) if stored_metric is not None else ""
+    if requested_metric in VALIDATION_CRRU_METRIC_ALIASES:
+        return stored in VALIDATION_CRRU_METRIC_ALIASES
+    return stored == requested_metric
 
 
 def _parameter_storage_name(
@@ -1302,11 +1322,15 @@ def _objective_metric_value(
     result: Mapping[str, Any],
 ) -> float:
     """Return the objective value for one validation epoch."""
-    if metric_name == VALIDATION_ONLINE_CRRU_METRIC:
-        return compute_validation_online_crru_objective(
+    if is_validation_crru_metric_name(metric_name):
+        return compute_validation_crru_metric_value(
+            metric_name,
             metrics,
             peak_vram_mb=result.get("peak_vram_mb"),
             epoch_time_s=_result_epoch_time_s(result),
+            largest_training_item_interaction_count=result.get(
+                "largest_training_item_interaction_count"
+            ),
         )
     if metric_name == VALIDATION_ACCURACY_METRIC:
         return compute_validation_accuracy_objective(metrics)
@@ -1331,11 +1355,20 @@ def _build_pruning_epoch_callback(
             for metric, metric_value in val_metrics.items()
             if math.isfinite(float(metric_value))
         }
-        value = _objective_metric_value(
-            metrics,
-            search_space.objective.metric,
-            result={"avg_epoch_time_s": epoch_time_s},
-        )
+        try:
+            value = _objective_metric_value(
+                metrics,
+                search_space.objective.metric,
+                result={"avg_epoch_time_s": epoch_time_s},
+            )
+        except ValueError as exc:
+            logger.debug(
+                "Skipping pruning report for %s epoch %d because objective is incomplete: %s",
+                dataset,
+                epoch + 1,
+                exc,
+            )
+            return
         step = dataset_index * search_space.max_epochs + epoch + 1
         trial.report(value, step=step)
         trial.set_user_attr(f"{dataset}.last_pruning_epoch", epoch + 1)
@@ -1425,17 +1458,24 @@ def _set_trial_attrs_from_result(
         direction=objective.direction,
     )
     try:
-        for k, metric_name in VALIDATION_ONLINE_CRRU_K_METRICS.items():
-            best_val_metrics[metric_name] = compute_validation_online_crru_for_k(
+        for metric_name in VALIDATION_CRRU_K_METRICS.values():
+            best_val_metrics[metric_name] = compute_validation_crru_metric_value(
+                metric_name,
                 best_val_metrics,
-                k=k,
                 peak_vram_mb=result.get("peak_vram_mb"),
                 epoch_time_s=_result_epoch_time_s(result),
+                largest_training_item_interaction_count=result.get(
+                    "largest_training_item_interaction_count"
+                ),
             )
-        best_val_metrics[VALIDATION_ONLINE_CRRU_METRIC] = compute_validation_online_crru_objective(
+        best_val_metrics[VALIDATION_CRRU_METRIC] = compute_validation_crru_metric_value(
+            VALIDATION_CRRU_METRIC,
             best_val_metrics,
             peak_vram_mb=result.get("peak_vram_mb"),
             epoch_time_s=_result_epoch_time_s(result),
+            largest_training_item_interaction_count=result.get(
+                "largest_training_item_interaction_count"
+            ),
         )
     except ValueError:
         logger.debug("Skipping CRRU trial attrs because validation metrics are incomplete.")
@@ -1447,6 +1487,10 @@ def _set_trial_attrs_from_result(
     trial.set_user_attr(prefix + "training_time_s", result.get("training_time_s"))
     trial.set_user_attr(prefix + "avg_epoch_time_s", _result_epoch_time_s(result))
     trial.set_user_attr(prefix + "peak_vram_mb", result.get("peak_vram_mb"))
+    trial.set_user_attr(
+        prefix + "largest_training_item_interaction_count",
+        result.get("largest_training_item_interaction_count"),
+    )
     trial.set_user_attr(prefix + "batch_size", result.get("batch_size"))
     trial.set_user_attr(prefix + "auto_batch_size", result.get("auto_batch_size"))
     effective_config = dataclasses.asdict(config)
@@ -1458,8 +1502,8 @@ def _set_trial_attrs_from_result(
 
     for metric_name in (
         *THESIS_PRIMARY_METRICS,
-        *VALIDATION_ONLINE_CRRU_K_METRICS.values(),
-        VALIDATION_ONLINE_CRRU_METRIC,
+        *VALIDATION_CRRU_K_METRICS.values(),
+        VALIDATION_CRRU_METRIC,
         VALIDATION_ACCURACY_METRIC,
     ):
         if metric_name in best_val_metrics:
@@ -1716,6 +1760,9 @@ def default_study_name(
         f"{search_space.objective.split}-{search_space.objective.metric}",
         fallback="search",
     )
+    objective_version = _objective_metric_version(search_space.objective.metric)
+    if objective_version is not None:
+        objective_name = f"{objective_name}-{slugify_fragment(objective_version)}"
     return f"{base_name}-{objective_name}"
 
 
@@ -2023,7 +2070,10 @@ def _trial_matches_current_search_contract(
         search_space.name,
     ):
         return False
-    if trial.user_attrs.get("objective_metric") != search_space.objective.metric:
+    if not _objective_metric_matches(
+        trial.user_attrs.get("objective_metric"),
+        search_space.objective.metric,
+    ):
         return False
     if trial.user_attrs.get("objective_split") != search_space.objective.split:
         return False
@@ -2069,7 +2119,10 @@ def _trial_matches_search_budget_scope(
         return False
     if trial.user_attrs.get("search_space_revision") != search_space_revision(search_space):
         return False
-    if trial.user_attrs.get("objective_metric") != search_space.objective.metric:
+    if not _objective_metric_matches(
+        trial.user_attrs.get("objective_metric"),
+        search_space.objective.metric,
+    ):
         return False
     if trial.user_attrs.get("objective_split") != search_space.objective.split:
         return False

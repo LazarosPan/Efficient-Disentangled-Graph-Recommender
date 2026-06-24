@@ -161,7 +161,10 @@ def main() -> int:
     )
 
     if results:
-        print("Note: AvgPop@20 and AvgPop@40 are lower-is-better.")
+        print(
+            "Note: AvgPop@20 and AvgPop@40 are raw PyG AveragePopularity values; "
+            "lower is lower raw training-popularity concentration."
+        )
         results_by_dataset: dict[str, list[dict]] = {}
         for result_entry in results:
             results_by_dataset.setdefault(result_entry["dataset"], []).append(result_entry)
@@ -181,8 +184,8 @@ def main() -> int:
                 ""
                 f"\nDATASET: {dataset}\n"
                 f"{'Variant':<20} | {'Graph':<16} | {'NDCG@20':>8} | {'Recall@20':>10} | "
-                f"{'AvgPop@20':>10} | {'NDCG@40':>8} | {'Recall@40':>10} | "
-                f"{'AvgPop@40':>10} | Time",
+                f"{'AvgPop@20':>12} | {'NDCG@40':>8} | {'Recall@40':>10} | "
+                f"{'AvgPop@40':>12} | Time",
             )
             print("-" * 136)
             for result_entry in dataset_results:
@@ -195,10 +198,10 @@ def main() -> int:
                     f"{result_entry['variant']:<20} | {result_entry['graph_policy']:<16} | "
                     f"{metric_values['NDCG@20']:>8.4f} | "
                     f"{metric_values['Recall@20']:>10.4f} | "
-                    f"{metric_values['AveragePopularity@20']:>10.4f} | "
+                    f"{metric_values['AveragePopularity@20']:>12.4f} | "
                     f"{metric_values['NDCG@40']:>8.4f} | "
                     f"{metric_values['Recall@40']:>10.4f} | "
-                    f"{metric_values['AveragePopularity@40']:>10.4f} | "
+                    f"{metric_values['AveragePopularity@40']:>12.4f} | "
                     f"{result_entry['elapsed_s']:.0f}s",
                 )
                 if baseline_metrics and result_entry["variant"] != "mainline":
