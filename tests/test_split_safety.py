@@ -540,7 +540,7 @@ class SplitSafetyTests(unittest.TestCase):
         data = build_graph(canonical, config)
 
         expected_edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
-        expected_popularity = torch.tensor([1.0, 0.0], dtype=torch.bfloat16)
+        expected_popularity = torch.tensor([1.0, 0.0], dtype=torch.float32)
 
         self.assertTrue(torch.equal(data.edge_index.cpu(), expected_edge_index))
         self.assertTrue(torch.equal(data.popularity.cpu(), expected_popularity))
@@ -628,8 +628,8 @@ class SplitSafetyTests(unittest.TestCase):
 
         data = build_graph(canonical, config)
 
-        expected_popularity = torch.tensor([1.0, 0.5], dtype=torch.bfloat16)
-        self.assertTrue(torch.equal(data.popularity.cpu(), expected_popularity))
+        expected_popularity = torch.tensor([2.0, 1.0], dtype=torch.float32)
+        torch.testing.assert_close(data.popularity.cpu(), expected_popularity)
 
     def test_build_graph_carries_causal_fields(self) -> None:
         """Graph data should retain the extended canonical causal descriptors."""
@@ -898,6 +898,16 @@ class SplitSafetyTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["Personalization@20"], 0.0, places=6)
         self.assertAlmostEqual(metrics["Personalization@40"], 0.0, places=6)
 
+    def test_evaluator_accepts_raw_count_popularity_for_average_popularity_metric(self) -> None:
+        """PyG AveragePopularity must receive finite non-negative raw train counts."""
+        evaluator = Evaluator(EDGRecConfig(device="cpu"))
+
+        metrics = evaluator._build_metrics(torch.tensor([0.0, 2.0], dtype=torch.float32))
+        self.assertIn("AveragePopularity@20", metrics)
+
+        with self.assertRaisesRegex(ValueError, "non-negative raw training"):
+            evaluator._build_metrics(torch.tensor([0.0, -1.0], dtype=torch.float32))
+
     def test_evaluator_uses_only_positive_labels_as_ground_truth(self) -> None:
         """Negative or weak held-out interactions must not count as relevant."""
         evaluator = Evaluator(EDGRecConfig(device="cpu"))
@@ -937,7 +947,7 @@ class SplitSafetyTests(unittest.TestCase):
         data.item_nodes = torch.tensor([1, 50, 3, 2], dtype=torch.long)
         data.n_users = 2
         data.n_items = 50
-        data.popularity = torch.arange(50, dtype=torch.float32)
+        data.popularity = torch.linspace(0.0, 1.0, 50, dtype=torch.float32)
 
         base = torch.arange(50, dtype=torch.float32).unsqueeze(0).expand(2, -1)
         model = _ComponentRankingModel(
@@ -1026,7 +1036,7 @@ class SplitSafetyTests(unittest.TestCase):
         data.item_nodes = torch.tensor([item_id + 2 for item_id in item_ids], dtype=torch.long)
         data.n_users = 2
         data.n_items = 50
-        data.popularity = torch.arange(50, dtype=torch.float32)
+        data.popularity = torch.linspace(0.0, 1.0, 50, dtype=torch.float32)
 
         base = torch.arange(50, dtype=torch.float32).unsqueeze(0).expand(2, -1)
         context = torch.arange(50, dtype=torch.float32).unsqueeze(0)
@@ -1069,7 +1079,7 @@ class SplitSafetyTests(unittest.TestCase):
         data.item_nodes = torch.tensor([1, 26], dtype=torch.long)
         data.n_users = 1
         data.n_items = 50
-        data.popularity = torch.arange(50, dtype=torch.float32)
+        data.popularity = torch.linspace(0.0, 1.0, 50, dtype=torch.float32)
 
         component_scores = torch.arange(50, dtype=torch.float32).unsqueeze(0)
         component_scores[:, 25] = -100.0
@@ -1108,7 +1118,7 @@ class SplitSafetyTests(unittest.TestCase):
         data.item_nodes = torch.tensor([1, 50, 3, 2], dtype=torch.long)
         data.n_users = 2
         data.n_items = 50
-        data.popularity = torch.arange(50, dtype=torch.float32)
+        data.popularity = torch.linspace(0.0, 1.0, 50, dtype=torch.float32)
 
         base = torch.arange(50, dtype=torch.float32).unsqueeze(0).expand(2, -1)
         model = _ComponentRankingModel(
@@ -1178,7 +1188,7 @@ class SplitSafetyTests(unittest.TestCase):
         data.item_nodes = torch.tensor([1, 26], dtype=torch.long)
         data.n_users = 1
         data.n_items = 50
-        data.popularity = torch.arange(50, dtype=torch.float32)
+        data.popularity = torch.linspace(0.0, 1.0, 50, dtype=torch.float32)
 
         scores = torch.arange(50, dtype=torch.float32).unsqueeze(0)
         scores[:, 25] = 100.0

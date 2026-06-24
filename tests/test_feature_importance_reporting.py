@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import numpy as np
 from src.reporting import feature_analysis as fa
 
 
@@ -33,11 +34,12 @@ def _trial(
         "search_space_revision": "test-revision",
         "datasets": [dataset],
         "sampled_params": {"feature_subset_profile": profile},
-        "objective_metric": "ValidationOnlineCRRU@20_40",
+        "objective_metric": "ValidationCRRU@20_40",
         "objective_split": "val",
         f"{dataset}.effective_config": {"epochs": max_epochs},
         f"{dataset}.avg_epoch_time_s": 1.5,
         f"{dataset}.peak_vram_mb": 256.0,
+        f"{dataset}.largest_training_item_interaction_count": 10.0,
         f"{dataset}.batch_size": 4096,
     }
     attrs.update(
@@ -75,6 +77,22 @@ def test_graph_only_dataset_produces_valid_group_inventory(tmp_path, monkeypatch
         encoding="utf-8",
     )
     assert (tmp_path / "feature_group_inventory.csv").exists()
+
+
+def test_feature_group_inventory_marks_safe_item_groups_as_search_candidates() -> None:
+    """Inventory status describes search eligibility, not missing trial completion."""
+    canonical = SimpleNamespace(
+        item_features=np.ones((2, 1), dtype=np.float32),
+        item_feature_names=("movies::genres=Action",),
+        item_feature_sources=("raw/movies.dat",),
+        item_feature_raw_columns=("genres",),
+        item_feature_roles=("safe_pre_treatment",),
+        item_feature_groups=("item_genre",),
+    )
+
+    rows = fa._feature_subset_source_rows("movielens1m", canonical)
+
+    assert rows[0]["feature_subset_status"] == "search_candidate"
 
 
 def test_feature_subset_reports_run_on_tiny_synthetic_trials(tmp_path, monkeypatch) -> None:

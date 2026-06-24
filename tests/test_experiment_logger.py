@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 from scripts import query_results
 from src.profiling.gpu_profiler import StageMetrics
+from src.utils.crru import compute_validation_crru_for_k
 from src.utils.experiment_logger import ExperimentLogger
 
 
@@ -36,6 +37,15 @@ class ExperimentLoggerTests(unittest.TestCase):
             db_path=str(Path(self.temp_dir.name) / "experiments.sqlite"),
         )
         self.addCleanup(self.logger.close)
+
+    def _log_crru_denominator(self, exp_id: int, value: float = 10.0) -> None:
+        """Log the raw train-count denominator required by CRRU."""
+        self.logger.log_metric(
+            exp_id,
+            "largest_training_item_interaction_count",
+            value,
+            split="train",
+        )
 
     def test_log_experiment_serializes_dataclass_config(self) -> None:
         """Dataclass configs should still be serialized into config_json."""
@@ -440,8 +450,8 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertAlmostEqual(row["delta_test_recall_20"], 0.05)
         self.assertAlmostEqual(row["delta_test_average_popularity_20"], -0.02)
 
-    def test_compute_dataset_crru_scores_is_dataset_local_and_k_specific(self) -> None:
-        """CRRU scores should normalize per dataset and differ between @20 and @40."""
+    def test_compute_dataset_crru_scores_are_absolute_and_k_specific(self) -> None:
+        """CRRU should be independent of unrelated rows and differ between @20/@40."""
         conn = sqlite3.connect(":memory:")
         self.addCleanup(conn.close)
         conn.row_factory = sqlite3.Row
@@ -460,6 +470,7 @@ class ExperimentLoggerTests(unittest.TestCase):
                 test_hit_ratio_40 REAL,
                 test_personalization_40 REAL,
                 test_average_popularity_40 REAL,
+                largest_training_item_interaction_count REAL,
                 peak_vram_mb REAL,
                 training_time_s REAL
             )
@@ -472,8 +483,8 @@ class ExperimentLoggerTests(unittest.TestCase):
                 test_personalization_20, test_average_popularity_20,
                 test_ndcg_40, test_recall_40, test_hit_ratio_40,
                 test_personalization_40, test_average_popularity_40,
-                peak_vram_mb, training_time_s
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                largest_training_item_interaction_count, peak_vram_mb, training_time_s
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -489,6 +500,7 @@ class ExperimentLoggerTests(unittest.TestCase):
                     0.30,
                     0.40,
                     0.80,
+                    10.0,
                     1000.0,
                     100.0,
                 ),
@@ -505,6 +517,7 @@ class ExperimentLoggerTests(unittest.TestCase):
                     0.75,
                     0.65,
                     0.10,
+                    10.0,
                     4000.0,
                     400.0,
                 ),
@@ -521,6 +534,7 @@ class ExperimentLoggerTests(unittest.TestCase):
                     0.03,
                     0.04,
                     0.08,
+                    10.0,
                     500.0,
                     50.0,
                 ),
@@ -537,25 +551,295 @@ class ExperimentLoggerTests(unittest.TestCase):
                     0.08,
                     0.07,
                     0.01,
+                    10.0,
                     1500.0,
                     150.0,
                 ),
+                (
+                    5,
+                    "amazonbook",
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0,
+                    10.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    1.0,
+                    0.0,
+                    1.0,
+                    1.0,
+                ),
             ],
         )
-        all_rows = conn.execute("SELECT * FROM report_rows ORDER BY id").fetchall()
-        amazon_rows = conn.execute(
+        base_rows = conn.execute(
+            "SELECT * FROM report_rows WHERE id IN (1, 2) ORDER BY id"
+        ).fetchall()
+        expanded_rows = conn.execute(
             "SELECT * FROM report_rows WHERE dataset = 'amazonbook' ORDER BY id"
         ).fetchall()
+        all_rows = conn.execute(
+            "SELECT * FROM report_rows WHERE id IN (1, 2, 3, 4) ORDER BY id"
+        ).fetchall()
 
-        all_scores = query_results._compute_dataset_crru_scores(all_rows)
-        amazon_scores = query_results._compute_dataset_crru_scores(amazon_rows)
+        base_scores = query_results._compute_dataset_crru_scores(base_rows)
+        expanded_scores = query_results._compute_dataset_crru_scores(expanded_rows)
+        cross_dataset_scores = query_results._compute_dataset_crru_scores(all_rows)
 
-        self.assertGreater(all_scores[1][20], all_scores[2][20])
-        self.assertLess(all_scores[1][40], all_scores[2][40])
-        self.assertAlmostEqual(all_scores[1][20], amazon_scores[1][20])
-        self.assertAlmostEqual(all_scores[1][40], amazon_scores[1][40])
-        self.assertAlmostEqual(all_scores[2][20], amazon_scores[2][20])
-        self.assertAlmostEqual(all_scores[2][40], amazon_scores[2][40])
+        self.assertGreater(base_scores[1][20], base_scores[2][20])
+        self.assertLess(base_scores[1][40], base_scores[2][40])
+        self.assertAlmostEqual(base_scores[1][20], expanded_scores[1][20])
+        self.assertAlmostEqual(base_scores[1][40], expanded_scores[1][40])
+        self.assertAlmostEqual(base_scores[2][20], expanded_scores[2][20])
+        self.assertAlmostEqual(base_scores[2][40], expanded_scores[2][40])
+        self.assertAlmostEqual(base_scores[1][20], cross_dataset_scores[1][20])
+        self.assertAlmostEqual(base_scores[1][40], cross_dataset_scores[1][40])
+        self.assertAlmostEqual(base_scores[2][20], cross_dataset_scores[2][20])
+        self.assertAlmostEqual(base_scores[2][40], cross_dataset_scores[2][40])
+
+        valid_crru_key = query_results._crru_sort_key(
+            base_rows[0],
+            {1: {20: 0.2, 40: 0.3}},
+        )
+        missing_crru_key = query_results._crru_sort_key(base_rows[1], {})
+
+        self.assertEqual(valid_crru_key[0], 0)
+        self.assertEqual(missing_crru_key[0], 1)
+        self.assertLess(valid_crru_key, missing_crru_key)
+
+    def test_compute_dataset_crru_scores_reconstructs_missing_denominator(self) -> None:
+        """Historical rows can recover the CRRU denominator from run config."""
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            """
+            CREATE TABLE report_rows (
+                id INTEGER PRIMARY KEY,
+                dataset TEXT NOT NULL,
+                config_json TEXT,
+                test_ndcg_20 REAL,
+                test_recall_20 REAL,
+                test_hit_ratio_20 REAL,
+                test_personalization_20 REAL,
+                test_average_popularity_20 REAL,
+                test_ndcg_40 REAL,
+                test_recall_40 REAL,
+                test_hit_ratio_40 REAL,
+                test_personalization_40 REAL,
+                test_average_popularity_40 REAL,
+                largest_training_item_interaction_count REAL,
+                peak_vram_mb REAL,
+                training_time_s REAL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO report_rows (
+                id, dataset, config_json, test_ndcg_20, test_recall_20,
+                test_hit_ratio_20, test_personalization_20,
+                test_average_popularity_20, test_ndcg_40, test_recall_40,
+                test_hit_ratio_40, test_personalization_40,
+                test_average_popularity_40, largest_training_item_interaction_count,
+                peak_vram_mb, training_time_s
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                11,
+                "amazonbook",
+                json.dumps(
+                    {
+                        "dataset": "amazonbook",
+                        "preprocessing_preset": "amazonbook_graph_only",
+                        "seed": 13,
+                    },
+                ),
+                0.2,
+                0.3,
+                0.4,
+                0.5,
+                0.6,
+                0.3,
+                0.4,
+                0.5,
+                0.6,
+                0.7,
+                None,
+                1024.0,
+                10.0,
+            ),
+        )
+        rows = conn.execute("SELECT * FROM report_rows").fetchall()
+
+        with patch.object(
+            query_results,
+            "resolve_largest_training_item_interaction_count",
+            return_value=10.0,
+        ) as resolver:
+            scores, audit = query_results._compute_dataset_crru_scores_with_audit(rows)
+
+        self.assertIn(11, scores)
+        self.assertEqual(audit.skip_reasons, {})
+        self.assertEqual(audit.stored_denominator_rows, 0)
+        self.assertEqual(audit.reconstructed_denominator_rows, 1)
+        self.assertEqual(audit.unavailable_denominator_rows, 0)
+        self.assertEqual(audit.invalid_denominator_rows, 0)
+        resolver.assert_called_once()
+        self.assertEqual(resolver.call_args.kwargs["stored_value"], None)
+        self.assertEqual(resolver.call_args.kwargs["dataset"], "amazonbook")
+
+    def test_compute_dataset_crru_scores_reports_reconstruction_failures(self) -> None:
+        """Rows with unreconstructable metadata should get precise skip reasons."""
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            """
+            CREATE TABLE report_rows (
+                id INTEGER PRIMARY KEY,
+                dataset TEXT NOT NULL,
+                config_json TEXT,
+                test_ndcg_20 REAL,
+                test_recall_20 REAL,
+                test_hit_ratio_20 REAL,
+                test_personalization_20 REAL,
+                test_average_popularity_20 REAL,
+                test_ndcg_40 REAL,
+                test_recall_40 REAL,
+                test_hit_ratio_40 REAL,
+                test_personalization_40 REAL,
+                test_average_popularity_40 REAL,
+                peak_vram_mb REAL,
+                training_time_s REAL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO report_rows (
+                id, dataset, config_json, test_ndcg_20, test_recall_20,
+                test_hit_ratio_20, test_personalization_20,
+                test_average_popularity_20, test_ndcg_40, test_recall_40,
+                test_hit_ratio_40, test_personalization_40,
+                test_average_popularity_40, peak_vram_mb, training_time_s
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                12,
+                "amazonbook",
+                "{}",
+                0.2,
+                0.3,
+                0.4,
+                0.5,
+                0.6,
+                0.3,
+                0.4,
+                0.5,
+                0.6,
+                0.7,
+                1024.0,
+                10.0,
+            ),
+        )
+        rows = conn.execute("SELECT * FROM report_rows").fetchall()
+
+        with patch.object(
+            query_results,
+            "resolve_largest_training_item_interaction_count",
+            side_effect=query_results.CRRUPopularityReconstructionError(
+                "missing training graph reconstruction metadata",
+            ),
+        ):
+            scores, audit = query_results._compute_dataset_crru_scores_with_audit(rows)
+
+        self.assertEqual(scores, {})
+        self.assertIn(12, audit.skip_reasons)
+        self.assertIn("missing training graph", audit.skip_reasons[12])
+        self.assertEqual(audit.unavailable_denominator_rows, 1)
+        self.assertEqual(audit.invalid_denominator_rows, 0)
+
+    def test_compute_dataset_crru_scores_rejects_arp_above_denominator(self) -> None:
+        """Raw PyG ARP must not exceed the largest train item interaction count."""
+        conn = sqlite3.connect(":memory:")
+        self.addCleanup(conn.close)
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            """
+            CREATE TABLE report_rows (
+                id INTEGER PRIMARY KEY,
+                dataset TEXT NOT NULL,
+                config_json TEXT,
+                test_ndcg_20 REAL,
+                test_recall_20 REAL,
+                test_hit_ratio_20 REAL,
+                test_personalization_20 REAL,
+                test_average_popularity_20 REAL,
+                test_ndcg_40 REAL,
+                test_recall_40 REAL,
+                test_hit_ratio_40 REAL,
+                test_personalization_40 REAL,
+                test_average_popularity_40 REAL,
+                largest_training_item_interaction_count REAL,
+                peak_vram_mb REAL,
+                training_time_s REAL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO report_rows (
+                id, dataset, config_json, test_ndcg_20, test_recall_20,
+                test_hit_ratio_20, test_personalization_20,
+                test_average_popularity_20, test_ndcg_40, test_recall_40,
+                test_hit_ratio_40, test_personalization_40,
+                test_average_popularity_40, largest_training_item_interaction_count,
+                peak_vram_mb, training_time_s
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                13,
+                "amazonbook",
+                "{}",
+                0.2,
+                0.3,
+                0.4,
+                0.5,
+                11.0,
+                0.3,
+                0.4,
+                0.5,
+                0.6,
+                10.0,
+                10.0,
+                1024.0,
+                10.0,
+            ),
+        )
+        rows = conn.execute("SELECT * FROM report_rows").fetchall()
+
+        scores, audit = query_results._compute_dataset_crru_scores_with_audit(rows)
+
+        self.assertEqual(scores, {})
+        self.assertEqual(audit.invalid_denominator_rows, 1)
+        self.assertIn(13, audit.skip_reasons)
+        self.assertIn("AveragePopularity@20=11", audit.skip_reasons[13])
+        self.assertIn("exceeds LargestTrainingItemInteractionCount=10", audit.skip_reasons[13])
+
+    def test_crru_denominator_reconstruction_rejects_unsupported_graph_policy(self) -> None:
+        """Historical reconstruction must not silently assume observed graph policy."""
+        with self.assertRaisesRegex(
+            query_results.CRRUPopularityReconstructionError,
+            "unsupported graph_policy",
+        ):
+            query_results.resolve_largest_training_item_interaction_count(
+                stored_value=None,
+                config={"dataset": "amazonbook", "graph_policy": "legacy_cagra"},
+                dataset="amazonbook",
+            )
 
     def test_compute_efficiency_scores_prefers_epoch_time_over_total_time(self) -> None:
         """CRRU efficiency should compare throughput per epoch, not early-stop wall time."""
@@ -588,12 +872,25 @@ class ExperimentLoggerTests(unittest.TestCase):
         )
         rows = conn.execute("SELECT * FROM report_rows ORDER BY id").fetchall()
 
-        efficiency_scores = query_results.compute_crru_efficiency_scores(
-            [row["peak_vram_mb"] for row in rows],
-            [query_results._crru_epoch_time_s(row) for row in rows],
-        )
+        metrics = {
+            "NDCG@20": 0.30,
+            "Recall@20": 0.40,
+            "HitRatio@20": 0.50,
+            "Personalization@20": 0.60,
+            "AveragePopularity@20": 2.0,
+        }
+        scores = [
+            compute_validation_crru_for_k(
+                metrics,
+                k=20,
+                peak_vram_mb=row["peak_vram_mb"],
+                epoch_time_s=query_results._crru_epoch_time_s(row),
+                largest_training_item_interaction_count=10.0,
+            )
+            for row in rows
+        ]
 
-        self.assertGreater(efficiency_scores[0], efficiency_scores[1])
+        self.assertGreater(scores[0], scores[1])
 
     def test_query_results_duration_formatter_always_uses_seconds(self) -> None:
         """Runtime report durations should stay in seconds for direct comparison."""
@@ -644,6 +941,7 @@ class ExperimentLoggerTests(unittest.TestCase):
         )
         self.logger.log_metric(high_accuracy_low_utility, "training_time_s", 900.0, split="train")
         self.logger.log_metric(high_accuracy_low_utility, "peak_vram_mb", 9000.0, split="train")
+        self._log_crru_denominator(high_accuracy_low_utility)
         self.logger.update_experiment_status(high_accuracy_low_utility, status="completed")
 
         low_accuracy_high_utility = self.logger.log_experiment(
@@ -685,12 +983,13 @@ class ExperimentLoggerTests(unittest.TestCase):
         )
         self.logger.log_metric(low_accuracy_high_utility, "training_time_s", 10.0, split="train")
         self.logger.log_metric(low_accuracy_high_utility, "peak_vram_mb", 1000.0, split="train")
+        self._log_crru_denominator(low_accuracy_high_utility)
         self.logger.update_experiment_status(low_accuracy_high_utility, status="completed")
 
         buffer = StringIO()
         temp_db_path = Path(self.temp_dir.name) / "experiments.sqlite"
         with patch.object(query_results, "DB_PATH", temp_db_path), redirect_stdout(buffer):
-            query_results.list_top_completed(self.logger.conn, n=20)
+            query_results.list_top_completed(self.logger.conn, top_n=20)
 
         output = buffer.getvalue()
         self.assertLess(
@@ -719,27 +1018,28 @@ class ExperimentLoggerTests(unittest.TestCase):
             batch_id="formal-tiny-crru",
             profile_name="tiny-crru",
         )
-        self.logger.log_metric(exp_id, "NDCG@20", 0.11, split="test")
-        self.logger.log_metric(exp_id, "Recall@20", 0.22, split="test")
-        self.logger.log_metric(exp_id, "HitRatio@20", 0.33, split="test")
-        self.logger.log_metric(exp_id, "Personalization@20", 0.44, split="test")
-        self.logger.log_metric(exp_id, "AveragePopularity@20", 0.55, split="test")
-        self.logger.log_metric(exp_id, "NDCG@40", 0.66, split="test")
-        self.logger.log_metric(exp_id, "Recall@40", 0.77, split="test")
-        self.logger.log_metric(exp_id, "HitRatio@40", 0.88, split="test")
-        self.logger.log_metric(exp_id, "Personalization@40", 0.99, split="test")
+        self.logger.log_metric(exp_id, "NDCG@20", 1e-12, split="test")
+        self.logger.log_metric(exp_id, "Recall@20", 1e-12, split="test")
+        self.logger.log_metric(exp_id, "HitRatio@20", 1e-12, split="test")
+        self.logger.log_metric(exp_id, "Personalization@20", 1e-12, split="test")
+        self.logger.log_metric(exp_id, "AveragePopularity@20", 1.0, split="test")
+        self.logger.log_metric(exp_id, "NDCG@40", 1e-12, split="test")
+        self.logger.log_metric(exp_id, "Recall@40", 1e-12, split="test")
+        self.logger.log_metric(exp_id, "HitRatio@40", 1e-12, split="test")
+        self.logger.log_metric(exp_id, "Personalization@40", 1e-12, split="test")
         self.logger.log_metric(exp_id, "AveragePopularity@40", 1.0, split="test")
         self.logger.log_metric(exp_id, "training_time_s", 11.2, split="train")
         self.logger.log_metric(exp_id, "peak_vram_mb", 2048.0, split="train")
+        self._log_crru_denominator(exp_id)
         self.logger.update_experiment_status(exp_id, status="completed")
         buffer = StringIO()
         temp_db_path = Path(self.temp_dir.name) / "experiments.sqlite"
         with patch.object(query_results, "DB_PATH", temp_db_path), redirect_stdout(buffer):
-            query_results.list_top_completed(self.logger.conn, n=20)
+            query_results.list_top_completed(self.logger.conn, top_n=20)
 
         output = buffer.getvalue()
         self.assertIn("tiny-crru", output)
-        self.assertIn("e-06", output)
+        self.assertRegex(output, r"e-0[0-9]")
         self.assertNotIn("|   0.0000 |   0.0000", output)
 
     def test_query_results_top_completed_shows_only_reportable_test_runs(self) -> None:
@@ -829,6 +1129,7 @@ class ExperimentLoggerTests(unittest.TestCase):
         )
         self.logger.log_metric(formal_exp, "training_time_s", 7.9, split="train")
         self.logger.log_metric(formal_exp, "peak_vram_mb", 1234.0, split="train")
+        self._log_crru_denominator(formal_exp)
         self.logger.update_experiment_status(formal_exp, status="completed")
 
         runtime_probe_exp = self.logger.log_experiment(
@@ -861,6 +1162,7 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.logger.log_metric(runtime_probe_exp, "AveragePopularity@40", 0.01, split="test")
         self.logger.log_metric(runtime_probe_exp, "training_time_s", 7.9, split="train")
         self.logger.log_metric(runtime_probe_exp, "peak_vram_mb", 1234.0, split="train")
+        self._log_crru_denominator(runtime_probe_exp)
         self.logger.log_metric(
             runtime_probe_exp,
             "runtime_probe_target_epochs",
@@ -935,6 +1237,7 @@ class ExperimentLoggerTests(unittest.TestCase):
         )
         self.logger.log_metric(ablation_exp, "training_time_s", 12.3, split="train")
         self.logger.log_metric(ablation_exp, "peak_vram_mb", 2345.0, split="train")
+        self._log_crru_denominator(ablation_exp)
         self.logger.update_experiment_status(ablation_exp, status="completed")
 
         legacy_ablation_exp = self.logger.log_experiment(
@@ -1011,7 +1314,7 @@ class ExperimentLoggerTests(unittest.TestCase):
         buffer = StringIO()
         temp_db_path = Path(self.temp_dir.name) / "experiments.sqlite"
         with patch.object(query_results, "DB_PATH", temp_db_path), redirect_stdout(buffer):
-            query_results.list_top_completed(self.logger.conn, n=20)
+            query_results.list_top_completed(self.logger.conn, top_n=20)
 
         output = buffer.getvalue()
         self.assertIn("Evidence role legend", output)
@@ -1026,14 +1329,18 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.assertNotIn("ABLATION FULL-DATA TEST RUNS", output)
         self.assertIn("no_context_no_features", output)
         self.assertIn("Composite Resource-aware Recommendation Utility at K", output)
-        self.assertIn("CRRU is not a causal-effect estimator", output)
-        self.assertIn("section-row min-max", output)
+        self.assertIn("CRRU is a thesis comparison utility", output)
+        self.assertIn("absolute per-run utility", output)
+        self.assertIn("EpochDurationEfficiencyScore^0.50", output)
+        self.assertIn("PyG AveragePopularity@K is logged using raw train-only", output)
+        self.assertIn("CRRU denominator source:", output)
+        self.assertIn("CRRU audit assertions passed", output)
+        self.assertNotIn("section-row min-max", output)
         self.assertNotIn("report-row min-max", output)
-        self.assertIn("PopularityDiversity@K", output)
+        self.assertIn("PopularityAwarePersonalization@K", output)
         self.assertNotIn("Bias@K", output)
         self.assertIn("CRRU@20", output)
         self.assertIn("CRRU@40", output)
-        self.assertIn("(1-log(1+time/epoch)_n)^0.50", output)
         self.assertIn("dev-profile", output)
         self.assertIn("no_independence", output)
         self.assertIn("Hit@20", output)
@@ -1120,6 +1427,7 @@ class ExperimentLoggerTests(unittest.TestCase):
         self.logger.log_metric(exp_id, "AveragePopularity@40", 1.0, split="test")
         self.logger.log_metric(exp_id, "training_time_s", 11.2, split="train")
         self.logger.log_metric(exp_id, "peak_vram_mb", 2048.0, split="train")
+        self._log_crru_denominator(exp_id)
         self.logger.update_experiment_status(exp_id, status="completed")
         temp_db_path = Path(self.temp_dir.name) / "experiments.sqlite"
         output_path = Path(self.temp_dir.name) / "query_results.md"
@@ -1158,8 +1466,8 @@ class ExperimentLoggerTests(unittest.TestCase):
             "Composite Resource-aware Recommendation Utility at K",
             markdown_output,
         )
-        self.assertIn("CRRU is not a causal-effect estimator", markdown_output)
-        self.assertIn("PopularityDiversity@K", markdown_output)
+        self.assertIn("CRRU is a thesis comparison utility", markdown_output)
+        self.assertIn("PopularityAwarePersonalization@K", markdown_output)
         self.assertNotIn("Bias@K", markdown_output)
         self.assertIn("CRRU@20", markdown_output)
         self.assertIn("CRRU@40", markdown_output)

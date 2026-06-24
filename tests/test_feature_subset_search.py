@@ -177,7 +177,7 @@ def _complete_trial(dataset: str, profile: str, value: float) -> SimpleNamespace
         "HitRatio@40": value / 3,
         "Personalization@40": 0.75,
         "AveragePopularity@40": 0.25,
-        "ValidationOnlineCRRU@20_40": value,
+        "ValidationCRRU@20_40": value,
     }
     return SimpleNamespace(
         number=hash((dataset, profile, value)) % 10000,
@@ -192,6 +192,7 @@ def _complete_trial(dataset: str, profile: str, value: float) -> SimpleNamespace
             f"{dataset}.effective_config": {"epochs": 150},
             f"{dataset}.avg_epoch_time_s": 1.5,
             f"{dataset}.peak_vram_mb": 128.0,
+            f"{dataset}.largest_training_item_interaction_count": 10.0,
             f"{dataset}.batch_size": 4096,
         },
     )

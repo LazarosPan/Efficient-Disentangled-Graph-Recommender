@@ -29,6 +29,7 @@ from experiments.run_benchmark import (
     build_benchmark_plan,
 )
 from experiments.run_experiment import (
+    _CHECKPOINT_FILENAME_BYTE_LIMIT,
     _auto_batch_probe_candidates,
     _auto_batch_probe_interactions,
     _build_training_identity,
@@ -257,6 +258,82 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         canonical = build_canonical_experiment_name(config, "edgrec", None)
 
         self.assertIn("lr-cosine", canonical)
+
+    def test_default_checkpoint_path_preserves_normal_filename(self) -> None:
+        """Short checkpoint names should stay byte-for-byte compatible."""
+        config = build_config(_experiment_args(preset="edgrec"))
+        _, training_hash = _build_training_identity(config, "edgrec", None)
+        canonical = build_canonical_experiment_name(config, "edgrec", None)
+
+        checkpoint_path = _default_checkpoint_path(config, "edgrec", None, training_hash)
+
+        self.assertEqual(checkpoint_path.name, f"{canonical}_train-{training_hash}.pt")
+
+    def test_default_checkpoint_path_bounds_feature_heavy_filename(self) -> None:
+        """Feature-heavy profile names should not exceed filesystem basename limits."""
+        config = EDGRecConfig(
+            dataset="kuairand1k",
+            device="cpu",
+            epochs=300,
+            batch_size=1048576,
+            lr_scheduler="cosine",
+            num_neighbors=[8, 4],
+            preprocessing_preset="kuairand_causal",
+            item_universe_policy="random_exposure_items_only",
+            use_features=True,
+            feature_subset_mode="include_groups",
+            feature_include_groups=[
+                "item_author_music",
+                "item_upload_time",
+                "item_category",
+            ],
+            embedding_optimizer="sparseadam",
+            train_edge_keep_prob=0.6,
+            seed=13,
+        )
+        _, training_hash = _build_training_identity(config, "edgrec", None)
+        canonical = build_canonical_experiment_name(config, "edgrec", None)
+        legacy_name = f"{canonical}_train-{training_hash}.pt"
+
+        checkpoint_path = _default_checkpoint_path(config, "edgrec", None, training_hash)
+
+        self.assertGreater(len(legacy_name.encode("utf-8")), _CHECKPOINT_FILENAME_BYTE_LIMIT)
+        self.assertLessEqual(
+            len(checkpoint_path.name.encode("utf-8")),
+            _CHECKPOINT_FILENAME_BYTE_LIMIT,
+        )
+        self.assertIn(f"_train-{training_hash}.pt", checkpoint_path.name)
+        self.assertNotEqual(checkpoint_path.name, legacy_name)
+
+    def test_recoverable_checkpoint_lookup_handles_feature_heavy_filename(self) -> None:
+        """Empty lookup for an overlong semantic name should return None, not crash."""
+        config = EDGRecConfig(
+            dataset="kuairand1k",
+            device="cpu",
+            epochs=300,
+            batch_size=1048576,
+            lr_scheduler="cosine",
+            num_neighbors=[8, 4],
+            preprocessing_preset="kuairand_causal",
+            item_universe_policy="random_exposure_items_only",
+            use_features=True,
+            feature_subset_mode="include_groups",
+            feature_include_groups=[
+                "item_author_music",
+                "item_upload_time",
+                "item_category",
+            ],
+            embedding_optimizer="sparseadam",
+            train_edge_keep_prob=0.6,
+            seed=13,
+            auto_batch_size=False,
+        )
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch("experiments.run_experiment.CHECKPOINT_DIR", Path(tmp_dir)),
+        ):
+            self.assertIsNone(recoverable_checkpoint_for_config(config, preset="edgrec"))
 
     def test_query_results_reuses_runtime_canonical_name_contract(self) -> None:
         """Stored configs should render the same canonical label as live runs."""

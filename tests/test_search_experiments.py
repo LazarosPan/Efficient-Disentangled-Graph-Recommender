@@ -19,9 +19,29 @@ from experiments.recipes import (
     search_space_names,
 )
 from src.data.feature_groups import feature_subset_profile_matrix, required_feature_subset_profiles
-from src.utils.crru import compute_validation_online_crru_components_for_k
+from src.utils.crru import (
+    CRRU_FORMULATION_IDENTIFIER,
+    compute_validation_crru_components_for_k,
+    compute_validation_crru_for_k,
+    compute_validation_crru_objective,
+)
 from src.utils.experiment_logger import ExperimentLogger
 from src.utils.method_naming import EDGREC_LEGACY_PRESET
+
+
+def _valid_crru_metrics_for_search_test() -> dict[str, float]:
+    return {
+        "NDCG@20": 0.10,
+        "Recall@20": 0.20,
+        "HitRatio@20": 0.30,
+        "Personalization@20": 0.40,
+        "AveragePopularity@20": 5.0,
+        "NDCG@40": 0.15,
+        "Recall@40": 0.25,
+        "HitRatio@40": 0.35,
+        "Personalization@40": 0.45,
+        "AveragePopularity@40": 5.5,
+    }
 
 
 class SearchSpaceValidationTests(unittest.TestCase):
@@ -146,6 +166,30 @@ class SearchSpaceValidationTests(unittest.TestCase):
                 "search_space_revision": search.search_space_revision(spec),
                 "objective_metric": spec.objective.metric,
                 "objective_split": spec.objective.split,
+            },
+        )
+
+        study.add_trial(legacy_trial)
+
+        self.assertEqual(search._budget_informative_trials(study, spec), [study.trials[0]])
+
+    def test_legacy_crru_objective_label_counts_for_crru_budget(self) -> None:
+        """Historical CRRU objective labels should match the current CRRU objective family."""
+        spec = search.resolve_search_space(
+            "edgrec-core-optimization",
+            dataset="amazonbook",
+        )
+        study = optuna.create_study(direction=spec.objective.direction)
+        legacy_trial = optuna.trial.create_trial(
+            state=optuna.trial.TrialState.COMPLETE,
+            value=1.0,
+            user_attrs={
+                "search_space": "edgrec-core-optimization",
+                "search_space_revision": search.search_space_revision(spec),
+                "objective_metric": "ValidationOnlineCRRU@20_40",
+                "objective_split": spec.objective.split,
+                "sampled_params": {},
+                "amazonbook.objective": 1.0,
             },
         )
 
@@ -820,9 +864,9 @@ class SearchSpaceValidationTests(unittest.TestCase):
                 "hit_40": 0.51,
                 "personalization_40": 0.61,
                 "avgpop_40": 0.71,
-                "online_crru_20": 0.08,
-                "online_crru_40": 0.09,
-                "online_crru_20_40": 0.1,
+                "validation_crru_20": 0.08,
+                "validation_crru_40": 0.09,
+                "validation_crru_20_40": 0.1,
                 "posthoc_crru_20": 0.11,
                 "posthoc_crru_40": 0.12,
                 "time_per_epoch_s": 1.5,
@@ -839,7 +883,7 @@ class SearchSpaceValidationTests(unittest.TestCase):
         self.assertIn("## Feature subset search", rendered)
         self.assertIn("FeatureSubset", rendered)
         self.assertIn("ValidationAccuracy@20_40", rendered)
-        self.assertIn("OnlineCRRU@20_40", rendered)
+        self.assertIn("ValidationCRRU@20_40", rendered)
         self.assertIn("| movielens1m | all_gate_neg4 | item_genre |", rendered)
 
     def test_trial_overrides_enter_build_config_path(self) -> None:
@@ -1153,7 +1197,11 @@ class SearchSpaceValidationTests(unittest.TestCase):
             search_space=grid_spec,
         )
 
-        self.assertEqual(continuous_name, "tiny-amazonbook-val-validationonlinecrru-20-40")
+        self.assertEqual(
+            continuous_name,
+            "tiny-amazonbook-val-validationcrru-20-40-"
+            f"{CRRU_FORMULATION_IDENTIFIER.replace('_', '-')}",
+        )
         self.assertEqual(grid_name, continuous_name)
 
     def test_default_study_name_changes_when_objective_changes(self) -> None:
@@ -1320,20 +1368,21 @@ class SearchSpaceValidationTests(unittest.TestCase):
             "Recall@40": 0.40,
             "HitRatio@40": 0.50,
             "Personalization@40": 0.70,
-            "AveragePopularity@40": 3.0,
+            "AveragePopularity@40": 0.30,
         }
         result = {
             "history": {"val_metrics": [val_metrics]},
             "training_time_s": 10.0,
             "epochs_stopped_at": 2,
             "peak_vram_mb": 512.0,
+            "largest_training_item_interaction_count": 10.0,
             "test_metrics": {"NDCG@40": 0.99},
         }
 
         objective = search.extract_validation_objective(
             result,
             search.ObjectiveSpec(
-                metric=search.VALIDATION_ONLINE_CRRU_METRIC,
+                metric=search.VALIDATION_CRRU_METRIC,
                 split="val",
                 direction="maximize",
             ),
@@ -1341,15 +1390,16 @@ class SearchSpaceValidationTests(unittest.TestCase):
 
         self.assertAlmostEqual(
             objective,
-            search.compute_validation_online_crru_objective(
+            compute_validation_crru_objective(
                 val_metrics,
                 peak_vram_mb=512.0,
                 epoch_time_s=5.0,
+                largest_training_item_interaction_count=10.0,
             ),
         )
 
     def test_validation_crru_components_reconstruct_per_k_objective(self) -> None:
-        """OnlineCRRU component diagnostics should share the objective formula."""
+        """Validation CRRU component diagnostics should share the objective formula."""
         val_metrics = {
             "NDCG@20": 0.10,
             "Recall@20": 0.20,
@@ -1358,25 +1408,158 @@ class SearchSpaceValidationTests(unittest.TestCase):
             "AveragePopularity@20": 1.0,
         }
 
-        components = compute_validation_online_crru_components_for_k(
+        components = compute_validation_crru_components_for_k(
             val_metrics,
             k=20,
             peak_vram_mb=512.0,
             epoch_time_s=5.0,
+            largest_training_item_interaction_count=10.0,
         )
 
         self.assertAlmostEqual(
-            components["online_crru"],
-            search.compute_validation_online_crru_for_k(
+            components["crru"],
+            compute_validation_crru_for_k(
                 val_metrics,
                 k=20,
                 peak_vram_mb=512.0,
                 epoch_time_s=5.0,
+                largest_training_item_interaction_count=10.0,
             ),
         )
         self.assertGreater(components["accuracy"], 0.0)
-        self.assertGreater(components["popularity_diversity"], 0.0)
+        self.assertGreater(components["popularity_aware_personalization"], 0.0)
         self.assertGreater(components["efficiency"], 0.0)
+
+    def test_crru_pruning_callback_skips_until_resource_inputs_exist(self) -> None:
+        """Per-epoch pruning must not invent peak VRAM for strict CRRU."""
+        study = optuna.create_study(direction="maximize")
+        trial = study.ask()
+        spec = search.SearchSpaceSpec(
+            name="tiny",
+            description="test search space",
+            base_profile="core-edgrec-mainline",
+            datasets=("amazonbook",),
+            objective=search.ObjectiveSpec(
+                metric=search.VALIDATION_CRRU_METRIC,
+                split="val",
+                direction="maximize",
+            ),
+            max_epochs=2,
+            trials=1,
+            config_overrides={},
+            parameters={},
+        )
+        callback = search._build_pruning_epoch_callback(
+            trial,
+            search_space=spec,
+            dataset="amazonbook",
+            dataset_index=0,
+        )
+
+        callback(0, _valid_crru_metrics_for_search_test(), 1.0)
+
+        self.assertNotIn("amazonbook.last_pruning_objective", trial.user_attrs)
+
+    def test_optuna_report_reconstructs_crru_instead_of_trusting_stale_attrs(self) -> None:
+        """CRRU reports should ignore stored CRRU attrs when raw metrics exist."""
+        dataset = "amazonbook"
+        val_metrics = {
+            "NDCG@20": 0.10,
+            "Recall@20": 0.20,
+            "HitRatio@20": 0.30,
+            "Personalization@20": 0.40,
+            "AveragePopularity@20": 5.0,
+            "NDCG@40": 0.15,
+            "Recall@40": 0.25,
+            "HitRatio@40": 0.35,
+            "Personalization@40": 0.45,
+            "AveragePopularity@40": 5.5,
+        }
+        user_attrs = {
+            "datasets": [dataset],
+            "objective_metric": optuna_report.VALIDATION_CRRU_METRIC,
+            "objective_split": "val",
+            f"{dataset}.objective": 0.999,
+            f"{dataset}.val.{optuna_report.VALIDATION_CRRU_METRIC}": 0.999,
+            f"{dataset}.val.ValidationCRRU@20": 0.999,
+            f"{dataset}.val.ValidationCRRU@40": 0.999,
+            f"{dataset}.peak_vram_mb": 512.0,
+            f"{dataset}.avg_epoch_time_s": 5.0,
+            f"{dataset}.largest_training_item_interaction_count": 10.0,
+        }
+        user_attrs.update({f"{dataset}.val.{name}": value for name, value in val_metrics.items()})
+        trial = optuna.trial.create_trial(
+            state=optuna.trial.TrialState.COMPLETE,
+            value=0.999,
+            params={},
+            distributions={},
+            user_attrs=user_attrs,
+        )
+
+        expected = compute_validation_crru_objective(
+            val_metrics,
+            peak_vram_mb=512.0,
+            epoch_time_s=5.0,
+            largest_training_item_interaction_count=10.0,
+        )
+
+        self.assertNotAlmostEqual(expected, 0.999)
+        self.assertAlmostEqual(
+            optuna_report.dataset_metric(
+                trial,
+                dataset,
+                optuna_report.VALIDATION_CRRU_METRIC,
+            ),
+            expected,
+        )
+        self.assertAlmostEqual(
+            optuna_report.dataset_metric(trial, dataset, "objective"),
+            expected,
+        )
+
+    def test_optuna_report_loads_legacy_validation_online_crru_studies(self) -> None:
+        """Historical ValidationOnlineCRRU studies should remain visible in reports."""
+        dataset = "amazonbook"
+        val_metrics = _valid_crru_metrics_for_search_test()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            storage = f"sqlite:///{Path(tmpdir) / 'optuna.db'}"
+            study = optuna.create_study(
+                study_name="legacy-crru-study",
+                storage=storage,
+                direction="maximize",
+            )
+            study.add_trial(
+                optuna.trial.create_trial(
+                    state=optuna.trial.TrialState.COMPLETE,
+                    value=0.5,
+                    params={},
+                    distributions={},
+                    user_attrs={
+                        "datasets": [dataset],
+                        "objective_metric": "ValidationOnlineCRRU@20_40",
+                        "objective_split": "val",
+                        f"{dataset}.objective": 0.5,
+                        f"{dataset}.peak_vram_mb": 512.0,
+                        f"{dataset}.avg_epoch_time_s": 5.0,
+                        f"{dataset}.largest_training_item_interaction_count": 10.0,
+                        **{f"{dataset}.val.{name}": value for name, value in val_metrics.items()},
+                    },
+                ),
+            )
+
+            loaded = optuna_report.load_studies(storage)
+            self.assertEqual([study.study_name for study in loaded], ["legacy-crru-study"])
+            self.assertEqual(
+                optuna_report.objective_metric_label("ValidationOnlineCRRU@20_40"),
+                "ValidationCRRU@20_40",
+            )
+            self.assertIsNotNone(
+                optuna_report.dataset_metric(
+                    loaded[0].trials[0],
+                    dataset,
+                    optuna_report.VALIDATION_CRRU_METRIC,
+                ),
+            )
 
     def test_validation_accuracy_objective_uses_validation_metrics_only(self) -> None:
         """The accuracy-first objective should not read test metrics."""
