@@ -13,12 +13,14 @@ Usage:
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import sys
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from contextlib import redirect_stdout
+from dataclasses import dataclass, field
 from io import StringIO
 from pathlib import Path
 
@@ -27,8 +29,11 @@ from src.reporting.feature_analysis import write_query_feature_analysis_reports
 from src.utils.cli_parsers import build_query_results_parser
 from src.utils.crru import (
     CRRU_REPORT_FORMULA_LINES,
-    compute_crru_efficiency_scores,
-    compute_crru_scores_for_k,
+    compute_validation_crru_for_k,
+)
+from src.utils.crru_popularity import (
+    CRRUPopularityReconstructionError,
+    resolve_largest_training_item_interaction_count,
 )
 from src.utils.experiment_logger import RUNTIME_PROBE_METRIC_NAMES, ExperimentLogger
 from src.utils.experiment_naming import (
@@ -63,6 +68,26 @@ FINAL_FORMAL_PROFILE_NAMES = frozenset(
 FINAL_FORMAL_PROFILE_PREFIXES = ("edgrec-global-top-",)
 RUNTIME_PROBE_COLUMNS = RUNTIME_PROBE_METRIC_NAMES
 PAPER_BASELINE_PRESETS = frozenset({"lightgcn_paper", "dice_paper"})
+
+
+class CRRUDenominatorInvariantError(ValueError):
+    """Raised when raw ARP is inconsistent with the CRRU denominator."""
+
+
+@dataclass
+class CRRUReportAudit:
+    """Audit evidence for report-time CRRU reconstruction."""
+
+    stored_denominator_rows: int = 0
+    reconstructed_denominator_rows: int = 0
+    unavailable_denominator_rows: int = 0
+    invalid_denominator_rows: int = 0
+    skip_reasons: dict[int, str] = field(default_factory=dict)
+
+    @property
+    def computed_rows(self) -> int:
+        """Return rows with a successfully computed CRRU value."""
+        return self.stored_denominator_rows + self.reconstructed_denominator_rows
 
 
 def _display_preset(preset: object | None) -> str:
@@ -223,6 +248,11 @@ def _query_report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             return f"s.{column_name}"
         return f"NULL AS {column_name}"
 
+    def summary_expr(column_name: str) -> str:
+        if column_name in summary_columns:
+            return f"s.{column_name}"
+        return "NULL"
+
     try:
         return conn.execute(
             f"""
@@ -230,6 +260,19 @@ def _query_report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                    s.training_time_s, s.completed_train_epochs,
                    {summary_column("avg_epoch_time_s")},
                    s.peak_vram_mb,
+                   COALESCE(
+                       {summary_expr("largest_training_item_interaction_count")},
+                       (
+                           SELECT metric_value
+                           FROM metrics AS crru_pop_metric
+                           WHERE crru_pop_metric.experiment_id = s.id
+                             AND crru_pop_metric.split = 'train'
+                             AND crru_pop_metric.metric_name =
+                                 'largest_training_item_interaction_count'
+                           ORDER BY crru_pop_metric.epoch DESC
+                           LIMIT 1
+                       )
+                   ) AS largest_training_item_interaction_count,
                    s.avg_gpu_utilization_pct,
                    (
                        SELECT metric_value
@@ -312,6 +355,16 @@ def _query_report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                        s.training_time_s, s.completed_train_epochs,
                        NULL AS avg_epoch_time_s,
                        s.peak_vram_mb,
+                       (
+                           SELECT metric_value
+                           FROM metrics AS crru_pop_metric
+                           WHERE crru_pop_metric.experiment_id = s.id
+                             AND crru_pop_metric.split = 'train'
+                             AND crru_pop_metric.metric_name =
+                                 'largest_training_item_interaction_count'
+                           ORDER BY crru_pop_metric.epoch DESC
+                           LIMIT 1
+                       ) AS largest_training_item_interaction_count,
                        s.avg_gpu_utilization_pct,
                        NULL AS runtime_probe_target_epochs,
                        NULL AS runtime_probe_observed_epochs,
@@ -444,7 +497,7 @@ def _comparison_key(row: sqlite3.Row) -> tuple[str, str, str, str, str, str]:
 def _select_top_test_rows(
     rows: list[sqlite3.Row],
     *,
-    n: int,
+    top_n: int,
     crru_scores: dict[int, dict[int, float]],
 ) -> list[sqlite3.Row]:
     """Return the top completed full-data test rows per dataset ranked by CRRU."""
@@ -463,7 +516,7 @@ def _select_top_test_rows(
         seen_keys.add(key)
 
         dataset = row["dataset"] or "-"
-        if dataset_counts.get(dataset, 0) >= n:
+        if dataset_counts.get(dataset, 0) >= top_n:
             continue
         dataset_counts[dataset] = dataset_counts.get(dataset, 0) + 1
         top_rows.append(row)
@@ -473,10 +526,20 @@ def _select_top_test_rows(
 def _crru_sort_key(
     row: sqlite3.Row,
     crru_scores: dict[int, dict[int, float]],
-) -> tuple[float, float, float, float, int]:
+) -> tuple[int, float, float, float, float, int]:
     """Return the sort key that orders rows by CRRU within a dataset."""
-    row_scores = crru_scores[int(row["id"])]
+    row_scores = crru_scores.get(int(row["id"]))
+    if row_scores is None:
+        return (
+            1,
+            0.0,
+            0.0,
+            -(float(row["test_ndcg_20"]) if row["test_ndcg_20"] is not None else float("-inf")),
+            -(float(row["test_ndcg_40"]) if row["test_ndcg_40"] is not None else float("-inf")),
+            int(row["id"]),
+        )
     return (
+        0,
         -row_scores[20],
         -row_scores[40],
         -(float(row["test_ndcg_20"]) if row["test_ndcg_20"] is not None else float("-inf")),
@@ -503,26 +566,29 @@ def _print_causal_diagnostics(row: sqlite3.Row) -> None:
     if not has_causal:
         return
 
-    def fmt_val(v: float | None) -> str:
-        return f"{v:.4f}" if v is not None else "-"
+    def format_metric_pair_value(value: float | None) -> str:
+        return f"{value:.4f}" if value is not None else "-"
 
-    def fmt_pair(v20: float | None, v40: float | None) -> str:
-        return f"{{20: {fmt_val(v20)}, 40: {fmt_val(v40)}}}"
+    def format_cutoff_pair(value_at_20: float | None, value_at_40: float | None) -> str:
+        return (
+            f"{{20: {format_metric_pair_value(value_at_20)}, "
+            f"40: {format_metric_pair_value(value_at_40)}}}"
+        )
 
-    conformity_contrib = fmt_pair(
+    conformity_contrib = format_cutoff_pair(
         row["test_conformity_contribution_20"], row["test_conformity_contribution_40"]
     )
-    interest_contrib = fmt_pair(
+    interest_contrib = format_cutoff_pair(
         row["test_interest_contribution_20"], row["test_interest_contribution_40"]
     )
-    context_contrib = fmt_pair(
+    context_contrib = format_cutoff_pair(
         row["test_context_contribution_20"], row["test_context_contribution_40"]
     )
-    interest_ratio = fmt_pair(
+    interest_ratio = format_cutoff_pair(
         _row_value(row, "test_interest_branch_contribution_ratio_20"),
         _row_value(row, "test_interest_branch_contribution_ratio_40"),
     )
-    conformity_ratio = fmt_pair(
+    conformity_ratio = format_cutoff_pair(
         _row_value(row, "test_conformity_branch_contribution_ratio_20"),
         _row_value(row, "test_conformity_branch_contribution_ratio_40"),
     )
@@ -535,17 +601,17 @@ def _print_causal_diagnostics(row: sqlite3.Row) -> None:
         f"branch_ratio(interest={interest_ratio}, conformity={conformity_ratio})"
     )
 
-    interest_pop = fmt_pair(
+    interest_pop = format_cutoff_pair(
         row["test_interest_popularity_spearman_20"], row["test_interest_popularity_spearman_40"]
     )
-    conformity_pop = fmt_pair(
+    conformity_pop = format_cutoff_pair(
         row["test_conformity_popularity_spearman_20"],
         row["test_conformity_popularity_spearman_40"],
     )
-    context_pop = fmt_pair(
+    context_pop = format_cutoff_pair(
         row["test_context_popularity_spearman_20"], row["test_context_popularity_spearman_40"]
     )
-    final_pop = fmt_pair(
+    final_pop = format_cutoff_pair(
         row["test_final_popularity_spearman_20"], row["test_final_popularity_spearman_40"]
     )
 
@@ -556,23 +622,23 @@ def _print_causal_diagnostics(row: sqlite3.Row) -> None:
         f"Final={final_pop})"
     )
 
-    def fmt_mean_std(mean: float | None, std: float | None) -> str:
+    def format_mean_and_std(mean: float | None, std: float | None) -> str:
         if mean is None:
             return "-"
         if std is None:
             return f"{mean:.4f}"
         return f"{mean:.4f}±{std:.4f}"
 
-    score_interest = fmt_mean_std(
+    score_interest = format_mean_and_std(
         row["test_score_mix_interest_mean"], row["test_score_mix_interest_std"]
     )
-    score_conformity = fmt_mean_std(
+    score_conformity = format_mean_and_std(
         row["test_score_mix_conformity_mean"], row["test_score_mix_conformity_std"]
     )
-    score_context = fmt_mean_std(
+    score_context = format_mean_and_std(
         row["test_score_mix_context_mean"], row["test_score_mix_context_std"]
     )
-    cosine_sim = fmt_mean_std(
+    cosine_sim = format_mean_and_std(
         row["test_interest_conformity_cosine_mean"], row["test_interest_conformity_cosine_std"]
     )
     warnings = _branch_collapse_warning_label(row)
@@ -585,27 +651,27 @@ def _print_causal_diagnostics(row: sqlite3.Row) -> None:
         f"Cosine={cosine_sim}{warning_suffix}"
     )
 
-    interest_branch_ndcg = fmt_pair(
+    interest_branch_ndcg = format_cutoff_pair(
         _row_value(row, "test_interest_branch_ndcg_20"),
         _row_value(row, "test_interest_branch_ndcg_40"),
     )
-    interest_branch_recall = fmt_pair(
+    interest_branch_recall = format_cutoff_pair(
         _row_value(row, "test_interest_branch_recall_20"),
         _row_value(row, "test_interest_branch_recall_40"),
     )
-    interest_branch_pop = fmt_pair(
+    interest_branch_pop = format_cutoff_pair(
         _row_value(row, "test_interest_branch_average_popularity_20"),
         _row_value(row, "test_interest_branch_average_popularity_40"),
     )
-    conformity_branch_ndcg = fmt_pair(
+    conformity_branch_ndcg = format_cutoff_pair(
         _row_value(row, "test_conformity_branch_ndcg_20"),
         _row_value(row, "test_conformity_branch_ndcg_40"),
     )
-    conformity_branch_recall = fmt_pair(
+    conformity_branch_recall = format_cutoff_pair(
         _row_value(row, "test_conformity_branch_recall_20"),
         _row_value(row, "test_conformity_branch_recall_40"),
     )
-    conformity_branch_pop = fmt_pair(
+    conformity_branch_pop = format_cutoff_pair(
         _row_value(row, "test_conformity_branch_average_popularity_20"),
         _row_value(row, "test_conformity_branch_average_popularity_40"),
     )
@@ -911,12 +977,12 @@ def _print_ranked_result_table(
         ("Recall@20", 10, ">"),
         ("Hit@20", 8, ">"),
         ("Pers@20", 9, ">"),
-        ("AvgPop@20", 10, ">"),
+        ("AvgPop@20", 12, ">"),
         ("NDCG@40", 8, ">"),
         ("Recall@40", 10, ">"),
         ("Hit@40", 8, ">"),
         ("Pers@40", 9, ">"),
-        ("AvgPop@40", 10, ">"),
+        ("AvgPop@40", 12, ">"),
         ("Epochs", 6, ">"),
         ("Time/Ep", 10, ">"),
         ("PeakVRAM", 10, ">"),
@@ -1040,9 +1106,11 @@ def _print_ranked_result_table(
     )
     print(
         "Bold values mark the best shown value within each dataset. Lower is better for "
-        "AvgPop, Time/Ep, and PeakVRAM; higher is better for CRRU, accuracy, and "
-        "personalization. Epoch count is not bolded because fewer epochs is not always "
-        "a better model result."
+        "AvgPop is PyG AveragePopularity computed from raw train item counts; lower "
+        "means less raw training-popularity concentration. CRRU log-normalizes raw "
+        "AvgPop internally with the largest train item count. Lower is also better for Time/Ep and "
+        "PeakVRAM; higher is better for CRRU, accuracy, and personalization. Epoch "
+        "count is not bolded because fewer epochs is not always a better model result."
     )
     print()
 
@@ -1378,7 +1446,7 @@ def _print_optuna_report_pointer() -> None:
     print()
 
 
-def show_experiment(conn: sqlite3.Connection, exp_id: int) -> None:
+def show_experiment(conn: sqlite3.Connection, experiment_id: int) -> None:
     """Show experiment details."""
     row = conn.execute(
         """
@@ -1387,15 +1455,15 @@ def show_experiment(conn: sqlite3.Connection, exp_id: int) -> None:
              gpu_name, gpu_vram_gb, training_mode, updated_at
         FROM experiments WHERE id = ?
     """,
-        (exp_id,),
+        (experiment_id,),
     ).fetchone()
 
     if not row:
-        print(f"Experiment {exp_id} not found.")
+        print(f"Experiment {experiment_id} not found.")
         return
 
     print("=" * 80)
-    print(f"EXPERIMENT {exp_id}")
+    print(f"EXPERIMENT {experiment_id}")
     print("=" * 80)
     print(f"Database:     {THESIS_DB_PATH.resolve()}")
     print(f"Timestamp:    {row['timestamp']}")
@@ -1420,14 +1488,14 @@ def show_experiment(conn: sqlite3.Connection, exp_id: int) -> None:
 
     if row["config_json"]:
         config = json.loads(row["config_json"])
-        for k, v in sorted(config.items()):
-            print(f"  {k}: {v}")
+        for config_key, config_value in sorted(config.items()):
+            print(f"  {config_key}: {config_value}")
 
 
-def show_metrics(conn: sqlite3.Connection, exp_id: int) -> None:
+def show_metrics(conn: sqlite3.Connection, experiment_id: int) -> None:
     """Show metrics for an experiment."""
     print("=" * 80)
-    print(f"METRICS (Experiment {exp_id})")
+    print(f"METRICS (Experiment {experiment_id})")
     print("=" * 80)
 
     # Group by split
@@ -1439,7 +1507,7 @@ def show_metrics(conn: sqlite3.Connection, exp_id: int) -> None:
             WHERE experiment_id = ? AND split = ?
             ORDER BY epoch, metric_name, timestamp
         """,
-            (exp_id, split),
+            (experiment_id, split),
         ).fetchall()
 
         if rows:
@@ -1455,10 +1523,10 @@ def show_metrics(conn: sqlite3.Connection, exp_id: int) -> None:
                 )
 
 
-def show_profiling(conn: sqlite3.Connection, exp_id: int) -> None:
+def show_profiling(conn: sqlite3.Connection, experiment_id: int) -> None:
     """Show profiling breakdown for an experiment."""
     print("=" * 80)
-    print(f"PROFILING (Experiment {exp_id})")
+    print(f"PROFILING (Experiment {experiment_id})")
     print("=" * 80)
 
     # Summary by stage
@@ -1480,7 +1548,7 @@ def show_profiling(conn: sqlite3.Connection, exp_id: int) -> None:
         GROUP BY stage
         ORDER BY total_ms DESC
     """,
-        (exp_id,),
+        (experiment_id,),
     ).fetchall()
 
     if not rows:
@@ -1499,14 +1567,14 @@ def show_profiling(conn: sqlite3.Connection, exp_id: int) -> None:
     print("-" * 150)
     for row in rows:
         stage_total_ms = float(row["total_ms"])
-        pct = (stage_total_ms / total_ms * 100) if total_ms > 0 else 0
+        total_percentage = (stage_total_ms / total_ms * 100) if total_ms > 0 else 0
         peak_vram_mb = row["peak_vram_mb"]
         peak_str = f"{peak_vram_mb:.0f} MB" if peak_vram_mb else "-"
         print(
             (
                 f"{row['stage']:<15} | {row['avg_epoch_ms']:>11.1f} | "
                 f"{row['avg_call_ms']:>10.1f} | {row['total_calls']:>6} | "
-                f"{row['profiled_epochs']:>6} | {pct:>5.1f}% | {peak_str:<9} | "
+                f"{row['profiled_epochs']:>6} | {total_percentage:>5.1f}% | {peak_str:<9} | "
                 f"{row['last_logged_at']}"
             ),
         )
@@ -1515,10 +1583,10 @@ def show_profiling(conn: sqlite3.Connection, exp_id: int) -> None:
     print(f"{'TOTAL':<15} | {total_ms:>11.1f}")
 
 
-def show_alpha_drift(conn: sqlite3.Connection, exp_id: int) -> None:
+def show_alpha_drift(conn: sqlite3.Connection, experiment_id: int) -> None:
     """Show alpha_pos/alpha_neg values over epochs."""
     print("=" * 80)
-    print(f"ALPHA DRIFT (Experiment {exp_id})")
+    print(f"ALPHA DRIFT (Experiment {experiment_id})")
     print("=" * 80)
 
     rows = conn.execute(
@@ -1528,7 +1596,7 @@ def show_alpha_drift(conn: sqlite3.Connection, exp_id: int) -> None:
         WHERE experiment_id = ? AND metric_name LIKE 'alpha%'
         ORDER BY epoch, metric_name
     """,
-        (exp_id,),
+        (experiment_id,),
     ).fetchall()
 
     if not rows:
@@ -1548,10 +1616,10 @@ def show_alpha_drift(conn: sqlite3.Connection, exp_id: int) -> None:
         print(f"{epoch:>5} | {alpha_pos:>10.4f} | {alpha_neg:>10.4f}")
 
 
-def show_bottleneck(conn: sqlite3.Connection, exp_id: int) -> None:
+def show_bottleneck(conn: sqlite3.Connection, experiment_id: int) -> None:
     """Show bottleneck analysis (which stage takes most time)."""
     print("=" * 80)
-    print(f"BOTTLENECK ANALYSIS (Experiment {exp_id})")
+    print(f"BOTTLENECK ANALYSIS (Experiment {experiment_id})")
     print("=" * 80)
 
     rows = conn.execute(
@@ -1564,7 +1632,7 @@ def show_bottleneck(conn: sqlite3.Connection, exp_id: int) -> None:
         GROUP BY stage
         ORDER BY total_ms DESC
     """,
-        (exp_id,),
+        (experiment_id,),
     ).fetchall()
 
     if not rows:
@@ -1577,13 +1645,13 @@ def show_bottleneck(conn: sqlite3.Connection, exp_id: int) -> None:
         f"\n{'Rank':>4} | {'Stage':<15} | {'Total (ms)':>12} | {'Calls':>6} | {'% of Total':>10}",
     )
     print("-" * 60)
-    for i, row in enumerate(rows, 1):
+    for rank, row in enumerate(rows, 1):
         stage_total_ms = float(row["total_ms"])
-        pct = (stage_total_ms / grand_total * 100) if grand_total > 0 else 0
+        total_percentage = (stage_total_ms / grand_total * 100) if grand_total > 0 else 0
         print(
             ""
-            f"{i:>4} | {row['stage']:<15} | {stage_total_ms:>12.1f} | "
-            f"{row['n_calls']:>6} | {pct:>9.1f}%",
+            f"{rank:>4} | {row['stage']:<15} | {stage_total_ms:>12.1f} | "
+            f"{row['n_calls']:>6} | {total_percentage:>9.1f}%",
         )
 
     print("-" * 60)
@@ -1617,46 +1685,146 @@ def _crru_epoch_time_s(row: sqlite3.Row) -> float | None:
     return training_time_s if training_time_s is not None and training_time_s > 0 else None
 
 
-def _compute_dataset_crru_scores(rows: list[sqlite3.Row]) -> dict[int, dict[int, float]]:
-    """Return dataset-local CRRU@20 and CRRU@40 scores keyed by experiment ID."""
-    scores_by_id: dict[int, dict[int, float]] = {}
-    rows_by_dataset: dict[str, list[sqlite3.Row]] = defaultdict(list)
-    for row in rows:
-        rows_by_dataset[row["dataset"] or "-"].append(row)
+def _largest_training_item_interaction_count_for_row(row: sqlite3.Row) -> float:
+    """Return the stored or reconstructed CRRU popularity denominator for a row."""
+    value, _source = _largest_training_item_interaction_count_for_row_with_source(row)
+    return value
 
-    for dataset_rows in rows_by_dataset.values():
-        efficiency_scores = compute_crru_efficiency_scores(
-            [row["peak_vram_mb"] for row in dataset_rows],
-            [_crru_epoch_time_s(row) for row in dataset_rows],
-        )
-        crru_20 = compute_crru_scores_for_k(
-            ndcg=[row["test_ndcg_20"] for row in dataset_rows],
-            recall=[row["test_recall_20"] for row in dataset_rows],
-            hit=[row["test_hit_ratio_20"] for row in dataset_rows],
-            personalization=[row["test_personalization_20"] for row in dataset_rows],
-            average_popularity=[row["test_average_popularity_20"] for row in dataset_rows],
-            efficiency_scores=efficiency_scores,
-        )
-        crru_40 = compute_crru_scores_for_k(
-            ndcg=[row["test_ndcg_40"] for row in dataset_rows],
-            recall=[row["test_recall_40"] for row in dataset_rows],
-            hit=[row["test_hit_ratio_40"] for row in dataset_rows],
-            personalization=[row["test_personalization_40"] for row in dataset_rows],
-            average_popularity=[row["test_average_popularity_40"] for row in dataset_rows],
-            efficiency_scores=efficiency_scores,
-        )
-        for row, score_20, score_40 in zip(
-            dataset_rows,
-            crru_20,
-            crru_40,
-            strict=True,
+
+def _largest_training_item_interaction_count_for_row_with_source(
+    row: sqlite3.Row,
+) -> tuple[float, str]:
+    """Return CRRU popularity denominator and whether it was stored or rebuilt."""
+    try:
+        config_json = row["config_json"]
+    except (IndexError, KeyError):
+        config_json = None
+    stored_value = _row_value(row, "largest_training_item_interaction_count")
+    source = "stored" if stored_value is not None else "reconstructed"
+    return resolve_largest_training_item_interaction_count(
+        stored_value=stored_value,
+        config=_load_config_json(config_json),
+        dataset=row["dataset"],
+    ), source
+
+
+def _assert_average_popularity_within_denominator(
+    row: sqlite3.Row,
+    *,
+    largest_training_item_interaction_count: float,
+) -> None:
+    """Assert raw PyG ARP is on the same scale as the reconstructed denominator."""
+    for cutoff in (20, 40):
+        average_popularity = _row_value(row, f"test_average_popularity_{cutoff}")
+        if average_popularity is None:
+            continue
+        if not math.isfinite(average_popularity):
+            continue
+        if (
+            math.isfinite(largest_training_item_interaction_count)
+            and average_popularity > largest_training_item_interaction_count
         ):
-            scores_by_id[int(row["id"])] = {20: score_20, 40: score_40}
+            raise CRRUDenominatorInvariantError(
+                f"AveragePopularity@{cutoff}={average_popularity:g} exceeds "
+                "LargestTrainingItemInteractionCount="
+                f"{largest_training_item_interaction_count:g}; raw ARP scale or "
+                "training-graph reconstruction is inconsistent",
+            )
 
+
+def _assert_crru_scores_bounded(scores: dict[int, float]) -> None:
+    """Assert final report CRRU values satisfy the formal [0, 1] bound."""
+    for cutoff, value in scores.items():
+        if not math.isfinite(value) or value < 0.0 or value > 1.0:
+            raise ValueError(f"CRRU@{cutoff} must be finite and in [0, 1]; got {value!r}.")
+
+
+def _compute_dataset_crru_scores(
+    rows: list[sqlite3.Row],
+) -> dict[int, dict[int, float]]:
+    """Return absolute CRRU@20 and CRRU@40 scores keyed by experiment ID."""
+    scores_by_id, _audit = _compute_dataset_crru_scores_with_audit(rows)
     return scores_by_id
 
 
-def _print_crru_summary() -> None:
+def _compute_dataset_crru_scores_with_reasons(
+    rows: list[sqlite3.Row],
+) -> tuple[dict[int, dict[int, float]], dict[int, str]]:
+    """Return absolute CRRU scores and precise skip reasons keyed by experiment ID."""
+    scores_by_id, audit = _compute_dataset_crru_scores_with_audit(rows)
+    return scores_by_id, audit.skip_reasons
+
+
+def _compute_dataset_crru_scores_with_audit(
+    rows: list[sqlite3.Row],
+) -> tuple[dict[int, dict[int, float]], CRRUReportAudit]:
+    """Return absolute CRRU scores plus report-time reconstruction audit evidence."""
+    scores_by_id: dict[int, dict[int, float]] = {}
+    audit = CRRUReportAudit()
+    for row in rows:
+        experiment_id = int(row["id"])
+        try:
+            (
+                largest_training_item_interaction_count,
+                denominator_source,
+            ) = _largest_training_item_interaction_count_for_row_with_source(row)
+            _assert_average_popularity_within_denominator(
+                row,
+                largest_training_item_interaction_count=largest_training_item_interaction_count,
+            )
+            metrics = {
+                "NDCG@20": row["test_ndcg_20"],
+                "Recall@20": row["test_recall_20"],
+                "HitRatio@20": row["test_hit_ratio_20"],
+                "Personalization@20": row["test_personalization_20"],
+                "AveragePopularity@20": row["test_average_popularity_20"],
+                "NDCG@40": row["test_ndcg_40"],
+                "Recall@40": row["test_recall_40"],
+                "HitRatio@40": row["test_hit_ratio_40"],
+                "Personalization@40": row["test_personalization_40"],
+                "AveragePopularity@40": row["test_average_popularity_40"],
+            }
+            epoch_time_s = _crru_epoch_time_s(row)
+            crru_20 = compute_validation_crru_for_k(
+                metrics,
+                k=20,
+                peak_vram_mb=row["peak_vram_mb"],
+                epoch_time_s=epoch_time_s,
+                largest_training_item_interaction_count=largest_training_item_interaction_count,
+            )
+            crru_40 = compute_validation_crru_for_k(
+                metrics,
+                k=40,
+                peak_vram_mb=row["peak_vram_mb"],
+                epoch_time_s=epoch_time_s,
+                largest_training_item_interaction_count=largest_training_item_interaction_count,
+            )
+            row_scores = {20: crru_20, 40: crru_40}
+            _assert_crru_scores_bounded(row_scores)
+        except CRRUPopularityReconstructionError as exc:
+            if _row_value(row, "largest_training_item_interaction_count") is None:
+                audit.unavailable_denominator_rows += 1
+            else:
+                audit.invalid_denominator_rows += 1
+            audit.skip_reasons[experiment_id] = str(exc) or exc.__class__.__name__
+            continue
+        except CRRUDenominatorInvariantError as exc:
+            audit.invalid_denominator_rows += 1
+            audit.skip_reasons[experiment_id] = str(exc) or exc.__class__.__name__
+            continue
+        except (IndexError, KeyError, ValueError) as exc:
+            audit.skip_reasons[experiment_id] = str(exc) or exc.__class__.__name__
+            continue
+        if denominator_source == "stored":
+            audit.stored_denominator_rows += 1
+        else:
+            audit.reconstructed_denominator_rows += 1
+        scores_by_id[experiment_id] = row_scores
+
+    return scores_by_id, audit
+
+
+def _print_crru_summary(audit: CRRUReportAudit | None = None) -> None:
     """Print the CRRU framing used by the default thesis summary."""
     print("## CRRU Reporting Utility")
     for index, line in enumerate(CRRU_REPORT_FORMULA_LINES):
@@ -1664,6 +1832,42 @@ def _print_crru_summary() -> None:
             print(f"**{line}**")
         else:
             print(f"- {line.strip()}")
+    print(
+        "- Reports use the logged LargestTrainingItemInteractionCount when present; "
+        "otherwise they reconstruct it from the stored dataset, preprocessing, "
+        "item-universe, split, sampling, and seed configuration."
+    )
+    if audit is not None:
+        print(
+            "- PyG AveragePopularity@K is logged using raw train-only item "
+            "interaction counts; CRRU applies log-normalized scaling to the raw "
+            "ARP only inside the CRRU utility."
+        )
+        print(
+            "- CRRU denominator source: "
+            f"{audit.stored_denominator_rows} stored, "
+            f"{audit.reconstructed_denominator_rows} reconstructed, "
+            f"{audit.unavailable_denominator_rows} unavailable, "
+            f"{audit.invalid_denominator_rows} invalid."
+        )
+        print(
+            f"- CRRU audit: {audit.computed_rows} rows computed, {len(audit.skip_reasons)} skipped."
+        )
+        if audit.computed_rows:
+            print(
+                "- CRRU audit assertions passed: AveragePopularity@20/@40 <= "
+                "LargestTrainingItemInteractionCount and CRRU@20/@40 in [0, 1] "
+                "for every computed row."
+            )
+    if audit is not None and audit.skip_reasons:
+        print(
+            "- Rows with blank CRRU lack at least one formal input or cannot safely "
+            "reconstruct training-graph metadata:"
+        )
+        for experiment_id, reason in sorted(audit.skip_reasons.items())[:12]:
+            print(f"  - ExpID {experiment_id}: {reason}")
+        if len(audit.skip_reasons) > 12:
+            print(f"  - ... {len(audit.skip_reasons) - 12} more rows omitted.")
     print()
 
 
@@ -1741,7 +1945,7 @@ def _print_evidence_role_notes() -> None:
     print()
 
 
-def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
+def list_top_completed(conn: sqlite3.Connection, *, top_n: int = 20) -> None:
     """Print the default thesis summary for full-data test runs."""
     print("## THESIS TEST RESULTS - completed full-data test rows")
     print()
@@ -1757,26 +1961,26 @@ def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
         print("Use --view all to inspect every logged experiment row.")
         print()
     else:
-        crru_scores = _compute_dataset_crru_scores(rows)
-        _print_crru_summary()
+        crru_scores, crru_audit = _compute_dataset_crru_scores_with_audit(rows)
+        _print_crru_summary(crru_audit)
         _print_evidence_role_notes()
         _print_paper_baseline_notes(
             reportable_formal_rows=reportable_formal_rows,
             runtime_probe_rows=runtime_probe_rows,
         )
         _print_test_leaderboard(
-            _select_top_test_rows(rows, n=n, crru_scores=crru_scores),
+            _select_top_test_rows(rows, top_n=top_n, crru_scores=crru_scores),
             crru_scores=crru_scores,
         )
 
     _print_optuna_report_pointer()
 
 
-def _render_default_summary(conn: sqlite3.Connection, *, n: int = 20) -> str:
+def _render_default_summary(conn: sqlite3.Connection, *, top_n: int = 20) -> str:
     """Render the default thesis summary into a text buffer."""
     buffer = StringIO()
     with redirect_stdout(buffer):
-        list_top_completed(conn, n=n)
+        list_top_completed(conn, top_n=top_n)
     return buffer.getvalue().rstrip()
 
 

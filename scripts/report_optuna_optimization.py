@@ -30,13 +30,19 @@ from src.reporting.feature_analysis import (
     write_feature_subset_search_reports,
 )
 from src.utils.crru import (
+    CRRU_RECOMMENDATION_METRIC_NAMES,
+    CRRU_REPORT_FORMULA_LINES,
     VALIDATION_ACCURACY_METRIC,
-    VALIDATION_ONLINE_CRRU_K_METRICS,
-    VALIDATION_ONLINE_CRRU_METRIC,
-    compute_crru_efficiency_scores,
-    compute_crru_scores_for_k,
-    compute_validation_online_crru_for_k,
-    compute_validation_online_crru_objective,
+    VALIDATION_CRRU_K_METRIC_ALIASES,
+    VALIDATION_CRRU_K_METRICS,
+    VALIDATION_CRRU_METRIC,
+    VALIDATION_CRRU_METRIC_ALIASES,
+    compute_validation_crru_metric_value,
+    is_validation_crru_metric_name,
+)
+from src.utils.crru_popularity import (
+    CRRUPopularityReconstructionError,
+    resolve_largest_training_item_interaction_count,
 )
 from src.utils.method_naming import (
     display_method_label,
@@ -54,7 +60,7 @@ IMPORTANCE_CACHE_PATH = RESULTS_DIR / "optuna_importance_cache.json"
 IMPORTANCE_EVALUATOR_NAME = "mean_decrease_impurity_seed_13"
 INCLUDE_OPTUNA_IMPORTANCE_TABLES = False
 DEFAULT_SOURCE_OBJECTIVE_METRICS = (
-    VALIDATION_ONLINE_CRRU_METRIC,
+    *VALIDATION_CRRU_METRIC_ALIASES,
     VALIDATION_ACCURACY_METRIC,
 )
 CRRU_FIGURE_STEMS = (
@@ -122,31 +128,37 @@ EFFECTIVE_CONFIG_PRIORITY = tuple(
     dict.fromkeys((*PARAMETER_PRIORITY, *EFFECTIVE_CONFIG_EXTRA_PRIORITY)),
 )
 DATASET_METRICS = (
-    "NDCG@20",
-    "Recall@20",
-    "HitRatio@20",
-    "Personalization@20",
-    "AveragePopularity@20",
-    "NDCG@40",
-    "Recall@40",
-    "HitRatio@40",
-    "Personalization@40",
-    "AveragePopularity@40",
-    VALIDATION_ONLINE_CRRU_K_METRICS[20],
-    VALIDATION_ONLINE_CRRU_K_METRICS[40],
-    VALIDATION_ONLINE_CRRU_METRIC,
+    *CRRU_RECOMMENDATION_METRIC_NAMES,
+    VALIDATION_CRRU_K_METRICS[20],
+    VALIDATION_CRRU_K_METRICS[40],
+    VALIDATION_CRRU_METRIC,
 )
 
 
 def objective_metric_label(metric: str) -> str:
     """Return a compact display label for a validation objective metric."""
+    if metric in VALIDATION_CRRU_METRIC_ALIASES:
+        return "ValidationCRRU@20_40"
+    for cutoff, aliases in VALIDATION_CRRU_K_METRIC_ALIASES.items():
+        if metric in aliases:
+            return f"ValidationCRRU@{cutoff}"
     return {
-        VALIDATION_ONLINE_CRRU_METRIC: "OnlineCRRU@20_40 (validation)",
         VALIDATION_ACCURACY_METRIC: "Validation Accuracy",
     }.get(metric, metric)
 
 
+def objective_split_metric_label(split: str, metric: str) -> str:
+    """Return a display label for one objective split and metric name."""
+    return f"{split} {objective_metric_label(metric)}"
+
+
 PAPER_FIGURE_FILENAMES = tuple(f"optuna_crru_{stem}.png" for stem in CRRU_FIGURE_STEMS)
+
+
+def display_study_name(study_name: str) -> str:
+    """Return a thesis-facing display name for an Optuna study."""
+    name = public_method_identifier(study_name) or study_name
+    return name.replace("validationonlinecrru", "validationcrru")
 
 
 def _completed_finite_trial(trial: FrozenTrial) -> bool:
@@ -231,8 +243,8 @@ def dataset_trial_sort_key(
     *,
     dataset: str,
 ) -> tuple[float, int]:
-    """Sort trials by the default dataset-local OnlineCRRU objective."""
-    value = dataset_metric(trial, dataset, VALIDATION_ONLINE_CRRU_METRIC)
+    """Sort trials by the default reconstructed validation CRRU objective."""
+    value = dataset_metric(trial, dataset, VALIDATION_CRRU_METRIC)
     if value is None:
         value = float("nan")
     return -value, int(trial.number)
@@ -402,6 +414,24 @@ def attr_float(trial: FrozenTrial, key: str) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def trial_largest_training_item_interaction_count(
+    trial: FrozenTrial,
+    dataset: str,
+) -> float | None:
+    """Return stored or reconstructed CRRU train-popularity denominator."""
+    try:
+        return resolve_largest_training_item_interaction_count(
+            stored_value=attr_float(
+                trial,
+                f"{dataset}.largest_training_item_interaction_count",
+            ),
+            config=effective_trial_params(trial, dataset=dataset),
+            dataset=dataset,
+        )
+    except CRRUPopularityReconstructionError:
+        return None
+
+
 def dataset_names(trial: FrozenTrial) -> list[str]:
     """Return datasets represented by trial user attributes."""
     declared = trial.user_attrs.get("datasets")
@@ -423,35 +453,22 @@ def dataset_names(trial: FrozenTrial) -> list[str]:
 
 def dataset_metric(trial: FrozenTrial, dataset: str, metric_name: str) -> float | None:
     """Return a dataset validation metric stored in Optuna user attrs."""
+    if is_validation_crru_metric_name(metric_name):
+        return _derived_validation_crru_metric_value(trial, dataset, metric_name)
     if metric_name == "objective":
+        if is_validation_crru_metric_name(trial_objective_metric(trial)):
+            return _derived_validation_crru_metric_value(trial, dataset, VALIDATION_CRRU_METRIC)
         return attr_float(trial, f"{dataset}.objective")
     stored = attr_float(trial, f"{dataset}.val.{metric_name}")
     if stored is not None:
         return stored
-    if metric_name == VALIDATION_ONLINE_CRRU_METRIC:
-        return _derived_online_crru_objective(trial, dataset)
-    for k, k_metric_name in VALIDATION_ONLINE_CRRU_K_METRICS.items():
-        if metric_name == k_metric_name:
-            return _derived_online_crru_for_k(trial, dataset, k)
     return None
 
 
 def _primary_validation_metrics(trial: FrozenTrial, dataset: str) -> dict[str, float]:
-    """Return stored validation metrics needed to derive OnlineCRRU."""
-    names = (
-        "NDCG@20",
-        "Recall@20",
-        "HitRatio@20",
-        "Personalization@20",
-        "AveragePopularity@20",
-        "NDCG@40",
-        "Recall@40",
-        "HitRatio@40",
-        "Personalization@40",
-        "AveragePopularity@40",
-    )
+    """Return stored validation metrics needed to derive CRRU."""
     metrics: dict[str, float] = {}
-    for name in names:
+    for name in CRRU_RECOMMENDATION_METRIC_NAMES:
         value = attr_float(trial, f"{dataset}.val.{name}")
         if value is None:
             return {}
@@ -459,32 +476,50 @@ def _primary_validation_metrics(trial: FrozenTrial, dataset: str) -> dict[str, f
     return metrics
 
 
-def _derived_online_crru_for_k(trial: FrozenTrial, dataset: str, k: int) -> float | None:
-    """Derive per-K OnlineCRRU from stored validation and runtime attrs."""
+def _validation_crru_inputs(
+    trial: FrozenTrial,
+    dataset: str,
+) -> tuple[dict[str, float], float, float, float] | None:
+    """Return complete formal CRRU inputs for one dataset trial."""
     metrics = _primary_validation_metrics(trial, dataset)
-    if not metrics:
+    peak_vram_mb = attr_float(trial, f"{dataset}.peak_vram_mb")
+    epoch_time_s = trial_epoch_time_s(trial, dataset)
+    largest_training_item_interaction_count = trial_largest_training_item_interaction_count(
+        trial,
+        dataset,
+    )
+    if (
+        not metrics
+        or peak_vram_mb is None
+        or epoch_time_s is None
+        or largest_training_item_interaction_count is None
+    ):
         return None
-    try:
-        return compute_validation_online_crru_for_k(
-            metrics,
-            k=k,
-            peak_vram_mb=attr_float(trial, f"{dataset}.peak_vram_mb"),
-            epoch_time_s=trial_epoch_time_s(trial, dataset),
-        )
-    except ValueError:
-        return None
+    return (
+        metrics,
+        peak_vram_mb,
+        epoch_time_s,
+        largest_training_item_interaction_count,
+    )
 
 
-def _derived_online_crru_objective(trial: FrozenTrial, dataset: str) -> float | None:
-    """Derive scalar OnlineCRRU from stored validation and runtime attrs."""
-    metrics = _primary_validation_metrics(trial, dataset)
-    if not metrics:
+def _derived_validation_crru_metric_value(
+    trial: FrozenTrial,
+    dataset: str,
+    metric_name: str,
+) -> float | None:
+    """Derive a ValidationCRRU metric from stored validation and runtime attrs."""
+    inputs = _validation_crru_inputs(trial, dataset)
+    if inputs is None:
         return None
+    metrics, peak_vram_mb, epoch_time_s, largest_training_item_interaction_count = inputs
     try:
-        return compute_validation_online_crru_objective(
+        return compute_validation_crru_metric_value(
+            metric_name,
             metrics,
-            peak_vram_mb=attr_float(trial, f"{dataset}.peak_vram_mb"),
-            epoch_time_s=trial_epoch_time_s(trial, dataset),
+            peak_vram_mb=peak_vram_mb,
+            epoch_time_s=epoch_time_s,
+            largest_training_item_interaction_count=largest_training_item_interaction_count,
         )
     except ValueError:
         return None
@@ -525,61 +560,42 @@ def trial_epoch_time_s(trial: FrozenTrial, dataset: str) -> float | None:
     return None
 
 
+def _trial_validation_crru_by_cutoff(
+    trial: FrozenTrial,
+    dataset: str,
+) -> dict[int, float] | None:
+    """Return formal ValidationCRRU@K values for one dataset trial."""
+    inputs = _validation_crru_inputs(trial, dataset)
+    if inputs is None:
+        return None
+    metrics, peak_vram_mb, epoch_time_s, largest_training_item_interaction_count = inputs
+    try:
+        return {
+            cutoff: compute_validation_crru_metric_value(
+                metric_name,
+                metrics,
+                peak_vram_mb=peak_vram_mb,
+                epoch_time_s=epoch_time_s,
+                largest_training_item_interaction_count=largest_training_item_interaction_count,
+            )
+            for cutoff, metric_name in VALIDATION_CRRU_K_METRICS.items()
+        }
+    except ValueError:
+        return None
+
+
 def compute_posthoc_validation_crru(
     trials: Sequence[FrozenTrial],
     *,
     dataset: str,
 ) -> dict[int, dict[int, float]]:
-    """Return dataset-local post-hoc validation CRRU keyed by trial number."""
-    dataset_trials = [
-        trial
-        for trial in trials
-        if dataset_metric(trial, dataset, "NDCG@20") is not None
-        and dataset_metric(trial, dataset, "Recall@20") is not None
-        and dataset_metric(trial, dataset, "HitRatio@20") is not None
-        and dataset_metric(trial, dataset, "Personalization@20") is not None
-        and dataset_metric(trial, dataset, "AveragePopularity@20") is not None
-        and dataset_metric(trial, dataset, "NDCG@40") is not None
-        and dataset_metric(trial, dataset, "Recall@40") is not None
-        and dataset_metric(trial, dataset, "HitRatio@40") is not None
-        and dataset_metric(trial, dataset, "Personalization@40") is not None
-        and dataset_metric(trial, dataset, "AveragePopularity@40") is not None
-    ]
-    if not dataset_trials:
-        return {}
-
-    efficiency_scores = compute_crru_efficiency_scores(
-        [attr_float(trial, f"{dataset}.peak_vram_mb") for trial in dataset_trials],
-        [trial_epoch_time_s(trial, dataset) for trial in dataset_trials],
-    )
-    crru_20 = compute_crru_scores_for_k(
-        ndcg=[dataset_metric(trial, dataset, "NDCG@20") for trial in dataset_trials],
-        recall=[dataset_metric(trial, dataset, "Recall@20") for trial in dataset_trials],
-        hit=[dataset_metric(trial, dataset, "HitRatio@20") for trial in dataset_trials],
-        personalization=[
-            dataset_metric(trial, dataset, "Personalization@20") for trial in dataset_trials
-        ],
-        average_popularity=[
-            dataset_metric(trial, dataset, "AveragePopularity@20") for trial in dataset_trials
-        ],
-        efficiency_scores=efficiency_scores,
-    )
-    crru_40 = compute_crru_scores_for_k(
-        ndcg=[dataset_metric(trial, dataset, "NDCG@40") for trial in dataset_trials],
-        recall=[dataset_metric(trial, dataset, "Recall@40") for trial in dataset_trials],
-        hit=[dataset_metric(trial, dataset, "HitRatio@40") for trial in dataset_trials],
-        personalization=[
-            dataset_metric(trial, dataset, "Personalization@40") for trial in dataset_trials
-        ],
-        average_popularity=[
-            dataset_metric(trial, dataset, "AveragePopularity@40") for trial in dataset_trials
-        ],
-        efficiency_scores=efficiency_scores,
-    )
-    return {
-        int(trial.number): {20: value_20, 40: value_40}
-        for trial, value_20, value_40 in zip(dataset_trials, crru_20, crru_40, strict=True)
-    }
+    """Return absolute post-hoc validation CRRU keyed by trial number."""
+    output: dict[int, dict[int, float]] = {}
+    for trial in trials:
+        values_by_cutoff = _trial_validation_crru_by_cutoff(trial, dataset)
+        if values_by_cutoff:
+            output[int(trial.number)] = values_by_cutoff
+    return output
 
 
 def format_float(value: float | None, digits: int = 6) -> str:
@@ -662,19 +678,19 @@ def dataset_trial_candidates(studies: Sequence[optuna.Study]) -> list[DatasetTri
     """Return every dataset-scoped completed candidate from loaded studies."""
     candidates: list[DatasetTrialCandidate] = []
     for study in studies:
-        display_name = public_method_identifier(study.study_name) or study.study_name
+        display_name = display_study_name(study.study_name)
         for trial in completed_trials(study):
             study_objective = float(trial.value) if trial.value is not None else None
             source_metric = trial_objective_metric(trial)
             source_split = trial_objective_split(trial)
             for dataset in dataset_names(trial):
-                objective = dataset_metric(trial, dataset, VALIDATION_ONLINE_CRRU_METRIC)
+                objective = dataset_metric(trial, dataset, VALIDATION_CRRU_METRIC)
                 if objective is None or not math.isfinite(float(objective)):
                     continue
                 candidates.append(
                     DatasetTrialCandidate(
                         dataset=dataset,
-                        objective_metric=VALIDATION_ONLINE_CRRU_METRIC,
+                        objective_metric=VALIDATION_CRRU_METRIC,
                         objective_split="val",
                         source_objective_metric=source_metric,
                         source_objective_split=source_split,
@@ -702,11 +718,13 @@ def render_side_feature_analysis(
 def objective_group_sort_key(group: tuple[str, str, str]) -> tuple[int, str, str]:
     """Return a stable order for objective groups in thesis reports."""
     metric, split, direction = group
-    priority = {
-        VALIDATION_ONLINE_CRRU_METRIC: 0,
-        VALIDATION_ACCURACY_METRIC: 1,
-        "NDCG@40": 2,
-    }.get(metric, 10)
+    if metric in VALIDATION_CRRU_METRIC_ALIASES:
+        priority = 0
+    else:
+        priority = {
+            VALIDATION_ACCURACY_METRIC: 1,
+            "NDCG@40": 2,
+        }.get(metric, 10)
     return priority, split, direction
 
 
@@ -723,89 +741,14 @@ def candidate_sort_key(candidate: DatasetTrialCandidate) -> tuple[float, str, in
 def compute_global_posthoc_validation_crru(
     candidates: Sequence[DatasetTrialCandidate],
 ) -> dict[tuple[str, int, str], dict[int, float]]:
-    """Return dataset-local post-hoc CRRU over every loaded candidate."""
+    """Return absolute post-hoc CRRU over every loaded candidate."""
     result: dict[tuple[str, int, str], dict[int, float]] = {}
-    for dataset in sorted({candidate.dataset for candidate in candidates}):
-        dataset_candidates = [
-            candidate
-            for candidate in candidates
-            if candidate.dataset == dataset
-            and dataset_metric(candidate.trial, dataset, "NDCG@20") is not None
-            and dataset_metric(candidate.trial, dataset, "Recall@20") is not None
-            and dataset_metric(candidate.trial, dataset, "HitRatio@20") is not None
-            and dataset_metric(candidate.trial, dataset, "Personalization@20") is not None
-            and dataset_metric(candidate.trial, dataset, "AveragePopularity@20") is not None
-            and dataset_metric(candidate.trial, dataset, "NDCG@40") is not None
-            and dataset_metric(candidate.trial, dataset, "Recall@40") is not None
-            and dataset_metric(candidate.trial, dataset, "HitRatio@40") is not None
-            and dataset_metric(candidate.trial, dataset, "Personalization@40") is not None
-            and dataset_metric(candidate.trial, dataset, "AveragePopularity@40") is not None
-        ]
-        if not dataset_candidates:
-            continue
-
-        efficiency_scores = compute_crru_efficiency_scores(
-            [
-                attr_float(candidate.trial, f"{dataset}.peak_vram_mb")
-                for candidate in dataset_candidates
-            ],
-            [trial_epoch_time_s(candidate.trial, dataset) for candidate in dataset_candidates],
-        )
-        crru_20 = compute_crru_scores_for_k(
-            ndcg=[
-                dataset_metric(candidate.trial, dataset, "NDCG@20")
-                for candidate in dataset_candidates
-            ],
-            recall=[
-                dataset_metric(candidate.trial, dataset, "Recall@20")
-                for candidate in dataset_candidates
-            ],
-            hit=[
-                dataset_metric(candidate.trial, dataset, "HitRatio@20")
-                for candidate in dataset_candidates
-            ],
-            personalization=[
-                dataset_metric(candidate.trial, dataset, "Personalization@20")
-                for candidate in dataset_candidates
-            ],
-            average_popularity=[
-                dataset_metric(candidate.trial, dataset, "AveragePopularity@20")
-                for candidate in dataset_candidates
-            ],
-            efficiency_scores=efficiency_scores,
-        )
-        crru_40 = compute_crru_scores_for_k(
-            ndcg=[
-                dataset_metric(candidate.trial, dataset, "NDCG@40")
-                for candidate in dataset_candidates
-            ],
-            recall=[
-                dataset_metric(candidate.trial, dataset, "Recall@40")
-                for candidate in dataset_candidates
-            ],
-            hit=[
-                dataset_metric(candidate.trial, dataset, "HitRatio@40")
-                for candidate in dataset_candidates
-            ],
-            personalization=[
-                dataset_metric(candidate.trial, dataset, "Personalization@40")
-                for candidate in dataset_candidates
-            ],
-            average_popularity=[
-                dataset_metric(candidate.trial, dataset, "AveragePopularity@40")
-                for candidate in dataset_candidates
-            ],
-            efficiency_scores=efficiency_scores,
-        )
-        for candidate, value_20, value_40 in zip(
-            dataset_candidates,
-            crru_20,
-            crru_40,
-            strict=True,
-        ):
-            result[(candidate.study_name, int(candidate.trial.number), dataset)] = {
-                20: value_20,
-                40: value_40,
+    for candidate in candidates:
+        values_by_cutoff = _trial_validation_crru_by_cutoff(candidate.trial, candidate.dataset)
+        if values_by_cutoff:
+            result[(candidate.study_name, int(candidate.trial.number), candidate.dataset)] = {
+                20: values_by_cutoff[20],
+                40: values_by_cutoff[40],
             }
     return result
 
@@ -1140,10 +1083,10 @@ def study_report_sort_key(study: optuna.Study) -> tuple[int, str]:
     trials = completed_trials(study)
     datasets = sorted({dataset for trial in trials for dataset in dataset_names(trial)})
     objective_metric = str(trials[0].user_attrs.get("objective_metric", "")) if trials else ""
-    display_name = public_method_identifier(study.study_name) or study.study_name
-    if objective_metric == VALIDATION_ONLINE_CRRU_METRIC and len(datasets) == 1:
+    display_name = display_study_name(study.study_name)
+    if objective_metric in VALIDATION_CRRU_METRIC_ALIASES and len(datasets) == 1:
         return (0, display_name)
-    if objective_metric == VALIDATION_ONLINE_CRRU_METRIC:
+    if objective_metric in VALIDATION_CRRU_METRIC_ALIASES:
         return (1, display_name)
     return (2, display_name)
 
@@ -1314,7 +1257,7 @@ def render_dataset_best_trials(
             [
                 f"#### Dataset: `{dataset}`",
                 "",
-                "| Rank | Trial | Origin | OnlineCRRU@20_40 | Study objective | "
+                "| Rank | Trial | Origin | ValidationCRRU@20_40 | Study objective | "
                 "PosthocCRRU@20 | PosthocCRRU@40 | Time/epoch (s) | Peak VRAM (MB) | Batch | "
                 "Revision | Effective config |",
                 "|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---|---|",
@@ -1324,7 +1267,7 @@ def render_dataset_best_trials(
             trial_crru = posthoc_crru.get(dataset, {}).get(int(trial.number), {})
             lines.append(
                 f"| {rank} | {trial.number} | {trial_origin(trial)} | "
-                f"{format_float(dataset_metric(trial, dataset, VALIDATION_ONLINE_CRRU_METRIC))} | "
+                f"{format_float(dataset_metric(trial, dataset, VALIDATION_CRRU_METRIC))} | "
                 f"{format_float(float(trial.value) if trial.value is not None else None)} | "
                 f"{format_float(trial_crru.get(20))} | "
                 f"{format_float(trial_crru.get(40))} | "
@@ -1365,9 +1308,10 @@ def render_global_best_trials(
         "## Global best trials by dataset",
         "",
         "This section scans every loaded study in the Optuna storage. Study names are "
-        "provenance only; selection is by dataset-local `ValidationOnlineCRRU@20_40`, "
-        "using the stored value when available and deriving it from validation metrics, "
-        "time/epoch, and peak VRAM otherwise.",
+        "provenance only; selection is by reconstructed `ValidationCRRU@20_40` "
+        "from validation metrics, raw PyG AveragePopularity, stored or reconstructed "
+        "largest train item count, time/epoch, and peak VRAM when all required inputs "
+        "are available.",
         "",
         f"- Loaded studies: `{len(studies)}`",
         f"- Dataset-scoped completed candidates: `{len(candidates)}`",
@@ -1393,7 +1337,7 @@ def render_global_best_trials(
         metric, split, direction = objective_key
         lines.extend(
             [
-                f"### Objective: `{split} {metric}`",
+                f"### Objective: `{objective_split_metric_label(split, metric)}`",
                 "",
                 f"Direction: `{direction}`.",
                 "",
@@ -1411,12 +1355,16 @@ def render_global_best_trials(
                 (best.study_name, int(best.trial.number), dataset),
                 {},
             )
+            source_objective_label = objective_split_metric_label(
+                best.source_objective_split,
+                best.source_objective_metric,
+            )
             lines.append(
                 f"| {dataset} | {format_float(best.objective_value)} | "
                 f"`{best.study_display_name}` | {best.trial.number} | "
                 f"{trial_origin(best.trial)} | "
                 f"`{format_revision_label(trial_search_revision(best.trial))}` | "
-                f"`{best.source_objective_split} {best.source_objective_metric}` | "
+                f"`{source_objective_label}` | "
                 f"{format_float(best.study_objective_value)} | "
                 f"{format_float(trial_crru.get(20))} | "
                 f"{format_float(trial_crru.get(40))} | "
@@ -1441,12 +1389,12 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
         objective_metric = trial_objective_metric(trials[0])
         objective_split = trial_objective_split(trials[0])
 
-    display_study_name = public_method_identifier(study.study_name) or study.study_name
+    displayed_study_name = display_study_name(study.study_name)
     lines = [
-        f"## Study: `{display_study_name}`",
+        f"## Study: `{displayed_study_name}`",
         "",
         f"- Direction: `{study.direction.name.lower()}`",
-        f"- Objective: `{objective_split} {objective_metric}`",
+        f"- Objective: `{objective_split_metric_label(objective_split, objective_metric)}`",
         f"- Trials: {len(study.trials)} total, {len(trials)} completed, "
         f"{state_counts.get('fail', 0)} failed, {state_counts.get('running', 0)} running, "
         f"{state_counts.get('pruned', 0)} pruned",
@@ -1483,7 +1431,7 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
                 "| Dataset | Source objective | NDCG@20 | Recall@20 | Hit@20 | Pers@20 | "
                 "AvgPop@20 | "
                 "NDCG@40 | Recall@40 | Hit@40 | Pers@40 | AvgPop@40 | "
-                "OnlineCRRU@20 | OnlineCRRU@40 | OnlineCRRU@20_40 | PosthocCRRU@20 | "
+                "ValidationCRRU@20 | ValidationCRRU@40 | ValidationCRRU@20_40 | PosthocCRRU@20 | "
                 "PosthocCRRU@40 | Time/epoch (s) | Peak VRAM (MB) | Batch |",
                 "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
                 "---:|---:|---:|---:|---:|",
@@ -1588,9 +1536,9 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
             )
             for trial in ranked[:3]:
                 trial_crru = posthoc_crru.get(dataset, {}).get(int(trial.number), {})
-                crru_proxy = dataset_metric(trial, dataset, VALIDATION_ONLINE_CRRU_METRIC)
+                crru_proxy = dataset_metric(trial, dataset, VALIDATION_CRRU_METRIC)
                 lines.append(
-                    f"- `{dataset}` trial `{trial.number}`: OnlineCRRU@20_40 "
+                    f"- `{dataset}` trial `{trial.number}`: ValidationCRRU@20_40 "
                     f"`{format_float(crru_proxy)}`; "
                     f"study objective "
                     f"`{format_float(float(trial.value) if trial.value is not None else None)}`; "
@@ -1636,24 +1584,30 @@ def render_report(
         "- Search objectives use validation metrics only; test metrics remain for formal reruns.",
         "- The default report scans every useful Optuna study in storage. Use `--study-name` "
         "only for narrow forensic inspection of excluded historical studies.",
-        "- `ValidationOnlineCRRU@20_40` is the single default ranking and figure metric. "
-        "It combines validation ranking/popularity-diversity metrics with time/epoch and "
-        "peak VRAM. The name is legacy: `online` means computable for one trial during "
-        "Optuna search, not an online-serving or A/B-test metric.",
+        "- Historical Optuna rows stored under the former validation-CRRU objective alias "
+        "are loaded as storage aliases and reported with the current `ValidationCRRU*` names.",
+        "- `ValidationCRRU@20_40` is the single default ranking and figure metric. "
+        "It combines validation ranking, popularity-aware personalization, peak VRAM, "
+        "and time/epoch.",
         "- Accuracy-optimized studies are still loaded as provenance, but their candidates "
-        "are compared through their stored-or-derived `ValidationOnlineCRRU@20_40` so the report "
+        "are compared through reconstructed `ValidationCRRU@20_40` so the report "
         "has one cross-study source of truth.",
-        "- Exact thesis CRRU uses dataset-local section-row min-max normalization and is "
-        "recomputed after rows exist; it is not a stable live Optuna objective because "
-        "future trials change the min/max range.",
+        "- Exact thesis CRRU is an absolute per-trial utility computed from that trial's "
+        "validation/test metrics, raw PyG AveragePopularity, stored or reconstructed "
+        "largest train item count, peak VRAM, and seconds/epoch; it does not normalize "
+        "against other rows.",
         "- Historical `val NDCG@40` studies are excluded from default thesis outputs because "
         "they are small early screens and are less useful than the CRRU and accuracy studies.",
-        "- Default figures aggregate loaded trials by dataset under `ValidationOnlineCRRU@20_40`. "
+        "- Reports reconstruct canonical `ValidationCRRU@20_40` when raw metrics, "
+        "resource attrs, and either a logged or reconstructable largest train item "
+        "count are available.",
+        "- Default figures aggregate loaded trials by dataset under `ValidationCRRU@20_40`. "
         "Study names are provenance fields in the tables, not separate figure facets.",
         "- Inactive CAGRA-only knobs are omitted from overview figure heatmaps, while historical "
         "CAGRA trial provenance remains visible in the report tables.",
-        "- Lower average popularity and higher personalization are supporting diagnostics, "
-        "not standalone fairness or exposure-effect estimates.",
+        "- Lower raw PyG AveragePopularity and higher personalization are supporting "
+        "diagnostics, not standalone fairness or exposure-effect estimates; CRRU "
+        "log-normalizes raw ARP internally.",
         "- Optuna parameter importances are post-hoc diagnostics computed from stored "
         "trial parameters and objectives. Deterministic importance subsets are cached "
         f"in `{IMPORTANCE_CACHE_PATH}` and overwritten on cache-key changes.",
@@ -1694,7 +1648,15 @@ def render_report(
         "parameters. Future trials store the resolved dataset config directly; older "
         "trials fall back to sampled params plus any runtime attrs present in Optuna.",
         "",
+        "## CRRU Reporting Utility",
+        "",
     ]
+    for index, line in enumerate(CRRU_REPORT_FORMULA_LINES):
+        prefix = "**" if index == 0 else "- "
+        suffix = "**" if index == 0 else ""
+        clean_line = line.strip()
+        lines.append(f"{prefix}{clean_line}{suffix}")
+    lines.append("")
     lines.extend(render_global_best_trials(studies))
     lines.extend(render_side_feature_analysis(studies, rows=feature_subset_rows))
     lines.extend(
@@ -1704,11 +1666,8 @@ def render_report(
             "Generated by `uv run scripts/export_optuna_figures.py`. The default exporter "
             "writes one unified validation CRRU PNG figure set and removes stale generated "
             "figure files, including older PNG/HTML artifacts, from the figure directory. "
-            "The Optuna storage name is "
-            "`ValidationOnlineCRRU@20_40`; the figures use CRRU wording because `online` "
-            "only means single-trial search-time computation, not online serving or "
-            "A/B testing. Accuracy-only and historical NDCG figure sets are not generated "
-            "by default.",
+            "The canonical Optuna selection metric is `ValidationCRRU@20_40`. "
+            "Accuracy-only and historical NDCG figure sets are not generated by default.",
             "",
             "The importance heatmap is a global overview diagnostic: each row "
             "aggregates all loaded completed trials for one dataset/objective and uses normalized "
@@ -1717,17 +1676,18 @@ def render_report(
             "association value; gray cells mean no detected association among the displayed "
             "top parameters.",
             "The selection-frontier figure summarizes the trade-off behind each selected "
-            "trial: accuracy component on x, popularity-diversity component on y, "
+            "trial: ranking-accuracy component on x, popularity-aware personalization "
+            "component on y, "
             "resource-efficiency percentile within the same dataset as color, and a gold "
             "star for the selected trial. Colors are not comparable as absolute efficiency "
             "values across datasets.",
-            "The component-response figure plots each component as a dataset-local percentile "
-            "against the dataset-local CRRU percentile. This avoids comparing raw component "
-            "magnitudes across datasets with different metric scales.",
+            "The component-response figure plots each absolute reconstructed CRRU component "
+            "score against absolute `ValidationCRRU@20_40`. Use it to inspect response shape "
+            "and selected-trial placement, not as controlled attribution.",
             "The component-correlation figure reports Spearman rank associations between "
-            "`ValidationOnlineCRRU@20_40` and its reconstructed accuracy, popularity-diversity, "
-            "and efficiency components. Treat it as a descriptive association diagnostic, "
-            "not a controlled attribution estimate.",
+            "`ValidationCRRU@20_40` and its reconstructed ranking-accuracy, "
+            "popularity-aware personalization, and resource components. Treat it as a "
+            "descriptive association diagnostic, not a controlled attribution estimate.",
             "Absolute resource-efficiency component values can cluster below 0.3 because "
             "the search-time score uses inverse-log transforms of time/epoch and peak VRAM. "
             "The default final CRRU exponent for this component is 0.15, so low absolute "
