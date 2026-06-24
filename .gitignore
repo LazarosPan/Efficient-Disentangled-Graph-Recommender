@@ -38,6 +38,10 @@ wheels/
 !/results/optuna_optimization.md
 !/results/optuna_figures/
 
+# Generated notes
+/scripts/concat_edgrec_implementation_notes.py
+/.agents/skills/edgrec-implementation/edgrec-implementation-combined.md
+
 # MLFlow
 /mlruns/*
 
