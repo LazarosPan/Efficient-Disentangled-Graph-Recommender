@@ -14,7 +14,7 @@
                 "validation_every_n_epochs": 2
             },
             "objective": {
-                "metric": "ValidationOnlineCRRU@20_40",
+                "metric": "ValidationCRRU@20_40",
                 "split": "val",
                 "direction": "maximize"
             },
@@ -91,7 +91,7 @@
                 "validation_every_n_epochs": 2
             },
             "objective": {
-                "metric": "ValidationOnlineCRRU@20_40",
+                "metric": "ValidationCRRU@20_40",
                 "split": "val",
                 "direction": "maximize"
             },
@@ -160,7 +160,7 @@
                 "validation_every_n_epochs": 2
             },
             "objective": {
-                "metric": "ValidationOnlineCRRU@20_40",
+                "metric": "ValidationCRRU@20_40",
                 "split": "val",
                 "direction": "maximize"
             },
@@ -244,7 +244,7 @@
                 "validation_every_n_epochs": 2
             },
             "objective": {
-                "metric": "ValidationOnlineCRRU@20_40",
+                "metric": "ValidationCRRU@20_40",
                 "split": "val",
                 "direction": "maximize"
             },
@@ -531,7 +531,7 @@
                 "use_popularity_emb": false
             },
             "objective": {
-                "metric": "ValidationOnlineCRRU@20_40",
+                "metric": "ValidationCRRU@20_40",
                 "split": "val",
                 "direction": "maximize"
             },
@@ -603,7 +603,7 @@
                 "use_popularity_emb": false
             },
             "objective": {
-                "metric": "ValidationOnlineCRRU@20_40",
+                "metric": "ValidationCRRU@20_40",
                 "split": "val",
                 "direction": "maximize"
             },
