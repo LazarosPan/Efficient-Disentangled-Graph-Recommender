@@ -134,9 +134,9 @@ Current graph rules:
 
 ## Train-derived user history and exposure context
 
-- `build_recent_train_history()` creates `recent_train_items` and `recent_train_mask` from the final training split only.
+- `build_recent_train_history()` creates `(n_users, temporal_history_size)` `recent_train_items` and `recent_train_mask` from the final training split only.
 - Recent-history construction groups sorted train interactions by user, avoiding per-user full-interaction scans on large datasets.
-- Those buffers are per-user histories: the latest training interactions for each user, never global "recent" or popularity-only items.
+- Those buffers are per-user histories: each user's latest retained training items by timestamp, never global "recent" or popularity-only items.
 - Subgraph training reuses the same train-derived user history and does not create separate splits for interest, recency, or context.
 
 Propensity target contract:

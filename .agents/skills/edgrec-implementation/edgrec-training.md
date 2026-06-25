@@ -99,7 +99,8 @@ Important runtime details:
   unpromising trial. Normal experiment, formal-run, and baseline paths leave this
   callback unset,
 - EDGRec train-derived model tensors (`item_recency`, recent-train history, and
-  optional propensity targets) are cached on the runtime graph payload so
+  optional propensity targets) are cached on the runtime graph payload with the
+  configured `temporal_history_size` so
   auto-batch probe model rebuilds reuse split-safe CPU tensors instead of
   recomputing per candidate,
 - Optuna objectives are validation-only. `ValidationAccuracy@20_40` is the broad
@@ -137,14 +138,18 @@ Important runtime details:
 - Full-graph mode skips subgraph extraction and propagates the full train graph per optimizer step.
 - Full-graph mode is used by `lightgcn_paper` and `dice_paper`.
 - Full-graph mode stages `edge_index`, `edge_sign`, and `edge_norm` once per trainer/device.
+- Auto-batch probes use the same training mode as the real run: sampled profiles probe sampled subgraph batches; full-graph paper baselines probe full-graph optimizer batches.
+- Formal-run item labels show `bsauto(startN)` while probing is unresolved; completed-checkpoint recovery returns the saved resolved `batch_size` so summaries do not fall back to the planned start batch.
 - Full-graph mode releases CUDA graph cache before validation.
 
-Trainer family map:
+Trainer preset/family map:
 
-| Family | Runtime contract |
+| Preset or family | Runtime contract |
 | --- | --- |
 | `lightgcn_paper` | `PaperLightGCN`; no dropout/features/mixer; observed graph; Adam; ego L2 |
+| `lightgcn_paper_scaled_batch` preset | Resolves to `baseline_family="lightgcn_paper"`; `paper_scaled_batch=True` changes only batch-size selection. |
 | `dice_paper` | `PaperGCNDICE`; separate branches; self-looped DICE LightGCN; dropout; summed final score |
+| `dice_paper_scaled_batch` preset | Resolves to `baseline_family="dice_paper"`; `paper_scaled_batch=True` changes only batch-size selection. |
 | EDGRec DICE negatives | raw train-only counts; `dice_sampler_margin`; `dice_sampler_pool`; `n_negatives=1`; vectorized known-positive filtering |
 | `dice_paper` negatives | external-code `n_negatives=4`; exact per-user pool-count correction |
 - Sampled and full-graph training both pass the current epoch into the negative sampler. The DICE sampler margin decays only when `dice_adaptive_decay=True`.

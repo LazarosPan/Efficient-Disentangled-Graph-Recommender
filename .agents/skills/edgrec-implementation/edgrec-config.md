@@ -26,7 +26,7 @@ Precedence:
 
 - `build_config()`: defaults -> preset -> recipe overrides -> explicit overrides -> `validate()`.
 - Paper presets re-apply locked fields after shared overrides.
-- Locked paper fields include architecture, sampler, scheduler, optimizer, graph policy, and batch-size contract.
+- Locked paper fields include architecture, sampler, scheduler, optimizer, graph policy, and batch-size contract; `*_scaled_batch` variants unlock only batch-size and auto-batch selection.
 - Shared EDGRec profile knobs must not mutate `lightgcn_paper` or `dice_paper` paper defaults.
 
 ## Preset contract
@@ -35,8 +35,10 @@ Precedence:
 | --- | --- |
 | `lightgcn` preset (`EDGRecConfig.preset_lightgcn()`) | Scalable sampled-neighborhood LightGCN approximation: single branch with fixed interest-only mixing, no sign-aware weighting, no IPW, no popularity head, no side features, only `L_rec` active. |
 | `lightgcn_paper` preset (`EDGRecConfig.preset_lightgcn_paper()`) | Paper-faithful LightGCN adapter: `PaperLightGCN`, single branch, full-graph propagation during training, observed graph only, no dropout, Adam optimizer with constant `lr=0.001` (`lr_scheduler="none"`), explicit ego-embedding L2 with `weight_decay=1e-4`, `batch_size=2048`, and no sampled-neighbor fan-out in the optimizer step. |
+| `lightgcn_paper_scaled_batch` preset (`EDGRecConfig.preset_lightgcn_paper_scaled_batch()`) | Hardware-scaled LightGCN paper-architecture variant: same adapter/loss/optimizer/scheduler as `lightgcn_paper`, but `paper_scaled_batch=True` unlocks batch size and auto-batch selection. Not a paper-faithful reproduction row. |
 | `dice_like` preset (`EDGRecConfig.preset_dice_like()`) | Legacy DICE-like ablation: dual branch with fixed interest+conformity mixing, no sign-aware weighting, no IPW, no popularity head, no side features, branch BPR plus independence active. It is not the official DICE paper baseline. |
 | `dice_paper` preset (`EDGRecConfig.preset_dice_paper()`) | Paper-faithful GCN-DICE adapter: `PaperGCNDICE`, dual self-looped LightGCN backbone branches, full-graph propagation during training, observed graph only, DICE popularity-conditioned negative sampling, DICE branch losses, Adam with constant `lr=0.001` (`lr_scheduler="none"`), DICE betas `(0.5, 0.99)`, and AMSGrad, `n_negatives=4`, `dropout=0.2`, `batch_size=128`, and DICE adaptive loss/margin decay enabled. |
+| `dice_paper_scaled_batch` preset (`EDGRecConfig.preset_dice_paper_scaled_batch()`) | Hardware-scaled GCN-DICE paper-architecture variant: same adapter/DICE sampler/loss/optimizer/scheduler as `dice_paper`, but `paper_scaled_batch=True` unlocks batch size and auto-batch selection. Not a paper-faithful reproduction row. |
 | `edgrec` preset (`EDGRecConfig.preset_full()`) | Dual branch with learned score mixing over interest, conformity, and the item-only context head, sign-aware propagation, calibrated-IPW support disabled by default, side features disabled by default unless an explicit feature ablation/profile enables them, DICE-conditioned popularity negatives with one negative per positive, DICE-style causal branch supervision, a small learned-mix floor to prevent branch collapse, `linear_ramp` schedule, and contrastive/DirectAU auxiliaries implemented but off by default. |
 
 ## Build rules
@@ -45,7 +47,7 @@ Precedence:
 2. If `preprocessing_preset` is unset, `build_config()` fills it from `src/data/loaders/_registry.py`.
 3. `num_neighbors` must match `max_gnn_layers`, which is `single_branch_gnn_layers` in single-branch mode and `max(interest_gnn_layers, conformity_gnn_layers)` in dual-branch mode.
 4. `auxiliary_loss_schedule` is the live auxiliary-schedule switch. The separate legacy field `loss_schedule` remains checkpoint-compatible, but the only supported value is `baseline`.
-5. `lightgcn_paper` and `dice_paper` lock architecture-, sampler-, scheduler-, optimizer-, and batch-size-owned fields after shared overrides. Use separate tuned baseline presets if you need a fair-tuned table with intentionally changed paper defaults.
+5. `lightgcn_paper` and `dice_paper` lock architecture-, sampler-, scheduler-, optimizer-, and batch-size-owned fields after shared overrides. `lightgcn_paper_scaled_batch` and `dice_paper_scaled_batch` preserve paper architecture/loss/runtime family but let auto-batch choose batch size, so report them as hardware-scaled variants, not faithful reproduction rows.
 6. `validate()` is the final authority for config shape and contract checks.
 
 ## Key config groups
@@ -56,6 +58,7 @@ Precedence:
 | Item universe | `item_universe_policy` | Compacts loaded interactions before graph/model construction; KuaiRand thesis-scale runs use randomized-exposure or observed-interaction item universes instead of all catalog IDs. |
 | Model depth | `single_branch_gnn_layers`, `interest_gnn_layers`, `conformity_gnn_layers`, `num_neighbors` | Couples propagation depth to sampled fan-out. |
 | Score fusion | `use_learned_score_mix`, `score_weight_interest`, `score_weight_conformity`, `score_weight_popularity`, `score_mix_min_weight`, `use_popularity_head` | Sets preset-owned priors and learned-vs-fixed fusion; baselines keep fixed mixing while `preset_full()` keeps learned `score_mix_weights`, and `score_mix_min_weight` applies only to learned components available by the model/data contract. |
+| Temporal interest | `use_temporal_interest`, `temporal_history_size` | Opt-in EDGRec long/short-interest ablation. Reuses split-safe recent-train histories and the existing scorer; no separate sequential model. |
 | Item branch capacity | `separate_item_branch_embeddings` | Default `False` keeps one shared item table; `True` gives dual-branch EDGRec explicit interest/conformity item tables while retaining `"item"` fallback compatibility. |
 | Loss and schedule | `loss_weight_*`, `branch_loss_mode`, `dice_mask_reduction`, `recommendation_loss_mode`, `auxiliary_loss_schedule`, `auxiliary_ramp_rate`, `independence_ramp_rate`, `distance_correlation_max_pairs`, `contrastive_max_pairs`, `contrastive_temperature`, `uniformity_max_pairs`, `uniformity_temperature`, `use_conformity_au`, `loss_weight_propensity_calibration`, `loss_normalization` | Enables auxiliaries, selects symmetric-vs-DICE branch supervision, sets masked-DICE reduction scale, caps quadratic auxiliary estimators, controls how weights activate, and optionally normalizes auxiliaries with detached EMA denominators. |
 | Training mode | `training_graph_mode`, `negative_sampling_strategy`, `n_negatives`, `dice_sampler_margin`, `dice_sampler_pool`, `dice_branch_margin`, `dice_loss_decay`, `dice_margin_decay`, `dice_adaptive_decay` | Selects sampled-subgraph vs full-graph training and standard vs DICE popularity-conditioned negative sampling. |
@@ -77,8 +80,9 @@ Precedence:
 - The dataclass default `propensity_clip_min` is `0.01`; `preset_full()` raises it to `0.1`.
 - `use_ipw=False` is the dataclass and preset default. IPW must be explicitly enabled with `loss_weight_propensity_calibration > 0`.
 - `use_features=False` is the dataclass and preset default. Feature use is opt-in through explicit feature ablations or search/profile overrides.
+- `use_temporal_interest=False` is the dataclass and EDGRec preset default. Long/short temporal interest is opt-in through dedicated video-dataset ablation profiles.
 - `score_mix_min_weight=0.0` is the dataclass default; `preset_full()` sets it to `0.05` so learned fusion cannot collapse to interest-only when conformity/context are available, even if a current batch gives one component zero-valued scores.
-- `negative_sampling_strategy="standard"` is the dataclass default; `preset_full()` switches to DICE popularity-conditioned negatives with `n_negatives=1` and a stable `dice_branch_margin == dice_sampler_margin`.
+- `negative_sampling_strategy="standard"` is the dataclass default; `preset_full()` switches to DICE popularity-conditioned negatives with `n_negatives=1` and default sampler/branch margins both `40.0`. Search and profile overrides may vary `dice_sampler_margin` while the loss fallback still reads `dice_branch_margin`.
 - `dice_mask_reduction="batch_mean"` is the dataclass and paper-DICE default; `preset_full()` uses `active_mean` so DICE branch BPR scale does not vanish when the active mask is sparse.
 - `feature_gate_init=0.0` is the dataclass default; `preset_full()` uses `-4.0` so side features start near zero contribution (`sigmoid(-4) ~= 0.018`).
 - `separate_item_branch_embeddings=False` is the default; enable it only through EDGRec search/profile overrides when testing DICE-like item branch capacity.
@@ -103,10 +107,16 @@ Precedence:
 | `edgrec-global-top-<dataset>-r<rank>` | Dataset-local promoted EDGRec candidates. | Top 5 distinct completed Optuna configs per dataset by global validation `ValidationCRRU@20_40`; formal budget `epochs=300`, `patience=20`, observed graph only, `auto_batch_size=false`, and fixed batch sweep `[trial batch, 2x trial batch]`; added to final formal-row reporting. |
 | `amazonbook-edgrec-compact-candidate` | AmazonBook-specific compact EDGRec candidate. | Graph-only, `[10,5]`, branch depths `1/2`, independence zero, contrastive/IPW/DirectAU off; excluded only from the shared compact default queue. |
 | `amazonbook-edgrec-deep-features-candidate` | AmazonBook-specific richer EDGRec candidate. | Explicit deeper/use_features/contrastive candidate preserved from prior Optuna evidence; feature gate fixed by profile; compare against compact EDGRec and `lightgcn_paper` accuracy before thesis promotion. |
+| `edgrec-long-short-baseline-video` | Controlled KuaiRec/KuaiRand baseline for temporal ablation. | `use_temporal_interest=False`, context head on. |
+| `edgrec-long-short-temporal-video` | Small long/short temporal-interest ablation. | KuaiRec/KuaiRand only; `use_temporal_interest=True`, context head on. |
+| `edgrec-long-short-temporal-no-context-video` | Temporal ablation with context removed. | Tests whether temporal interest complements or replaces the item-only context head. |
+| `edgrec-small-batch-*` | Fixed small-batch EDGRec sweep. | All four thesis datasets; exact batches `256/512/1024`, no auto-batch, `300` epochs, cosine `lr=0.01` and constant `lr=0.001` variants, shallow `[4]` and asymmetric `[4,2]/[8,4]` fan-out families. |
 | `core-edgrec-mainline` | Core comparison profile. | EDGRec only; older broader small/medium fan-out sweep retained for comparison. |
 | `core-edgrec-mainline-opposite-fanout-smaller-lr` | Fan-out/LR sanity check. | Small/medium aliases; EDGRec only. |
 | `paper-lightgcn-*` | Run-once LightGCN paper baselines/probes. | Full-graph `PaperLightGCN`; fixed paper contract. |
 | `paper-dice-all-runtime-probes` | DICE paper feasibility estimates. | One epoch; logs `approximation` split estimates. |
+| `paper-lightgcn-scaled-batch-baselines` | Hardware-scaled LightGCN paper-architecture baseline for AmazonBook/MovieLens. | Same paper adapter; larger auto-batch ladder; not a faithful reproduction label. |
+| `paper-dice-scaled-batch-*` | Hardware-scaled GCN-DICE feasibility probes. | Same paper adapter/loss/sampler; larger auto-batch ladder; not a faithful reproduction label. |
 | `fast-baseline-tuning` | Fallback sampled non-paper baselines. | Report separately from paper-faithful baselines. |
 | `core-deeper-comparison-i2-c3` | Deeper EDGRec branch comparison. | Keeps flat fan-out sweep `[[10,5,3],[5,3,2]]`. |
 | preprocessing sweeps | Dataset-view selection. | Taobao, KuaiRec, KuaiRand explicit profiles only. |

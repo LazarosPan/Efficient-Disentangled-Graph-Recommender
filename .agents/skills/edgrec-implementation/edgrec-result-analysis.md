@@ -33,6 +33,7 @@ Evidence roles:
 | `lightgcn_paper` | Full-data test rows: `amazonbook`, `kuairec_v2`, `movielens1m`; runtime probes: `kuairand1k`, `kuairec_v2`. | Paper-faithful accuracy/resource comparison where full rows exist. Runtime-only rows are feasibility evidence. |
 | `dice_paper` | Runtime probes only: `amazonbook`, `movielens1m`. | Resource feasibility only; do not claim final accuracy against DICE yet. |
 | feature-subset EDGRec search | Completed validation/search coverage for all current feature-subset datasets; current report has 0 pending required profiles. | Feature evidence only unless a named full-data test rerun matches the feature profile. |
+| long/short temporal EDGRec | Full-data supporting rows exist for KuaiRec_v2 and KuaiRand1K video profiles. | Mechanism ablation only; current rows do not justify a broad temporal-recommender claim. |
 | sampled `lightgcn` / `dice_like` | Supporting fast ablation and legacy mechanism rows. | Useful for engineering comparison, not paper-faithful baseline claims. |
 
 ## Feature-Subset Search Boundary
@@ -67,10 +68,10 @@ Rows below use the current unified full-data test leaderboard unless marked as a
 
 | Dataset | EDGRec row | Comparator | EDGRec improves | EDGRec does not improve | Thesis reading |
 | --- | --- | --- | --- | --- | --- |
-| `amazonbook` | ExpID 17201, `edgrec-global-top-amazonbook-r2` | Best LightGCN paper row ExpID 8712 | Time/epoch 3.3s vs 36.2s; denominator can be reconstructed from stored train-graph config. | If the stored AvgPop was legacy normalized rather than raw PyG ARP, rerun is needed for final CRRU; NDCG@20 0.0188 vs 0.0246; Recall@20 0.0236 vs 0.0315; Hit@20 0.1531 vs 0.1958; peak VRAM 14762MB vs 931MB. | EDGRec is a speed and lower-popularity-concentration trade-off, not the AmazonBook leaderboard winner. |
-| `kuairec_v2` | ExpID 17213, `edgrec-global-top-kuairec-v2-r3` | LightGCN paper ExpID 8701; leaderboard winner is supporting ExpID 4037 | Against LightGCN paper: NDCG@20 0.1181 vs 0.0484; Recall@20 0.0268 vs 0.0108; Hit@20 0.7299 vs 0.4164; time/epoch 4.1s vs 226.3s. | Peak VRAM is higher than LightGCN paper: 3265MB vs 1288MB. Legacy normalized AvgPop rows still need rerun for final raw-ARP CRRU claims. | KuaiRec remains the strongest positive EDGRec dataset, but the best current full-data row is a supporting-family result that should be treated as a promotion candidate before thesis headline wording. |
-| `movielens1m` | ExpID 17228, `edgrec-global-top-movielens1m-r1` | Best LightGCN paper row ExpID 8711 | Time/epoch 2.0s vs 3.2s; Personalization@20 0.9447 vs 0.9329; denominator can be reconstructed. | Legacy normalized AvgPop rows still need rerun for final raw-ARP CRRU claims; NDCG@20 0.0913 vs 0.0997; Recall@20 0.1282 vs 0.1398; Hit@20 0.4762 vs 0.4977; peak VRAM 2105MB vs 551MB. | EDGRec is a popularity/speed alternative. LightGCN remains the current raw-accuracy winner. |
-| `kuairand1k` | ExpID 17226, `edgrec-global-top-kuairand1k-r5` | Best full-data supporting row ExpID 1094; LightGCN paper is probe-only P2 | Recall@20 0.0056 vs 0.0007; time/epoch 0.074s vs 25.3s; peak VRAM 2045MB vs 12008MB; denominator can be reconstructed when item-universe policy is stored. | Legacy normalized AvgPop rows still need rerun for final raw-ARP CRRU claims; NDCG@20 0.0026 vs 0.0202; Hit@20 0.0110 vs 0.3000. | KuaiRand remains stress-test evidence. The promoted EDGRec rows are extremely cheap under a compact randomized-exposure training contract, but ranking utility is not competitive. |
+| `amazonbook` | ExpID 17200, `edgrec-global-top-amazonbook-r2` | Best LightGCN paper row ExpID 8712 | Time/epoch 3.3s vs 36.2s; AvgPop@20 0.0995 vs 0.1387. | NDCG@20 0.0189 vs 0.0246; Recall@20 0.0234 vs 0.0315; Hit@20 0.1546 vs 0.1958; peak VRAM 9380MB vs 931MB. | EDGRec is a speed and lower-popularity-concentration trade-off, not the AmazonBook leaderboard winner. |
+| `kuairec_v2` | ExpID 17213, `edgrec-global-top-kuairec-v2-r3` | LightGCN paper ExpID 8701; leaderboard winner is supporting ExpID 4037 | Against LightGCN paper: NDCG@20 0.1181 vs 0.0484; Recall@20 0.0268 vs 0.0108; Hit@20 0.7299 vs 0.4164; time/epoch 4.1s vs 226.3s. | Peak VRAM is higher than LightGCN paper: 3265MB vs 1288MB; supporting ExpID 4037 is much stronger than promoted rows. | KuaiRec remains strongest positive EDGRec-family dataset, but headline claims must identify promoted profile vs stronger supporting row. |
+| `movielens1m` | ExpID 17228, `edgrec-global-top-movielens1m-r1` | Best LightGCN paper row ExpID 8711 | Time/epoch 2.0s vs 3.2s; Personalization@20 0.9447 vs 0.9329; AvgPop@20 0.2972 vs 0.3351. | NDCG@20 0.0913 vs 0.0997; Recall@20 0.1282 vs 0.1398; Hit@20 0.4762 vs 0.4977; peak VRAM 2105MB vs 551MB. | EDGRec is a popularity/speed alternative. LightGCN remains current raw-accuracy winner. |
+| `kuairand1k` | ExpID 17226, `edgrec-global-top-kuairand1k-r5` | Best full-data supporting row ExpID 1094; LightGCN paper is probe-only P2 | Recall@20 0.0056 vs 0.0007; time/epoch 0.074s vs 25.3s; peak VRAM 2045MB vs 12008MB; AvgPop@20 0.2380 vs 0.3642. | NDCG@20 0.0026 vs 0.0202; Hit@20 0.0110 vs 0.3000. | KuaiRand remains stress-test evidence. Promoted EDGRec rows are cheap under compact randomized-exposure training, but ranking utility is not competitive. |
 
 ## KuaiRand Timing Interpretation
 
@@ -81,6 +82,15 @@ The `Time/Ep` value in `results/query_results.md` is the CRRU runtime source: it
 | ExpID 17226 logs 50 epochs with `avg_epoch_time_s=0.0737s`, batch size 1,048,576, `train_edge_count=7,088`, `item_universe_policy=random_exposure_items_only`, and `train_edge_keep_prob=0.6`. | The sub-second value is plausible for a tiny sampled train graph and one very large batch. |
 | ExpIDs 17221/17223/17225 use batch size 2,097,152 with the same 7,088 train edges and 0.073-0.074s/epoch. ExpID 17219 uses 4,790 train edges with `train_edge_keep_prob=0.4`. | The compact graph and huge batch are the direct reason these rows are fast. |
 | Older/non-compact KuaiRand rows report much larger epoch times: ExpID 1094 at 25.3s, ExpID 8698 at 46.1s, and mainline EDGRec ExpIDs 11006/11007 at 77.0-98.2s. | Do not compare the global-top KuaiRand timing as if it were full standard-view KuaiRand throughput. Report it as randomized-exposure compact-regime efficiency. |
+
+## Long/Short Temporal Interest Evidence
+
+Current rows are supporting mechanism evidence, not thesis headline candidates.
+
+| Dataset | Matching rows | Current read |
+| --- | --- | --- |
+| `kuairec_v2` | baseline ExpID 17257; temporal ExpID 17259; no-context ExpID 17261 | Temporal improves NDCG@20/Hit@20 over matching baseline (0.0581/0.4826 vs 0.0409/0.4117) but lowers Recall@20 (0.0110 vs 0.0132) and raises VRAM. Not competitive with stronger KuaiRec EDGRec rows. |
+| `kuairand1k` | baseline ExpID 17258; temporal ExpID 17255/17260; no-context ExpID 17262 | Matching baseline is strongest on NDCG@20/Recall@20/Hit@20. Temporal/no-context rows are useful diagnostics, not evidence that recent-history gating helps KuaiRand. |
 
 ## Dataset-Conditioned Profile Policy
 
@@ -95,8 +105,8 @@ The `Time/Ep` value in `results/query_results.md` is the CRRU runtime source: it
 
 | Dataset | EDGRec reference | DICE probe | Speed evidence | Resource note | Accuracy status |
 | --- | --- | --- | --- | --- | --- |
-| `amazonbook` | ExpID 17201 | Probe P1 | 3.3s/epoch vs 3426.2s/epoch: about 1038x faster. | EDGRec peak VRAM is higher: 14762MB vs 5197MB. | DICE NDCG@20 is one-epoch diagnostic only. |
-| `movielens1m` | ExpID 17228 | Probe P4 | 2.0s/epoch vs 578.8s/epoch: about 289x faster. | EDGRec peak VRAM is lower: 2105MB vs 2899MB. | DICE NDCG@20 is one-epoch diagnostic only. |
+| `amazonbook` | ExpID 17200 | Probe P1 | 3.3s/epoch vs 3426.2s/epoch: about 1030x faster. | EDGRec peak VRAM is higher: 9380MB vs 5197MB. | DICE NDCG@20 is one-epoch diagnostic only. |
+| `movielens1m` | ExpID 17228 | Probe P4 | 2.0s/epoch vs 578.8s/epoch: about 283x faster. | EDGRec peak VRAM is lower: 2105MB vs 2899MB. | DICE NDCG@20 is one-epoch diagnostic only. |
 
 Thesis-safe DICE statement: "Paper-faithful DICE is orders of magnitude slower per epoch under current profiles; final DICE ranking comparison remains open until full rows exist."
 

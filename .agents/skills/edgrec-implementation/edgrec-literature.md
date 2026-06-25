@@ -11,6 +11,7 @@ Use this file for thesis-facing rationale: which literature-backed ideas justify
 | `docs/paper_summaries/summary_by_paper_10.md` | Paper-level details for DICE, CausE, DCCL, CaDCR, DDCE, etc. |
 | `docs/paper_summaries/gcn_models.md` | LightGCN, LayerGCN, LightGCN++ mechanics. |
 | `docs/paper_summaries/summary_performance_papers.md` | Full-graph vs mini-batch GNN training, CAGRA, PANORAMA. |
+| `Papers_Efficient_Disentangled_Graph_Recommender/Disentanglement/` | Local primary PDFs for DICE, CLSR, DDCE, DCCL, CaDCR, and related disentanglement papers. |
 | `results/query_results.md` and `results/thesis_experiments.db` | Current empirical evidence. Not literature. |
 
 ## Paper Evidence Ledger
@@ -22,6 +23,7 @@ Use this file for thesis-facing rationale: which literature-backed ideas justify
 | DICE, 2020 | Interest/conformity embeddings, additive click score, popularity-conditioned triplets, branch BPR, discrepancy loss, macro-cause limitation. | Dual branches, DICE sampler masks, branch losses, independence regularization, paper-DICE baseline. | Do not claim EDGRec reproduces DICE exactly; `dice_paper` owns that. |
 | CausE, 2018 | Treatment/control representation learning needs biased plus randomized exposure evidence; randomized logging is costly/sparse. | Propensity/IPW is optional and gated; randomized KuaiRand evidence is treated carefully. | Observational ranking gains are not ITE estimates. |
 | PropCare | Propensity/relevance split and capped propensity-style evaluation need explicit treatment/propensity/effect columns. | Propensity calibration target path exists where data supports it. | Default EDGRec is not a PropCare evaluator. |
+| CLSR, 2022 | Long/short user interests need separate encoders, recent-history proxies, self-supervised contrastive tasks, and adaptive fusion; short-term evolution uses an RNN/GRU-family path. | Supports EDGRec's limited recent-history ablation as temporal evidence. | EDGRec does not implement CLSR's sequential encoder, proxy contrastive objective, or fusion predictor. |
 | DDCE / MGCE / MCLN | Popularity, quality, conformity, multimodal, and counterfactual signals can help, but noise/depth/counterfactual overhead are risks. | Item-only context head, safe feature policy, feature gates initialized near zero. | Side features are not assumed universally causal. |
 | DCCL / DirectAU | Contrastive and geometry objectives can help representation quality but add `O(B^2 d)` or pairwise-distance cost. | Contrastive/DirectAU terms are implemented, capped, and disabled by default. | They are not part of the default mainline contribution unless enabled. |
 | Full-graph vs mini-batch GNN training | Full graph is a mini-batch limit; tuned batch/fan-out can improve throughput and trade off generalization. | Sampled subgraph EDGRec default; full-graph paper baselines remain fidelity references. | Faster training is partly a training-protocol contribution. |
@@ -32,7 +34,7 @@ Use this file for thesis-facing rationale: which literature-backed ideas justify
 | Claim type | Safe wording |
 | --- | --- |
 | Causal scope | EDGRec is a causal-recommendation-inspired debiasing architecture; current ranking metrics are not causal-effect estimates. |
-| Core mechanism | EDGRec synthesizes LightGCN propagation, DICE-style interest/conformity separation, popularity-aware negative sampling, bounded independence losses, safe side features, and optional propensity calibration. |
+| Core mechanism | EDGRec synthesizes LightGCN propagation, DICE-style interest/conformity separation, popularity-aware negative sampling, bounded independence losses, safe side features, optional propensity calibration, and opt-in recent-history interest. |
 | Efficiency contribution | EDGRec tests whether causal-branch recommendation can retain accuracy while replacing paper-baseline full-graph and expensive sampler/loss paths with sampled neighborhoods, vectorized sampling, and bounded auxiliaries. |
 | Baseline comparison | `lightgcn_paper` and `dice_paper` are paper-faithful contracts; sampled `lightgcn` and `dice_like` are fast ablations, not paper baselines. |
 | Avoid | "EDGRec proves causality", "CRRU is causal", "DICE is less accurate" before full DICE formal rows exist. |
@@ -52,14 +54,14 @@ Use this file for thesis-facing rationale: which literature-backed ideas justify
 | For sparse graphs, the performance summary recommends fan-out under 15 as a practical threshold. | Default EDGRec `num_neighbors=[10,5]`; formal comparisons use small explicit fan-out sweeps. | `edgrec-config.md` |
 | CAGRA reports high GPU ANN graph construction/query throughput, but is memory-bandwidth and device-memory constrained. | Not part of EDGRec training/search spaces; graph augmentation was removed after OOM evidence. | `edgrec-data-pipeline.md`, `edgrec-config.md` |
 | Propensity methods such as CausE/PropCare require randomized or propensity/effect evidence; surveys warn propensity correctness is hard to validate. | KuaiRand `show_cnt` can calibrate propensity targets; default scorer zero-fills propensity context unless explicit calibrated IPW is active. | `edgrec-data-pipeline.md`, `edgrec-architecture.md` |
-| DDCE/MGCE/MCLN/FMMRec split interest, conformity, popularity, quality, modality, or fairness signals; several papers report multimodal noise and depth sensitivity. | EDGRec includes safe item-feature gates initialized near zero; side features start as weak optional evidence, not dominant signal. | `edgrec-architecture.md`, `edgrec-config.md` |
+| DDCE/CLSR/MGCE/MCLN/FMMRec split interest, conformity, popularity, quality, modality, temporal preference, or fairness signals; several papers report multimodal noise and depth sensitivity. | EDGRec includes safe item-feature gates initialized near zero; side features start as weak optional evidence, not dominant signal. The long/short path is recent-history gating, not a GRU, CLSR, or DDCE reproduction. | `edgrec-architecture.md`, `edgrec-config.md` |
 | Causal-rec surveys use standard ranking metrics plus causal metrics; they warn ranking accuracy can improve while causal quality degrades. | Thesis reports PyG ranking metrics plus bias/resource diagnostics; CRRU is explicitly resource-aware utility, not causal effect. | `edgrec-training.md`, `edgrec-result-analysis.md` |
 
 ## What Is New in This Implementation
 
 | Area | Literature anchor | EDGRec synthesis |
 | --- | --- | --- |
-| Architecture | LightGCN + DICE + DDCE/MGCE-style explicit popularity path | Dual LightGCN-style branches plus item-only context head and learned bounded score mixing. |
+| Architecture | LightGCN + DICE + DDCE/MGCE-style explicit popularity path | Dual LightGCN-style branches plus item-only context head, learned bounded score mixing, and optional DDCE/CLSR-informed long/short interest gate. |
 | Causal supervision | DICE branch triplets and discrepancy; DCCL/DirectAU geometry as optional add-ons | DICE branch losses are default; contrastive/DirectAU terms are available but disabled unless explicitly tested. |
 | Leakage control | Survey warnings about post-treatment features and exposure bias | `thesis_default` feature policy; train-only popularity/recency; explicit propensity-gate rules. |
 | Systems path | Full-graph vs mini-batch GNN literature; ANN systems papers | Sampled subgraphs, auto-batch, vectorized negative sampling, bounded pairwise losses. |

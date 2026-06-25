@@ -22,7 +22,9 @@ flowchart LR
     B --> C[CanonicalInteractions]
     C --> F[build_graph observed train positives]
     C --> I[item_propensity_targets optional]
+    C --> R[recent train history tensors]
     F --> J[build_runtime_model]
+    R --> J
     J --> K[MiniBatchTrainer and LossSuite]
     I --> L[data.propensity_targets optional]
     L --> K

@@ -75,7 +75,7 @@ When `branch_loss_mode="dice"`, the branch terms follow DICE semantics:
 | sampler mask | `dice_negative_mask` marks popularity-dominated negatives |
 | mask consumer | `LossSuite`; fallback reconstructs from train popularity + `dice_branch_margin` |
 | mask reduction | `dice_mask_reduction="batch_mean"` averages masked loss over the full batch; `active_mean` divides by active mask count |
-| margin owner | `dice_paper` and `edgrec` lock fallback margin to `dice_sampler_margin` |
+| margin owner | sampler masks come from the DICE negative sampler; if absent, `LossSuite` falls back to `dice_branch_margin`. Paper-DICE and EDGRec defaults set sampler and branch margins to `40.0`, but experiment profiles may vary `dice_sampler_margin` independently. |
 | margin decay | only when `dice_adaptive_decay=True` |
 | `L_interest_bpr` | active only on popularity-dominated negatives |
 | `L_conformity_bpr` | popular negative above positive; otherwise positive above negative |

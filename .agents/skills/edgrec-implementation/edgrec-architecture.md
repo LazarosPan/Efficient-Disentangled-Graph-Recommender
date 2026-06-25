@@ -79,6 +79,7 @@ Item branch capacity:
 | Fusion logits | cosine-style interest/conformity + `tanh(raw_context_score)` |
 | Raw branch use | branch BPR and diagnostics |
 | Calibrated use | final ranking fusion |
+| Temporal interest gate | opt-in only when `use_temporal_interest=True`; combines propagated long-term interest, recent-train short-term item-interest mean, and base user interest through one scorer MLP |
 | Context inputs | train-derived popularity, train-derived recency, optional calibrated propensity target, item age, safe item features |
 | Context width | `4 + item_features_dim` |
 | Propensity context gate | zero-fill unless `use_ipw=True` and `loss_weight_propensity_calibration > 0` |
@@ -95,9 +96,10 @@ Item branch capacity:
 - `preset_dice_paper()` instantiates `PaperGCNDICE`, which exposes interest, conformity, and summed final scores for DICE sampler/loss training.
 - The `no_popularity_head` ablation removes only the context head; learned per-user mixing still applies over the active interest and conformity branches.
 - The context head is item-only; no user features enter context scoring.
+- Long/short temporal interest does not create a new model class or GRU, CLSR, or DDCE reproduction. It reuses split-safe recent-train history buffers plus the existing `ScoringModule` interest path.
 - Missing context fields are zero-filled.
 - Fixed-weight normalization stays tensor-native inside the scorer, avoiding `.item()`-style device synchronization during pairwise and full-catalog scoring.
-- `forward_subgraph()` resolves recent-train item histories by global item id before scoring so the short-term branch never indexes user history against a subgraph-local item table.
+- When `use_temporal_interest=True`, `forward_subgraph()` resolves recent-train item histories by global item id before scoring so the short-term branch never indexes user history against a subgraph-local item table.
 
 ## Public `EDGRec` surfaces
 
