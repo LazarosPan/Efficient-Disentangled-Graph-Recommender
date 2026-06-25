@@ -124,6 +124,9 @@ _TRAINING_IDENTITY_FIELDS = (
     "hard_negative_ratio",
     "score_mix_min_weight",
     "separate_item_branch_embeddings",
+    "use_temporal_interest",
+    "temporal_history_size",
+    "paper_scaled_batch",
     "training_graph_mode",
     "branch_loss_mode",
     "recommendation_loss_mode",
@@ -435,19 +438,27 @@ def _runtime_feature_cache(data: Any) -> dict[str, Any]:
 
 
 def _train_derived_model_tensors(
+    config: EDGRecConfig,
     canonical: Any,
     data: Any,
 ) -> dict[str, torch.Tensor | None]:
     """Return train-split model tensors, reusing cache across probe model builds."""
     cache = _runtime_feature_cache(data)
-    cache_key = (id(canonical), _train_mask_cache_key(data))
+    cache_key = (
+        id(canonical),
+        _train_mask_cache_key(data),
+        int(config.temporal_history_size),
+    )
     cached = cache.get("train_derived_model_tensors")
     if isinstance(cached, dict) and cached.get("train_mask_key") == cache_key:
         return cached["tensors"]
 
     train_mask = _train_mask_numpy_from_data(data)
     item_recency = torch.from_numpy(canonical.compute_item_recency(train_mask))
-    recent_train_items, recent_train_mask = canonical.build_recent_train_history(train_mask)
+    recent_train_items, recent_train_mask = canonical.build_recent_train_history(
+        train_mask,
+        history_size=int(config.temporal_history_size),
+    )
     item_propensity_targets = (
         torch.from_numpy(canonical.item_propensity_targets)
         if canonical.item_propensity_targets is not None
@@ -494,7 +505,7 @@ def build_runtime_model(
             config,
         )
 
-    train_derived_tensors = _train_derived_model_tensors(canonical, data)
+    train_derived_tensors = _train_derived_model_tensors(config, canonical, data)
     apply_graph_item_feature_subset(data, config)
     return EDGRec(
         canonical.n_users,
@@ -903,19 +914,31 @@ def _probe_batch_size_candidate(
         if batch_size <= 0:
             return
 
-        stage = "prepare_batch"
-        sub_batch = probe_trainer._prepare_batch(
-            batch_users[:batch_size],
-            batch_items[:batch_size],
-            random_seed=random_seed,
-            epoch=0,
-        )
-        stage = "forward_loss"
-        _, losses = probe_trainer._run_training_batch(
-            sub_batch,
-            probe_trainer.popularity,
-            epoch=0,
-        )
+        probe_users = batch_users[:batch_size]
+        probe_items = batch_items[:batch_size]
+        if config.training_graph_mode == "full":
+            stage = "forward_loss"
+            _, losses = probe_trainer._run_full_graph_training_batch(
+                probe_users,
+                probe_items,
+                probe_trainer.popularity,
+                epoch=0,
+                random_seed=random_seed,
+            )
+        else:
+            stage = "prepare_batch"
+            sub_batch = probe_trainer._prepare_batch(
+                probe_users,
+                probe_items,
+                random_seed=random_seed,
+                epoch=0,
+            )
+            stage = "forward_loss"
+            _, losses = probe_trainer._run_training_batch(
+                sub_batch,
+                probe_trainer.popularity,
+                epoch=0,
+            )
         stage = "backward_step"
         probe_trainer._apply_optimization_step(losses["total"])
     except Exception as exc:
@@ -931,6 +954,7 @@ def _probe_batch_size_candidate(
         if probe_trainer is not None:
             probe_trainer.optimizer.zero_grad(set_to_none=True)
             probe_trainer.subgraph_sampler = None
+            probe_trainer._release_full_graph_cache_for_eval()
         sub_batch = None
         losses = None
         del probe_trainer, probe_loss_suite, probe_model
@@ -1550,6 +1574,10 @@ def normalize_benchmark_config_overrides(
     normalized["batch_size_candidates"] = (
         list(batch_size_candidates) if isinstance(batch_size_candidates, (list, tuple)) else None
     )
+    temporal_history_size = raw_config.get("temporal_history_size")
+    normalized["temporal_history_size"] = (
+        int(temporal_history_size) if temporal_history_size is not None else None
+    )
     for list_field in (
         "feature_include_groups",
         "feature_exclude_groups",
@@ -1636,6 +1664,8 @@ def normalize_benchmark_config_overrides(
         "use_popularity_head",
         "use_learned_score_mix",
         "separate_item_branch_embeddings",
+        "use_temporal_interest",
+        "paper_scaled_batch",
         "embedding_sparse_optimizer",
         "profile_training_stages",
     )
@@ -2019,6 +2049,8 @@ def run_experiment(
             "epochs_stopped_at": len(history.get("train_loss", [])),
             "training_time_s": None,
             "train_batches_per_epoch": None,
+            "batch_size": config.batch_size,
+            "auto_batch_size": config.auto_batch_size,
         }
 
     experiment_logger: ExperimentLogger | None = None

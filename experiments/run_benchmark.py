@@ -674,14 +674,21 @@ def _benchmark_item_label(
     preprocessing_preset: str | None,
     graph_policy: str,
     neighbor_label: str,
-    batch_size: int,
+    batch_label: str,
 ) -> str:
     """Return the shared human-readable label for one benchmark item."""
     return (
         f"{dataset} / {preset} / {lr_scheduler} "
         f"/ {preprocessing_preset or 'default'} / {graph_policy} / nbr{neighbor_label} "
-        f"/ bs{batch_size}"
+        f"/ bs{batch_label}"
     )
+
+
+def _benchmark_batch_label(benchmark_args: Mapping[str, object], batch_size: int) -> str:
+    """Return display batch label without hiding auto-batch probing."""
+    if bool(benchmark_args.get("auto_batch_size")):
+        return f"auto(start{batch_size})"
+    return str(batch_size)
 
 
 def _record_benchmark_failure(
@@ -792,10 +799,11 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             batch_size,
         ) in enumerate(experiments, 1):
             neighbor_label = format_num_neighbors_payload(neighbors) or ""
+            batch_label = _benchmark_batch_label(benchmark_args, batch_size)
             print(
                 f"{i:>4} | {ds:<15} | {pr:<12} | {scheduler:<12} | "
                 f"{preprocessing_preset or '-'!s: <24} | "
-                f"{graph_policy:<16} | {neighbor_label:<10} | {batch_size:>10}",
+                f"{graph_policy:<16} | {neighbor_label:<10} | {batch_label:>10}",
             )
         print(f"\nTotal: {len(experiments)} experiments (dry run, nothing executed)")
         return 0
@@ -821,6 +829,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
         effective_neighbor_list = list(neighbor_list)
         raw_neighbor_label = format_num_neighbors_payload(neighbor_list) or ""
         neighbor_label = raw_neighbor_label
+        batch_label = _benchmark_batch_label(benchmark_args, batch_size)
 
         try:
             effective_neighbor_list = _resolve_benchmark_num_neighbors_for_preset(
@@ -854,7 +863,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                 preprocessing_preset,
                 graph_policy,
                 neighbor_label,
-                batch_size,
+                batch_label,
             ),
         )
         print("=" * 70)

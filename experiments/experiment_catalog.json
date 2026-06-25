@@ -61,7 +61,7 @@
                     "kuairand1k": "random_exposure_items_only"
                 },
                 "n_negatives": 1,
-                "validation_every_n_epochs": 2,
+                "validation_every_n_epochs": 1,
                 "auxiliary_losses_start_epoch": 15,
                 "popularity_supervision_start_epoch": 30
             }
@@ -1328,7 +1328,7 @@
                 "num_neighbors": [10, 5],
                 "item_universe_policy": "observed_interaction_items",
                 "n_negatives": 1,
-                "validation_every_n_epochs": 2,
+                "validation_every_n_epochs": 1,
                 "auxiliary_losses_start_epoch": 15,
                 "popularity_supervision_start_epoch": 30,
                 "loss_weight_independence": 0.0,
@@ -1369,7 +1369,7 @@
                 "num_neighbors": [8, 4, 2],
                 "item_universe_policy": "observed_interaction_items",
                 "n_negatives": 1,
-                "validation_every_n_epochs": 2,
+                "validation_every_n_epochs": 1,
                 "auxiliary_loss_schedule": "linear_ramp",
                 "auxiliary_ramp_rate": 0.001,
                 "independence_ramp_rate": 0.00025,
@@ -1445,7 +1445,7 @@
                 "graph_policy": "observed",
                 "num_neighbors": [8, 4],
                 "n_negatives": 1,
-                "validation_every_n_epochs": 2,
+                "validation_every_n_epochs": 1,
                 "auxiliary_losses_start_epoch": 15,
                 "popularity_supervision_start_epoch": 30
             }
@@ -1474,7 +1474,7 @@
                 "num_neighbors": [8, 4],
                 "loss_weight_independence": 0.0,
                 "n_negatives": 1,
-                "validation_every_n_epochs": 2,
+                "validation_every_n_epochs": 1,
                 "auxiliary_losses_start_epoch": 15,
                 "popularity_supervision_start_epoch": 30
             }
@@ -1504,7 +1504,109 @@
                 "item_universe_policy": "random_exposure_items_only",
                 "label_mode": "current",
                 "n_negatives": 1,
-                "validation_every_n_epochs": 2,
+                "validation_every_n_epochs": 1,
+                "auxiliary_losses_start_epoch": 15,
+                "popularity_supervision_start_epoch": 30
+            }
+        },
+        {
+            "id": "edgrec-long-short-baseline-video",
+            "aliases": ["edgrec_temporal_baseline_video"],
+            "description": "Controlled video-dataset EDGRec baseline for the long/short temporal-interest ablation. Temporal interest is explicitly disabled so this row can be compared against the matching temporal profiles.",
+            "matrix": {
+                "datasets": ["kuairec_v2", "kuairand1k"],
+                "presets": ["edgrec"]
+            },
+            "config_overrides": {
+                "epochs": 300,
+                "use_early_stopping": true,
+                "patience": 20,
+                "lr": 0.01,
+                "lr_scheduler": "cosine",
+                "auto_batch_size": true,
+                "batch_size_candidates": [1048576, 524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+                "use_temporal_interest": false,
+                "temporal_history_size": 10,
+                "use_features": false,
+                "use_popularity_head": true,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 2,
+                "graph_policy": "observed",
+                "num_neighbors": [8, 4],
+                "item_universe_policy": {
+                    "all": "observed_interaction_items",
+                    "kuairand1k": "random_exposure_items_only"
+                },
+                "n_negatives": 1,
+                "validation_every_n_epochs": 1,
+                "auxiliary_losses_start_epoch": 15,
+                "popularity_supervision_start_epoch": 30
+            }
+        },
+        {
+            "id": "edgrec-long-short-temporal-video",
+            "aliases": ["edgrec_temporal_video"],
+            "description": "Small temporal long/short-interest EDGRec ablation for video datasets. It keeps the EDGRec architecture fixed and adds only the gated recent-history interest path.",
+            "matrix": {
+                "datasets": ["kuairec_v2", "kuairand1k"],
+                "presets": ["edgrec"]
+            },
+            "config_overrides": {
+                "epochs": 300,
+                "use_early_stopping": true,
+                "patience": 20,
+                "lr": 0.01,
+                "lr_scheduler": "cosine",
+                "auto_batch_size": true,
+                "batch_size_candidates": [1048576, 524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+                "use_temporal_interest": true,
+                "temporal_history_size": 10,
+                "use_features": false,
+                "use_popularity_head": true,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 2,
+                "graph_policy": "observed",
+                "num_neighbors": [8, 4],
+                "item_universe_policy": {
+                    "all": "observed_interaction_items",
+                    "kuairand1k": "random_exposure_items_only"
+                },
+                "n_negatives": 1,
+                "validation_every_n_epochs": 1,
+                "auxiliary_losses_start_epoch": 15,
+                "popularity_supervision_start_epoch": 30
+            }
+        },
+        {
+            "id": "edgrec-long-short-temporal-no-context-video",
+            "aliases": ["edgrec_temporal_no_context_video"],
+            "description": "Temporal long/short-interest EDGRec ablation with the item-only context head disabled. Use it to test whether temporal interest replaces or complements context/popularity scoring.",
+            "matrix": {
+                "datasets": ["kuairec_v2", "kuairand1k"],
+                "presets": ["edgrec"]
+            },
+            "config_overrides": {
+                "epochs": 300,
+                "use_early_stopping": true,
+                "patience": 20,
+                "lr": 0.01,
+                "lr_scheduler": "cosine",
+                "auto_batch_size": true,
+                "batch_size_candidates": [1048576, 524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+                "use_temporal_interest": true,
+                "temporal_history_size": 10,
+                "use_features": false,
+                "use_popularity_head": false,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 2,
+                "graph_policy": "observed",
+                "num_neighbors": [8, 4],
+                "item_universe_policy": {
+                    "all": "observed_interaction_items",
+                    "kuairand1k": "random_exposure_items_only"
+                },
+                "n_negatives": 1,
+                "validation_every_n_epochs": 1,
                 "auxiliary_losses_start_epoch": 15,
                 "popularity_supervision_start_epoch": 30
             }
@@ -2363,6 +2465,86 @@
             }
         },
         {
+            "id": "paper-lightgcn-scaled-batch-baselines",
+            "aliases": ["lightgcn_paper_scaled_batch"],
+            "description": "Hardware-scaled LightGCN paper-architecture baseline for AmazonBook and MovieLens1M, where current full rows make this comparison most useful. This preserves the paper adapter, loss, optimizer, scheduler, and full-graph evaluation path, but enables auto batch-size selection; report separately from paper-faithful reproduction rows.",
+            "matrix": {
+                "datasets": ["amazonbook", "movielens1m"],
+                "presets": ["lightgcn_paper_scaled_batch"]
+            },
+            "config_overrides": {
+                "epochs": 300,
+                "use_early_stopping": true,
+                "patience": 20,
+                "lr": 0.001,
+                "lr_scheduler": "none",
+                "paper_scaled_batch": true,
+                "auto_batch_size": true,
+                "batch_size": 1048576,
+                "batch_size_candidates": [1048576, 524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+                "single_branch_gnn_layers": 3,
+                "dropout": 0.0,
+                "graph_policy": "observed",
+                "num_neighbors": [10, 5, 5]
+            }
+        },
+        {
+            "id": "paper-dice-scaled-batch-movielens-probe",
+            "aliases": ["dice_paper_scaled_batch_movielens"],
+            "description": "Hardware-scaled GCN-DICE feasibility probe on MovieLens1M. Same paper-DICE architecture, loss, DICE sampler, and full-graph training path, but auto-selects a larger batch to test whether small-batch overhead drives the runtime bottleneck.",
+            "matrix": {
+                "datasets": ["movielens1m"],
+                "presets": ["dice_paper_scaled_batch"]
+            },
+            "config_overrides": {
+                "epochs": 1,
+                "use_early_stopping": true,
+                "patience": 10,
+                "lr": 0.001,
+                "lr_scheduler": "none",
+                "paper_scaled_batch": true,
+                "auto_batch_size": true,
+                "batch_size": 1048576,
+                "batch_size_candidates": [1048576, 524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+                "interest_gnn_layers": 2,
+                "conformity_gnn_layers": 2,
+                "dropout": 0.2,
+                "graph_policy": "observed",
+                "num_neighbors": [10, 5]
+            },
+            "runtime_probe": {
+                "target_epochs": 200
+            }
+        },
+        {
+            "id": "paper-dice-scaled-batch-amazonbook-probe",
+            "aliases": ["dice_paper_scaled_batch_amazonbook"],
+            "description": "Hardware-scaled GCN-DICE feasibility probe on AmazonBook. Run only after the MovieLens1M scaled-batch probe shows meaningful runtime improvement.",
+            "matrix": {
+                "datasets": ["amazonbook"],
+                "presets": ["dice_paper_scaled_batch"]
+            },
+            "config_overrides": {
+                "epochs": 1,
+                "use_early_stopping": true,
+                "patience": 10,
+                "lr": 0.001,
+                "lr_scheduler": "none",
+                "paper_scaled_batch": true,
+                "auto_batch_size": true,
+                "batch_size": 1048576,
+                "batch_size_candidates": [1048576, 524288, 262144, 131072, 65536, 32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+                "interest_gnn_layers": 2,
+                "conformity_gnn_layers": 2,
+                "dropout": 0.2,
+                "graph_policy": "observed",
+                "num_neighbors": [10, 5]
+            },
+            "runtime_probe": {
+                "target_epochs": 200
+            }
+        },
+        {
             "id": "fast-baseline-tuning",
             "description": "Fallback profile for faster sampled LightGCN and legacy DICE-like baselines if paper-faithful full-graph baselines are infeasible. Report these separately from paper-default baselines.",
             "matrix": {
@@ -2631,6 +2813,294 @@
                 "preprocessing_preset": "kuairand_random_only",
                 "auxiliary_losses_start_epoch": 15,
                 "popularity_supervision_start_epoch": 30
+            }
+        },
+        {
+            "id": "edgrec-small-batch-shallow-cosine-bs256",
+            "aliases": ["edgrec_small_batch_shallow_cosine_bs256"],
+            "description": "Fixed small-batch EDGRec probe: batch 256, cosine LR 0.01, shallow 1/1 branches, low fanout.",
+            "matrix": {
+                "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+                "presets": ["edgrec"],
+                "lr_schedulers": ["cosine"],
+                "graph_policies": ["observed"],
+                "neighbor_shapes": [[4]]
+            },
+            "config_overrides": {
+                "epochs": 300,
+                "use_early_stopping": true,
+                "patience": 20,
+                "batch_size": 256,
+                "auto_batch_size": false,
+                "lr": 0.01,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 1,
+                "auxiliary_losses_start_epoch": 30,
+                "popularity_supervision_start_epoch": 60
+            }
+        },
+        {
+            "id": "edgrec-small-batch-shallow-cosine-bs512",
+            "aliases": ["edgrec_small_batch_shallow_cosine_bs512"],
+            "description": "Fixed small-batch EDGRec probe: batch 512, cosine LR 0.01, shallow 1/1 branches, low fanout.",
+            "matrix": {
+                "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+                "presets": ["edgrec"],
+                "lr_schedulers": ["cosine"],
+                "graph_policies": ["observed"],
+                "neighbor_shapes": [[4]]
+            },
+            "config_overrides": {
+                "epochs": 300,
+                "use_early_stopping": true,
+                "patience": 20,
+                "batch_size": 512,
+                "auto_batch_size": false,
+                "lr": 0.01,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 1,
+                "auxiliary_losses_start_epoch": 30,
+                "popularity_supervision_start_epoch": 60
+            }
+        },
+        {
+            "id": "edgrec-small-batch-shallow-cosine-bs1024",
+            "aliases": ["edgrec_small_batch_shallow_cosine_bs1024"],
+            "description": "Fixed small-batch EDGRec probe: batch 1024, cosine LR 0.01, shallow 1/1 branches, low fanout.",
+            "matrix": {
+                "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+                "presets": ["edgrec"],
+                "lr_schedulers": ["cosine"],
+                "graph_policies": ["observed"],
+                "neighbor_shapes": [[4]]
+            },
+            "config_overrides": {
+                "epochs": 300,
+                "use_early_stopping": true,
+                "patience": 20,
+                "batch_size": 1024,
+                "auto_batch_size": false,
+                "lr": 0.01,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 1,
+                "auxiliary_losses_start_epoch": 30,
+                "popularity_supervision_start_epoch": 60
+            }
+        },
+        {
+            "id": "edgrec-small-batch-asym-cosine-bs256",
+            "aliases": ["edgrec_small_batch_asym_cosine_bs256"],
+            "description": "Fixed small-batch EDGRec probe: batch 256, cosine LR 0.01, 1/2 branches, low and compact fanout.",
+            "matrix": {
+                "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+                "presets": ["edgrec"],
+                "lr_schedulers": ["cosine"],
+                "graph_policies": ["observed"],
+                "neighbor_shapes": [[4, 2], [8, 4]]
+            },
+            "config_overrides": {
+                "epochs": 300,
+                "use_early_stopping": true,
+                "patience": 20,
+                "batch_size": 256,
+                "auto_batch_size": false,
+                "lr": 0.01,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 2,
+                "auxiliary_losses_start_epoch": 30,
+                "popularity_supervision_start_epoch": 60
+            }
+        },
+        {
+            "id": "edgrec-small-batch-asym-cosine-bs512",
+            "aliases": ["edgrec_small_batch_asym_cosine_bs512"],
+            "description": "Fixed small-batch EDGRec probe: batch 512, cosine LR 0.01, 1/2 branches, low and compact fanout.",
+            "matrix": {
+                "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+                "presets": ["edgrec"],
+                "lr_schedulers": ["cosine"],
+                "graph_policies": ["observed"],
+                "neighbor_shapes": [[4, 2], [8, 4]]
+            },
+            "config_overrides": {
+                "epochs": 300,
+                "use_early_stopping": true,
+                "patience": 20,
+                "batch_size": 512,
+                "auto_batch_size": false,
+                "lr": 0.01,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 2,
+                "auxiliary_losses_start_epoch": 30,
+                "popularity_supervision_start_epoch": 60
+            }
+        },
+        {
+            "id": "edgrec-small-batch-asym-cosine-bs1024",
+            "aliases": ["edgrec_small_batch_asym_cosine_bs1024"],
+            "description": "Fixed small-batch EDGRec probe: batch 1024, cosine LR 0.01, 1/2 branches, low and compact fanout.",
+            "matrix": {
+                "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+                "presets": ["edgrec"],
+                "lr_schedulers": ["cosine"],
+                "graph_policies": ["observed"],
+                "neighbor_shapes": [[4, 2], [8, 4]]
+            },
+            "config_overrides": {
+                "epochs": 300,
+                "use_early_stopping": true,
+                "patience": 20,
+                "batch_size": 1024,
+                "auto_batch_size": false,
+                "lr": 0.01,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 2,
+                "auxiliary_losses_start_epoch": 30,
+                "popularity_supervision_start_epoch": 60
+            }
+        },
+        {
+            "id": "edgrec-small-batch-shallow-none-bs256",
+            "aliases": ["edgrec_small_batch_shallow_none_bs256"],
+            "description": "Fixed small-batch EDGRec probe: batch 256, constant LR 0.001, shallow 1/1 branches, low fanout.",
+            "matrix": {
+                "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+                "presets": ["edgrec"],
+                "lr_schedulers": ["none"],
+                "graph_policies": ["observed"],
+                "neighbor_shapes": [[4]]
+            },
+            "config_overrides": {
+                "epochs": 300,
+                "use_early_stopping": true,
+                "patience": 20,
+                "batch_size": 256,
+                "auto_batch_size": false,
+                "lr": 0.001,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 1,
+                "auxiliary_losses_start_epoch": 30,
+                "popularity_supervision_start_epoch": 60
+            }
+        },
+        {
+            "id": "edgrec-small-batch-shallow-none-bs512",
+            "aliases": ["edgrec_small_batch_shallow_none_bs512"],
+            "description": "Fixed small-batch EDGRec probe: batch 512, constant LR 0.001, shallow 1/1 branches, low fanout.",
+            "matrix": {
+                "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+                "presets": ["edgrec"],
+                "lr_schedulers": ["none"],
+                "graph_policies": ["observed"],
+                "neighbor_shapes": [[4]]
+            },
+            "config_overrides": {
+                "epochs": 300,
+                "use_early_stopping": true,
+                "patience": 20,
+                "batch_size": 512,
+                "auto_batch_size": false,
+                "lr": 0.001,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 1,
+                "auxiliary_losses_start_epoch": 30,
+                "popularity_supervision_start_epoch": 60
+            }
+        },
+        {
+            "id": "edgrec-small-batch-shallow-none-bs1024",
+            "aliases": ["edgrec_small_batch_shallow_none_bs1024"],
+            "description": "Fixed small-batch EDGRec probe: batch 1024, constant LR 0.001, shallow 1/1 branches, low fanout.",
+            "matrix": {
+                "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+                "presets": ["edgrec"],
+                "lr_schedulers": ["none"],
+                "graph_policies": ["observed"],
+                "neighbor_shapes": [[4]]
+            },
+            "config_overrides": {
+                "epochs": 300,
+                "use_early_stopping": true,
+                "patience": 20,
+                "batch_size": 1024,
+                "auto_batch_size": false,
+                "lr": 0.001,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 1,
+                "auxiliary_losses_start_epoch": 30,
+                "popularity_supervision_start_epoch": 60
+            }
+        },
+        {
+            "id": "edgrec-small-batch-asym-none-bs256",
+            "aliases": ["edgrec_small_batch_asym_none_bs256"],
+            "description": "Fixed small-batch EDGRec probe: batch 256, constant LR 0.001, 1/2 branches, low and compact fanout.",
+            "matrix": {
+                "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+                "presets": ["edgrec"],
+                "lr_schedulers": ["none"],
+                "graph_policies": ["observed"],
+                "neighbor_shapes": [[4, 2], [8, 4]]
+            },
+            "config_overrides": {
+                "epochs": 300,
+                "use_early_stopping": true,
+                "patience": 20,
+                "batch_size": 256,
+                "auto_batch_size": false,
+                "lr": 0.001,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 2,
+                "auxiliary_losses_start_epoch": 30,
+                "popularity_supervision_start_epoch": 60
+            }
+        },
+        {
+            "id": "edgrec-small-batch-asym-none-bs512",
+            "aliases": ["edgrec_small_batch_asym_none_bs512"],
+            "description": "Fixed small-batch EDGRec probe: batch 512, constant LR 0.001, 1/2 branches, low and compact fanout.",
+            "matrix": {
+                "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+                "presets": ["edgrec"],
+                "lr_schedulers": ["none"],
+                "graph_policies": ["observed"],
+                "neighbor_shapes": [[4, 2], [8, 4]]
+            },
+            "config_overrides": {
+                "epochs": 300,
+                "use_early_stopping": true,
+                "patience": 20,
+                "batch_size": 512,
+                "auto_batch_size": false,
+                "lr": 0.001,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 2,
+                "auxiliary_losses_start_epoch": 30,
+                "popularity_supervision_start_epoch": 60
+            }
+        },
+        {
+            "id": "edgrec-small-batch-asym-none-bs1024",
+            "aliases": ["edgrec_small_batch_asym_none_bs1024"],
+            "description": "Fixed small-batch EDGRec probe: batch 1024, constant LR 0.001, 1/2 branches, low and compact fanout.",
+            "matrix": {
+                "datasets": ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+                "presets": ["edgrec"],
+                "lr_schedulers": ["none"],
+                "graph_policies": ["observed"],
+                "neighbor_shapes": [[4, 2], [8, 4]]
+            },
+            "config_overrides": {
+                "epochs": 300,
+                "use_early_stopping": true,
+                "patience": 20,
+                "batch_size": 1024,
+                "auto_batch_size": false,
+                "lr": 0.001,
+                "interest_gnn_layers": 1,
+                "conformity_gnn_layers": 2,
+                "auxiliary_losses_start_epoch": 30,
+                "popularity_supervision_start_epoch": 60
             }
         }
     ],
