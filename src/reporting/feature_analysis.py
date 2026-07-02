@@ -5,14 +5,10 @@ from __future__ import annotations
 import csv
 import json
 import math
-import textwrap
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
-
-import matplotlib.pyplot as plt
-import numpy as np
 
 from src.data.feature_groups import (
     GRAPH_ONLY_PROFILE,
@@ -40,9 +36,62 @@ from src.utils.experiment_logger import RUNTIME_PROBE_METRIC_NAMES
 from src.utils.project_paths import RESULTS_DIR
 
 FEATURE_ANALYSIS_DIR = RESULTS_DIR / "feature_analysis"
+DATASET_SUMMARY_PATH = RESULTS_DIR / "dataset_visualizations" / "benchmark_summary.json"
 FEATURE_SUBSET_SEARCH_SPACE = "edgrec-feature-subset-search"
 FEATURE_SUBSET_DATASETS = ("amazonbook", "movielens1m", "kuairec_v2", "kuairand1k")
 FEATURE_SAFE_ROLE = "safe_pre_treatment"
+DATASET_DISPLAY_NAMES = {
+    "amazonbook": "Amazon Book",
+    "movielens1m": "MovieLens-1M",
+    "movielens20m": "MovieLens-20M",
+    "kuairec_v2": "KuaiRec v2",
+    "taobao": "Taobao",
+    "kuairand1k": "KuaiRand-1K",
+}
+FEATURE_GROUP_LABELS = {
+    "graph_only": "graph only",
+    "item_genre": "item genre",
+    "user_demographic": "user demographics",
+    "item_author_music": "author/music",
+    "item_video_metadata": "video metadata",
+    "item_upload_time": "upload time",
+    "item_category": "category/tags",
+    "item_resolution": "resolution",
+    "other_safe_item_feature": "other item",
+    "other_safe_user_feature": "other user",
+}
+DATASET_FEATURE_NOTES = {
+    "amazonbook": "No side-feature source; interaction graph only.",
+    "movielens1m": (
+        "Item genres searched; user demographics loaded but not used by the item-only context head."
+    ),
+    "movielens20m": "Genres are available; no current feature-subset search or EDGRec test row.",
+    "kuairec_v2": (
+        "Safe item descriptors: author/music, metadata, resolution, category, upload time."
+    ),
+    "taobao": "Category id is available; no current feature-subset search or EDGRec test row.",
+    "kuairand1k": (
+        "Safe item descriptors mirror KuaiRec; randomized-exposure rows remain a separate regime."
+    ),
+}
+DATASET_EXCLUSION_NOTES = {
+    "amazonbook": "Nothing feature-bearing was omitted.",
+    "movielens1m": (
+        "Zip code is proxy-only; demographics are not searched/trained in current EDGRec."
+    ),
+    "movielens20m": "Genome/tag text evidence is outside the current thesis-default path.",
+    "kuairec_v2": (
+        "User profiles, captions/free text, and engagement counts are excluded or proxy-only."
+    ),
+    "taobao": (
+        "Behavior labels and timestamps are outcomes/context, not side features for the "
+        "current model."
+    ),
+    "kuairand1k": (
+        "Statistic engagement file is excluded; show_cnt is only a propensity target when "
+        "IPW is explicit."
+    ),
+}
 FEATURE_SUBSET_RESULT_COLUMNS = (
     ("dataset", "Dataset"),
     ("feature_subset_profile", "FeatureSubset"),
@@ -812,219 +861,603 @@ def _write_feature_subset_best_by_dataset(rows: Sequence[Mapping[str, object]]) 
     )
 
 
-def _feature_subset_delta_figure_path(dataset: str) -> Path:
-    """Return the dataset-local feature-subset delta figure path."""
-    return FEATURE_ANALYSIS_DIR / f"feature_subset_deltas_{dataset}.png"
+def _feature_subset_evidence_matrix_path() -> Path:
+    """Return the markdown feature-subset evidence matrix path."""
+    return FEATURE_ANALYSIS_DIR / "feature_subset_evidence_matrix.md"
 
 
-def _remove_feature_subset_delta_figures() -> None:
-    """Remove stale feature-subset delta figures before regenerating them."""
+def _remove_feature_subset_legacy_figures() -> None:
+    """Remove stale feature-subset PNG figures before regenerating tables."""
+    _remove_file(_feature_subset_evidence_matrix_path())
     _remove_file(FEATURE_ANALYSIS_DIR / "feature_subset_delta_heatmap.png")
+    _remove_file(FEATURE_ANALYSIS_DIR / "feature_subset_evidence_matrix.png")
     for path in FEATURE_ANALYSIS_DIR.glob("feature_subset_deltas_*.png"):
         _remove_file(path)
 
 
-def _effect_group_label(group: str) -> str:
-    """Return a readable feature-group label for plots."""
-    return "\n".join(textwrap.wrap(group.replace("_", " "), width=18))
-
-
-def _combination_effect_label(effect: str) -> str:
-    """Return a compact label for a pair/triple gain effect."""
-    kind, groups = effect.split(":", 1)
-    prefix = "pair" if kind == "pair_gain" else "triple"
-    return f"{prefix}: " + "\n".join(
-        textwrap.wrap(groups.replace("__", " + ").replace("_", " "), width=28),
-    )
-
-
-def _symmetric_axis_limit(values: Sequence[float]) -> float:
-    """Return a readable symmetric x-axis limit for signed delta bars."""
-    finite = [abs(value) for value in values if math.isfinite(value)]
-    return max(finite, default=0.01) * 1.25
-
-
-def _annotate_bars(ax: plt.Axes, bars: object, values: Sequence[float], limit: float) -> None:
-    """Annotate horizontal bars with signed delta values."""
-    offset = limit * 0.025
-    for bar, value in zip(bars, values, strict=True):
-        if not math.isfinite(value):
-            continue
-        x = value + offset if value >= 0 else value - offset
-        ax.text(
-            x,
-            bar.get_y() + bar.get_height() / 2,
-            f"{value:+.3f}",
-            va="center",
-            ha="left" if value >= 0 else "right",
-            fontsize=8,
-        )
-
-
-def _plot_side_feature_gain(
-    ax: plt.Axes,
-    side_value: float | None,
-    *,
-    limit: float,
-) -> None:
-    """Plot the dataset-local all-features versus no-features gain."""
-    if side_value is None:
-        ax.text(0.5, 0.5, "PENDING", ha="center", va="center", transform=ax.transAxes)
-        ax.set_axis_off()
-        return
-    color = "#2166ac" if side_value >= 0 else "#b2182b"
-    bars = ax.barh([0], [side_value], color=color)
-    _annotate_bars(ax, bars, [side_value], limit)
-    ax.axvline(0.0, color="#444444", linewidth=0.8)
-    ax.set_xlim(-limit, limit)
-    ax.set_yticks([0], labels=["best all\nminus none"])
-    ax.set_title("Side-feature gain")
-    ax.set_xlabel("delta")
-
-
-def _plot_group_effects(
-    ax: plt.Axes,
-    group_values: Mapping[str, Mapping[str, float]],
-    *,
-    limit: float,
-) -> None:
-    """Plot single-group gains and drop-group effects."""
-    if not group_values:
-        ax.text(0.5, 0.5, "No group effects", ha="center", va="center", transform=ax.transAxes)
-        ax.set_axis_off()
-        return
-    groups = sorted(
-        group_values,
-        key=lambda group: max(abs(value) for value in group_values[group].values()),
-        reverse=True,
-    )
-    y = np.arange(len(groups), dtype=np.float32)
-    single_values = [group_values[group].get("single", math.nan) for group in groups]
-    drop_values = [group_values[group].get("drop", math.nan) for group in groups]
-    single_bars = ax.barh(
-        y - 0.18,
-        [0.0 if math.isnan(value) else value for value in single_values],
-        height=0.34,
-        color="#1b9e77",
-        label="single vs none",
-    )
-    drop_bars = ax.barh(
-        y + 0.18,
-        [0.0 if math.isnan(value) else value for value in drop_values],
-        height=0.34,
-        color="#d95f02",
-        label="full minus drop",
-    )
-    _annotate_bars(ax, single_bars, single_values, limit)
-    _annotate_bars(ax, drop_bars, drop_values, limit)
-    ax.axvline(0.0, color="#444444", linewidth=0.8)
-    ax.set_xlim(-limit, limit)
-    ax.set_yticks(y, labels=[_effect_group_label(group) for group in groups])
-    ax.invert_yaxis()
-    ax.set_title("Feature-group effects")
-    ax.set_xlabel("delta")
-    ax.legend(loc="lower right", fontsize=8)
-
-
-def _plot_combination_gains(
-    ax: plt.Axes,
-    combination_rows: Sequence[Mapping[str, object]],
-    *,
-    limit: float,
-) -> None:
-    """Plot top pair/triple feature-subset gains."""
-    if not combination_rows:
-        ax.text(
-            0.5,
-            0.5,
-            "No completed pair/triple profiles",
-            ha="center",
-            va="center",
-            transform=ax.transAxes,
-        )
-        ax.set_axis_off()
-        return
-    top_rows = sorted(
-        combination_rows,
-        key=lambda row: float(row["delta"]),
-        reverse=True,
-    )[:10]
-    values = [float(row["delta"]) for row in top_rows]
-    y = np.arange(len(top_rows), dtype=np.float32)
-    colors = ["#2166ac" if value >= 0 else "#b2182b" for value in values]
-    bars = ax.barh(y, values, color=colors)
-    _annotate_bars(ax, bars, values, limit)
-    ax.axvline(0.0, color="#444444", linewidth=0.8)
-    ax.set_xlim(-limit, limit)
-    ax.set_yticks(
-        y,
-        labels=[_combination_effect_label(str(row["effect"])) for row in top_rows],
-    )
-    ax.invert_yaxis()
-    ax.set_title("Top pair/triple gains")
-    ax.set_xlabel("delta")
-
-
-def _write_dataset_feature_subset_delta_figure(
+def _best_effect_by_prefix(
+    deltas: Mapping[tuple[str, str], float],
     dataset: str,
-    delta_rows: Sequence[Mapping[str, object]],
+    prefixes: Sequence[str],
+) -> tuple[str, float] | None:
+    """Return the largest delta for one dataset across effect prefixes."""
+    candidates = [
+        (effect, value)
+        for (candidate_dataset, effect), value in deltas.items()
+        if candidate_dataset == dataset and any(effect.startswith(prefix) for prefix in prefixes)
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[1])
+
+
+def _feature_effect_markdown_text(effect: str, value: float, *, include_label: bool) -> str:
+    """Return markdown cell text for one feature effect."""
+    if not include_label:
+        return f"{value:+.3f}"
+    label = _friendly_group_text(effect.split(":", 1)[1])
+    return f"{value:+.3f} {label}"
+
+
+def _claim_boundary_label(dataset: str, best_profile: str, side_gain: float | None) -> str:
+    """Return short claim-boundary text for the feature evidence table."""
+    if best_profile == GRAPH_ONLY_PROFILE:
+        return "graph-only"
+    if best_profile == "none" or (side_gain is not None and side_gain < 0):
+        return "negative evidence"
+    if dataset in {"kuairec_v2", "kuairand1k"}:
+        return "rerun before claim"
+    return "validation only"
+
+
+def _profile_table_label(profile: str) -> str:
+    """Return a compact readable profile label for the matrix-side table."""
+    for prefix in ("single_", "pair_", "triple_"):
+        if profile.startswith(prefix):
+            return (
+                f"{prefix.removesuffix('_')}: {_friendly_group_text(profile.removeprefix(prefix))}"
+            )
+    if profile.startswith("drop_"):
+        return f"drop: {_friendly_group_text(profile.removeprefix('drop_'))}"
+    return _profile_readable_label(profile)
+
+
+def _write_feature_subset_evidence_matrix(
+    rows: Sequence[Mapping[str, object]],
 ) -> None:
-    """Write one dataset-local feature-subset delta figure."""
-    side_value: float | None = None
-    group_values: dict[str, dict[str, float]] = {}
-    combination_rows: list[Mapping[str, object]] = []
-    all_values: list[float] = []
-    for row in delta_rows:
-        effect = str(row["effect"])
-        value = float(row["delta"])
-        all_values.append(value)
-        if effect == "side_feature_gain":
-            side_value = value
-        elif effect.startswith("single_group_gain:"):
-            group = effect.split(":", 1)[1]
-            group_values.setdefault(group, {})["single"] = value
-        elif effect.startswith("drop_group_effect:"):
-            group = effect.split(":", 1)[1]
-            group_values.setdefault(group, {})["drop"] = value
-        elif effect.startswith(("pair_gain:", "triple_gain:")):
-            combination_rows.append(row)
+    """Write a markdown feature-subset evidence matrix."""
+    deltas = _feature_delta_lookup(rows)
+    best_rows = _best_completed_row_by_dataset(rows)
+    datasets = [
+        dataset
+        for dataset in FEATURE_SUBSET_DATASETS
+        if dataset in best_rows
+        or any(candidate_dataset == dataset for candidate_dataset, _effect in deltas)
+    ]
+    if not datasets:
+        return
 
-    limit = _symmetric_axis_limit(all_values)
-    group_count = max(len(group_values), len(combination_rows[:10]), 1)
-    if combination_rows:
-        fig, axes = plt.subplots(
-            1,
-            3,
-            figsize=(16.0, max(4.5, group_count * 0.55)),
-            gridspec_kw={"width_ratios": [1.0, 2.0, 2.6]},
-            constrained_layout=True,
+    effect_columns: list[tuple[str, str, Sequence[str]]] = [
+        ("All side vs none", "", ("side_feature_gain",)),
+        ("Best single\ngroup", "single", ("single_group_gain:",)),
+        ("Best pair/triple", "combo", ("pair_gain:", "triple_gain:")),
+        ("Best drop importance", "drop", ("drop_group_effect:",)),
+    ]
+    matrix_rows: list[list[str]] = []
+    for dataset in datasets:
+        cells: list[str] = [DATASET_DISPLAY_NAMES.get(dataset, dataset)]
+        for _title, kind, prefixes in effect_columns:
+            if kind == "":
+                value = deltas.get((dataset, "side_feature_gain"))
+                if value is None:
+                    cells.append("n/a")
+                    continue
+                cells.append(f"{value:+.3f}")
+                continue
+            best = _best_effect_by_prefix(deltas, dataset, prefixes)
+            if best is None:
+                cells.append("n/a")
+                continue
+            effect, value = best
+            cells.append(
+                _feature_effect_markdown_text(effect, value, include_label=True),
+            )
+        best = best_rows.get(dataset)
+        if best is None:
+            cells.extend(["no evidence", "-", "-"])
+        else:
+            raw_profile = str(best.get("feature_subset_profile", ""))
+            cells.extend(
+                [
+                    _profile_table_label(raw_profile),
+                    _format_float(best.get("validation_crru_20_40")),
+                    _claim_boundary_label(
+                        dataset,
+                        raw_profile,
+                        deltas.get((dataset, "side_feature_gain")),
+                    ),
+                ],
+            )
+        matrix_rows.append(cells)
+    lines = [
+        "# Feature Subset Evidence Matrix",
+        "",
+        "Cells are validation/search deltas, not test-set claims. "
+        "Drop importance = all-features score minus score after removing the group.",
+        "",
+        "| Dataset | All side vs none | Best single group | Best pair/triple | "
+        "Best drop importance | Best validation profile | ValCRRU | Thesis use |",
+        "|---|---:|---:|---:|---:|---|---:|---|",
+    ]
+    for row in matrix_rows:
+        lines.append(
+            "| " + " | ".join(_format_markdown_value(value) for value in row) + " |",
         )
-    else:
-        fig, axes = plt.subplots(
-            1,
-            2,
-            figsize=(10.5, max(4.2, group_count * 0.55)),
-            gridspec_kw={"width_ratios": [1.0, 2.0]},
-            constrained_layout=True,
+    _feature_subset_evidence_matrix_path().write_text(
+        "\n".join(lines) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_feature_subset_delta_tables(rows: Sequence[Mapping[str, object]]) -> None:
+    """Write combined feature-subset delta tables."""
+    _remove_feature_subset_legacy_figures()
+    _write_feature_subset_evidence_matrix(rows)
+
+
+def _read_dataset_summary_payloads() -> dict[str, Mapping[str, object]]:
+    """Return generated dataset-summary payloads when available."""
+    if not DATASET_SUMMARY_PATH.exists():
+        return {}
+    try:
+        payload = json.loads(DATASET_SUMMARY_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    datasets = payload.get("datasets")
+    if not isinstance(datasets, list):
+        return {}
+    output: dict[str, Mapping[str, object]] = {}
+    for row in datasets:
+        if not isinstance(row, Mapping):
+            continue
+        name = row.get("name")
+        if isinstance(name, str):
+            output[name] = row
+    return output
+
+
+def _read_existing_feature_inventory_rows() -> list[dict[str, object]]:
+    """Return current feature-inventory rows from disk when they exist."""
+    path = FEATURE_ANALYSIS_DIR / "feature_group_inventory.csv"
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8", newline="") as handle:
+        return [dict(row) for row in csv.DictReader(handle)]
+
+
+def _inventory_rows_from_result_rows(
+    rows: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """Build a minimal feature-inventory fallback from subset result rows."""
+    output: list[dict[str, object]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        dataset = str(row.get("dataset", ""))
+        groups = [
+            group
+            for field in ("included_groups", "excluded_groups")
+            for group in str(row.get(field, "")).split(",")
+            if group
+        ]
+        if not groups and dataset and dataset not in seen:
+            groups = [GRAPH_ONLY_PROFILE]
+        for group in groups:
+            key = (dataset, group)
+            if not dataset or key in seen:
+                continue
+            seen.add(key)
+            output.append(
+                {
+                    "dataset": dataset,
+                    "feature_name": group,
+                    "source_file": group,
+                    "raw_column": group,
+                    "entity_type": "item",
+                    "role": FEATURE_SAFE_ROLE,
+                    "group": group,
+                    "encoded_column_index": "",
+                    "feature_subset_status": (
+                        "not_applicable" if group == GRAPH_ONLY_PROFILE else "search_candidate"
+                    ),
+                },
+            )
+    return output
+
+
+def _dataset_order(
+    dataset_payloads: Mapping[str, Mapping[str, object]],
+    rows: Sequence[Mapping[str, object]],
+) -> list[str]:
+    """Return thesis-friendly dataset order for feature review artifacts."""
+    preferred = [
+        "amazonbook",
+        "movielens1m",
+        "movielens20m",
+        "kuairec_v2",
+        "taobao",
+        "kuairand1k",
+    ]
+    available = set(dataset_payloads) | {str(row.get("dataset", "")) for row in rows}
+    ordered = [dataset for dataset in preferred if dataset in available]
+    ordered.extend(sorted(dataset for dataset in available if dataset and dataset not in ordered))
+    return ordered
+
+
+def _feature_group_counts(
+    inventory_rows: Sequence[Mapping[str, object]],
+    dataset: str,
+    *,
+    entity: str | None = None,
+    status: str | None = None,
+) -> dict[str, int]:
+    """Return loaded feature-column counts by feature group."""
+    counts: dict[str, int] = defaultdict(int)
+    for row in inventory_rows:
+        if row.get("dataset") != dataset:
+            continue
+        if entity is not None and row.get("entity_type") != entity:
+            continue
+        if status is not None and row.get("feature_subset_status") != status:
+            continue
+        group = str(row.get("group", ""))
+        if group:
+            counts[group] += 1
+    return dict(counts)
+
+
+def _format_group_count_summary(counts: Mapping[str, int], *, fallback: str) -> str:
+    """Format feature-group counts for table cells."""
+    if not counts:
+        return fallback
+    parts = [
+        f"{FEATURE_GROUP_LABELS.get(group, group)} ({count})"
+        for group, count in sorted(counts.items())
+    ]
+    return "\n".join(parts)
+
+
+def _format_dataset_context(payload: Mapping[str, object] | None, dataset: str) -> str:
+    """Format scale, sparsity, and feedback semantics for one dataset."""
+    label = DATASET_DISPLAY_NAMES.get(dataset, dataset)
+    if payload is None:
+        return label
+    interactions = _finite_float(payload.get("n_interactions"))
+    density = _finite_float(payload.get("density"))
+    feedback = str(payload.get("feedback_description") or "")
+    interactions_text = f"{interactions / 1_000_000:.1f}M interactions" if interactions else ""
+    density_text = f"{density * 100:.3g}% density" if density is not None else ""
+    return "\n".join(part for part in (label, interactions_text, density_text, feedback) if part)
+
+
+def _best_completed_row_by_dataset(
+    rows: Sequence[Mapping[str, object]],
+) -> dict[str, Mapping[str, object]]:
+    """Return the highest ValidationCRRU feature-subset row per dataset."""
+    output: dict[str, Mapping[str, object]] = {}
+    for row in _best_rows_by_profile(rows):
+        if row.get("status") != "completed":
+            continue
+        value = _finite_float(row.get("validation_crru_20_40"))
+        dataset = str(row.get("dataset", ""))
+        if value is None or not dataset:
+            continue
+        current = output.get(dataset)
+        current_value = _finite_float(current.get("validation_crru_20_40")) if current else None
+        if current_value is None or value > current_value:
+            output[dataset] = row
+    return output
+
+
+def _feature_delta_lookup(
+    rows: Sequence[Mapping[str, object]],
+) -> dict[tuple[str, str], float]:
+    """Return feature-subset delta values keyed by dataset and effect label."""
+    output: dict[tuple[str, str], float] = {}
+    for row in _feature_subset_delta_rows(rows):
+        value = _finite_float(row.get("delta"))
+        dataset = str(row.get("dataset", ""))
+        effect = str(row.get("effect", ""))
+        if value is not None and dataset and effect:
+            output[(dataset, effect)] = value
+    return output
+
+
+def _best_positive_effect(
+    deltas: Mapping[tuple[str, str], float],
+    dataset: str,
+    prefixes: Sequence[str],
+) -> tuple[str, float] | None:
+    """Return the strongest positive feature effect for one dataset."""
+    candidates = [
+        (effect, value)
+        for (candidate_dataset, effect), value in deltas.items()
+        if candidate_dataset == dataset
+        and any(effect.startswith(prefix) for prefix in prefixes)
+        and value > 0
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[1])
+
+
+def _profile_readable_label(profile: str) -> str:
+    """Return a readable feature-subset profile label."""
+    replacements = {
+        "graph_only": "graph only",
+        "none": "no side features",
+        "all_gate_neg4": "all features, gate -4",
+        "all_gate0": "all features, gate 0",
+    }
+    if profile in replacements:
+        return replacements[profile]
+    for prefix in ("single_", "drop_", "pair_", "triple_"):
+        if profile.startswith(prefix):
+            label = profile.removeprefix(prefix).replace("__", " + ").replace("_", " ")
+            return f"{prefix[:-1]}: {label}"
+    return profile.replace("_", " ")
+
+
+def _friendly_group_text(groups: str) -> str:
+    """Return compact feature-group text for figure annotations."""
+    labels = [
+        FEATURE_GROUP_LABELS.get(group, group.replace("_", " "))
+        for group in groups.split("__")
+        if group
+    ]
+    return " + ".join(labels)
+
+
+def _feature_validation_result_text(
+    dataset: str,
+    best_rows: Mapping[str, Mapping[str, object]],
+    deltas: Mapping[tuple[str, str], float],
+) -> str:
+    """Return compact validation result text for one dataset."""
+    best = best_rows.get(dataset)
+    if best is None:
+        return "No completed feature-subset evidence."
+    raw_profile = str(best.get("feature_subset_profile", ""))
+    profile = _profile_readable_label(raw_profile)
+    for prefix in ("single_", "pair_", "triple_"):
+        if raw_profile.startswith(prefix):
+            profile = _friendly_group_text(raw_profile.removeprefix(prefix))
+            break
+    score = _format_float(best.get("validation_crru_20_40"))
+    side_gain = deltas.get((dataset, "side_feature_gain"))
+    side_text = f"side gain {side_gain:+.3f}" if side_gain is not None else "side gain n/a"
+    positive = _best_positive_effect(
+        deltas,
+        dataset,
+        ("single_group_gain:", "pair_gain:", "triple_gain:"),
+    )
+    if positive is None:
+        return f"Best: {profile}\nValCRRU {score}\n{side_text}"
+    effect, value = positive
+    effect_label = _friendly_group_text(effect.split(":", 1)[1])
+    return (
+        f"Best: {profile}\nValCRRU {score}\n{side_text}\nstrongest: {effect_label} ({value:+.3f})"
+    )
+
+
+def _feature_decision_text(
+    dataset: str,
+    best_rows: Mapping[str, Mapping[str, object]],
+    deltas: Mapping[tuple[str, str], float],
+) -> str:
+    """Return thesis-facing feature decision or next-step text."""
+    best = best_rows.get(dataset)
+    if best is None:
+        return (
+            "Context dataset only for now; run feature-subset search before using feature claims."
         )
-    fig.suptitle(f"{dataset}: feature-subset validation deltas", fontsize=14)
-    _plot_side_feature_gain(axes[0], side_value, limit=limit)
-    _plot_group_effects(axes[1], group_values, limit=limit)
-    if combination_rows:
-        _plot_combination_gains(axes[2], combination_rows, limit=limit)
-    fig.savefig(_feature_subset_delta_figure_path(dataset), dpi=170)
-    plt.close(fig)
+    profile = str(best.get("feature_subset_profile", ""))
+    side_gain = deltas.get((dataset, "side_feature_gain"))
+    if profile == GRAPH_ONLY_PROFILE:
+        return "Train graph-only; no side-feature claim."
+    if profile == "none" or (side_gain is not None and side_gain < 0):
+        return (
+            "Prefer no side features in current EDGRec basin; keep feature result as "
+            "negative evidence."
+        )
+    if dataset == "kuairec_v2":
+        return (
+            "Use resolution/video-metadata feature reruns as candidates; final claim needs "
+            "matching test rows."
+        )
+    if dataset == "kuairand1k":
+        return (
+            "Use category/triple features as candidates; test outside compact diagnostic "
+            "regime before a headline."
+        )
+    return "Use as validation-only feature evidence until a matching full-data test row exists."
 
 
-def _write_feature_subset_delta_figures(rows: Sequence[Mapping[str, object]]) -> None:
-    """Write dataset-local feature-subset delta figures."""
-    _remove_feature_subset_delta_figures()
-    delta_rows = _feature_subset_delta_rows(rows)
-    by_dataset: dict[str, list[Mapping[str, object]]] = defaultdict(list)
-    for row in delta_rows:
-        by_dataset[str(row["dataset"])].append(row)
-    for dataset, dataset_rows in sorted(by_dataset.items()):
-        _write_dataset_feature_subset_delta_figure(dataset, dataset_rows)
+def _feature_review_rows(
+    rows: Sequence[Mapping[str, object]],
+    inventory_rows: Sequence[Mapping[str, object]],
+) -> list[dict[str, str]]:
+    """Return dataset-feature decision rows for Markdown and PNG outputs."""
+    dataset_payloads = _read_dataset_summary_payloads()
+    best_rows = _best_completed_row_by_dataset(rows)
+    deltas = _feature_delta_lookup(rows)
+    output: list[dict[str, str]] = []
+    for dataset in _dataset_order(dataset_payloads, rows):
+        item_groups = _feature_group_counts(
+            inventory_rows,
+            dataset,
+            entity="item",
+            status="search_candidate",
+        )
+        if not item_groups and dataset in {"movielens20m", "taobao"}:
+            fallback = DATASET_FEATURE_NOTES[dataset]
+        else:
+            fallback = DATASET_FEATURE_NOTES.get(dataset, "No loaded thesis-default features.")
+        user_not_searched = _feature_group_counts(
+            inventory_rows,
+            dataset,
+            entity="user",
+            status="not_searched",
+        )
+        used_features = _format_group_count_summary(item_groups, fallback=fallback)
+        if user_not_searched:
+            used_features += "\nNot searched: " + _format_group_count_summary(
+                user_not_searched,
+                fallback="",
+            )
+        output.append(
+            {
+                "dataset": dataset,
+                "dataset_context": _format_dataset_context(
+                    dataset_payloads.get(dataset),
+                    dataset,
+                ),
+                "feature_inputs": used_features,
+                "left_out": DATASET_EXCLUSION_NOTES.get(dataset, ""),
+                "validation_result": _feature_validation_result_text(dataset, best_rows, deltas),
+                "decision": _feature_decision_text(dataset, best_rows, deltas),
+            },
+        )
+    return output
+
+
+def _write_dataset_feature_decision_map(review_rows: Sequence[Mapping[str, str]]) -> None:
+    """Write the dataset-feature decision map as a markdown table."""
+    _remove_file(FEATURE_ANALYSIS_DIR / "dataset_feature_decision_map.png")
+    if not review_rows:
+        return
+    lines = [
+        "# Dataset Feature Decision Map",
+        "",
+        "Feature evidence is validation/search evidence from `edgrec-feature-subset-search` "
+        "unless a matching full-data test row exists. Excluded features are omitted by "
+        "policy, not by plotting convenience.",
+        "",
+        "| Dataset regime | Thesis-default feature input | Left outside training | "
+        "Feature evidence | Training decision / gap |",
+        "|---|---|---|---|---|",
+    ]
+    for row in review_rows:
+        lines.append(
+            "| "
+            + " | ".join(
+                _format_markdown_value(value).replace("\n", "<br/>")
+                for value in (
+                    row["dataset_context"],
+                    row["feature_inputs"],
+                    row["left_out"],
+                    row["validation_result"],
+                    row["decision"],
+                )
+            )
+            + " |",
+        )
+    (FEATURE_ANALYSIS_DIR / "dataset_feature_decision_map.md").write_text(
+        "\n".join(lines) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _write_feature_engineering_review_markdown(
+    review_rows: Sequence[Mapping[str, str]],
+) -> None:
+    """Write a thesis-facing feature-engineering review document."""
+    lines = [
+        "# Feature Engineering Review",
+        "",
+        "Purpose: explain which dataset features are used for EDGRec training, which are "
+        "left outside the thesis-default path, and what evidence still needs a full-data "
+        "test rerun before becoming a thesis claim.",
+        "",
+        "Primary tables/reports: `dataset_feature_decision_map.md`, "
+        "`feature_subset_evidence_matrix.md`, `feature_subset_best_by_dataset.md`, and "
+        "`feature_subset_results.csv`.",
+        "",
+        "## Dataset Decisions",
+        "",
+        "| Dataset | Feature input | Left outside training | Evidence | Decision |",
+        "|---|---|---|---|---|",
+    ]
+    for row in review_rows:
+        dataset = str(row["dataset_context"]).splitlines()[0]
+        lines.append(
+            "| "
+            + " | ".join(
+                _format_markdown_value(value).replace("\n", "<br/>")
+                for value in (
+                    dataset,
+                    row["feature_inputs"],
+                    row["left_out"],
+                    row["validation_result"],
+                    row["decision"],
+                )
+            )
+            + " |",
+        )
+    lines.extend(
+        [
+            "",
+            "## What This Means",
+            "",
+            "- AmazonBook is a graph-only recommendation dataset in the current code path; no "
+            "side-feature engineering claim should be made.",
+            "- MovieLens-1M genre features are negative validation evidence in the current "
+            "EDGRec basin; user demographics are loaded as metadata but not used by the "
+            "item-only context head.",
+            "- KuaiRec v2 has the strongest validation signal for side features, especially "
+            "resolution and video metadata, but feature-specific full-data test rows are "
+            "needed before a test-set claim.",
+            "- KuaiRand-1K has positive validation signal for category/triple features, but "
+            "current compact randomized-exposure results are diagnostic; standard-regime "
+            "feature reruns are needed for a headline.",
+            "- MovieLens-20M and Taobao are dataset-analysis context unless they receive "
+            "matching EDGRec feature-subset searches and test rows.",
+            "",
+            "## Not Done Yet",
+            "",
+            "- Full-data test reruns for KuaiRec `item_resolution`, `item_video_metadata`, and "
+            "`item_video_metadata + item_resolution` candidates.",
+            "- Full-data KuaiRand rerun for `item_author_music + item_upload_time + "
+            "item_category`, preferably outside the ultra-compact diagnostic-only setup.",
+            "- Explicit statement in slides that user-side features are not part of the "
+            "current EDGRec scorer; otherwise a committee may ask why demographics were "
+            "loaded but not trained.",
+            "- If Taobao or MovieLens-20M become headline datasets, add their own "
+            "feature-subset searches rather than extrapolating from the four current "
+            "feature-search datasets.",
+        ],
+    )
+    (FEATURE_ANALYSIS_DIR / "feature_engineering_review.md").write_text(
+        "\n".join(lines) + "\n",
+        encoding="utf-8",
+    )
+
+
+def write_feature_engineering_review_reports(
+    rows: Sequence[Mapping[str, object]],
+    inventory_rows: Sequence[Mapping[str, object]] | None = None,
+) -> None:
+    """Write feature-engineering decision artifacts from current report rows."""
+    _ensure_dir()
+    resolved_inventory_rows = (
+        list(inventory_rows)
+        if inventory_rows is not None
+        else _read_existing_feature_inventory_rows()
+    )
+    if not resolved_inventory_rows:
+        resolved_inventory_rows = _inventory_rows_from_result_rows(rows)
+    review_rows = _feature_review_rows(rows, resolved_inventory_rows)
+    _write_dataset_feature_decision_map(review_rows)
+    _write_feature_engineering_review_markdown(review_rows)
 
 
 def render_feature_subset_report_section(rows: Sequence[Mapping[str, object]]) -> list[str]:
@@ -1096,7 +1529,8 @@ def write_feature_subset_search_reports(
         ),
     )
     _write_feature_subset_best_by_dataset(result_rows)
-    _write_feature_subset_delta_figures(result_rows)
+    _write_feature_subset_delta_tables(result_rows)
+    write_feature_engineering_review_reports(result_rows)
     return result_rows
 
 

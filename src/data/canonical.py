@@ -813,7 +813,7 @@ def build_indexed_canonical_interactions(
         timestamp: Interaction timestamps aligned to the interactions.
         sign: Graded signs aligned to the interactions.
         popularity: Optional canonical item-popularity summary. When omitted,
-            max-normalized popularity is derived from ``indexed.item_id``.
+            log-normalized popularity is derived from ``indexed.item_id``.
         user_features: Optional user side-feature matrix.
         item_features: Optional item side-feature matrix.
         user_feature_names: Optional user side-feature encoded names.

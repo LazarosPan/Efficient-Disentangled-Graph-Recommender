@@ -5,7 +5,7 @@ The plots are intentionally built from ``CanonicalInteractions`` rather than
 raw files or learned embeddings so every dataset is shown on the same footing.
 This keeps the figures thesis-friendly: they compare scale, sparsity,
 long-tail behavior, temporal coverage, response signals, and dataset-specific
-causal context without coupling the output to a trained model checkpoint.
+exposure/context signals without coupling the output to a trained model checkpoint.
 Rerunning the script rewrites the same fixed PNG outputs in place.
 """
 
@@ -182,6 +182,7 @@ def describe_split_strategy(split_source: str) -> str:
         "predefined": "provided train / validation / test split",
         "train/test+derived-val": "provided train / test split with validation carved from train",
         "derived:per_user_temporal": "per-user temporal split derived from timestamps",
+        "derived:per_user_loader_order": "per-user loader-order split (no timestamps)",
     }
     return descriptions.get(split_source, split_source.replace("_", " "))
 
@@ -246,6 +247,8 @@ def split_source(canonical: CanonicalInteractions) -> str:
         return "predefined"
     if canonical.train_mask is not None and canonical.test_mask is not None:
         return "train/test+derived-val"
+    if not np.any(canonical.timestamp > 0):
+        return "derived:per_user_loader_order"
     return "derived:per_user_temporal"
 
 
@@ -533,7 +536,7 @@ def render_summary_markdown(dataset_payloads: list[dict[str, Any]]) -> str:
                 f"- Distinct user-item pairs: {payload['unique_pair_count']:,}",
                 f"- Repeated-pair share: {payload['repeated_pair_share']:.2%}",
                 (
-                    "- Split counts: train={split_counts['train']:,}, "
+                    f"- Split counts: train={split_counts['train']:,}, "
                     f"val={split_counts['val']:,}, test={split_counts['test']:,}"
                 ),
             ],
@@ -543,7 +546,7 @@ def render_summary_markdown(dataset_payloads: list[dict[str, Any]]) -> str:
         if response_summary is not None:
             lines.append(
                 (
-                    "- Response summary ({response_signal['name']}): mean="
+                    f"- Response summary ({response_signal['name']}): mean="
                     f"{response_summary['mean']:.4f}, std={response_summary['std']:.4f}, "
                     f"min={response_summary['min']:.4f}, max={response_summary['max']:.4f}"
                 ),
@@ -819,6 +822,17 @@ def plot_context_panel(
             labels=canonical.label,
             title="Share labeled positive by exposure policy",
         )
+        return
+
+    if summary.name == "taobao" and (summary.user_feature_dim > 0 or summary.item_feature_dim > 0):
+        ax.bar(
+            ["user features", "item features"],
+            [summary.user_feature_dim, summary.item_feature_dim],
+            color=FEATURE_COLORS,
+        )
+        ax.set_title("Available side-feature dimensions")
+        ax.set_ylabel("columns")
+        ax.grid(True, axis="y", alpha=0.2)
         return
 
     if canonical.behavior_type is not None and np.unique(canonical.behavior_type).size > 1:
