@@ -213,6 +213,8 @@ def _build_training_identity(
     config_identity = {
         field_name: config_values[field_name] for field_name in _TRAINING_IDENTITY_FIELDS
     }
+    if config.use_features:
+        config_identity["feature_gate_init"] = config_values["feature_gate_init"]
     if config.dataset == "kuairand1k":
         config_identity["label_mode"] = config_values["label_mode"]
         config_identity["watch_ratio_proxy_threshold"] = config_values[

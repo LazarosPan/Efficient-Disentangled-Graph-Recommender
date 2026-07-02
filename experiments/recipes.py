@@ -9,10 +9,45 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from src.utils.config import CONFIG_OVERRIDE_FIELDS
 from src.utils.experiment_naming import format_num_neighbors_payload
 
 CATALOG_PATH = Path(__file__).with_name("experiment_catalog.json")
 SEARCH_SPACES_PATH = Path(__file__).with_name("search_spaces.json")
+PROFILE_MATRIX_ONLY_FIELDS = frozenset({"datasets", "presets"})
+PROFILE_BENCHMARK_ONLY_OVERRIDE_FIELDS = frozenset({"preprocessing_preset_options"})
+PROFILE_SUPPORTED_OVERRIDE_FIELDS = frozenset(CONFIG_OVERRIDE_FIELDS) | (
+    PROFILE_BENCHMARK_ONLY_OVERRIDE_FIELDS
+)
+PROFILE_MATRIX_OVERRIDE_ALIASES = {
+    "batch_sizes": "batch_size",
+    "graph_policies": "graph_policy",
+    "lr_schedulers": "lr_scheduler",
+    "neighbor_shapes": "num_neighbors",
+    "preprocessing_presets": "preprocessing_preset_options",
+}
+PROFILE_SCALAR_MATRIX_OVERRIDES = frozenset({"graph_policy"})
+PROFILE_SCALAR_OR_SWEEP_MATRIX_OVERRIDES = frozenset({"batch_size", "lr_scheduler"})
+
+
+def _matrix_sequence(raw_value: object) -> list[object]:
+    """Return matrix scalar-or-list values without splitting strings."""
+    if isinstance(raw_value, str):
+        return [raw_value]
+    if isinstance(raw_value, (list, tuple)):
+        return list(raw_value)
+    return [raw_value]
+
+
+def _validate_profile_override_key(profile: Mapping[str, Any], field_name: str) -> None:
+    """Reject catalog fields that formal-run would otherwise drop silently."""
+    if field_name in PROFILE_SUPPORTED_OVERRIDE_FIELDS:
+        return
+    profile_id = profile.get("id", "<anonymous>")
+    raise ValueError(
+        f"Formal profile {profile_id} uses unsupported config field {field_name!r}. "
+        "Add it to CONFIG_OVERRIDE_FIELDS or remove it from experiment_catalog.json.",
+    )
 
 
 @lru_cache(maxsize=1)
@@ -173,6 +208,39 @@ def _resolved_profile_matrix(profile: dict[str, Any]) -> dict[str, Any]:
 def _resolved_profile_overrides(profile: dict[str, Any]) -> dict[str, Any]:
     """Normalize the config override block for a formal profile."""
     overrides = dict(profile.get("config_overrides", {}))
+    for override_key in overrides:
+        _validate_profile_override_key(profile, override_key)
+    matrix = dict(profile.get("matrix", {}))
+    for matrix_key, raw_value in matrix.items():
+        if matrix_key in PROFILE_MATRIX_ONLY_FIELDS:
+            continue
+        override_key = PROFILE_MATRIX_OVERRIDE_ALIASES.get(matrix_key, matrix_key)
+        _validate_profile_override_key(profile, override_key)
+        if matrix_key == "graph_policies":
+            promoted_value = _matrix_sequence(raw_value)
+            if len(promoted_value) != 1:
+                raise ValueError("matrix.graph_policies supports one value per profile.")
+            promoted: object = str(promoted_value[0])
+        elif override_key in PROFILE_SCALAR_OR_SWEEP_MATRIX_OVERRIDES:
+            promoted_value = _matrix_sequence(raw_value)
+            promoted = promoted_value[0] if len(promoted_value) == 1 else promoted_value
+        elif override_key in PROFILE_SCALAR_MATRIX_OVERRIDES:
+            promoted_value = _matrix_sequence(raw_value)
+            if len(promoted_value) != 1:
+                raise ValueError(f"matrix.{matrix_key} supports one value per profile.")
+            promoted = promoted_value[0]
+        else:
+            promoted = raw_value
+        existing = overrides.get(override_key)
+        if existing is not None and json.dumps(existing, sort_keys=True) != json.dumps(
+            promoted,
+            sort_keys=True,
+        ):
+            raise ValueError(
+                f"Formal profile {profile.get('id', '<anonymous>')} defines "
+                f"conflicting {matrix_key} and config_overrides.{override_key}.",
+            )
+        overrides.setdefault(override_key, promoted)
     neighbor_sweep = resolve_profile_num_neighbors(overrides)
     if neighbor_sweep is not None:
         if isinstance(neighbor_sweep, dict):

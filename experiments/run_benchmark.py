@@ -311,8 +311,8 @@ def _build_new_run_args(
                 else None
             ),
             "change_note": None,
-            "device": "cuda",
-            "data_dir": "data",
+            "device": benchmark_args.get("device") or "cuda",
+            "data_dir": benchmark_args.get("data_dir") or "data",
             "no_mlflow": False,
             "mlflow_tracking_uri": None,
             "mlflow_experiment_name": "edgrec-formal",
