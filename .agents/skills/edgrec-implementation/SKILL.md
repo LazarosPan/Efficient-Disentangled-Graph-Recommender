@@ -39,6 +39,6 @@ Live implementation notes for the current EDGRec codebase. Dense by design: many
 | Token shape | Prefer tables, bullets, and short sentences. Avoid long paragraphs. |
 | Currency | Use live code names/behavior. Keep legacy wording only when code supports it. |
 | Scope | Implementation owner files are code notes; literature/result files are thesis-facing evidence summaries and must stay source-backed. |
-| Result analysis | Before using or editing `edgrec-result-analysis.md`, compare it with `results/query_results.md` and `results/optuna_optimization.md`; refresh stale speed, accuracy, CRRU, Optuna, and promotion-candidate explanations. |
+| Result analysis | Before using or editing `edgrec-result-analysis.md`, compare it with `results/query_results.md` and `results/optuna_optimization.md`; refresh stale speed, accuracy, CRRU, Optuna, and test-profile candidate explanations. |
 | Overview file | `edgrec_full.md` maps flow and sources; it must not copy slice details. |
 | Diagrams | Simple Mermaid only: standard diagram types, plain ASCII labels, no nested fences. |
