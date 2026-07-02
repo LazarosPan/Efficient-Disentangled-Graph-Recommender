@@ -14,3 +14,4 @@ Read the most relevant file for the task:
 - [lr_schedulers.md](lr_schedulers.md) — Learning rate schedulers, including StepLR, MultiStepLR, ExponentialLR, CosineAnnealingLR, ReduceLROnPlateau, CyclicLR, OneCycleLR, CosineAnnealingWarmRestarts, PolynomialLR, and LinearLR.
 - [pytorch_jit.md](pytorch_jit.md) — PyTorch JIT compilation, TorchScript, tracing, scripting, and optimization techniques for improving model performance and deployment.
 - [sparse.md](sparse.md) — Sparse tensor operations, including sparse-dense matrix multiplication, sparse COO and CSR formats, and efficient propagation techniques for graph neural networks.
+- [amp.md](amp.md) — Automatic Mixed Precision, torch.autocast, GradScaler, examples.
