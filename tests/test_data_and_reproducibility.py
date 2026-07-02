@@ -74,7 +74,7 @@ class DataContractTests(unittest.TestCase):
         np.testing.assert_array_equal(canonical.item_id, indexed.item_id)
         np.testing.assert_allclose(
             canonical.popularity,
-            np.array([1.0, 0.5], dtype=np.float32),
+            np.array([1.0, np.log1p(1.0) / np.log1p(2.0)], dtype=np.float32),
         )
         self.assertEqual(canonical.n_users, indexed.n_users)
         self.assertEqual(canonical.n_items, indexed.n_items)

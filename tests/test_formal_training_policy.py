@@ -1271,7 +1271,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             },
         )
         self.assertEqual(profile["config_overrides"]["n_negatives"], 1)
-        self.assertEqual(profile["config_overrides"]["validation_every_n_epochs"], 2)
+        self.assertEqual(profile["config_overrides"]["validation_every_n_epochs"], 1)
         self.assertNotIn("hard_negative_ratio", profile["config_overrides"])
         self.assertNotIn("loss_schedule", profile["config_overrides"])
         self.assertTrue(benchmark_args["use_early_stopping"])
@@ -1316,7 +1316,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(benchmark_args["graph_policy"], "observed")
         self.assertFalse(benchmark_args["use_features"])
         self.assertEqual(benchmark_args["n_negatives"], 1)
-        self.assertEqual(benchmark_args["validation_every_n_epochs"], 2)
+        self.assertEqual(benchmark_args["validation_every_n_epochs"], 1)
         self.assertNotIn("graph_policy_options", benchmark_args)
         self.assertEqual(benchmark_args["hard_negative_ratio"], 0.0)
         self.assertIsNone(benchmark_args["loss_schedule"])
@@ -3043,7 +3043,9 @@ class BenchmarkPlanTests(unittest.TestCase):
                 "edgrec",
                 "lightgcn",
                 "lightgcn_paper",
+                "lightgcn_paper_scaled_batch",
                 "dice_paper",
+                "dice_paper_scaled_batch",
                 "dice_like",
                 "dice_like_ablation",
             ],
@@ -3497,6 +3499,8 @@ class BenchmarkPlanTests(unittest.TestCase):
             {
                 "paper-lightgcn-large-runtime-probes",
                 "paper-dice-all-runtime-probes",
+                "paper-dice-scaled-batch-movielens-probe",
+                "paper-dice-scaled-batch-amazonbook-probe",
             },
         )
         for profile_name in probe_profile_ids:

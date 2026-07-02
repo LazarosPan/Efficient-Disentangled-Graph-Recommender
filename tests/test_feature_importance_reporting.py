@@ -127,7 +127,9 @@ def test_feature_subset_reports_run_on_tiny_synthetic_trials(tmp_path, monkeypat
         encoding="utf-8",
     )
     assert not (tmp_path / "feature_subset_delta_heatmap.png").exists()
-    assert (tmp_path / "feature_subset_deltas_movielens1m.png").exists()
+    assert not (tmp_path / "feature_subset_deltas_movielens1m.png").exists()
+    assert (tmp_path / "feature_subset_evidence_matrix.md").exists()
+    assert not (tmp_path / "feature_subset_evidence_matrix.png").exists()
 
 
 def test_missing_experiments_are_marked_pending(tmp_path, monkeypatch) -> None:

@@ -223,8 +223,10 @@ def test_feature_subset_reports_mark_missing_profiles_pending(tmp_path, monkeypa
     assert "PENDING" in (tmp_path / "feature_subset_results.md").read_text(
         encoding="utf-8",
     )
+    assert not (tmp_path / "feature_subset_evidence_matrix.md").exists()
     assert not (tmp_path / "feature_subset_delta_heatmap.png").exists()
     assert not (tmp_path / "feature_subset_deltas_movielens1m.png").exists()
+    assert not (tmp_path / "feature_subset_evidence_matrix.png").exists()
 
 
 def test_feature_subset_reports_do_not_pool_datasets(tmp_path, monkeypatch) -> None:
@@ -263,5 +265,7 @@ def test_feature_subset_reports_do_not_pool_datasets(tmp_path, monkeypatch) -> N
     assert "## kuairec_v2" in best
     assert "global mean" not in best.lower()
     assert not (tmp_path / "feature_subset_delta_heatmap.png").exists()
-    assert (tmp_path / "feature_subset_deltas_movielens1m.png").exists()
-    assert (tmp_path / "feature_subset_deltas_kuairec_v2.png").exists()
+    assert not (tmp_path / "feature_subset_deltas_movielens1m.png").exists()
+    assert not (tmp_path / "feature_subset_deltas_kuairec_v2.png").exists()
+    assert (tmp_path / "feature_subset_evidence_matrix.md").exists()
+    assert not (tmp_path / "feature_subset_evidence_matrix.png").exists()
