@@ -1517,10 +1517,10 @@ def render_study_report(study: optuna.Study, *, top_n: int) -> str:
 
     lines.extend(
         [
-            "### Formal-promotion candidates",
+            "### Test-profile candidates",
             "",
-            "Promote dataset-local candidates into formal profiles only after checking runtime "
-            "and whether popularity diagnostics are acceptable.",
+            "Turn dataset-local candidates into named full-data test profiles only after "
+            "checking runtime and whether popularity diagnostics are acceptable.",
             "",
         ],
     )
@@ -1616,7 +1616,7 @@ def render_report(
         "- Current multi-dataset searches expand into one independent study per "
         "dataset; older `*-all-*` studies are historical global-mean screens.",
         "- Removed CAGRA graph-augmentation studies are included for provenance when "
-        "present in storage, but they should not be promoted as active thesis candidates "
+        "present in storage, but they should not be treated as active thesis candidates "
         "without a current-code rerun.",
         "- `--trials N` means N fresh informative finished trials for the current "
         "`search_space_revision`: COMPLETE plus real PRUNED, excluding FAIL/RUNNING, "
@@ -1630,7 +1630,7 @@ def render_report(
         "- The current second-pass grid tunes active EDGRec loss weights and schedule "
         "knobs only; inactive DirectAU/IPW-only weights remain out of the default "
         "search to avoid changing the thesis model family without a separate ablation.",
-        "- Compact EDGRec settings are search priors and formal candidates, not final "
+        "- Compact EDGRec settings are search priors and test-profile candidates, not final "
         "thesis selections. Current evidence supports compact candidates most clearly "
         "for KuaiRec_v2, "
         "allows a MovieLens1M near-parity/speed candidate with popularity diagnostics, "
@@ -1638,7 +1638,7 @@ def render_report(
         "accuracy remains unresolved. AmazonBook is excluded only "
         "from the shared compact default queue: it still needs a dataset-specific "
         "compact-vs-deep_features EDGRec comparison against the LightGCN-paper accuracy "
-        "baseline before thesis promotion.",
+        "baseline before full-data thesis use.",
         "- Search profile labels such as `no_context_no_features` are historical/internal "
         "Optuna mechanism labels. They are not public ablation variants unless they appear "
         "in `experiments/ablation_configs.py`.",
@@ -1711,7 +1711,7 @@ def render_report(
             "one of these rather than exporting dozens of per-study diagnostics:",
             "",
             "- Dataset-local top-3 candidate profile plot: NDCG, Recall, personalization, "
-            "low-popularity score, epoch time, and VRAM for the formal-promotion trials.",
+            "low-popularity score, epoch time, and VRAM for the test-profile candidates.",
             "- Loss-weight response surface: interest-BPR weight vs conformity-BPR weight, "
             "colored by the selected validation objective, one panel per dataset.",
             "- Schedule ablation strip: `linear_ramp` vs `phased`, with active ramp/start "

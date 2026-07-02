@@ -1875,7 +1875,7 @@ def _print_evidence_role_notes() -> None:
     """Print report-wide evidence role and dataset-policy notes."""
     print("## Evidence Role Notes")
     print(
-        "Rows in this report are evidence, not automatic profile promotion. "
+        "Rows in this report are evidence, not automatic thesis selections. "
         "Use the role labels below before turning a row into thesis wording."
     )
     print()
