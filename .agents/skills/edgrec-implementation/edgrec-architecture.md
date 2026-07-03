@@ -32,7 +32,7 @@ Runtime path: embeddings/metadata -> graph propagation -> refined scorer -> opti
 | Layer | Owner | Current contract |
 | --- | --- | --- |
 | Embedding layer | `EmbeddingModule` | Builds user and item embeddings, optional popularity embeddings, train-split metadata buffers, optional item-feature fusion inputs, and recent-history item-interest lookups for subgraph training. |
-| Propagation layer | `DualBranchGCN` | Runs LightGCN propagation with explicit branch depths and optional sign-aware edge weights; EDGRec uses an uncoalesced CUDA sparse adjacency tensor or CPU chunked edge-list aggregation while paper baselines may still use prebuilt sparse adjacency helpers. |
+| Propagation layer | `DualBranchGCN` | Runs LightGCN propagation with explicit branch depths and optional sign-aware edge weights; EDGRec defaults to chunked edge-list aggregation and only uses the sparse-adjacency backend when explicitly requested. Stable sparse inputs are cached as coalesced tensors. Paper baselines may still use their prebuilt sparse-adjacency helper for paper-faithful full-graph propagation. |
 | Scoring layer | `ScoringModule` | Produces pairwise and full-catalog interest, conformity, context, `score_mix_weights`, and fused final scores. |
 | Propensity layer | `PropensityEstimator` | Optional two-layer MLP over propagated item embeddings, clipped to `[propensity_clip_min, propensity_clip_max]`. |
 | Shared model helpers | `src/models/common.py` | Owns cross-model helper functions such as module dtype lookup and the training payload dictionary consumed by `LossSuite`. |
@@ -56,9 +56,9 @@ Propagation facts:
 | Area | Contract |
 | --- | --- |
 | `LightGCNBranch` | repeated alpha-averaged layer outputs |
-| EDGRec CUDA | uncoalesced sparse adjacency tensor from `edge_index`/`edge_weight` |
-| EDGRec CPU | chunked `forward_edges()` aggregation |
-| Paper baseline path | coalesced sparse-adjacency `forward()` allowed |
+| EDGRec default | chunked `forward_edges()` aggregation on CPU/CUDA |
+| EDGRec explicit sparse backend | coalesced sparse adjacency from `edge_index`/`edge_weight`, cached for stable non-gradient tensors |
+| Paper baseline path | separate coalesced sparse-adjacency `forward()` helper retained for paper-faithful full-graph baselines |
 | EDGRec/LightGCN norm | precomputed `edge_norm` |
 | `PaperGCNDICE` norm | recomputes self-looped DICE GCN normalization |
 | sign-aware no negatives | constant weights; no sparse edge-value gradients |
@@ -79,6 +79,7 @@ Item branch capacity:
 | Fusion logits | cosine-style interest/conformity + `tanh(raw_context_score)` |
 | Raw branch use | branch BPR and diagnostics |
 | Calibrated use | final ranking fusion |
+| Temporal interest gate | opt-in only when `use_temporal_interest=True`; combines propagated long-term interest, recent-train short-term item-interest mean, and base user interest through one scorer MLP |
 | Context inputs | train-derived popularity, train-derived recency, optional calibrated propensity target, item age, safe item features |
 | Context width | `4 + item_features_dim` |
 | Propensity context gate | zero-fill unless `use_ipw=True` and `loss_weight_propensity_calibration > 0` |
@@ -95,9 +96,10 @@ Item branch capacity:
 - `preset_dice_paper()` instantiates `PaperGCNDICE`, which exposes interest, conformity, and summed final scores for DICE sampler/loss training.
 - The `no_popularity_head` ablation removes only the context head; learned per-user mixing still applies over the active interest and conformity branches.
 - The context head is item-only; no user features enter context scoring.
+- Long/short temporal interest does not create a new model class or GRU, CLSR, or DDCE reproduction. It reuses split-safe recent-train history buffers plus the existing `ScoringModule` interest path.
 - Missing context fields are zero-filled.
 - Fixed-weight normalization stays tensor-native inside the scorer, avoiding `.item()`-style device synchronization during pairwise and full-catalog scoring.
-- `forward_subgraph()` resolves recent-train item histories by global item id before scoring so the short-term branch never indexes user history against a subgraph-local item table.
+- When `use_temporal_interest=True`, `forward_subgraph()` resolves recent-train item histories by global item id before scoring so the short-term branch never indexes user history against a subgraph-local item table.
 
 ## Public `EDGRec` surfaces
 

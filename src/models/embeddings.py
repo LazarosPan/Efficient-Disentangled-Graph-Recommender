@@ -112,7 +112,7 @@ class EmbeddingModule(nn.Module):
             (
                 recent_train_items.to(dtype=torch.long)
                 if recent_train_items is not None
-                else torch.zeros((n_users, 10), dtype=torch.long)
+                else torch.zeros((n_users, config.temporal_history_size), dtype=torch.long)
             ),
             persistent=False,
         )
@@ -121,7 +121,7 @@ class EmbeddingModule(nn.Module):
             (
                 recent_train_mask.to(dtype=torch.bool)
                 if recent_train_mask is not None
-                else torch.zeros((n_users, 10), dtype=torch.bool)
+                else torch.zeros((n_users, config.temporal_history_size), dtype=torch.bool)
             ),
             persistent=False,
         )

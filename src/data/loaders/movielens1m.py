@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
+from ...utils.csv_features import FeatureBlock, make_feature_block
 from ...utils.dataset_loader_utils import (
     downcast_numeric_arrays,
     resolve_local_dataset_dir,
@@ -19,7 +20,7 @@ from ..feature_policy import (
 )
 from ._explicit_ratings import (
     build_explicit_rating_canonical,
-    build_movie_genre_features,
+    build_movie_genre_feature_block,
     prepare_explicit_rating_feedback,
 )
 
@@ -45,7 +46,7 @@ def _parse_users_dat(
     raw_dir: Path,
     user_map: dict[int, int],
     n_users: int,
-) -> np.ndarray | None:
+) -> FeatureBlock | None:
     """Parse users.dat -> (n_users, 3) array: [gender, age_ordinal, occupation]."""
     path = raw_dir / "users.dat"
     if not path.exists():
@@ -64,14 +65,20 @@ def _parse_users_dat(
             features[idx, 0] = 0 if parts[1] == "F" else 1  # gender
             features[idx, 1] = _AGE_MAP.get(int(parts[2]), 3)  # age ordinal
             features[idx, 2] = int(parts[3])  # occupation (0-20)
-    return features
+    return make_feature_block(
+        features,
+        dataset_name="movielens1m",
+        aspect="user_features",
+        relative_path="raw/users.dat",
+        raw_columns=("gender", "age", "occupation"),
+    )
 
 
 def _parse_movies_dat(
     raw_dir: Path,
     item_map: dict[int, int],
     n_items: int,
-) -> np.ndarray | None:
+) -> FeatureBlock | None:
     """Parse movies.dat into a multi-hot genre matrix inferred from the file."""
     path = raw_dir / "movies.dat"
     if not path.exists():
@@ -89,19 +96,21 @@ def _parse_movies_dat(
                 continue
             genre_rows.append((movie_id, parts[2]))
 
-    features, mapped_item_count = build_movie_genre_features(
+    block, mapped_item_count = build_movie_genre_feature_block(
         genre_rows,
         item_map,
         n_items,
+        dataset_name="movielens1m",
+        relative_path="raw/movies.dat",
     )
-    if features is not None:
+    if block is not None:
         logger.info(
             "Loaded MovieLens1M genre features for %d / %d items (%d columns).",
             mapped_item_count,
             n_items,
-            features.shape[1],
+            block.matrix.shape[1],
         )
-    return features
+    return block
 
 
 def _parse_ratings_dat(
@@ -199,8 +208,8 @@ def load_movielens1m(
     user_map = indexed.user_map
     item_map = indexed.item_map
 
-    user_features = None
-    item_features = None
+    user_feature_block = None
+    item_feature_block = None
     if include_optional_features:
         load_user_features, _ = resolve_feature_source(
             feature_policy,
@@ -209,7 +218,7 @@ def load_movielens1m(
             "raw/users.dat",
         )
         if load_user_features:
-            user_features = _parse_users_dat(raw_dir, user_map, n_users)
+            user_feature_block = _parse_users_dat(raw_dir, user_map, n_users)
         load_item_features, _ = resolve_feature_source(
             feature_policy,
             "movielens1m",
@@ -217,14 +226,28 @@ def load_movielens1m(
             "raw/movies.dat",
         )
         if load_item_features:
-            item_features = _parse_movies_dat(raw_dir, item_map, n_items)
+            item_feature_block = _parse_movies_dat(raw_dir, item_map, n_items)
 
     effective_preset = preprocessing_preset or "movielens_explicit"
 
     return build_explicit_rating_canonical(
         prepared,
         timestamps,
-        user_features=user_features,
-        item_features=item_features,
+        user_features=None if user_feature_block is None else user_feature_block.matrix,
+        item_features=None if item_feature_block is None else item_feature_block.matrix,
+        user_feature_names=None if user_feature_block is None else user_feature_block.names,
+        item_feature_names=None if item_feature_block is None else item_feature_block.names,
+        user_feature_sources=None if user_feature_block is None else user_feature_block.sources,
+        item_feature_sources=None if item_feature_block is None else item_feature_block.sources,
+        user_feature_raw_columns=(
+            None if user_feature_block is None else user_feature_block.raw_features
+        ),
+        item_feature_raw_columns=(
+            None if item_feature_block is None else item_feature_block.raw_features
+        ),
+        user_feature_roles=None if user_feature_block is None else user_feature_block.roles,
+        item_feature_roles=None if item_feature_block is None else item_feature_block.roles,
+        user_feature_groups=None if user_feature_block is None else user_feature_block.groups,
+        item_feature_groups=None if item_feature_block is None else item_feature_block.groups,
         preprocessing_preset=effective_preset,
     )

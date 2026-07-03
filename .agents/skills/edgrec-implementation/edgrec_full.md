@@ -22,7 +22,9 @@ flowchart LR
     B --> C[CanonicalInteractions]
     C --> F[build_graph observed train positives]
     C --> I[item_propensity_targets optional]
+    C --> R[recent train history tensors]
     F --> J[build_runtime_model]
+    R --> J
     J --> K[MiniBatchTrainer and LossSuite]
     I --> L[data.propensity_targets optional]
     L --> K
@@ -57,7 +59,7 @@ Runtime invariants:
 | DICE independence | hash-sample entities up to `distance_correlation_max_pairs` |
 | DirectAU uniformity | hash-sample rows up to `uniformity_max_pairs` |
 | sampled BFS | bounded CSR offset gathers by hop fanout |
-| EDGRec propagation | uncoalesced CUDA sparse adjacency tensor; CPU chunked edge-list fallback |
+| EDGRec propagation | chunked edge-list aggregation by default; explicit sparse backend uses cached coalesced adjacency for stable non-gradient tensors |
 | EDGRec DICE negatives | fast high/low routing + vectorized known-positive filtering |
 | `dice_paper` negatives | exact per-user pool-count correction retained |
 
@@ -94,6 +96,6 @@ Runtime invariants:
 | `experiments/run_search.py` | Optuna search controller |
 | `experiments/ablation_configs.py` | thesis-facing ablation variants |
 | `src/utils/experiment_logger.py` | SQLite experiment store |
-| `src/utils/crru.py` | CRRU and OnlineCRRU utilities |
+| `src/utils/crru.py` | CRRU and ValidationCRRU utilities |
 | `scripts/query_results.py` | SQLite-first result inspection |
 | `scripts/quick_validate.py` | non-persistent smoke validation entry point |

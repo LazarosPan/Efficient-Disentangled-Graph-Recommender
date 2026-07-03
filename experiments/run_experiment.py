@@ -34,6 +34,7 @@ import numpy as np
 import torch
 from scripts._workflow_helpers import configure_cli_logging
 from src.data.canonical import filter_canonical_interactions, sample_canonical_interactions
+from src.data.feature_groups import apply_graph_item_feature_subset
 from src.data.graph_builder import build_graph
 from src.data.loaders import default_preprocessing_preset, load_dataset
 from src.losses.loss_suite import LossSuite
@@ -92,6 +93,7 @@ DB_PATH = THESIS_DB_PATH
 
 _CHECKPOINT_IDENTITY_VERSION = 1
 _CHECKPOINT_HASH_LEN = 16
+_CHECKPOINT_FILENAME_BYTE_LIMIT = 240
 _TRAINING_IDENTITY_FIELDS = (
     "amp_dtype",
     "auxiliary_loss_schedule",
@@ -114,11 +116,17 @@ _TRAINING_IDENTITY_FIELDS = (
     "embedding_optimizer",
     "epochs",
     "feature_policy",
+    "feature_subset_mode",
+    "feature_include_groups",
+    "feature_exclude_groups",
     "graph_policy",
     "grad_clip_norm",
     "hard_negative_ratio",
     "score_mix_min_weight",
     "separate_item_branch_embeddings",
+    "use_temporal_interest",
+    "temporal_history_size",
+    "paper_scaled_batch",
     "training_graph_mode",
     "branch_loss_mode",
     "recommendation_loss_mode",
@@ -205,6 +213,8 @@ def _build_training_identity(
     config_identity = {
         field_name: config_values[field_name] for field_name in _TRAINING_IDENTITY_FIELDS
     }
+    if config.use_features:
+        config_identity["feature_gate_init"] = config_values["feature_gate_init"]
     if config.dataset == "kuairand1k":
         config_identity["label_mode"] = config_values["label_mode"]
         config_identity["watch_ratio_proxy_threshold"] = config_values[
@@ -239,6 +249,26 @@ def _build_evaluation_identity(
     return identity, _stable_identity_hash(identity)
 
 
+def _checkpoint_filename(canonical_name: str, training_hash: str) -> str:
+    """Return a checkpoint filename that fits common filesystem byte limits."""
+    suffix = f"_train-{training_hash}.pt"
+    filename = f"{canonical_name}{suffix}"
+    if len(filename.encode("utf-8")) <= _CHECKPOINT_FILENAME_BYTE_LIMIT:
+        return filename
+
+    name_digest = hashlib.sha256(canonical_name.encode("utf-8")).hexdigest()[:8]
+    shortened_suffix = f"_{name_digest}{suffix}"
+    prefix_budget = _CHECKPOINT_FILENAME_BYTE_LIMIT - len(
+        shortened_suffix.encode("utf-8"),
+    )
+    prefix = (
+        canonical_name.encode("utf-8")[:prefix_budget]
+        .decode("utf-8", errors="ignore")
+        .rstrip("._-")
+    )
+    return f"{prefix}{shortened_suffix}"
+
+
 def _default_checkpoint_path(
     config: EDGRecConfig,
     preset: str | None,
@@ -247,7 +277,7 @@ def _default_checkpoint_path(
 ) -> Path:
     """Return the default checkpoint path for a semantic training identity."""
     canonical_name = build_canonical_experiment_name(config, preset, intervention)
-    return CHECKPOINT_DIR / f"{canonical_name}_train-{training_hash}.pt"
+    return CHECKPOINT_DIR / _checkpoint_filename(canonical_name, training_hash)
 
 
 def _default_checkpoint_path_candidates(
@@ -368,7 +398,9 @@ def load_runtime_data(config: EDGRecConfig) -> tuple[Any, Any]:
         config.val_ratio,
         config.derived_split_mode,
     )
-    return canonical, build_graph(canonical, config)
+    data = build_graph(canonical, config)
+    apply_graph_item_feature_subset(data, config)
+    return canonical, data
 
 
 def _train_mask_numpy_from_data(data: Any) -> np.ndarray:
@@ -388,6 +420,63 @@ def _train_mask_numpy_from_data(data: Any) -> np.ndarray:
     if not isinstance(train_mask, torch.Tensor):
         raise ValueError("Runtime graph data must include a torch train_mask tensor.")
     return train_mask.detach().cpu().numpy()
+
+
+def _train_mask_cache_key(data: Any) -> tuple[int, tuple[int, ...], int]:
+    """Return a lightweight identity key for the immutable runtime train mask."""
+    train_mask = getattr(data, "train_mask", None)
+    if not isinstance(train_mask, torch.Tensor):
+        raise ValueError("Runtime graph data must include a torch train_mask tensor.")
+    return (id(train_mask), tuple(train_mask.shape), int(train_mask.sum().item()))
+
+
+def _runtime_feature_cache(data: Any) -> dict[str, Any]:
+    """Return the private runtime feature cache attached to a graph payload."""
+    cache = getattr(data, "_edgrec_runtime_feature_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        object.__setattr__(data, "_edgrec_runtime_feature_cache", cache)
+    return cache
+
+
+def _train_derived_model_tensors(
+    config: EDGRecConfig,
+    canonical: Any,
+    data: Any,
+) -> dict[str, torch.Tensor | None]:
+    """Return train-split model tensors, reusing cache across probe model builds."""
+    cache = _runtime_feature_cache(data)
+    cache_key = (
+        id(canonical),
+        _train_mask_cache_key(data),
+        int(config.temporal_history_size),
+    )
+    cached = cache.get("train_derived_model_tensors")
+    if isinstance(cached, dict) and cached.get("train_mask_key") == cache_key:
+        return cached["tensors"]
+
+    train_mask = _train_mask_numpy_from_data(data)
+    item_recency = torch.from_numpy(canonical.compute_item_recency(train_mask))
+    recent_train_items, recent_train_mask = canonical.build_recent_train_history(
+        train_mask,
+        history_size=int(config.temporal_history_size),
+    )
+    item_propensity_targets = (
+        torch.from_numpy(canonical.item_propensity_targets)
+        if canonical.item_propensity_targets is not None
+        else None
+    )
+    tensors = {
+        "item_recency": item_recency,
+        "item_propensity_targets": item_propensity_targets,
+        "recent_train_items": torch.from_numpy(recent_train_items),
+        "recent_train_mask": torch.from_numpy(recent_train_mask),
+    }
+    cache["train_derived_model_tensors"] = {
+        "train_mask_key": cache_key,
+        "tensors": tensors,
+    }
+    return tensors
 
 
 def build_runtime_model(
@@ -418,24 +507,18 @@ def build_runtime_model(
             config,
         )
 
-    train_mask = _train_mask_numpy_from_data(data)
-    item_recency = torch.from_numpy(canonical.compute_item_recency(train_mask))
-    recent_train_items, recent_train_mask = canonical.build_recent_train_history(train_mask)
-    item_propensity_targets = (
-        torch.from_numpy(canonical.item_propensity_targets)
-        if canonical.item_propensity_targets is not None
-        else None
-    )
+    train_derived_tensors = _train_derived_model_tensors(config, canonical, data)
+    apply_graph_item_feature_subset(data, config)
     return EDGRec(
         canonical.n_users,
         canonical.n_items,
         config,
         item_features=getattr(data, "item_features", None),
-        item_popularity=data.popularity,
-        item_recency=item_recency,
-        item_propensity_targets=item_propensity_targets,
-        recent_train_items=torch.from_numpy(recent_train_items),
-        recent_train_mask=torch.from_numpy(recent_train_mask),
+        item_popularity=getattr(data, "normalized_popularity", data.popularity),
+        item_recency=train_derived_tensors["item_recency"],
+        item_propensity_targets=train_derived_tensors["item_propensity_targets"],
+        recent_train_items=train_derived_tensors["recent_train_items"],
+        recent_train_mask=train_derived_tensors["recent_train_mask"],
     )
 
 
@@ -833,19 +916,31 @@ def _probe_batch_size_candidate(
         if batch_size <= 0:
             return
 
-        stage = "prepare_batch"
-        sub_batch = probe_trainer._prepare_batch(
-            batch_users[:batch_size],
-            batch_items[:batch_size],
-            random_seed=random_seed,
-            epoch=0,
-        )
-        stage = "forward_loss"
-        _, losses = probe_trainer._run_training_batch(
-            sub_batch,
-            probe_trainer.popularity,
-            epoch=0,
-        )
+        probe_users = batch_users[:batch_size]
+        probe_items = batch_items[:batch_size]
+        if config.training_graph_mode == "full":
+            stage = "forward_loss"
+            _, losses = probe_trainer._run_full_graph_training_batch(
+                probe_users,
+                probe_items,
+                probe_trainer.popularity,
+                epoch=0,
+                random_seed=random_seed,
+            )
+        else:
+            stage = "prepare_batch"
+            sub_batch = probe_trainer._prepare_batch(
+                probe_users,
+                probe_items,
+                random_seed=random_seed,
+                epoch=0,
+            )
+            stage = "forward_loss"
+            _, losses = probe_trainer._run_training_batch(
+                sub_batch,
+                probe_trainer.popularity,
+                epoch=0,
+            )
         stage = "backward_step"
         probe_trainer._apply_optimization_step(losses["total"])
     except Exception as exc:
@@ -861,6 +956,7 @@ def _probe_batch_size_candidate(
         if probe_trainer is not None:
             probe_trainer.optimizer.zero_grad(set_to_none=True)
             probe_trainer.subgraph_sampler = None
+            probe_trainer._release_full_graph_cache_for_eval()
         sub_batch = None
         losses = None
         del probe_trainer, probe_loss_suite, probe_model
@@ -1084,6 +1180,7 @@ def _build_mlflow_params(
         "lr": config.lr,
         "use_features": config.use_features,
         "feature_policy": config.feature_policy,
+        "feature_subset_mode": config.feature_subset_mode,
         "preprocessing_preset": config.preprocessing_preset or "default",
         "item_universe_policy": config.item_universe_policy,
         "derived_split_mode": config.derived_split_mode,
@@ -1176,6 +1273,9 @@ def _log_resource_contract(
         "optimizer_state_estimate_mb": optimizer_state_mb,
         "item_embedding_count": float(data.n_items),
         "train_edge_count": float(data.edge_index.size(1)),
+        "largest_training_item_interaction_count": float(
+            getattr(data, "largest_training_item_interaction_count", 0.0)
+        ),
     }
     logger.info(
         (
@@ -1375,6 +1475,7 @@ def build_benchmark_config_inputs(
     num_neighbors: list[int],
     preprocessing_preset: str | None = None,
     graph_policy: str | None = None,
+    batch_size: int | None = None,
 ) -> dict[str, object]:
     """Build one run's config inputs from normalized benchmark arguments."""
     copied_fields = _present_field_mapping(
@@ -1397,6 +1498,7 @@ def build_benchmark_config_inputs(
             "num_neighbors": num_neighbors,
             "preprocessing_preset": preprocessing_preset,
             "graph_policy": graph_policy,
+            "batch_size": batch_size,
         },
     )
 
@@ -1458,18 +1560,32 @@ def normalize_benchmark_config_overrides(
         "negative_sampling_strategy",
         "loss_normalization",
         "label_mode",
+        "feature_subset_mode",
     ):
         value = raw_config.get(string_field)
         normalized[string_field] = str(value) if value is not None else None
     batch_size = raw_config.get("batch_size")
-    normalized["batch_size"] = (
-        int(batch_size) if batch_size is not None else default_config.batch_size
-    )
+    if isinstance(batch_size, (list, tuple)):
+        normalized["batch_size"] = [int(value) for value in batch_size]
+    else:
+        normalized["batch_size"] = (
+            int(batch_size) if batch_size is not None else default_config.batch_size
+        )
     normalized["auto_batch_size"] = bool(raw_config.get("auto_batch_size", True))
     batch_size_candidates = raw_config.get("batch_size_candidates")
     normalized["batch_size_candidates"] = (
         list(batch_size_candidates) if isinstance(batch_size_candidates, (list, tuple)) else None
     )
+    temporal_history_size = raw_config.get("temporal_history_size")
+    normalized["temporal_history_size"] = (
+        int(temporal_history_size) if temporal_history_size is not None else None
+    )
+    for list_field in (
+        "feature_include_groups",
+        "feature_exclude_groups",
+    ):
+        list_value = raw_config.get(list_field)
+        normalized[list_field] = list(list_value) if isinstance(list_value, (list, tuple)) else None
     lr_value = raw_config.get("lr")
     normalized["lr"] = float(lr_value) if lr_value is not None else None
     weight_decay = raw_config.get("weight_decay")
@@ -1550,6 +1666,8 @@ def normalize_benchmark_config_overrides(
         "use_popularity_head",
         "use_learned_score_mix",
         "separate_item_branch_embeddings",
+        "use_temporal_interest",
+        "paper_scaled_batch",
         "embedding_sparse_optimizer",
         "profile_training_stages",
     )
@@ -1927,9 +2045,14 @@ def run_experiment(
             "canonical_name": canonical_name,
             "resumed": True,
             "peak_vram_mb": None,
+            "largest_training_item_interaction_count": float(
+                getattr(data, "largest_training_item_interaction_count", 0.0)
+            ),
             "epochs_stopped_at": len(history.get("train_loss", [])),
             "training_time_s": None,
             "train_batches_per_epoch": None,
+            "batch_size": config.batch_size,
+            "auto_batch_size": config.auto_batch_size,
         }
 
     experiment_logger: ExperimentLogger | None = None
@@ -2053,6 +2176,10 @@ def run_experiment(
                 fallback_checkpoint_path: Path | None = None
                 for candidate in candidates[start_index:]:
                     config.batch_size = candidate
+                    # A previous candidate may have failed while its exception
+                    # traceback still held CUDA tensors. Purge here, outside the
+                    # prior ``except`` scope, before allocating the next trainer.
+                    _release_cuda_probe_memory()
                     training_identity, training_hash = _build_training_identity(
                         config,
                         preset,
@@ -2179,7 +2306,6 @@ def run_experiment(
                         trainer = None
                         model = None
                         loss_suite = None
-                        _release_cuda_probe_memory()
                         continue
                 else:
                     raise RuntimeError(
@@ -2322,6 +2448,9 @@ def run_experiment(
             "canonical_name": canonical_name,
             "resumed": checkpoint_state is not None,
             "peak_vram_mb": peak_vram_mb,
+            "largest_training_item_interaction_count": float(
+                getattr(data, "largest_training_item_interaction_count", 0.0)
+            ),
             "epochs_stopped_at": len(history["train_loss"]) if history is not None else 0,
             "training_time_s": total_training_time_s,
             "train_batches_per_epoch": train_batches_per_epoch,

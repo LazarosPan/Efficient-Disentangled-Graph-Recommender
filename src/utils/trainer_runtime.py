@@ -271,7 +271,8 @@ class TrainerRuntime:
         self.amp_dtype = torch.bfloat16
         self.model.to(self.device)
         self.loss_suite.to(self.device)
-        self.popularity = move_tensor_to_device(data.popularity, self.device)
+        model_popularity_source = getattr(data, "normalized_popularity", data.popularity)
+        self.popularity = move_tensor_to_device(model_popularity_source, self.device)
         branch_popularity_source = getattr(data, "popularity_count", data.popularity)
         self.branch_popularity = move_tensor_to_device(branch_popularity_source, self.device)
         self.propensity_targets = move_optional_tensor_to_device(

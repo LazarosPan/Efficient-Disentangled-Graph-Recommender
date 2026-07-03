@@ -229,6 +229,25 @@ class _EvaluatorDiagnosticsAccumulator:
                     self._contribution_sum[key] / count
                 )
 
+        for top_k in self._top_ks:
+            interest_key = ("interest", top_k)
+            conformity_key = ("conformity", top_k)
+            interest_count = self._contribution_count.get(interest_key, 0)
+            conformity_count = self._contribution_count.get(conformity_key, 0)
+            if interest_count == 0 or conformity_count == 0:
+                continue
+            interest_contribution = self._contribution_sum[interest_key] / interest_count
+            conformity_contribution = self._contribution_sum[conformity_key] / conformity_count
+            total_branch_contribution = interest_contribution + conformity_contribution
+            if abs(total_branch_contribution) <= 1e-12:
+                continue
+            diagnostics[f"interest_branch_contribution_ratio@{top_k}"] = (
+                interest_contribution / total_branch_contribution
+            )
+            diagnostics[f"conformity_branch_contribution_ratio@{top_k}"] = (
+                conformity_contribution / total_branch_contribution
+            )
+
         for component_name in ("interest", "conformity", "context", "final"):
             for top_k in self._top_ks:
                 key = (component_name, top_k)
@@ -290,6 +309,7 @@ class Evaluator:
         family and cutoff, but runtime updates happen through a single shared
         collection call.
         """
+        self._validate_average_popularity_counts(popularity)
         metrics: dict[str, object] = {}
         for k in THESIS_EVAL_KS:
             metrics[f"NDCG@{k}"] = LinkPredNDCG(k=k)
@@ -301,6 +321,22 @@ class Evaluator:
             metrics[f"HitRatio@{k}"] = LinkPredHitRatio(k=k)
             metrics[f"Personalization@{k}"] = _SafeLinkPredPersonalization(k=k)
         return LinkPredMetricCollection(metrics)
+
+    @staticmethod
+    def _validate_average_popularity_counts(popularity: torch.Tensor) -> None:
+        """Ensure PyG AveragePopularity receives finite raw train-count values."""
+        if popularity.numel() == 0:
+            return
+        if not torch.isfinite(popularity).all():
+            raise ValueError(
+                "LinkPredAveragePopularity requires finite raw training item-interaction counts.",
+            )
+        min_value = float(popularity.min().item())
+        if min_value < 0.0:
+            raise ValueError(
+                "LinkPredAveragePopularity requires non-negative raw training "
+                f"item-interaction counts; got minimum {min_value}.",
+            )
 
     @staticmethod
     def _mask_ranking_scores(

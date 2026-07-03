@@ -2,7 +2,7 @@
 """Formal matrix benchmark runner for dataset x preset.
 
 Usage:
-    uv run formal-run --profile default
+    uv run formal-run --profile edgrec-compact-search-prior
 """
 
 from __future__ import annotations
@@ -55,6 +55,7 @@ from experiments.recipes import (
 from experiments.run_experiment import (
     build_benchmark_config_inputs,
     build_config,
+    is_cuda_oom_error,
     normalize_benchmark_config_overrides,
     normalize_config_inputs,
     recoverable_checkpoint_for_config,
@@ -116,7 +117,7 @@ PLAN_COMPARISON_FIELDS = tuple(
     for field_name in NORMALIZED_BENCHMARK_FIELDS
     if field_name not in RUNTIME_ONLY_BENCHMARK_FIELDS
 )
-BenchmarkPlanItem = tuple[str, str, str, str | None, str, tuple[int, ...]]
+BenchmarkPlanItem = tuple[str, str, str, str | None, str, tuple[int, ...], int]
 
 
 def _write_state(payload: dict[str, object]) -> None:
@@ -310,8 +311,8 @@ def _build_new_run_args(
                 else None
             ),
             "change_note": None,
-            "device": "cuda",
-            "data_dir": "data",
+            "device": benchmark_args.get("device") or "cuda",
+            "data_dir": benchmark_args.get("data_dir") or "data",
             "no_mlflow": False,
             "mlflow_tracking_uri": None,
             "mlflow_experiment_name": "edgrec-formal",
@@ -600,6 +601,27 @@ def _benchmark_num_neighbors_summary(
     return format_num_neighbors_payload(resolved) or ""
 
 
+def _benchmark_batch_size_values(benchmark_args: Mapping[str, object]) -> list[int]:
+    """Return one or more fixed formal-run batch sizes."""
+    raw_value = benchmark_args.get("batch_size")
+    if isinstance(raw_value, (list, tuple)):
+        values = [int(value) for value in raw_value]
+    elif raw_value is None:
+        values = [int(EDGRecConfig().batch_size)]
+    else:
+        values = [int(raw_value)]
+    return list(dict.fromkeys(values))
+
+
+def _is_optional_batch_size_candidate(
+    benchmark_args: Mapping[str, object],
+    batch_size: int,
+) -> bool:
+    """Return whether an OOM should skip this batch candidate without failing."""
+    values = _benchmark_batch_size_values(benchmark_args)
+    return len(values) > 1 and int(batch_size) != int(values[0])
+
+
 def build_benchmark_plan(
     args: argparse.Namespace | Mapping[str, object] | object,
 ) -> list[BenchmarkPlanItem]:
@@ -634,12 +656,14 @@ def build_benchmark_plan(
             None if preprocessing_preset is None else str(preprocessing_preset),
             graph_policy,
             tuple(num_neighbors),
+            batch_size,
         )
         for preset in presets
         for dataset in datasets
         for lr_scheduler in lr_scheduler_values_by_preset[preset]
         for preprocessing_preset in preprocessing_preset_values
         for num_neighbors in num_neighbor_values_by_dataset[dataset]
+        for batch_size in _benchmark_batch_size_values(benchmark_args)
     ]
 
 
@@ -650,12 +674,21 @@ def _benchmark_item_label(
     preprocessing_preset: str | None,
     graph_policy: str,
     neighbor_label: str,
+    batch_label: str,
 ) -> str:
     """Return the shared human-readable label for one benchmark item."""
     return (
         f"{dataset} / {preset} / {lr_scheduler} "
-        f"/ {preprocessing_preset or 'default'} / {graph_policy} / nbr{neighbor_label}"
+        f"/ {preprocessing_preset or 'default'} / {graph_policy} / nbr{neighbor_label} "
+        f"/ bs{batch_label}"
     )
+
+
+def _benchmark_batch_label(benchmark_args: Mapping[str, object], batch_size: int) -> str:
+    """Return display batch label without hiding auto-batch probing."""
+    if bool(benchmark_args.get("auto_batch_size")):
+        return f"auto(start{batch_size})"
+    return str(batch_size)
 
 
 def _record_benchmark_failure(
@@ -667,6 +700,7 @@ def _record_benchmark_failure(
     preprocessing_preset: str | None,
     graph_policy: str,
     neighbor_label: str,
+    batch_size: int,
     exc: Exception,
 ) -> None:
     """Log and store one benchmark failure through the shared format."""
@@ -677,6 +711,7 @@ def _record_benchmark_failure(
         preprocessing_preset,
         graph_policy,
         neighbor_label,
+        batch_size,
     )
     failure_notes.append(
         f"{item_label}: {type(exc).__name__}: {exc}",
@@ -751,18 +786,24 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
         print(
             "\n"
             f"{'#':>4} | {'Dataset':<15} | {'Preset':<12} | {'Scheduler':<12} | "
-            f"{'Preproc':<24} | {'Graph':<16} | {'Neighbors':<10}",
+            f"{'Preproc':<24} | {'Graph':<16} | {'Neighbors':<10} | {'Batch':>10}",
         )
-        print("-" * 140)
-        for i, (ds, pr, scheduler, preprocessing_preset, graph_policy, neighbors) in enumerate(
-            experiments,
-            1,
-        ):
+        print("-" * 154)
+        for i, (
+            ds,
+            pr,
+            scheduler,
+            preprocessing_preset,
+            graph_policy,
+            neighbors,
+            batch_size,
+        ) in enumerate(experiments, 1):
             neighbor_label = format_num_neighbors_payload(neighbors) or ""
+            batch_label = _benchmark_batch_label(benchmark_args, batch_size)
             print(
                 f"{i:>4} | {ds:<15} | {pr:<12} | {scheduler:<12} | "
                 f"{preprocessing_preset or '-'!s: <24} | "
-                f"{graph_policy:<16} | {neighbor_label:<10}",
+                f"{graph_policy:<16} | {neighbor_label:<10} | {batch_label:>10}",
             )
         print(f"\nTotal: {len(experiments)} experiments (dry run, nothing executed)")
         return 0
@@ -782,11 +823,13 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
         preprocessing_preset,
         graph_policy,
         num_neighbors,
+        batch_size,
     ) in enumerate(experiments, 1):
         neighbor_list = list(num_neighbors)
         effective_neighbor_list = list(neighbor_list)
         raw_neighbor_label = format_num_neighbors_payload(neighbor_list) or ""
         neighbor_label = raw_neighbor_label
+        batch_label = _benchmark_batch_label(benchmark_args, batch_size)
 
         try:
             effective_neighbor_list = _resolve_benchmark_num_neighbors_for_preset(
@@ -805,6 +848,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                 preprocessing_preset=preprocessing_preset,
                 graph_policy=graph_policy,
                 neighbor_label=neighbor_label,
+                batch_size=batch_size,
                 exc=e,
             )
             continue
@@ -819,6 +863,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                 preprocessing_preset,
                 graph_policy,
                 neighbor_label,
+                batch_label,
             ),
         )
         print("=" * 70)
@@ -833,6 +878,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                     num_neighbors=effective_neighbor_list,
                     preprocessing_preset=preprocessing_preset,
                     graph_policy=graph_policy,
+                    batch_size=batch_size,
                 ),
             )
         except Exception as e:
@@ -845,6 +891,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                 preprocessing_preset=preprocessing_preset,
                 graph_policy=graph_policy,
                 neighbor_label=neighbor_label,
+                batch_size=batch_size,
                 exc=e,
             )
             continue
@@ -859,6 +906,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             config_filters={
                 "graph_policy": graph_policy,
                 "num_neighbors": effective_neighbor_list,
+                "batch_size": batch_size,
                 **(
                     {"preprocessing_preset": preprocessing_preset}
                     if preprocessing_preset is not None
@@ -905,6 +953,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                         "preprocessing_preset": preprocessing_preset,
                         "graph_policy": graph_policy,
                         "num_neighbors": neighbor_list,
+                        "batch_size": batch_size,
                         "exp_id": existing["id"],
                         "metrics": tracker.get_metrics_for_split(
                             int(existing["id"]),
@@ -967,6 +1016,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                     "preprocessing_preset": preprocessing_preset,
                     "graph_policy": graph_policy,
                     "num_neighbors": effective_neighbor_list,
+                    "batch_size": result.get("batch_size", batch_size),
                     "exp_id": result["exp_id"],
                     "metrics": result["test_metrics"],
                     "elapsed_s": elapsed,
@@ -981,6 +1031,17 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             logger.info(f"Completed in {elapsed:.1f}s (exp_id={result['exp_id']})")
 
         except Exception as e:
+            if is_cuda_oom_error(e) and _is_optional_batch_size_candidate(
+                benchmark_args,
+                batch_size,
+            ):
+                skipped += 1
+                logger.warning(
+                    "Skipping optional OOM batch-size candidate %d for %s; formal queue continues.",
+                    batch_size,
+                    dataset,
+                )
+                continue
             failed += 1
             _record_benchmark_failure(
                 failure_notes,
@@ -990,6 +1051,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                 preprocessing_preset=preprocessing_preset,
                 graph_policy=graph_policy,
                 neighbor_label=neighbor_label,
+                batch_size=batch_size,
                 exc=e,
             )
             continue
@@ -1008,6 +1070,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
             str(r.get("preprocessing_preset") or "").lower(),
             str(r["graph_policy"]).lower(),
             tuple(r["num_neighbors"]),
+            int(r.get("batch_size") or 0),
         ),
     )
     print_batch_summary_counts(
@@ -1018,16 +1081,20 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
         total=len(experiments),
     )
     if sorted_results:
-        print("Note: AvgPop@20 and AvgPop@40 are lower-is-better.")
+        print(
+            "Note: AvgPop@20 and AvgPop@40 are raw PyG AveragePopularity values; "
+            "lower is lower raw training-popularity concentration."
+        )
         print(
             (
                 "\n"
                 + (
                     f"{'Dataset':<15} | {'Preset':<12} | "
                     f"{'Preproc':<24} | {'Graph':<16} | {'Neighbors':<10} | {'NDCG@20':>8} | "
-                    f"{'Recall@20':>10} | {'AvgPop@20':>10} | {'NDCG@40':>8} | "
-                    f"{'Recall@40':>10} | {'AvgPop@40':>10} | {'Epochs':>6} | "
-                    f"{'PeakVRAM':>8} | Time | {'Mode':<8} | {'Experiment':<40}"
+                    f"{'Recall@20':>10} | {'AvgPop@20':>12} | {'NDCG@40':>8} | "
+                    f"{'Recall@40':>10} | {'AvgPop@40':>12} | {'Epochs':>6} | "
+                    f"{'PeakVRAM':>8} | {'Batch':>10} | Time | {'Mode':<8} | "
+                    f"{'Experiment':<40}"
                 )
             ),
         )
@@ -1042,6 +1109,7 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                 str(r.get("epochs_stopped_at")) if r.get("epochs_stopped_at") is not None else "-"
             )
             peak_vram = f"{r['peak_vram_mb']:.0f}MB" if r.get("peak_vram_mb") is not None else "-"
+            batch_size = int(r["batch_size"]) if r.get("batch_size") is not None else 0
             checkpoint_label = (
                 Path(r["checkpoint_path"]).name if r.get("checkpoint_path") else f"exp{r['exp_id']}"
             )
@@ -1052,11 +1120,11 @@ def run_benchmark(args: argparse.Namespace | Mapping[str, object] | object) -> i
                     f"{r['graph_policy']:<16} | "
                     f"{neighbor_label:<10} | {metric_values['NDCG@20']:>8.4f} | "
                     f"{metric_values['Recall@20']:>10.4f} | "
-                    f"{metric_values['AveragePopularity@20']:>10.4f} | "
+                    f"{metric_values['AveragePopularity@20']:>12.4f} | "
                     f"{metric_values['NDCG@40']:>8.4f} | "
                     f"{metric_values['Recall@40']:>10.4f} | "
-                    f"{metric_values['AveragePopularity@40']:>10.4f} | "
-                    f"{epochs:>6} | {peak_vram:>8} | {r['elapsed_s']:.0f}s | "
+                    f"{metric_values['AveragePopularity@40']:>12.4f} | "
+                    f"{epochs:>6} | {peak_vram:>8} | {batch_size:>10} | {r['elapsed_s']:.0f}s | "
                     f"{r['run_mode']:<8} | {checkpoint_label:<40}"
                 ),
             )

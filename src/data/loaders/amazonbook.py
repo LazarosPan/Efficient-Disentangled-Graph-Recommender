@@ -27,42 +27,58 @@ def _parse_interaction_file(
     """Parse LightGCN-format interaction file.
 
     Each line: ``user_id item1 item2 ...`` (space-separated).
+    User-only lines are valid zero-interaction rows and are ignored.
     Returns list of (user_id, item_id) pairs.
     """
     pairs: list[tuple[int, int]] = []
-    malformed_rows = 0
+    malformed_tokens = 0
+    empty_user_rows = 0
     row_count = 0
     with open(path, encoding="utf-8") as f:
         for line in f:
             tokens = line.strip().split()
-            if len(tokens) < 2:
-                malformed_rows += 1
+            if not tokens:
                 continue
             try:
                 uid = int(tokens[0])
             except ValueError:
-                malformed_rows += 1
+                malformed_tokens += 1
+                continue
+            if len(tokens) < 2:
+                empty_user_rows += 1
                 continue
             for iid_str in tokens[1:]:
                 try:
                     iid = int(iid_str)
                 except ValueError:
-                    malformed_rows += 1
+                    malformed_tokens += 1
                     continue
                 pairs.append((uid, iid))
                 row_count += 1
                 if max_rows is not None and row_count >= max_rows:
-                    if malformed_rows > 0:
+                    if malformed_tokens > 0:
                         logger.warning(
                             "AmazonBook loader skipped %d malformed interaction tokens in %s.",
-                            malformed_rows,
+                            malformed_tokens,
+                            path.name,
+                        )
+                    if empty_user_rows > 0:
+                        logger.debug(
+                            "AmazonBook loader ignored %d user-only rows in %s.",
+                            empty_user_rows,
                             path.name,
                         )
                     return pairs
-    if malformed_rows > 0:
+    if malformed_tokens > 0:
         logger.warning(
             "AmazonBook loader skipped %d malformed interaction tokens in %s.",
-            malformed_rows,
+            malformed_tokens,
+            path.name,
+        )
+    if empty_user_rows > 0:
+        logger.debug(
+            "AmazonBook loader ignored %d user-only rows in %s.",
+            empty_user_rows,
             path.name,
         )
     return pairs

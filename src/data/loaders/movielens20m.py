@@ -8,7 +8,11 @@ from pathlib import Path
 
 import numpy as np
 
-from ...utils.csv_features import stack_feature_blocks
+from ...utils.csv_features import (
+    FeatureBlock,
+    make_feature_block,
+    stack_feature_metadata_blocks,
+)
 from ...utils.dataset_loader_utils import downcast_numeric_array, downcast_numeric_arrays
 from ..canonical import CanonicalInteractions
 from ..feature_policy import (
@@ -18,7 +22,7 @@ from ..feature_policy import (
 )
 from ._explicit_ratings import (
     build_explicit_rating_canonical,
-    build_movie_genre_features,
+    build_movie_genre_feature_block,
     prepare_explicit_rating_feedback,
 )
 
@@ -29,7 +33,7 @@ def _load_movie_genres(
     path: Path,
     item_map: dict[int, int],
     n_items: int,
-) -> np.ndarray | None:
+) -> FeatureBlock | None:
     """Parse movies.csv into a multi-hot genre matrix inferred from the file.
 
     Format: movieId,title,genres (pipe-separated)
@@ -50,26 +54,28 @@ def _load_movie_genres(
                 continue
             genre_rows.append((movie_id, row.get("genres", "")))
 
-    features, mapped_item_count = build_movie_genre_features(
+    block, mapped_item_count = build_movie_genre_feature_block(
         genre_rows,
         item_map,
         n_items,
+        dataset_name="movielens20m",
+        relative_path="raw/movies.csv",
     )
-    if features is not None:
+    if block is not None:
         logger.info(
             "Loaded MovieLens20M genre features for %d / %d items (%d columns).",
             mapped_item_count,
             n_items,
-            features.shape[1],
+            block.matrix.shape[1],
         )
-    return features
+    return block
 
 
 def _load_genome_scores(
     path: Path,
     item_map: dict[int, int],
     n_items: int,
-) -> np.ndarray | None:
+) -> FeatureBlock | None:
     """Parse genome-scores.csv -> (n_items, n_tags) dense tag relevance matrix.
 
     Format: movieId,tagId,relevance (11.7M rows for ~27K movies x 1128 tags)
@@ -115,7 +121,15 @@ def _load_genome_scores(
         len(tag_data),
         n_tags,
     )
-    return downcast_numeric_array(features, allow_float16=True)
+    matrix = downcast_numeric_array(features, allow_float16=True)
+    return make_feature_block(
+        matrix,
+        dataset_name="movielens20m",
+        aspect="item_features",
+        relative_path="raw/genome-scores.csv",
+        raw_columns=tuple("relevance" for _ in range(n_tags)),
+        encoded_columns=tuple(f"relevance={tag_id}" for tag_id in range(1, n_tags + 1)),
+    )
 
 
 def load_movielens20m(
@@ -162,11 +176,11 @@ def load_movielens20m(
     n_items = indexed.n_items
     item_map = indexed.item_map
 
-    item_features = None
+    item_feature_block = None
     if include_optional_features:
         raw_dir = Path(data_dir) / "MovieLens20M" / "raw"
-        genre_feats = None
-        genome_feats = None
+        genre_block = None
+        genome_block = None
         load_genres, _ = resolve_feature_source(
             feature_policy,
             "movielens20m",
@@ -174,7 +188,7 @@ def load_movielens20m(
             "raw/movies.csv",
         )
         if load_genres:
-            genre_feats = _load_movie_genres(raw_dir / "movies.csv", item_map, n_items)
+            genre_block = _load_movie_genres(raw_dir / "movies.csv", item_map, n_items)
         load_genome_scores, _ = resolve_feature_source(
             feature_policy,
             "movielens20m",
@@ -182,18 +196,25 @@ def load_movielens20m(
             "raw/genome-scores.csv",
         )
         if load_genome_scores:
-            genome_feats = _load_genome_scores(
+            genome_block = _load_genome_scores(
                 raw_dir / "genome-scores.csv",
                 item_map,
                 n_items,
             )
-        item_features = stack_feature_blocks(genre_feats, genome_feats)
+        item_feature_block = stack_feature_metadata_blocks(genre_block, genome_block)
 
     effective_preset = preprocessing_preset or "movielens_explicit"
 
     return build_explicit_rating_canonical(
         prepared,
         timestamps,
-        item_features=item_features,
+        item_features=None if item_feature_block is None else item_feature_block.matrix,
+        item_feature_names=None if item_feature_block is None else item_feature_block.names,
+        item_feature_sources=None if item_feature_block is None else item_feature_block.sources,
+        item_feature_raw_columns=(
+            None if item_feature_block is None else item_feature_block.raw_features
+        ),
+        item_feature_roles=None if item_feature_block is None else item_feature_block.roles,
+        item_feature_groups=None if item_feature_block is None else item_feature_block.groups,
         preprocessing_preset=effective_preset,
     )

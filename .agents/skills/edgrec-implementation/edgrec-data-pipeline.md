@@ -98,6 +98,9 @@ Item-universe compaction:
 - Post-treatment aggregates stay out of thesis-default model features.
 - Under `thesis_default`, KuaiRand's `video_features_statistic_1k.csv` stays excluded from model features, but its `show_cnt` column is reused separately as a propensity calibration target.
 - Free-text or comment-style columns are not part of the live thesis-default path; the runtime uses only structured numeric, temporal, and categorical-safe features.
+- Current item groups from loaded metadata: MovieLens1M `item_genre`; KuaiRec_v2 and KuaiRand1K `item_author_music`, `item_video_metadata`, `item_resolution`, `item_category`, `item_upload_time`; AmazonBook `graph_only`.
+- KuaiRec_v2 safe descriptors: author/music, type/status, duration, resolution, upload time, and category/tag IDs; engagement counts stay excluded.
+- KuaiRand1K safe descriptors: author/music, type/status, duration, resolution, upload time, and comma-separated `tag` as multi-hot category columns; statistic/engagement features stay excluded.
 
 `src/utils/csv_features.py` encoding policy:
 
@@ -106,6 +109,7 @@ Item-universe compaction:
 | repeated entity rows | first source row wins before encoding |
 | numeric/temporal | min-max to `[0,1]` within source |
 | categorical-like | deterministic codes in `[0,1]`; `0` reserved for missing |
+| list-like category strings | multi-hot token columns with `<source>::<field>=<token>` names |
 | embedding-time buffers | normalized again before context head |
 
 Purpose: daily files cannot overwrite thesis-default static descriptors or reintroduce raw timestamp/ID scale.
@@ -121,15 +125,18 @@ Current graph rules:
 - `build_graph()` attaches original observed split masks plus label-aware `*_positive_mask` fields.
 - Interaction graph edges, BPR training positives, and train-time popularity use only positive training labels.
 - Original observed masks remain available for seen-item exclusion and split bookkeeping.
-- `build_graph()` always recomputes `data.popularity` from positive rows in the final training split.
+- `build_graph()` always recomputes raw positive-train item counts from the final training split; validation/test interactions do not enter this tensor.
+- `data.popularity` is the raw-count tensor passed to PyG `LinkPredAveragePopularity`; this keeps logged `AveragePopularity@K` as raw PyG ARP.
+- `data.popularity_count` mirrors raw train counts for DICE-style sampling/masks, `data.normalized_popularity` stores log-normalized train popularity for model/loss auxiliary targets, and `data.largest_training_item_interaction_count` stores the CRRU denominator.
 - `build_graph()` precomputes `data.edge_norm` once, so training and evaluation share the same degree normalization.
 - Optional canonical payloads are copied onto the PyG `Data` object through one shared boundary helper.
 - CAGRA graph augmentation is removed. It materialized ANN edges into the GNN training graph and did not solve the training-time VRAM/epoch bottleneck.
 
 ## Train-derived user history and exposure context
 
-- `build_recent_train_history()` creates `recent_train_items` and `recent_train_mask` from the final training split only.
-- Those buffers are per-user histories: the latest training interactions for each user, never global "recent" or popularity-only items.
+- `build_recent_train_history()` creates `(n_users, temporal_history_size)` `recent_train_items` and `recent_train_mask` from the final training split only.
+- Recent-history construction groups sorted train interactions by user, avoiding per-user full-interaction scans on large datasets.
+- Those buffers are per-user histories: each user's latest retained training items by timestamp, never global "recent" or popularity-only items.
 - Subgraph training reuses the same train-derived user history and does not create separate splits for interest, recency, or context.
 
 Propensity target contract:

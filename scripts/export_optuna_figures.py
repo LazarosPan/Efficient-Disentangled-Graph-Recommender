@@ -26,8 +26,9 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.ticker import FuncFormatter, LogLocator
 from src.utils.crru import (
-    VALIDATION_ONLINE_CRRU_METRIC,
-    compute_validation_online_crru_components_for_k,
+    CRRU_RECOMMENDATION_METRIC_NAMES,
+    VALIDATION_CRRU_METRIC,
+    compute_validation_crru_components_for_k,
 )
 
 from scripts.report_optuna_optimization import (
@@ -38,9 +39,12 @@ from scripts.report_optuna_optimization import (
     completed_trials,
     dataset_metric,
     dataset_names,
+    display_study_name,
     load_studies,
     logical_trial_params,
     objective_metric_label,
+    trial_epoch_time_s,
+    trial_largest_training_item_interaction_count,
     trial_objective_metric,
     trial_objective_split,
 )
@@ -118,8 +122,10 @@ PROFILE_FALLBACK_PARAMS = (
 EXCLUDED_FIGURE_PARAM_PREFIXES = ("cagra_",)
 CRRU_SELECTION_TITLE = "Validation CRRU selection score @20/40"
 CRRU_SELECTION_SHORT_LABEL = "CRRU selection score"
-CRRU_SELECTION_AXIS_LABEL = "Normalized CRRU score\n(dataset-local, 0=worst, 1=best)"
-CRRU_WEIGHT_NOTE = "Final CRRU weights: accuracy 55%, popularity-diversity 30%, efficiency 15%."
+CRRU_SELECTION_AXIS_LABEL = "Validation CRRU percentile\nwithin dataset"
+CRRU_WEIGHT_NOTE = (
+    "Final CRRU weights: ranking accuracy 55%, popularity-aware personalization 30%, resources 15%."
+)
 FIGURE_FILE_SUFFIXES = frozenset({".png", ".pdf", ".svg", ".jpg", ".jpeg", ".html"})
 LOW_SUPPORT_COMPLETED_TRIALS = 10
 
@@ -152,10 +158,9 @@ def _include_figure_param(parameter: str) -> bool:
 
 def _objective_priority(metric: str) -> int:
     """Return stable display priority for validation objective families."""
-    return {
-        VALIDATION_ONLINE_CRRU_METRIC: 0,
-        "NDCG@40": 2,
-    }.get(metric, 10)
+    if metric == VALIDATION_CRRU_METRIC:
+        return 0
+    return {"NDCG@40": 2}.get(metric, 10)
 
 
 def _objective_label(split: str, metric: str) -> str:
@@ -165,7 +170,7 @@ def _objective_label(split: str, metric: str) -> str:
 
 def _figure_objective_label(metric: str) -> str:
     """Return a Matplotlib-friendly objective label."""
-    if metric == VALIDATION_ONLINE_CRRU_METRIC:
+    if metric == VALIDATION_CRRU_METRIC:
         return CRRU_SELECTION_TITLE
     return objective_metric_label(metric).replace("@20_40", "@20/40")
 
@@ -173,14 +178,14 @@ def _figure_objective_label(metric: str) -> str:
 def _compact_objective_label(split: str, metric: str) -> str:
     """Return a short objective label for dense figures."""
     compact_metric = {
-        VALIDATION_ONLINE_CRRU_METRIC: "CRRU selection@20/40",
+        VALIDATION_CRRU_METRIC: "CRRU selection@20/40",
     }.get(metric, metric)
     return f"{split} {compact_metric}" if split and split != "-" else compact_metric
 
 
 def _compact_study_label(study_name: str, *, width: int = 46) -> str:
     """Return a shortened study label for dense figure panels."""
-    return textwrap.shorten(study_name, width=width, placeholder="...")
+    return textwrap.shorten(display_study_name(study_name), width=width, placeholder="...")
 
 
 def _record_group_key(record: Mapping[str, Any]) -> tuple[str, str, str]:
@@ -249,95 +254,70 @@ def _color_for_dataset(dataset: str) -> str:
     return DATASET_COLORS.get(dataset, "#4d6073")
 
 
-def _trial_epoch_time_s(trial: optuna.trial.FrozenTrial, dataset: str) -> float | None:
-    """Return stored or derived seconds per epoch for a trial."""
-    avg_epoch_time_s = attr_float(trial, f"{dataset}.avg_epoch_time_s")
-    if avg_epoch_time_s is not None and avg_epoch_time_s > 0.0:
-        return avg_epoch_time_s
-    training_time_s = attr_float(trial, f"{dataset}.training_time_s")
-    epochs = attr_float(trial, f"{dataset}.epochs_stopped_at")
-    if training_time_s is not None and epochs is not None and epochs > 0.0:
-        return training_time_s / epochs
-    return None
-
-
-def _metric_value(
-    trial: optuna.trial.FrozenTrial,
-    dataset: str,
-    metric_name: str,
-) -> float | None:
-    """Return one stored metric value for plotting."""
-    if metric_name == "epoch_time_s":
-        return _trial_epoch_time_s(trial, dataset)
-    if metric_name == "peak_vram_mb":
-        return attr_float(trial, f"{dataset}.peak_vram_mb")
-    return dataset_metric(trial, dataset, metric_name)
-
-
-def _online_crru_validation_metrics(
+def _validation_metrics_for_crru(
     trial: optuna.trial.FrozenTrial,
     dataset: str,
 ) -> dict[str, float]:
-    """Return validation metrics needed to reconstruct OnlineCRRU components."""
-    names = (
-        "NDCG@20",
-        "Recall@20",
-        "HitRatio@20",
-        "Personalization@20",
-        "AveragePopularity@20",
-        "NDCG@40",
-        "Recall@40",
-        "HitRatio@40",
-        "Personalization@40",
-        "AveragePopularity@40",
-    )
+    """Return validation metrics needed to reconstruct validation CRRU components."""
     metrics: dict[str, float] = {}
-    for name in names:
-        value = _metric_value(trial, dataset, name)
+    for metric_name in CRRU_RECOMMENDATION_METRIC_NAMES:
+        value = dataset_metric(trial, dataset, metric_name)
         if value is None:
             return {}
-        metrics[name] = value
+        metrics[metric_name] = value
     return metrics
 
 
-def _online_crru_component_summary(
+def _validation_crru_component_summary(
     trial: optuna.trial.FrozenTrial,
     dataset: str,
 ) -> dict[str, float | None]:
-    """Return averaged OnlineCRRU component scores over K=20 and K=40."""
-    metrics = _online_crru_validation_metrics(trial, dataset)
+    """Return averaged validation CRRU component scores over K=20 and K=40."""
+    metrics = _validation_metrics_for_crru(trial, dataset)
     if not metrics:
         return {
             "accuracy_component": None,
-            "popularity_diversity_component": None,
+            "popularity_aware_personalization_component": None,
             "resource_efficiency_score": None,
-            "online_crru_reconstructed": None,
+            "validation_crru_reconstructed": None,
         }
+    peak_vram_mb = attr_float(trial, f"{dataset}.peak_vram_mb")
+    epoch_duration_seconds = trial_epoch_time_s(trial, dataset)
+    largest_training_item_interaction_count = trial_largest_training_item_interaction_count(
+        trial,
+        dataset,
+    )
     try:
-        by_k = [
-            compute_validation_online_crru_components_for_k(
+        components_by_cutoff = [
+            compute_validation_crru_components_for_k(
                 metrics,
-                k=k,
-                peak_vram_mb=_metric_value(trial, dataset, "peak_vram_mb"),
-                epoch_time_s=_trial_epoch_time_s(trial, dataset),
+                k=cutoff,
+                peak_vram_mb=peak_vram_mb,
+                epoch_time_s=epoch_duration_seconds,
+                largest_training_item_interaction_count=largest_training_item_interaction_count,
             )
-            for k in (20, 40)
+            for cutoff in (20, 40)
         ]
     except ValueError:
         return {
             "accuracy_component": None,
-            "popularity_diversity_component": None,
+            "popularity_aware_personalization_component": None,
             "resource_efficiency_score": None,
-            "online_crru_reconstructed": None,
+            "validation_crru_reconstructed": None,
         }
     return {
-        "accuracy_component": float(sum(item["accuracy"] for item in by_k) / len(by_k)),
-        "popularity_diversity_component": float(
-            sum(item["popularity_diversity"] for item in by_k) / len(by_k),
+        "accuracy_component": float(
+            sum(item["accuracy"] for item in components_by_cutoff) / len(components_by_cutoff)
         ),
-        "resource_efficiency_score": float(sum(item["efficiency"] for item in by_k) / len(by_k)),
-        "online_crru_reconstructed": float(
-            sum(item["online_crru"] for item in by_k) / len(by_k),
+        "popularity_aware_personalization_component": float(
+            sum(item["popularity_aware_personalization"] for item in components_by_cutoff)
+            / len(components_by_cutoff),
+        ),
+        "resource_efficiency_score": float(
+            sum(item["efficiency"] for item in components_by_cutoff) / len(components_by_cutoff)
+        ),
+        "validation_crru_reconstructed": float(
+            sum(item["crru"] for item in components_by_cutoff) / len(components_by_cutoff),
         ),
     }
 
@@ -351,11 +331,11 @@ def _trial_records(studies: Sequence[optuna.Study]) -> list[dict[str, Any]]:
             source_metric = trial_objective_metric(trial)
             source_split = trial_objective_split(trial)
             for dataset in dataset_names(trial):
-                objective = dataset_metric(trial, dataset, VALIDATION_ONLINE_CRRU_METRIC)
+                objective = dataset_metric(trial, dataset, VALIDATION_CRRU_METRIC)
                 if objective is None or not math.isfinite(float(objective)):
                     continue
                 completed_at = trial.datetime_complete or trial.datetime_start
-                component_summary = _online_crru_component_summary(trial, dataset)
+                component_summary = _validation_crru_component_summary(trial, dataset)
                 records.append(
                     {
                         "dataset": dataset,
@@ -365,13 +345,13 @@ def _trial_records(studies: Sequence[optuna.Study]) -> list[dict[str, Any]]:
                             f"trial {trial.number}"
                         ),
                         "study_direction": "maximize",
-                        "objective_metric": VALIDATION_ONLINE_CRRU_METRIC,
+                        "objective_metric": VALIDATION_CRRU_METRIC,
                         "objective_split": "val",
                         "source_objective_metric": source_metric,
                         "source_objective_split": source_split,
                         "objective_label": _objective_label(
                             "val",
-                            VALIDATION_ONLINE_CRRU_METRIC,
+                            VALIDATION_CRRU_METRIC,
                         ),
                         "trial_number": trial.number,
                         "completed_at": completed_at.isoformat() if completed_at else "",
@@ -383,17 +363,21 @@ def _trial_records(studies: Sequence[optuna.Study]) -> list[dict[str, Any]]:
                         "conformity_depth": _as_int(params.get("conformity_gnn_layers")),
                         "fanout": _fanout_tuple(params.get("num_neighbors")),
                         "dropout": _as_float(params.get("dropout")),
-                        "ndcg40": _metric_value(trial, dataset, "NDCG@40"),
-                        "recall40": _metric_value(trial, dataset, "Recall@40"),
-                        "hit40": _metric_value(trial, dataset, "HitRatio@40"),
-                        "personalization40": _metric_value(trial, dataset, "Personalization@40"),
-                        "average_popularity40": _metric_value(
+                        "ndcg40": dataset_metric(trial, dataset, "NDCG@40"),
+                        "recall40": dataset_metric(trial, dataset, "Recall@40"),
+                        "hit40": dataset_metric(trial, dataset, "HitRatio@40"),
+                        "personalization40": dataset_metric(
+                            trial,
+                            dataset,
+                            "Personalization@40",
+                        ),
+                        "average_popularity40": dataset_metric(
                             trial,
                             dataset,
                             "AveragePopularity@40",
                         ),
-                        "epoch_time_s": _metric_value(trial, dataset, "epoch_time_s"),
-                        "peak_vram_mb": _metric_value(trial, dataset, "peak_vram_mb"),
+                        "epoch_time_s": trial_epoch_time_s(trial, dataset),
+                        "peak_vram_mb": attr_float(trial, f"{dataset}.peak_vram_mb"),
                         **component_summary,
                     },
                 )
@@ -408,6 +392,36 @@ def _as_float(value: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return number if math.isfinite(number) else None
+
+
+def _record_validation_crru_value(record: Mapping[str, Any]) -> float | None:
+    """Return the absolute reconstructed CRRU value preferred for component plots."""
+    reconstructed = _as_float(record.get("validation_crru_reconstructed"))
+    if reconstructed is not None:
+        return reconstructed
+    return _as_float(record.get("objective"))
+
+
+def _zero_based_axis_upper_limit(
+    values: Sequence[float | None],
+    *,
+    minimum_upper_limit: float,
+    margin_fraction: float = 0.12,
+    tick_step: float = 0.05,
+) -> float:
+    """Return a zero-origin plot upper limit with a small data-driven margin."""
+    finite_values = [
+        max(0.0, float(value))
+        for value in values
+        if value is not None and math.isfinite(float(value))
+    ]
+    if not finite_values:
+        return minimum_upper_limit
+    upper_limit = max(finite_values) * (1.0 + margin_fraction)
+    upper_limit = max(minimum_upper_limit, upper_limit)
+    if upper_limit >= 1.0:
+        return 1.0
+    return min(1.0, math.ceil(upper_limit / tick_step) * tick_step)
 
 
 def _as_int(value: Any) -> int | None:
@@ -544,38 +558,35 @@ def _exploratory_record_importances(records: Sequence[Mapping[str, Any]]) -> dic
     return dict(sorted(normalized.items(), key=lambda item: item[1], reverse=True))
 
 
-def _minmax_score(
+def _rank_percentile(
     values: Sequence[float | None],
     *,
     lower_is_better: bool = False,
 ) -> list[float | None]:
-    """Return dataset-local min-max scores in [0, 1]."""
-    finite = [float(value) for value in values if value is not None and math.isfinite(value)]
-    if not finite:
+    """Return visualization-only rank percentiles in [0, 1]."""
+    finite_pairs = [
+        (index, float(value))
+        for index, value in enumerate(values)
+        if value is not None and math.isfinite(value)
+    ]
+    if not finite_pairs:
         return [None for _ in values]
-    lo, hi = min(finite), max(finite)
-    if math.isclose(lo, hi, rel_tol=0.0, abs_tol=1e-12):
-        return [1.0 if value is not None else None for value in values]
-    scores: list[float | None] = []
-    for value in values:
-        if value is None or not math.isfinite(float(value)):
-            scores.append(None)
-            continue
-        score = (float(value) - lo) / (hi - lo)
-        if lower_is_better:
-            score = 1.0 - score
-        scores.append(max(0.0, min(1.0, score)))
-    return scores
+    ordered = sorted(finite_pairs, key=lambda item: item[1], reverse=not lower_is_better)
+    denominator = max(1, len(ordered) - 1)
+    output: list[float | None] = [None for _ in values]
+    for rank, (index, _value) in enumerate(ordered):
+        output[index] = 1.0 - (rank / denominator)
+    return output
 
 
 def _attach_component_scores(records: list[dict[str, Any]]) -> None:
-    """Attach dataset-local normalized objective scores to flat records."""
+    """Attach visualization-only objective rank percentiles to flat records."""
     by_group: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for record in records:
         by_group[_record_group_key(record)].append(record)
 
     for dataset_records in by_group.values():
-        objective_percentiles = _minmax_score(
+        objective_percentiles = _rank_percentile(
             [record.get("objective") for record in dataset_records],
             lower_is_better=False,
         )
@@ -596,8 +607,8 @@ def _best_record(records: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | No
 COMPONENT_CORRELATION_SPECS = (
     ("accuracy_component", "Accuracy\nNDCG/Recall/Hit"),
     (
-        "popularity_diversity_component",
-        "Popularity-diversity\nPers + inverse AvgPop",
+        "popularity_aware_personalization_component",
+        "Popularity-aware personalization\nPers + inverse normalized ARP",
     ),
     ("resource_efficiency_score", "Resource efficiency\ninverse time + inverse VRAM"),
 )
@@ -694,7 +705,7 @@ def export_selection_frontier_by_dataset(
     objective_metric: str,
     filename: str,
 ) -> Path | None:
-    """Export the accuracy, popularity-diversity, and efficiency trade-off view."""
+    """Export the accuracy, popularity-aware personalization, and resource trade-off view."""
     groups = [
         (group, comparable_records)
         for group, group_records in _records_by_group(records)
@@ -703,7 +714,7 @@ def export_selection_frontier_by_dataset(
                 record
                 for record in group_records
                 if _as_float(record.get("accuracy_component")) is not None
-                and _as_float(record.get("popularity_diversity_component")) is not None
+                and _as_float(record.get("popularity_aware_personalization_component")) is not None
                 and _as_float(record.get("resource_efficiency_score")) is not None
                 and _as_float(record.get("objective_percentile")) is not None
             ]
@@ -726,12 +737,15 @@ def export_selection_frontier_by_dataset(
 
     last_scatter = None
     for ax, (group, comparable_records) in zip(axes.flat, groups, strict=False):
-        efficiency_ranks = _minmax_score(
+        efficiency_ranks = _rank_percentile(
             [record.get("resource_efficiency_score") for record in comparable_records],
         )
         last_scatter = ax.scatter(
             [float(record["accuracy_component"]) for record in comparable_records],
-            [float(record["popularity_diversity_component"]) for record in comparable_records],
+            [
+                float(record["popularity_aware_personalization_component"])
+                for record in comparable_records
+            ],
             c=[score if score is not None else 0.0 for score in efficiency_ranks],
             cmap="viridis",
             vmin=0.0,
@@ -745,7 +759,7 @@ def export_selection_frontier_by_dataset(
         if best is not None:
             ax.scatter(
                 [float(best["accuracy_component"])],
-                [float(best["popularity_diversity_component"])],
+                [float(best["popularity_aware_personalization_component"])],
                 marker="*",
                 s=205,
                 color="#f0c419",
@@ -754,7 +768,9 @@ def export_selection_frontier_by_dataset(
                 zorder=5,
             )
         ax.set_xlabel("Accuracy component (NDCG, Recall, Hit)")
-        ax.set_ylabel("Popularity-diversity component (Personalization, inverse AvgPop)")
+        ax.set_ylabel(
+            "Popularity-aware personalization component\n(Personalization, inverse normalized ARP)",
+        )
         ax.set_title(_group_title(group))
         ax.grid(alpha=0.20)
 
@@ -949,32 +965,38 @@ def export_crru_components_by_dataset(
     objective_metric: str,
     filename: str,
 ) -> Path | None:
-    """Export CRRU component-vs-objective diagnostics."""
+    """Export absolute CRRU component-vs-objective diagnostics."""
     if not records:
         return None
 
     fig, axes = plt.subplots(2, 2, figsize=(12.8, 8.8), constrained_layout=True)
     plotted_any = False
+    validation_crru_upper_limit = _zero_based_axis_upper_limit(
+        [_record_validation_crru_value(record) for record in records],
+        minimum_upper_limit=0.10,
+    )
     for ax, (key, label) in zip(axes.flat[:3], COMPONENT_CORRELATION_SPECS, strict=True):
+        component_values_for_axis: list[float] = []
         for group, group_records in _records_by_group(records):
             dataset = group[0]
-            component_percentiles = _minmax_score([record.get(key) for record in group_records])
-            comparable_pairs = [
-                (record, component_percentile)
-                for record, component_percentile in zip(
-                    group_records,
-                    component_percentiles,
-                    strict=True,
-                )
-                if component_percentile is not None
-                and _as_float(record.get("objective_percentile")) is not None
-            ]
+            comparable_pairs = []
+            for record in group_records:
+                component_value = _as_float(record.get(key))
+                validation_crru_value = _record_validation_crru_value(record)
+                if component_value is None or validation_crru_value is None:
+                    continue
+                comparable_pairs.append((record, component_value, validation_crru_value))
             if not comparable_pairs:
                 continue
             plotted_any = True
+            component_values_for_axis.extend(
+                float(component_value)
+                for _record, component_value, _crru in comparable_pairs
+                if component_value is not None
+            )
             ax.scatter(
-                [float(component_percentile) for _record, component_percentile in comparable_pairs],
-                [float(record["objective_percentile"]) for record, _score in comparable_pairs],
+                [float(component_value) for _record, component_value, _crru in comparable_pairs],
+                [float(crru_value) for _record, _component_value, crru_value in comparable_pairs],
                 s=36,
                 alpha=0.68,
                 color=_color_for_dataset(dataset),
@@ -982,14 +1004,14 @@ def export_crru_components_by_dataset(
             )
             best_pair = max(
                 comparable_pairs,
-                key=lambda pair: float(pair[0]["objective_percentile"]),
+                key=lambda pair: float(pair[2]),
                 default=None,
             )
             if best_pair is not None:
-                best, best_component_percentile = best_pair
+                _best, best_component_value, best_crru_value = best_pair
                 ax.scatter(
-                    [float(best_component_percentile)],
-                    [float(best["objective_percentile"])],
+                    [float(best_component_value)],
+                    [float(best_crru_value)],
                     marker="*",
                     s=150,
                     color="#f0c419",
@@ -997,11 +1019,17 @@ def export_crru_components_by_dataset(
                     linewidth=0.8,
                     zorder=5,
                 )
-        ax.set_xlim(-0.04, 1.04)
-        ax.set_ylim(-0.05, 1.05)
+        ax.set_xlim(
+            0.0,
+            _zero_based_axis_upper_limit(
+                component_values_for_axis,
+                minimum_upper_limit=0.05,
+            ),
+        )
+        ax.set_ylim(0.0, validation_crru_upper_limit)
         ax.set_title(label.replace("\n", " "))
-        ax.set_xlabel("Component percentile within dataset")
-        ax.set_ylabel("Validation CRRU percentile\nwithin dataset")
+        ax.set_xlabel("Absolute component score")
+        ax.set_ylabel("ValidationCRRU@20_40")
         ax.grid(alpha=0.22)
 
     axes.flat[3].axis("off")
@@ -1019,10 +1047,11 @@ def export_crru_components_by_dataset(
         0.50,
         0.62,
         "Accuracy: NDCG, Recall, and Hit.\n"
-        "Popularity-diversity: personalization and inverse AvgPop.\n"
+        "Popularity-aware personalization: personalization and inverse normalized raw ARP.\n"
         "Efficiency: inverse log time/epoch and inverse log VRAM.\n\n"
         f"{CRRU_WEIGHT_NOTE}\n"
-        "Higher component percentiles indicate stronger within-dataset values.",
+        "Scores are absolute bounded CRRU sub-utilities; the correlation heatmap summarizes "
+        "rank association separately.",
         fontsize=9,
         linespacing=1.25,
         va="top",
@@ -1038,7 +1067,7 @@ def export_crru_components_by_dataset(
             fontsize=8,
             frameon=False,
         )
-    fig.suptitle("Validation CRRU response to its component percentiles")
+    fig.suptitle("Validation CRRU response to absolute component scores")
     return _save_figure(fig, output_dir / filename) if plotted_any else None
 
 
@@ -1357,7 +1386,7 @@ def export_fanout_runtime_tradeoffs(
             {record["fanout"] for record in comparable_records},
             key=lambda fanout: (len(fanout), sum(fanout), fanout),
         )
-        time_scores = _minmax_score(
+        time_scores = _rank_percentile(
             [record.get("epoch_time_s") for record in comparable_records],
             lower_is_better=False,
         )
@@ -1460,7 +1489,7 @@ def export_paper_figures(
         export_component_correlations_by_dataset(
             records,
             output_dir,
-            objective_metric=VALIDATION_ONLINE_CRRU_METRIC,
+            objective_metric=VALIDATION_CRRU_METRIC,
             filename=filenames["component_correlations_by_dataset"],
         ),
     )
@@ -1468,7 +1497,7 @@ def export_paper_figures(
         export_selection_frontier_by_dataset(
             records,
             output_dir,
-            objective_metric=VALIDATION_ONLINE_CRRU_METRIC,
+            objective_metric=VALIDATION_CRRU_METRIC,
             filename=filenames["selection_frontier_by_dataset"],
         ),
     )
@@ -1476,7 +1505,7 @@ def export_paper_figures(
         export_importance_by_dataset(
             records,
             output_dir,
-            objective_metric=VALIDATION_ONLINE_CRRU_METRIC,
+            objective_metric=VALIDATION_CRRU_METRIC,
             filename=filenames["importance_by_dataset"],
         ),
     )
@@ -1484,7 +1513,7 @@ def export_paper_figures(
         export_crru_components_by_dataset(
             records,
             output_dir,
-            objective_metric=VALIDATION_ONLINE_CRRU_METRIC,
+            objective_metric=VALIDATION_CRRU_METRIC,
             filename=filenames["components_by_dataset"],
         ),
     )
@@ -1492,7 +1521,7 @@ def export_paper_figures(
         export_lr_branchmix_landscape(
             records,
             output_dir,
-            objective_metric=VALIDATION_ONLINE_CRRU_METRIC,
+            objective_metric=VALIDATION_CRRU_METRIC,
             filename=filenames["lr_branchmix_landscape"],
         ),
     )
@@ -1500,7 +1529,7 @@ def export_paper_figures(
         export_branch_depth_heatmaps(
             records,
             output_dir,
-            objective_metric=VALIDATION_ONLINE_CRRU_METRIC,
+            objective_metric=VALIDATION_CRRU_METRIC,
             filename=filenames["branch_depth_heatmaps"],
         ),
     )
@@ -1508,7 +1537,7 @@ def export_paper_figures(
         export_fanout_runtime_tradeoffs(
             records,
             output_dir,
-            objective_metric=VALIDATION_ONLINE_CRRU_METRIC,
+            objective_metric=VALIDATION_CRRU_METRIC,
             filename=filenames["fanout_runtime_tradeoffs"],
         ),
     )

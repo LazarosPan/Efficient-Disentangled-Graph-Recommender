@@ -2,7 +2,7 @@
 """Query experiment results from SQLite database.
 
 Usage:
-    python scripts/query_results.py                    # Write formal/ablation summary markdown
+    python scripts/query_results.py                    # Write default test-set summary markdown
     python scripts/query_results.py --view all         # Show all experiments
     python scripts/query_results.py --view completed   # Show only completed runs
     python scripts/query_results.py --view attention   # Show failed, OOM, running, or unknown runs
@@ -13,21 +13,27 @@ Usage:
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import sys
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from contextlib import redirect_stdout
+from dataclasses import dataclass, field
 from io import StringIO
 from pathlib import Path
 
 from experiments.ablation_configs import ABLATION_VARIANTS
+from src.reporting.feature_analysis import write_query_feature_analysis_reports
 from src.utils.cli_parsers import build_query_results_parser
 from src.utils.crru import (
     CRRU_REPORT_FORMULA_LINES,
-    compute_crru_efficiency_scores,
-    compute_crru_scores_for_k,
+    compute_validation_crru_for_k,
+)
+from src.utils.crru_popularity import (
+    CRRUPopularityReconstructionError,
+    resolve_largest_training_item_interaction_count,
 )
 from src.utils.experiment_logger import RUNTIME_PROBE_METRIC_NAMES, ExperimentLogger
 from src.utils.experiment_naming import (
@@ -47,19 +53,41 @@ OPTUNA_OPTIMIZATION_MARKDOWN_PATH = RESULTS_DIR / "optuna_optimization.md"
 VIEW_TABLES = ExperimentLogger.VIEW_TABLES
 FORMAL_BATCH_PREFIX = "formal-"
 ABLATION_BATCH_PREFIX = "ablation-"
-ABLATION_VARIANT_ORDER = {
-    variant_name: index for index, variant_name in enumerate(ABLATION_VARIANTS)
-}
 FINAL_FORMAL_PROFILE_NAMES = frozenset(
     {
+        "edgrec-compact-search-prior",
+        "edgrec-lite-default",
+        "amazonbook-edgrec-compact-candidate",
+        "amazonbook-edgrec-deep-features-candidate",
         "core-edgrec-mainline",
         "core-paper-architecture-comparison",
         "paper-lightgcn-small-baselines",
         "paper-lightgcn-baselines",
     }
 )
+FINAL_FORMAL_PROFILE_PREFIXES = ("edgrec-global-top-",)
 RUNTIME_PROBE_COLUMNS = RUNTIME_PROBE_METRIC_NAMES
 PAPER_BASELINE_PRESETS = frozenset({"lightgcn_paper", "dice_paper"})
+
+
+class CRRUDenominatorInvariantError(ValueError):
+    """Raised when raw ARP is inconsistent with the CRRU denominator."""
+
+
+@dataclass
+class CRRUReportAudit:
+    """Audit evidence for report-time CRRU reconstruction."""
+
+    stored_denominator_rows: int = 0
+    reconstructed_denominator_rows: int = 0
+    unavailable_denominator_rows: int = 0
+    invalid_denominator_rows: int = 0
+    skip_reasons: dict[int, str] = field(default_factory=dict)
+
+    @property
+    def computed_rows(self) -> int:
+        """Return rows with a successfully computed CRRU value."""
+        return self.stored_denominator_rows + self.reconstructed_denominator_rows
 
 
 def _display_preset(preset: object | None) -> str:
@@ -172,6 +200,8 @@ def _format_duration(value_s: float | None) -> str:
     """Return measured or estimated runtime in seconds."""
     if value_s is None:
         return "-"
+    if 0 <= value_s < 1:
+        return f"{value_s:.3f}s"
     return f"{value_s:.1f}s"
 
 
@@ -218,6 +248,11 @@ def _query_report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
             return f"s.{column_name}"
         return f"NULL AS {column_name}"
 
+    def summary_expr(column_name: str) -> str:
+        if column_name in summary_columns:
+            return f"s.{column_name}"
+        return "NULL"
+
     try:
         return conn.execute(
             f"""
@@ -225,7 +260,29 @@ def _query_report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                    s.training_time_s, s.completed_train_epochs,
                    {summary_column("avg_epoch_time_s")},
                    s.peak_vram_mb,
+                   COALESCE(
+                       {summary_expr("largest_training_item_interaction_count")},
+                       (
+                           SELECT metric_value
+                           FROM metrics AS crru_pop_metric
+                           WHERE crru_pop_metric.experiment_id = s.id
+                             AND crru_pop_metric.split = 'train'
+                             AND crru_pop_metric.metric_name =
+                                 'largest_training_item_interaction_count'
+                           ORDER BY crru_pop_metric.epoch DESC
+                           LIMIT 1
+                       )
+                   ) AS largest_training_item_interaction_count,
                    s.avg_gpu_utilization_pct,
+                   (
+                       SELECT metric_value
+                       FROM metrics AS train_edge_metric
+                       WHERE train_edge_metric.experiment_id = s.id
+                         AND train_edge_metric.split = 'train'
+                         AND train_edge_metric.metric_name = 'train_edge_count'
+                       ORDER BY train_edge_metric.epoch DESC
+                       LIMIT 1
+                   ) AS train_edge_count,
                    {summary_column("runtime_probe_target_epochs")},
                    {summary_column("runtime_probe_observed_epochs")},
                    {summary_column("runtime_probe_train_batches_per_epoch")},
@@ -252,6 +309,8 @@ def _query_report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                    {summary_column("test_conformity_branch_average_popularity_40")},
                    s.test_conformity_contribution_20,
                    s.test_conformity_contribution_40,
+                   {summary_column("test_conformity_branch_contribution_ratio_20")},
+                   {summary_column("test_conformity_branch_contribution_ratio_40")},
                    s.test_conformity_popularity_spearman_20,
                    s.test_conformity_popularity_spearman_40,
                    s.test_context_contribution_20,
@@ -264,6 +323,8 @@ def _query_report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                    s.test_interest_conformity_cosine_std,
                    s.test_interest_contribution_20,
                    s.test_interest_contribution_40,
+                   {summary_column("test_interest_branch_contribution_ratio_20")},
+                   {summary_column("test_interest_branch_contribution_ratio_40")},
                    s.test_interest_popularity_spearman_20,
                    s.test_interest_popularity_spearman_40,
                    s.test_score_mix_conformity_mean,
@@ -294,6 +355,16 @@ def _query_report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                        s.training_time_s, s.completed_train_epochs,
                        NULL AS avg_epoch_time_s,
                        s.peak_vram_mb,
+                       (
+                           SELECT metric_value
+                           FROM metrics AS crru_pop_metric
+                           WHERE crru_pop_metric.experiment_id = s.id
+                             AND crru_pop_metric.split = 'train'
+                             AND crru_pop_metric.metric_name =
+                                 'largest_training_item_interaction_count'
+                           ORDER BY crru_pop_metric.epoch DESC
+                           LIMIT 1
+                       ) AS largest_training_item_interaction_count,
                        s.avg_gpu_utilization_pct,
                        NULL AS runtime_probe_target_epochs,
                        NULL AS runtime_probe_observed_epochs,
@@ -354,7 +425,13 @@ def _is_final_formal_row(row: sqlite3.Row) -> bool:
     return (
         _is_reportable_formal_row(row)
         and isinstance(profile_name, str)
-        and public_profile_name in FINAL_FORMAL_PROFILE_NAMES
+        and (
+            public_profile_name in FINAL_FORMAL_PROFILE_NAMES
+            or (
+                isinstance(public_profile_name, str)
+                and public_profile_name.startswith(FINAL_FORMAL_PROFILE_PREFIXES)
+            )
+        )
     )
 
 
@@ -381,69 +458,93 @@ def _is_default_report_row(row: sqlite3.Row) -> bool:
     )
 
 
-def _crru_sort_key(
-    row: sqlite3.Row,
-    crru_scores: dict[int, dict[int, float]],
-) -> tuple[float, float, float, float, int]:
-    """Return the sort key that orders rows by CRRU within a dataset."""
-    row_scores = crru_scores[int(row["id"])]
+def _evidence_label(row: sqlite3.Row) -> str:
+    """Return the report-facing provenance label for one test-set row."""
+    if _is_final_formal_row(row):
+        return "thesis profile"
+    if _is_supporting_formal_row(row):
+        return "supporting"
+    if _is_supported_ablation_row(row):
+        return "ablation"
+    return "other"
+
+
+def _leaderboard_label(row: sqlite3.Row) -> str:
+    """Return the preset or ablation variant label for the unified leaderboard."""
+    if _is_supported_ablation_row(row):
+        return row["intervention"] or "-"
+    return _display_preset(row["preset"])
+
+
+def _leaderboard_intervention(row: sqlite3.Row) -> str | None:
+    """Return the intervention label only for ablation rows."""
+    return row["intervention"] if _is_supported_ablation_row(row) else None
+
+
+def _comparison_key(row: sqlite3.Row) -> tuple[str, str, str, str, str, str]:
+    """Return a display-level key used to suppress duplicate support rows."""
+    scoremix, neighbors = _scoremix_and_neighbors(row)
     return (
-        -row_scores[20],
-        -row_scores[40],
-        -(float(row["test_ndcg_20"]) if row["test_ndcg_20"] is not None else float("-inf")),
-        -(float(row["test_ndcg_40"]) if row["test_ndcg_40"] is not None else float("-inf")),
-        int(row["id"]),
+        row["dataset"] or "-",
+        _evidence_label(row),
+        _leaderboard_label(row),
+        _display_profile(row["profile_name"]),
+        scoremix,
+        neighbors,
     )
 
 
-def _select_top_formal_rows(
+def _select_top_test_rows(
     rows: list[sqlite3.Row],
     *,
-    n: int,
+    top_n: int,
     crru_scores: dict[int, dict[int, float]],
-    supporting: bool = False,
 ) -> list[sqlite3.Row]:
-    """Return the top completed formal rows per dataset ranked by CRRU."""
-    row_filter = _is_supporting_formal_row if supporting else _is_final_formal_row
+    """Return the top completed full-data test rows per dataset ranked by CRRU."""
     ranked_rows = sorted(
-        (row for row in rows if row_filter(row)),
+        (row for row in rows if _is_default_report_row(row)),
         key=lambda row: (row["dataset"] or "-", *_crru_sort_key(row, crru_scores)),
     )
 
     top_rows: list[sqlite3.Row] = []
     dataset_counts: dict[str, int] = {}
+    seen_keys: set[tuple[str, str, str, str, str, str]] = set()
     for row in ranked_rows:
+        key = _comparison_key(row)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+
         dataset = row["dataset"] or "-"
-        if dataset_counts.get(dataset, 0) >= n:
+        if dataset_counts.get(dataset, 0) >= top_n:
             continue
         dataset_counts[dataset] = dataset_counts.get(dataset, 0) + 1
         top_rows.append(row)
     return top_rows
 
 
-def _select_best_ablation_rows(
-    rows: list[sqlite3.Row],
-    *,
+def _crru_sort_key(
+    row: sqlite3.Row,
     crru_scores: dict[int, dict[int, float]],
-) -> list[sqlite3.Row]:
-    """Return one completed full-data ablation row per dataset and variant."""
-    best_by_variant: dict[tuple[str, str], sqlite3.Row] = {}
-    ranked_rows = sorted(
-        (row for row in rows if _is_supported_ablation_row(row)),
-        key=lambda row: (row["dataset"] or "-", *_crru_sort_key(row, crru_scores)),
-    )
-    for row in ranked_rows:
-        dataset = row["dataset"] or "-"
-        variant = row["intervention"] or "-"
-        best_by_variant.setdefault((dataset, variant), row)
-
-    return sorted(
-        best_by_variant.values(),
-        key=lambda row: (
-            row["dataset"] or "-",
-            *_crru_sort_key(row, crru_scores),
-            ABLATION_VARIANT_ORDER.get(row["intervention"] or "", len(ABLATION_VARIANT_ORDER)),
-        ),
+) -> tuple[int, float, float, float, float, int]:
+    """Return the sort key that orders rows by CRRU within a dataset."""
+    row_scores = crru_scores.get(int(row["id"]))
+    if row_scores is None:
+        return (
+            1,
+            0.0,
+            0.0,
+            -(float(row["test_ndcg_20"]) if row["test_ndcg_20"] is not None else float("-inf")),
+            -(float(row["test_ndcg_40"]) if row["test_ndcg_40"] is not None else float("-inf")),
+            int(row["id"]),
+        )
+    return (
+        0,
+        -row_scores[20],
+        -row_scores[40],
+        -(float(row["test_ndcg_20"]) if row["test_ndcg_20"] is not None else float("-inf")),
+        -(float(row["test_ndcg_40"]) if row["test_ndcg_40"] is not None else float("-inf")),
+        int(row["id"]),
     )
 
 
@@ -465,39 +566,52 @@ def _print_causal_diagnostics(row: sqlite3.Row) -> None:
     if not has_causal:
         return
 
-    def fmt_val(v: float | None) -> str:
-        return f"{v:.4f}" if v is not None else "-"
+    def format_metric_pair_value(value: float | None) -> str:
+        return f"{value:.4f}" if value is not None else "-"
 
-    def fmt_pair(v20: float | None, v40: float | None) -> str:
-        return f"{{20: {fmt_val(v20)}, 40: {fmt_val(v40)}}}"
+    def format_cutoff_pair(value_at_20: float | None, value_at_40: float | None) -> str:
+        return (
+            f"{{20: {format_metric_pair_value(value_at_20)}, "
+            f"40: {format_metric_pair_value(value_at_40)}}}"
+        )
 
-    conformity_contrib = fmt_pair(
+    conformity_contrib = format_cutoff_pair(
         row["test_conformity_contribution_20"], row["test_conformity_contribution_40"]
     )
-    interest_contrib = fmt_pair(
+    interest_contrib = format_cutoff_pair(
         row["test_interest_contribution_20"], row["test_interest_contribution_40"]
     )
-    context_contrib = fmt_pair(
+    context_contrib = format_cutoff_pair(
         row["test_context_contribution_20"], row["test_context_contribution_40"]
+    )
+    interest_ratio = format_cutoff_pair(
+        _row_value(row, "test_interest_branch_contribution_ratio_20"),
+        _row_value(row, "test_interest_branch_contribution_ratio_40"),
+    )
+    conformity_ratio = format_cutoff_pair(
+        _row_value(row, "test_conformity_branch_contribution_ratio_20"),
+        _row_value(row, "test_conformity_branch_contribution_ratio_40"),
     )
 
     print(
-        f"  Diagnostics: conformity_contrib={conformity_contrib} | "
+        "  Diagnostics: exploratory, not causal proof | "
+        f"conformity_contrib={conformity_contrib} | "
         f"interest_contrib={interest_contrib} | "
-        f"context_contrib={context_contrib}"
+        f"context_contrib={context_contrib} | "
+        f"branch_ratio(interest={interest_ratio}, conformity={conformity_ratio})"
     )
 
-    interest_pop = fmt_pair(
+    interest_pop = format_cutoff_pair(
         row["test_interest_popularity_spearman_20"], row["test_interest_popularity_spearman_40"]
     )
-    conformity_pop = fmt_pair(
+    conformity_pop = format_cutoff_pair(
         row["test_conformity_popularity_spearman_20"],
         row["test_conformity_popularity_spearman_40"],
     )
-    context_pop = fmt_pair(
+    context_pop = format_cutoff_pair(
         row["test_context_popularity_spearman_20"], row["test_context_popularity_spearman_40"]
     )
-    final_pop = fmt_pair(
+    final_pop = format_cutoff_pair(
         row["test_final_popularity_spearman_20"], row["test_final_popularity_spearman_40"]
     )
 
@@ -508,54 +622,56 @@ def _print_causal_diagnostics(row: sqlite3.Row) -> None:
         f"Final={final_pop})"
     )
 
-    def fmt_mean_std(mean: float | None, std: float | None) -> str:
+    def format_mean_and_std(mean: float | None, std: float | None) -> str:
         if mean is None:
             return "-"
         if std is None:
             return f"{mean:.4f}"
         return f"{mean:.4f}±{std:.4f}"
 
-    score_interest = fmt_mean_std(
+    score_interest = format_mean_and_std(
         row["test_score_mix_interest_mean"], row["test_score_mix_interest_std"]
     )
-    score_conformity = fmt_mean_std(
+    score_conformity = format_mean_and_std(
         row["test_score_mix_conformity_mean"], row["test_score_mix_conformity_std"]
     )
-    score_context = fmt_mean_std(
+    score_context = format_mean_and_std(
         row["test_score_mix_context_mean"], row["test_score_mix_context_std"]
     )
-    cosine_sim = fmt_mean_std(
+    cosine_sim = format_mean_and_std(
         row["test_interest_conformity_cosine_mean"], row["test_interest_conformity_cosine_std"]
     )
+    warnings = _branch_collapse_warning_label(row)
+    warning_suffix = f" | Warnings={warnings}" if warnings != "-" else ""
 
     print(
         f"  Score Mix:   Interest={score_interest} | "
         f"Conformity={score_conformity} | "
         f"Context={score_context} | "
-        f"Cosine={cosine_sim}"
+        f"Cosine={cosine_sim}{warning_suffix}"
     )
 
-    interest_branch_ndcg = fmt_pair(
+    interest_branch_ndcg = format_cutoff_pair(
         _row_value(row, "test_interest_branch_ndcg_20"),
         _row_value(row, "test_interest_branch_ndcg_40"),
     )
-    interest_branch_recall = fmt_pair(
+    interest_branch_recall = format_cutoff_pair(
         _row_value(row, "test_interest_branch_recall_20"),
         _row_value(row, "test_interest_branch_recall_40"),
     )
-    interest_branch_pop = fmt_pair(
+    interest_branch_pop = format_cutoff_pair(
         _row_value(row, "test_interest_branch_average_popularity_20"),
         _row_value(row, "test_interest_branch_average_popularity_40"),
     )
-    conformity_branch_ndcg = fmt_pair(
+    conformity_branch_ndcg = format_cutoff_pair(
         _row_value(row, "test_conformity_branch_ndcg_20"),
         _row_value(row, "test_conformity_branch_ndcg_40"),
     )
-    conformity_branch_recall = fmt_pair(
+    conformity_branch_recall = format_cutoff_pair(
         _row_value(row, "test_conformity_branch_recall_20"),
         _row_value(row, "test_conformity_branch_recall_40"),
     )
-    conformity_branch_pop = fmt_pair(
+    conformity_branch_pop = format_cutoff_pair(
         _row_value(row, "test_conformity_branch_average_popularity_20"),
         _row_value(row, "test_conformity_branch_average_popularity_40"),
     )
@@ -568,6 +684,21 @@ def _print_causal_diagnostics(row: sqlite3.Row) -> None:
         f"Conformity NDCG={conformity_branch_ndcg} | "
         f"Recall={conformity_branch_recall} | AvgPop={conformity_branch_pop}"
     )
+
+
+def _branch_collapse_warning_label(row: sqlite3.Row) -> str:
+    """Return compact branch-collapse warning labels for report rows."""
+    warnings: list[str] = []
+    conformity_mix_mean = _row_value(row, "test_score_mix_conformity_mean")
+    interest_mix_mean = _row_value(row, "test_score_mix_interest_mean")
+    branch_cosine_mean = _row_value(row, "test_interest_conformity_cosine_mean")
+    if conformity_mix_mean is not None and conformity_mix_mean > 0.8:
+        warnings.append("conformity_mix>0.8")
+    if interest_mix_mean is not None and interest_mix_mean < 0.1:
+        warnings.append("interest_mix<0.1")
+    if branch_cosine_mean is not None and abs(branch_cosine_mean) > 0.9:
+        warnings.append("|branch_cosine|>0.9")
+    return ", ".join(warnings) if warnings else "-"
 
 
 def _row_value(row: sqlite3.Row, key: str) -> float | None:
@@ -640,7 +771,7 @@ def _print_result_row_experiment(
 
 def _run_detail_cells(
     *,
-    run_index: int,
+    dataset_rank: int,
     row: sqlite3.Row,
     intervention_for_row: Callable[[sqlite3.Row], str | None],
     label_for_row: Callable[[sqlite3.Row], str],
@@ -674,7 +805,7 @@ def _run_detail_cells(
     }
 
     return (
-        f"[{run_index}]",
+        str(dataset_rank),
         dataset,
         label,
         detail_lines.get("Profile", profile_name),
@@ -696,7 +827,7 @@ def _run_detail_cells(
         f"Approximation: {detail_lines.get('Approximation', '-')}"
         if detail_lines.get("Approximation", "-") != "-"
         else "Approximation: -",
-        detail_lines.get("Experiment", canonical_name),
+        _wrap_identifier_for_markdown(detail_lines.get("Experiment", canonical_name)),
     )
 
 
@@ -704,6 +835,25 @@ def _format_markdown_cell(value: object) -> str:
     """Return one Markdown-safe table cell."""
     text = "-" if value is None else str(value)
     return text.replace("|", "\\|").replace("\n", "<br>")
+
+
+def _wrap_identifier_for_markdown(value: str, *, max_line_length: int = 54) -> str:
+    """Insert line breaks in long underscore-separated identifiers."""
+    if len(value) <= max_line_length:
+        return value
+
+    lines: list[str] = []
+    current = ""
+    for part in value.split("_"):
+        candidate = part if not current else f"{current}_{part}"
+        if len(candidate) > max_line_length and current:
+            lines.append(current)
+            current = part
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return "\n".join(lines)
 
 
 def _markdown_alignment(align: str) -> str:
@@ -741,6 +891,11 @@ def _scoremix_and_neighbors(row: sqlite3.Row) -> tuple[str, str]:
 def _peak_vram_label(row: sqlite3.Row) -> str:
     """Return peak VRAM as a compact report label."""
     value = _row_value(row, "peak_vram_mb")
+    return _format_vram_value(value)
+
+
+def _format_vram_value(value: float | None) -> str:
+    """Return peak VRAM as a compact report value."""
     return "-" if value is None else f"{value:.0f}MB"
 
 
@@ -750,94 +905,214 @@ def _epoch_count_label(row: sqlite3.Row) -> str:
     return "-" if value is None else str(int(value))
 
 
-def _print_split_result_tables(
+def _dataset_rank_by_id(rows: Sequence[sqlite3.Row]) -> dict[int, int]:
+    """Return dataset-local display ranks keyed by experiment id."""
+    ranks_by_id: dict[int, int] = {}
+    dataset_counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        dataset = row["dataset"] or "-"
+        dataset_counts[dataset] += 1
+        ranks_by_id[int(row["id"])] = dataset_counts[dataset]
+    return ranks_by_id
+
+
+def _best_values_by_dataset(
+    rows: Sequence[sqlite3.Row],
+    value_for_row: Callable[[sqlite3.Row], float | None],
+    *,
+    direction: str,
+) -> dict[str, float]:
+    """Return the best raw value for each dataset under a max/min direction."""
+    values_by_dataset: dict[str, list[float]] = defaultdict(list)
+    for row in rows:
+        value = value_for_row(row)
+        if value is not None:
+            values_by_dataset[row["dataset"] or "-"].append(value)
+
+    if direction == "min":
+        return {dataset: min(values) for dataset, values in values_by_dataset.items()}
+    return {dataset: max(values) for dataset, values in values_by_dataset.items()}
+
+
+def _format_best_cell(
+    row: sqlite3.Row,
+    value: float | None,
+    formatted: str,
+    best_by_dataset: dict[str, float],
+) -> str:
+    """Return a formatted table value, bolded when it is dataset-local best."""
+    if value is None or formatted == "-":
+        return formatted
+    best = best_by_dataset.get(row["dataset"] or "-")
+    if best is not None and abs(value - best) <= 1e-12:
+        return f"**{formatted}**"
+    return formatted
+
+
+def _print_ranked_result_table(
     rows: list[sqlite3.Row],
     *,
     crru_scores: dict[int, dict[int, float]],
     label_header: str,
     label_width: int,
     label_for_row: Callable[[sqlite3.Row], str],
+    evidence_for_row: Callable[[sqlite3.Row], str] | None = None,
 ) -> None:
-    """Print result rows as accuracy, popularity-diversity, and resource tables."""
-    common_columns = (
-        ("Run", 4, ">"),
+    """Print result rows as one ranked metric/resource table."""
+    columns: tuple[tuple[str, int, str], ...] = (
+        ("DatasetRank", 11, ">"),
+        ("ExpID", 6, ">"),
         ("Dataset", 14, "<"),
+    )
+    if evidence_for_row is not None:
+        columns += (("Evidence", 14, "<"),)
+    columns += (
         (label_header, label_width, "<"),
+        ("Profile", 32, "<"),
         ("ScoreMix", 8, "<"),
         ("Neighbors", 10, "<"),
-    )
-    accuracy_columns = (
-        *common_columns,
+        ("CRRU@20", 8, ">"),
+        ("CRRU@40", 8, ">"),
         ("NDCG@20", 8, ">"),
         ("Recall@20", 10, ">"),
         ("Hit@20", 8, ">"),
+        ("Pers@20", 9, ">"),
+        ("AvgPop@20", 12, ">"),
         ("NDCG@40", 8, ">"),
         ("Recall@40", 10, ">"),
         ("Hit@40", 8, ">"),
-    )
-    popularity_diversity_columns = (
-        *common_columns,
-        ("Pers@20", 9, ">"),
-        ("AvgPop@20", 10, ">"),
         ("Pers@40", 9, ">"),
-        ("AvgPop@40", 10, ">"),
-    )
-    resource_columns = (
-        *common_columns,
-        ("CRRU@20", 8, ">"),
-        ("CRRU@40", 8, ">"),
+        ("AvgPop@40", 12, ">"),
         ("Epochs", 6, ">"),
         ("Time/Ep", 10, ">"),
         ("PeakVRAM", 10, ">"),
     )
 
-    accuracy_rows: list[tuple[object, ...]] = []
-    popularity_diversity_rows: list[tuple[object, ...]] = []
-    resource_rows: list[tuple[object, ...]] = []
-    for run_index, row in enumerate(rows, start=1):
+    table_rows: list[tuple[object, ...]] = []
+    ranks_by_id = _dataset_rank_by_id(rows)
+    metric_specs: tuple[
+        tuple[str, Callable[[sqlite3.Row], float | None], Callable[[float | None], str], str],
+        ...,
+    ] = (
+        (
+            "CRRU@20",
+            lambda row: crru_scores.get(int(row["id"]), {}).get(20),
+            _format_crru_value,
+            "max",
+        ),
+        (
+            "CRRU@40",
+            lambda row: crru_scores.get(int(row["id"]), {}).get(40),
+            _format_crru_value,
+            "max",
+        ),
+        ("NDCG@20", lambda row: _row_value(row, "test_ndcg_20"), _format_metric_value, "max"),
+        (
+            "Recall@20",
+            lambda row: _row_value(row, "test_recall_20"),
+            _format_metric_value,
+            "max",
+        ),
+        (
+            "Hit@20",
+            lambda row: _row_value(row, "test_hit_ratio_20"),
+            _format_metric_value,
+            "max",
+        ),
+        (
+            "Pers@20",
+            lambda row: _row_value(row, "test_personalization_20"),
+            _format_metric_value,
+            "max",
+        ),
+        (
+            "AvgPop@20",
+            lambda row: _row_value(row, "test_average_popularity_20"),
+            _format_metric_value,
+            "min",
+        ),
+        ("NDCG@40", lambda row: _row_value(row, "test_ndcg_40"), _format_metric_value, "max"),
+        (
+            "Recall@40",
+            lambda row: _row_value(row, "test_recall_40"),
+            _format_metric_value,
+            "max",
+        ),
+        (
+            "Hit@40",
+            lambda row: _row_value(row, "test_hit_ratio_40"),
+            _format_metric_value,
+            "max",
+        ),
+        (
+            "Pers@40",
+            lambda row: _row_value(row, "test_personalization_40"),
+            _format_metric_value,
+            "max",
+        ),
+        (
+            "AvgPop@40",
+            lambda row: _row_value(row, "test_average_popularity_40"),
+            _format_metric_value,
+            "min",
+        ),
+        ("Time/Ep", _crru_epoch_time_s, _format_duration, "min"),
+        ("PeakVRAM", lambda row: _row_value(row, "peak_vram_mb"), _format_vram_value, "min"),
+    )
+    best_by_metric = {
+        metric_name: _best_values_by_dataset(rows, value_getter, direction=direction)
+        for metric_name, value_getter, _formatter, direction in metric_specs
+    }
+
+    for row in rows:
         dataset = row["dataset"] or "-"
         label = label_for_row(row)
         scoremix, neighbors = _scoremix_and_neighbors(row)
-        base = (run_index, dataset, label, scoremix, neighbors)
-        row_crru_scores = crru_scores.get(int(row["id"]), {})
-        accuracy_rows.append(
+        base_cells: list[object] = [
+            ranks_by_id[int(row["id"])],
+            int(row["id"]),
+            dataset,
+        ]
+        if evidence_for_row is not None:
+            base_cells.append(evidence_for_row(row))
+        metric_cells = []
+        for metric_name, value_getter, formatter, _direction in metric_specs:
+            raw_value = value_getter(row)
+            metric_cells.append(
+                _format_best_cell(
+                    row,
+                    raw_value,
+                    formatter(raw_value),
+                    best_by_metric[metric_name],
+                ),
+            )
+        table_rows.append(
             (
-                *base,
-                _format_metric_value(row["test_ndcg_20"]),
-                _format_metric_value(row["test_recall_20"]),
-                _format_metric_value(row["test_hit_ratio_20"]),
-                _format_metric_value(row["test_ndcg_40"]),
-                _format_metric_value(row["test_recall_40"]),
-                _format_metric_value(row["test_hit_ratio_40"]),
-            ),
-        )
-        popularity_diversity_rows.append(
-            (
-                *base,
-                _format_metric_value(row["test_personalization_20"]),
-                _format_metric_value(row["test_average_popularity_20"]),
-                _format_metric_value(row["test_personalization_40"]),
-                _format_metric_value(row["test_average_popularity_40"]),
-            ),
-        )
-        resource_rows.append(
-            (
-                *base,
-                _format_crru_value(row_crru_scores.get(20)),
-                _format_crru_value(row_crru_scores.get(40)),
+                *base_cells,
+                label,
+                _display_profile(row["profile_name"]),
+                scoremix,
+                neighbors,
+                *metric_cells[:12],
                 _epoch_count_label(row),
-                _format_duration(_crru_epoch_time_s(row)),
-                _peak_vram_label(row),
+                *metric_cells[12:],
             ),
         )
 
-    _print_metric_table("Accuracy metrics", accuracy_columns, accuracy_rows)
     _print_metric_table(
-        "Popularity-diversity diagnostics (AvgPop lower means lower popularity concentration)",
-        popularity_diversity_columns,
-        popularity_diversity_rows,
+        "Ranked test metrics, CRRU, and resource use",
+        columns,
+        table_rows,
     )
-    _print_metric_table("Composite utility and resource use", resource_columns, resource_rows)
+    print(
+        "Bold values mark the best shown value within each dataset. Lower is better for "
+        "AvgPop is PyG AveragePopularity computed from raw train item counts; lower "
+        "means less raw training-popularity concentration. CRRU log-normalizes raw "
+        "AvgPop internally with the largest train item count. Lower is also better for Time/Ep and "
+        "PeakVRAM; higher is better for CRRU, accuracy, and personalization. Epoch "
+        "count is not bolded because fewer epochs is not always a better model result."
+    )
+    print()
 
 
 def _select_paper_runtime_probe_rows(rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
@@ -867,12 +1142,12 @@ def _paper_baseline_status_note(preset: str) -> str:
     """Return thesis-facing interpretation for one paper baseline preset."""
     if preset == "lightgcn_paper":
         return (
-            "Paper-faithful LightGCN adapter; full formal rows are ranking baselines, "
+            "Paper-faithful LightGCN adapter; full test rows are ranking baselines, "
             "runtime probes are resource-only evidence."
         )
     if preset == "dice_paper":
         return (
-            "Paper-faithful DICE adapter; current formal evidence is one-epoch runtime "
+            "Paper-faithful DICE adapter; current evidence is one-epoch runtime "
             "probes, so use time/epoch and VRAM only until a full run is scheduled."
         )
     return "-"
@@ -902,8 +1177,8 @@ def _print_paper_baseline_notes(
 
     print("## Paper Baseline Notes")
     print(
-        "Paper baselines are kept visible here even when a full formal run is impractical. "
-        "Runtime-probe rows are excluded from the ranked formal tables."
+        "Paper baselines are kept visible here even when a full run is impractical. "
+        "Runtime-probe rows are excluded from the test-set leaderboard."
     )
     print()
 
@@ -925,7 +1200,7 @@ def _print_paper_baseline_notes(
         "Baseline evidence status",
         (
             ("Preset", 14, "<"),
-            ("Full formal datasets", 24, "<"),
+            ("Full test datasets", 24, "<"),
             ("Runtime-probe datasets", 24, "<"),
             ("Interpretation", 70, "<"),
         ),
@@ -955,7 +1230,7 @@ def _print_paper_baseline_notes(
     _print_metric_table(
         "Paper baseline runtime probes",
         (
-            ("Run", 4, "<"),
+            ("Probe", 5, "<"),
             ("Dataset", 14, "<"),
             ("Preset", 14, "<"),
             ("Profile", 32, "<"),
@@ -971,27 +1246,126 @@ def _print_paper_baseline_notes(
     )
 
 
+def _config_float(config: dict[str, object], key: str) -> float | None:
+    """Return a numeric config value when it is scalar."""
+    value = config.get(key)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float):
+        return float(value)
+    return None
+
+
+def _format_batch_label(config: dict[str, object]) -> str:
+    """Return selected batch size as a compact label."""
+    value = config.get("batch_size")
+    if isinstance(value, int):
+        return f"{value:,}"
+    if isinstance(value, float):
+        return f"{value:,.0f}"
+    if isinstance(value, list):
+        return ", ".join(f"{int(item):,}" for item in value if isinstance(item, int | float))
+    return "-"
+
+
+def _format_integer_label(value: float | None) -> str:
+    """Return a whole-number metric as a compact label."""
+    return "-" if value is None else f"{value:,.0f}"
+
+
+def _timing_source_label(row: sqlite3.Row) -> str:
+    """Return the source used for the reported time/epoch value."""
+    if _row_value(row, "avg_epoch_time_s") is not None:
+        return "avg epoch_time_s"
+    if _row_value(row, "training_time_s") is not None and _row_value(
+        row,
+        "completed_train_epochs",
+    ):
+        return "train time / epochs"
+    return "-"
+
+
+def _print_resource_context_notes(rows: Sequence[sqlite3.Row]) -> None:
+    """Print context for resource values that are easy to misread."""
+    note_rows: list[tuple[object, ...]] = []
+    for row in rows:
+        config = _load_config_json(row["config_json"])
+        item_policy = str(config.get("item_universe_policy") or "-")
+        edge_keep = _config_float(config, "train_edge_keep_prob")
+        batch_size = _config_float(config, "batch_size")
+        epoch_time_s = _crru_epoch_time_s(row)
+        train_edge_count = _row_value(row, "train_edge_count")
+
+        reasons: list[str] = []
+        if epoch_time_s is not None and epoch_time_s < 1.0:
+            reasons.append("sub-second Time/Ep")
+        if item_policy == "random_exposure_items_only":
+            reasons.append("random-exposure item universe")
+        if batch_size is not None and batch_size >= 1_000_000:
+            reasons.append("million-scale batch")
+        if edge_keep is not None and edge_keep < 1.0:
+            reasons.append(f"train_edge_keep_prob={edge_keep:g}")
+        if train_edge_count is not None and train_edge_count < 10_000:
+            reasons.append("compact train graph")
+        if not reasons:
+            continue
+
+        note_rows.append(
+            (
+                row["dataset"] or "-",
+                int(row["id"]),
+                _evidence_label(row),
+                item_policy,
+                _format_batch_label(config),
+                _format_integer_label(train_edge_count),
+                _format_duration(epoch_time_s),
+                _timing_source_label(row),
+                "; ".join(reasons),
+            ),
+        )
+
+    if not note_rows:
+        return
+
+    _print_metric_table(
+        "Resource comparability notes",
+        (
+            ("Dataset", 14, "<"),
+            ("ExpID", 6, ">"),
+            ("Evidence", 14, "<"),
+            ("ItemScope", 28, "<"),
+            ("Batch", 12, ">"),
+            ("TrainEdges", 11, ">"),
+            ("Time/Ep", 10, ">"),
+            ("Timing source", 18, "<"),
+            ("Why flagged", 68, "<"),
+        ),
+        note_rows,
+    )
+
+
 def _print_run_details(
     rows: list[sqlite3.Row],
     *,
     label_for_row: Callable[[sqlite3.Row], str],
     intervention_for_row: Callable[[sqlite3.Row], str | None],
 ) -> None:
-    """Print per-run profile, diagnostic, and canonical-name details."""
+    """Print per-row profile, diagnostic, and canonical-name details."""
     detail_rows: list[tuple[object, ...]] = []
-    for run_index, row in enumerate(rows, start=1):
+    ranks_by_id = _dataset_rank_by_id(rows)
+    for row in rows:
         detail_rows.append(
             _run_detail_cells(
-                run_index=run_index,
+                dataset_rank=ranks_by_id[int(row["id"])],
                 row=row,
                 intervention_for_row=intervention_for_row,
                 label_for_row=label_for_row,
             ),
         )
 
-    print("### Run Details")
+    print("### Diagnostic Details")
     headers = (
-        "Run",
+        "DatasetRank",
         "Dataset",
         "Preset/Variant",
         "Profile",
@@ -1023,60 +1397,38 @@ def _print_run_details(
     print()
 
 
-def _print_formal_rows(
-    rows: list[sqlite3.Row],
-    *,
-    crru_scores: dict[int, dict[int, float]],
-    title: str,
-    empty_message: str,
-) -> None:
-    """Print the formal-run ranking table."""
-    print(f"## {title}")
-    if not rows:
-        print(empty_message)
-        print()
-        return
-
-    _print_split_result_tables(
-        rows,
-        crru_scores=crru_scores,
-        label_header="Preset",
-        label_width=12,
-        label_for_row=lambda row: _display_preset(row["preset"]),
-    )
-    _print_run_details(
-        rows,
-        label_for_row=lambda row: _display_preset(row["preset"]),
-        intervention_for_row=lambda _row: None,
-    )
-
-
-def _print_ablation_rows(
+def _print_test_leaderboard(
     rows: list[sqlite3.Row],
     *,
     crru_scores: dict[int, dict[int, float]],
 ) -> None:
-    """Print the best full-data ablation rows per dataset and variant."""
+    """Print the unified full-data test-set leaderboard."""
+    print("## TEST-SET RESULT LEADERBOARD - completed full-data rows")
     print(
-        "## ABLATION FULL-DATA TEST RUNS — currently supported variants, "
-        "best run per dataset ranked by CRRU@20 then CRRU@40"
+        "Rows here all have test-set metrics and are ranked within each dataset by "
+        "CRRU@20 then CRRU@40. The `Evidence` column marks whether a row is a named "
+        "thesis profile, a supporting historical/diagnostic row, or a public ablation "
+        "variant. Runtime probes remain separate because their accuracy is diagnostic."
     )
+    print()
     if not rows:
-        print("No completed ablation full-data runs with test metrics found.")
+        print("No completed full-data test rows with metrics found.")
         print()
         return
 
-    _print_split_result_tables(
+    _print_ranked_result_table(
         rows,
         crru_scores=crru_scores,
-        label_header="Variant",
+        label_header="Preset/Variant",
         label_width=20,
-        label_for_row=lambda row: row["intervention"] or "-",
+        label_for_row=_leaderboard_label,
+        evidence_for_row=_evidence_label,
     )
+    _print_resource_context_notes(rows)
     _print_run_details(
         rows,
-        label_for_row=lambda row: row["intervention"] or "-",
-        intervention_for_row=lambda row: row["intervention"],
+        label_for_row=_leaderboard_label,
+        intervention_for_row=_leaderboard_intervention,
     )
 
 
@@ -1094,7 +1446,7 @@ def _print_optuna_report_pointer() -> None:
     print()
 
 
-def show_experiment(conn: sqlite3.Connection, exp_id: int) -> None:
+def show_experiment(conn: sqlite3.Connection, experiment_id: int) -> None:
     """Show experiment details."""
     row = conn.execute(
         """
@@ -1103,15 +1455,15 @@ def show_experiment(conn: sqlite3.Connection, exp_id: int) -> None:
              gpu_name, gpu_vram_gb, training_mode, updated_at
         FROM experiments WHERE id = ?
     """,
-        (exp_id,),
+        (experiment_id,),
     ).fetchone()
 
     if not row:
-        print(f"Experiment {exp_id} not found.")
+        print(f"Experiment {experiment_id} not found.")
         return
 
     print("=" * 80)
-    print(f"EXPERIMENT {exp_id}")
+    print(f"EXPERIMENT {experiment_id}")
     print("=" * 80)
     print(f"Database:     {THESIS_DB_PATH.resolve()}")
     print(f"Timestamp:    {row['timestamp']}")
@@ -1136,14 +1488,14 @@ def show_experiment(conn: sqlite3.Connection, exp_id: int) -> None:
 
     if row["config_json"]:
         config = json.loads(row["config_json"])
-        for k, v in sorted(config.items()):
-            print(f"  {k}: {v}")
+        for config_key, config_value in sorted(config.items()):
+            print(f"  {config_key}: {config_value}")
 
 
-def show_metrics(conn: sqlite3.Connection, exp_id: int) -> None:
+def show_metrics(conn: sqlite3.Connection, experiment_id: int) -> None:
     """Show metrics for an experiment."""
     print("=" * 80)
-    print(f"METRICS (Experiment {exp_id})")
+    print(f"METRICS (Experiment {experiment_id})")
     print("=" * 80)
 
     # Group by split
@@ -1155,7 +1507,7 @@ def show_metrics(conn: sqlite3.Connection, exp_id: int) -> None:
             WHERE experiment_id = ? AND split = ?
             ORDER BY epoch, metric_name, timestamp
         """,
-            (exp_id, split),
+            (experiment_id, split),
         ).fetchall()
 
         if rows:
@@ -1171,10 +1523,10 @@ def show_metrics(conn: sqlite3.Connection, exp_id: int) -> None:
                 )
 
 
-def show_profiling(conn: sqlite3.Connection, exp_id: int) -> None:
+def show_profiling(conn: sqlite3.Connection, experiment_id: int) -> None:
     """Show profiling breakdown for an experiment."""
     print("=" * 80)
-    print(f"PROFILING (Experiment {exp_id})")
+    print(f"PROFILING (Experiment {experiment_id})")
     print("=" * 80)
 
     # Summary by stage
@@ -1196,7 +1548,7 @@ def show_profiling(conn: sqlite3.Connection, exp_id: int) -> None:
         GROUP BY stage
         ORDER BY total_ms DESC
     """,
-        (exp_id,),
+        (experiment_id,),
     ).fetchall()
 
     if not rows:
@@ -1215,14 +1567,14 @@ def show_profiling(conn: sqlite3.Connection, exp_id: int) -> None:
     print("-" * 150)
     for row in rows:
         stage_total_ms = float(row["total_ms"])
-        pct = (stage_total_ms / total_ms * 100) if total_ms > 0 else 0
+        total_percentage = (stage_total_ms / total_ms * 100) if total_ms > 0 else 0
         peak_vram_mb = row["peak_vram_mb"]
         peak_str = f"{peak_vram_mb:.0f} MB" if peak_vram_mb else "-"
         print(
             (
                 f"{row['stage']:<15} | {row['avg_epoch_ms']:>11.1f} | "
                 f"{row['avg_call_ms']:>10.1f} | {row['total_calls']:>6} | "
-                f"{row['profiled_epochs']:>6} | {pct:>5.1f}% | {peak_str:<9} | "
+                f"{row['profiled_epochs']:>6} | {total_percentage:>5.1f}% | {peak_str:<9} | "
                 f"{row['last_logged_at']}"
             ),
         )
@@ -1231,10 +1583,10 @@ def show_profiling(conn: sqlite3.Connection, exp_id: int) -> None:
     print(f"{'TOTAL':<15} | {total_ms:>11.1f}")
 
 
-def show_alpha_drift(conn: sqlite3.Connection, exp_id: int) -> None:
+def show_alpha_drift(conn: sqlite3.Connection, experiment_id: int) -> None:
     """Show alpha_pos/alpha_neg values over epochs."""
     print("=" * 80)
-    print(f"ALPHA DRIFT (Experiment {exp_id})")
+    print(f"ALPHA DRIFT (Experiment {experiment_id})")
     print("=" * 80)
 
     rows = conn.execute(
@@ -1244,7 +1596,7 @@ def show_alpha_drift(conn: sqlite3.Connection, exp_id: int) -> None:
         WHERE experiment_id = ? AND metric_name LIKE 'alpha%'
         ORDER BY epoch, metric_name
     """,
-        (exp_id,),
+        (experiment_id,),
     ).fetchall()
 
     if not rows:
@@ -1264,10 +1616,10 @@ def show_alpha_drift(conn: sqlite3.Connection, exp_id: int) -> None:
         print(f"{epoch:>5} | {alpha_pos:>10.4f} | {alpha_neg:>10.4f}")
 
 
-def show_bottleneck(conn: sqlite3.Connection, exp_id: int) -> None:
+def show_bottleneck(conn: sqlite3.Connection, experiment_id: int) -> None:
     """Show bottleneck analysis (which stage takes most time)."""
     print("=" * 80)
-    print(f"BOTTLENECK ANALYSIS (Experiment {exp_id})")
+    print(f"BOTTLENECK ANALYSIS (Experiment {experiment_id})")
     print("=" * 80)
 
     rows = conn.execute(
@@ -1280,7 +1632,7 @@ def show_bottleneck(conn: sqlite3.Connection, exp_id: int) -> None:
         GROUP BY stage
         ORDER BY total_ms DESC
     """,
-        (exp_id,),
+        (experiment_id,),
     ).fetchall()
 
     if not rows:
@@ -1293,13 +1645,13 @@ def show_bottleneck(conn: sqlite3.Connection, exp_id: int) -> None:
         f"\n{'Rank':>4} | {'Stage':<15} | {'Total (ms)':>12} | {'Calls':>6} | {'% of Total':>10}",
     )
     print("-" * 60)
-    for i, row in enumerate(rows, 1):
+    for rank, row in enumerate(rows, 1):
         stage_total_ms = float(row["total_ms"])
-        pct = (stage_total_ms / grand_total * 100) if grand_total > 0 else 0
+        total_percentage = (stage_total_ms / grand_total * 100) if grand_total > 0 else 0
         print(
             ""
-            f"{i:>4} | {row['stage']:<15} | {stage_total_ms:>12.1f} | "
-            f"{row['n_calls']:>6} | {pct:>9.1f}%",
+            f"{rank:>4} | {row['stage']:<15} | {stage_total_ms:>12.1f} | "
+            f"{row['n_calls']:>6} | {total_percentage:>9.1f}%",
         )
 
     print("-" * 60)
@@ -1333,46 +1685,146 @@ def _crru_epoch_time_s(row: sqlite3.Row) -> float | None:
     return training_time_s if training_time_s is not None and training_time_s > 0 else None
 
 
-def _compute_dataset_crru_scores(rows: list[sqlite3.Row]) -> dict[int, dict[int, float]]:
-    """Return dataset-local CRRU@20 and CRRU@40 scores keyed by experiment ID."""
-    scores_by_id: dict[int, dict[int, float]] = {}
-    rows_by_dataset: dict[str, list[sqlite3.Row]] = defaultdict(list)
-    for row in rows:
-        rows_by_dataset[row["dataset"] or "-"].append(row)
+def _largest_training_item_interaction_count_for_row(row: sqlite3.Row) -> float:
+    """Return the stored or reconstructed CRRU popularity denominator for a row."""
+    value, _source = _largest_training_item_interaction_count_for_row_with_source(row)
+    return value
 
-    for dataset_rows in rows_by_dataset.values():
-        efficiency_scores = compute_crru_efficiency_scores(
-            [row["peak_vram_mb"] for row in dataset_rows],
-            [_crru_epoch_time_s(row) for row in dataset_rows],
-        )
-        crru_20 = compute_crru_scores_for_k(
-            ndcg=[row["test_ndcg_20"] for row in dataset_rows],
-            recall=[row["test_recall_20"] for row in dataset_rows],
-            hit=[row["test_hit_ratio_20"] for row in dataset_rows],
-            personalization=[row["test_personalization_20"] for row in dataset_rows],
-            average_popularity=[row["test_average_popularity_20"] for row in dataset_rows],
-            efficiency_scores=efficiency_scores,
-        )
-        crru_40 = compute_crru_scores_for_k(
-            ndcg=[row["test_ndcg_40"] for row in dataset_rows],
-            recall=[row["test_recall_40"] for row in dataset_rows],
-            hit=[row["test_hit_ratio_40"] for row in dataset_rows],
-            personalization=[row["test_personalization_40"] for row in dataset_rows],
-            average_popularity=[row["test_average_popularity_40"] for row in dataset_rows],
-            efficiency_scores=efficiency_scores,
-        )
-        for row, score_20, score_40 in zip(
-            dataset_rows,
-            crru_20,
-            crru_40,
-            strict=True,
+
+def _largest_training_item_interaction_count_for_row_with_source(
+    row: sqlite3.Row,
+) -> tuple[float, str]:
+    """Return CRRU popularity denominator and whether it was stored or rebuilt."""
+    try:
+        config_json = row["config_json"]
+    except (IndexError, KeyError):
+        config_json = None
+    stored_value = _row_value(row, "largest_training_item_interaction_count")
+    source = "stored" if stored_value is not None else "reconstructed"
+    return resolve_largest_training_item_interaction_count(
+        stored_value=stored_value,
+        config=_load_config_json(config_json),
+        dataset=row["dataset"],
+    ), source
+
+
+def _assert_average_popularity_within_denominator(
+    row: sqlite3.Row,
+    *,
+    largest_training_item_interaction_count: float,
+) -> None:
+    """Assert raw PyG ARP is on the same scale as the reconstructed denominator."""
+    for cutoff in (20, 40):
+        average_popularity = _row_value(row, f"test_average_popularity_{cutoff}")
+        if average_popularity is None:
+            continue
+        if not math.isfinite(average_popularity):
+            continue
+        if (
+            math.isfinite(largest_training_item_interaction_count)
+            and average_popularity > largest_training_item_interaction_count
         ):
-            scores_by_id[int(row["id"])] = {20: score_20, 40: score_40}
+            raise CRRUDenominatorInvariantError(
+                f"AveragePopularity@{cutoff}={average_popularity:g} exceeds "
+                "LargestTrainingItemInteractionCount="
+                f"{largest_training_item_interaction_count:g}; raw ARP scale or "
+                "training-graph reconstruction is inconsistent",
+            )
 
+
+def _assert_crru_scores_bounded(scores: dict[int, float]) -> None:
+    """Assert final report CRRU values satisfy the formal [0, 1] bound."""
+    for cutoff, value in scores.items():
+        if not math.isfinite(value) or value < 0.0 or value > 1.0:
+            raise ValueError(f"CRRU@{cutoff} must be finite and in [0, 1]; got {value!r}.")
+
+
+def _compute_dataset_crru_scores(
+    rows: list[sqlite3.Row],
+) -> dict[int, dict[int, float]]:
+    """Return absolute CRRU@20 and CRRU@40 scores keyed by experiment ID."""
+    scores_by_id, _audit = _compute_dataset_crru_scores_with_audit(rows)
     return scores_by_id
 
 
-def _print_crru_summary() -> None:
+def _compute_dataset_crru_scores_with_reasons(
+    rows: list[sqlite3.Row],
+) -> tuple[dict[int, dict[int, float]], dict[int, str]]:
+    """Return absolute CRRU scores and precise skip reasons keyed by experiment ID."""
+    scores_by_id, audit = _compute_dataset_crru_scores_with_audit(rows)
+    return scores_by_id, audit.skip_reasons
+
+
+def _compute_dataset_crru_scores_with_audit(
+    rows: list[sqlite3.Row],
+) -> tuple[dict[int, dict[int, float]], CRRUReportAudit]:
+    """Return absolute CRRU scores plus report-time reconstruction audit evidence."""
+    scores_by_id: dict[int, dict[int, float]] = {}
+    audit = CRRUReportAudit()
+    for row in rows:
+        experiment_id = int(row["id"])
+        try:
+            (
+                largest_training_item_interaction_count,
+                denominator_source,
+            ) = _largest_training_item_interaction_count_for_row_with_source(row)
+            _assert_average_popularity_within_denominator(
+                row,
+                largest_training_item_interaction_count=largest_training_item_interaction_count,
+            )
+            metrics = {
+                "NDCG@20": row["test_ndcg_20"],
+                "Recall@20": row["test_recall_20"],
+                "HitRatio@20": row["test_hit_ratio_20"],
+                "Personalization@20": row["test_personalization_20"],
+                "AveragePopularity@20": row["test_average_popularity_20"],
+                "NDCG@40": row["test_ndcg_40"],
+                "Recall@40": row["test_recall_40"],
+                "HitRatio@40": row["test_hit_ratio_40"],
+                "Personalization@40": row["test_personalization_40"],
+                "AveragePopularity@40": row["test_average_popularity_40"],
+            }
+            epoch_time_s = _crru_epoch_time_s(row)
+            crru_20 = compute_validation_crru_for_k(
+                metrics,
+                k=20,
+                peak_vram_mb=row["peak_vram_mb"],
+                epoch_time_s=epoch_time_s,
+                largest_training_item_interaction_count=largest_training_item_interaction_count,
+            )
+            crru_40 = compute_validation_crru_for_k(
+                metrics,
+                k=40,
+                peak_vram_mb=row["peak_vram_mb"],
+                epoch_time_s=epoch_time_s,
+                largest_training_item_interaction_count=largest_training_item_interaction_count,
+            )
+            row_scores = {20: crru_20, 40: crru_40}
+            _assert_crru_scores_bounded(row_scores)
+        except CRRUPopularityReconstructionError as exc:
+            if _row_value(row, "largest_training_item_interaction_count") is None:
+                audit.unavailable_denominator_rows += 1
+            else:
+                audit.invalid_denominator_rows += 1
+            audit.skip_reasons[experiment_id] = str(exc) or exc.__class__.__name__
+            continue
+        except CRRUDenominatorInvariantError as exc:
+            audit.invalid_denominator_rows += 1
+            audit.skip_reasons[experiment_id] = str(exc) or exc.__class__.__name__
+            continue
+        except (IndexError, KeyError, ValueError) as exc:
+            audit.skip_reasons[experiment_id] = str(exc) or exc.__class__.__name__
+            continue
+        if denominator_source == "stored":
+            audit.stored_denominator_rows += 1
+        else:
+            audit.reconstructed_denominator_rows += 1
+        scores_by_id[experiment_id] = row_scores
+
+    return scores_by_id, audit
+
+
+def _print_crru_summary(audit: CRRUReportAudit | None = None) -> None:
     """Print the CRRU framing used by the default thesis summary."""
     print("## CRRU Reporting Utility")
     for index, line in enumerate(CRRU_REPORT_FORMULA_LINES):
@@ -1380,71 +1832,155 @@ def _print_crru_summary() -> None:
             print(f"**{line}**")
         else:
             print(f"- {line.strip()}")
+    print(
+        "- Reports use the logged LargestTrainingItemInteractionCount when present; "
+        "otherwise they reconstruct it from the stored dataset, preprocessing, "
+        "item-universe, split, sampling, and seed configuration."
+    )
+    if audit is not None:
+        print(
+            "- PyG AveragePopularity@K is logged using raw train-only item "
+            "interaction counts; CRRU applies log-normalized scaling to the raw "
+            "ARP only inside the CRRU utility."
+        )
+        print(
+            "- CRRU denominator source: "
+            f"{audit.stored_denominator_rows} stored, "
+            f"{audit.reconstructed_denominator_rows} reconstructed, "
+            f"{audit.unavailable_denominator_rows} unavailable, "
+            f"{audit.invalid_denominator_rows} invalid."
+        )
+        print(
+            f"- CRRU audit: {audit.computed_rows} rows computed, {len(audit.skip_reasons)} skipped."
+        )
+        if audit.computed_rows:
+            print(
+                "- CRRU audit assertions passed: AveragePopularity@20/@40 <= "
+                "LargestTrainingItemInteractionCount and CRRU@20/@40 in [0, 1] "
+                "for every computed row."
+            )
+    if audit is not None and audit.skip_reasons:
+        print(
+            "- Rows with blank CRRU lack at least one formal input or cannot safely "
+            "reconstruct training-graph metadata:"
+        )
+        for experiment_id, reason in sorted(audit.skip_reasons.items())[:12]:
+            print(f"  - ExpID {experiment_id}: {reason}")
+        if len(audit.skip_reasons) > 12:
+            print(f"  - ... {len(audit.skip_reasons) - 12} more rows omitted.")
     print()
 
 
-def list_top_completed(conn: sqlite3.Connection, *, n: int = 20) -> None:
-    """Print the default thesis summary for formal and ablation test runs."""
-    print("## THESIS TEST RESULTS — formal and ablation runs only (full-data only)")
+def _print_evidence_role_notes() -> None:
+    """Print report-wide evidence role and dataset-policy notes."""
+    print("## Evidence Role Notes")
+    print(
+        "Rows in this report are evidence, not automatic thesis selections. "
+        "Use the role labels below before turning a row into thesis wording."
+    )
+    print()
+    _print_metric_table(
+        "Evidence role legend",
+        (
+            ("Role", 26, "<"),
+            ("Meaning", 90, "<"),
+        ),
+        (
+            (
+                "validation search candidate",
+                "Optuna validation-row candidate from `results/optuna_optimization.md`; "
+                "requires a full-data test rerun before test claims.",
+            ),
+            (
+                "full-data test row",
+                "Completed full-data row with test metrics in the thesis SQLite database.",
+            ),
+            (
+                "runtime probe",
+                "One-epoch or target-epoch feasibility row; use time/VRAM estimates, "
+                "not final accuracy.",
+            ),
+            (
+                "diagnostic-only evidence",
+                "Score-mix, branch-rank, popularity, and contribution diagnostics; "
+                "exploratory and not causal proof.",
+            ),
+        ),
+    )
+    _print_metric_table(
+        "Dataset-conditioned profile policy",
+        (
+            ("Dataset", 14, "<"),
+            ("Current policy", 94, "<"),
+        ),
+        (
+            (
+                "kuairec_v2",
+                "Compact EDGRec is a default candidate because current evidence supports "
+                "EDGRec accuracy plus speed.",
+            ),
+            (
+                "movielens1m",
+                "Compact EDGRec is a near-parity/speed candidate; keep the weaker "
+                "popularity profile visible.",
+            ),
+            (
+                "kuairand1k",
+                "Stress-test and randomized-exposure diagnostic; do not headline as an "
+                "accuracy win.",
+            ),
+            (
+                "amazonbook",
+                "Not in the shared compact default queue, but still an EDGRec target: "
+                "compare compact and deeper/use_features candidates against LightGCN-paper.",
+            ),
+        ),
+    )
+    public_variants = ", ".join(ABLATION_VARIANTS)
+    print(
+        "Historical/internal Optuna labels such as `no_context_no_features` are search "
+        "profile labels, not public ablation variants. Public ablations are: "
+        f"{public_variants}."
+    )
+    print()
+
+
+def list_top_completed(conn: sqlite3.Connection, *, top_n: int = 20) -> None:
+    """Print the default thesis summary for full-data test runs."""
+    print("## THESIS TEST RESULTS - completed full-data test rows")
     print()
     print(f"Database: `{THESIS_DB_PATH.resolve()}`")
     print()
 
     report_rows = _query_report_rows(conn)
     rows = [row for row in report_rows if _is_default_report_row(row)]
-    final_formal_rows = [row for row in rows if _is_final_formal_row(row)]
-    supporting_formal_rows = [row for row in rows if _is_supporting_formal_row(row)]
     reportable_formal_rows = [row for row in rows if _is_reportable_formal_row(row)]
     runtime_probe_rows = _select_paper_runtime_probe_rows(report_rows)
-    ablation_rows = [row for row in rows if _is_supported_ablation_row(row)]
-    if not (final_formal_rows or supporting_formal_rows or runtime_probe_rows or ablation_rows):
-        print("No completed formal or ablation full-data runs with test metrics found.")
+    if not (rows or runtime_probe_rows):
+        print("No completed full-data test rows with metrics found.")
         print("Use --view all to inspect every logged experiment row.")
         print()
     else:
-        crru_scores: dict[int, dict[int, float]] = {}
-        for section_rows in (final_formal_rows, supporting_formal_rows, ablation_rows):
-            crru_scores.update(_compute_dataset_crru_scores(section_rows))
-        _print_crru_summary()
+        crru_scores, crru_audit = _compute_dataset_crru_scores_with_audit(rows)
+        _print_crru_summary(crru_audit)
+        _print_evidence_role_notes()
         _print_paper_baseline_notes(
             reportable_formal_rows=reportable_formal_rows,
             runtime_probe_rows=runtime_probe_rows,
         )
-        _print_formal_rows(
-            _select_top_formal_rows(final_formal_rows, n=n, crru_scores=crru_scores),
-            crru_scores=crru_scores,
-            title=(
-                "FINAL FORMAL FULL-DATA TEST RUNS — thesis profiles ranked by CRRU@20 then CRRU@40"
-            ),
-            empty_message="No completed final formal full-data runs with test metrics found.",
-        )
-        _print_formal_rows(
-            _select_top_formal_rows(
-                supporting_formal_rows,
-                n=n,
-                crru_scores=crru_scores,
-                supporting=True,
-            ),
-            crru_scores=crru_scores,
-            title=(
-                "SUPPORTING FORMAL FULL-DATA RUNS — historical, diagnostic, and "
-                "preprocessing-sweep rows"
-            ),
-            empty_message="No supporting formal full-data runs with test metrics found.",
-        )
-        _print_ablation_rows(
-            _select_best_ablation_rows(ablation_rows, crru_scores=crru_scores),
+        _print_test_leaderboard(
+            _select_top_test_rows(rows, top_n=top_n, crru_scores=crru_scores),
             crru_scores=crru_scores,
         )
 
     _print_optuna_report_pointer()
 
 
-def _render_default_summary(conn: sqlite3.Connection, *, n: int = 20) -> str:
+def _render_default_summary(conn: sqlite3.Connection, *, top_n: int = 20) -> str:
     """Render the default thesis summary into a text buffer."""
     buffer = StringIO()
     with redirect_stdout(buffer):
-        list_top_completed(conn, n=n)
+        list_top_completed(conn, top_n=top_n)
     return buffer.getvalue().rstrip()
 
 
@@ -1466,6 +2002,7 @@ def main() -> int:
         if args.view is None:
             report_text = _render_default_summary(conn)
             _write_default_summary_markdown(report_text)
+            write_query_feature_analysis_reports()
             print(f"Wrote default results summary to {QUERY_RESULTS_MARKDOWN_PATH.resolve()}")
         else:
             list_experiments(

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from ..data.canonical import DerivedSplitMode
+from ..data.feature_groups import FeatureSubsetMode
 from ..data.feature_policy import DEFAULT_FEATURE_POLICY, FeaturePolicyName
 from .method_naming import EDGREC_PUBLIC_PRESET
 
@@ -61,7 +62,9 @@ CONFIG_PRESET_METHODS: dict[str, str] = {
     EDGREC_PUBLIC_PRESET: "preset_full",
     "lightgcn": "preset_lightgcn",
     "lightgcn_paper": "preset_lightgcn_paper",
+    "lightgcn_paper_scaled_batch": "preset_lightgcn_paper_scaled_batch",
     "dice_paper": "preset_dice_paper",
+    "dice_paper_scaled_batch": "preset_dice_paper_scaled_batch",
     "dice_like": "preset_dice_like",
     "dice_like_ablation": "preset_dice_like",
 }
@@ -91,7 +94,13 @@ CONFIG_OVERRIDE_FIELDS = (
     "embedding_optimizer",
     "use_learned_score_mix",
     "separate_item_branch_embeddings",
+    "use_temporal_interest",
+    "temporal_history_size",
+    "paper_scaled_batch",
     "feature_policy",
+    "feature_subset_mode",
+    "feature_include_groups",
+    "feature_exclude_groups",
     "graph_policy",
     "training_graph_mode",
     "sampler_residency_policy",
@@ -158,7 +167,29 @@ BENCHMARK_CONFIG_FIELDS = (
     "device",
     "data_dir",
 )
-PAPER_BASELINE_PRESETS = frozenset(("lightgcn_paper", "dice_paper"))
+PAPER_BASELINE_PRESETS = frozenset(
+    (
+        "lightgcn_paper",
+        "lightgcn_paper_scaled_batch",
+        "dice_paper",
+        "dice_paper_scaled_batch",
+    ),
+)
+SCALED_BATCH_CANDIDATES: list[int] = [
+    1048576,
+    524288,
+    262144,
+    131072,
+    65536,
+    32768,
+    16384,
+    8192,
+    4096,
+    2048,
+    1024,
+    512,
+    256,
+]
 GRAPH_POLICY_CHOICES: tuple[GraphPolicy, ...] = ("observed",)
 EMBEDDING_OPTIMIZER_CHOICES: tuple[EmbeddingOptimizer, ...] = (
     "adamw",
@@ -185,7 +216,7 @@ ITEM_UNIVERSE_POLICY_CHOICES: tuple[ItemUniversePolicy, ...] = (
     "observed_interaction_items",
     "random_exposure_items_only",
 )
-PresetOverrideValue = bool | int | float | str | list[int]
+PresetOverrideValue = bool | int | float | str | list[int] | list[str]
 PresetOverrides = dict[str, PresetOverrideValue]
 
 _NON_CAUSAL_PRESET_OVERRIDES: PresetOverrides = {
@@ -204,6 +235,8 @@ _NON_CAUSAL_PRESET_OVERRIDES: PresetOverrides = {
     "embedding_optimizer": "adamw",
     "use_learned_score_mix": False,
     "separate_item_branch_embeddings": False,
+    "use_temporal_interest": False,
+    "paper_scaled_batch": False,
     "loss_normalization": "none",
     "loss_weight_recommendation": 1.0,
     "loss_weight_contrastive": 0.0,
@@ -242,6 +275,15 @@ _LIGHTGCN_PAPER_PRESET_OVERRIDES: PresetOverrides = _LIGHTGCN_PRESET_OVERRIDES |
     "score_weight_conformity": 0.0,
     "score_weight_popularity": 0.0,
 }
+_LIGHTGCN_PAPER_SCALED_BATCH_PRESET_OVERRIDES: PresetOverrides = (
+    _LIGHTGCN_PAPER_PRESET_OVERRIDES
+    | {
+        "paper_scaled_batch": True,
+        "batch_size": SCALED_BATCH_CANDIDATES[0],
+        "auto_batch_size": True,
+        "batch_size_candidates": SCALED_BATCH_CANDIDATES,
+    }
+)
 _DICE_LIKE_PRESET_OVERRIDES: PresetOverrides = _NON_CAUSAL_PRESET_OVERRIDES | {
     "baseline_family": "dice_like_ablation",
     "use_dual_branch": True,
@@ -289,6 +331,15 @@ _DICE_PAPER_PRESET_OVERRIDES: PresetOverrides = _NON_CAUSAL_PRESET_OVERRIDES | {
     "dice_adaptive_decay": True,
     "dice_mask_reduction": "batch_mean",
 }
+_DICE_PAPER_SCALED_BATCH_PRESET_OVERRIDES: PresetOverrides = (
+    _DICE_PAPER_PRESET_OVERRIDES
+    | {
+        "paper_scaled_batch": True,
+        "batch_size": SCALED_BATCH_CANDIDATES[0],
+        "auto_batch_size": True,
+        "batch_size_candidates": SCALED_BATCH_CANDIDATES,
+    }
+)
 _LIGHTGCN_PAPER_LOCKED_OVERRIDES: PresetOverrides = {
     key: _LIGHTGCN_PAPER_PRESET_OVERRIDES[key]
     for key in (
@@ -424,7 +475,7 @@ _FULL_PRESET_OVERRIDES: PresetOverrides = {
     "propensity_clip_min": 0.1,
     "dice_mask_reduction": "active_mean",
     "feature_gate_init": -4.0,
-    "use_features": True,
+    "use_features": False,
     "feature_policy": DEFAULT_FEATURE_POLICY,
     "score_mix_min_weight": 0.05,
 }
@@ -442,10 +493,13 @@ class EDGRecConfig:
     embedding_optimizer: EmbeddingOptimizer = "adamw"
     use_learned_score_mix: bool = True
     separate_item_branch_embeddings: bool = False
+    use_temporal_interest: bool = False
+    temporal_history_size: int = 10
+    paper_scaled_batch: bool = False
     baseline_family: str = EDGREC_PUBLIC_PRESET
     training_graph_mode: TrainingGraphMode = "sampled"
     sampler_residency_policy: SamplerResidencyPolicy = "release_for_validation"
-    propagation_backend: PropagationBackend = "auto"
+    propagation_backend: PropagationBackend = "chunked_edge_index_aggregation"
     profile_training_stages: bool = False
 
     graph_policy: GraphPolicy = "observed"
@@ -469,9 +523,9 @@ class EDGRecConfig:
     loss_weight_interest_bpr: float = 0.02
     loss_weight_conformity_bpr: float = 0.02
     loss_weight_independence: float = 0.005
-    loss_weight_contrastive: float = 0.02
-    loss_weight_align: float = 0.02
-    loss_weight_uniform: float = 0.02
+    loss_weight_contrastive: float = 0.0
+    loss_weight_align: float = 0.0
+    loss_weight_uniform: float = 0.0
     loss_weight_popularity: float = 0.02
     branch_loss_mode: BranchLossMode = "symmetric_bpr"
     dice_mask_reduction: DiceMaskReduction = "batch_mean"
@@ -546,9 +600,12 @@ class EDGRecConfig:
     loss_schedule: Literal["baseline"] = "baseline"
 
     # ── Side features ─────────────────────────────────────────────────────
-    use_features: bool = True  # load and use user/item side features when available
+    use_features: bool = False  # load and use user/item side features when available
     feature_policy: FeaturePolicyName = DEFAULT_FEATURE_POLICY
     feature_gate_init: float = 0.0
+    feature_subset_mode: FeatureSubsetMode = "all"
+    feature_include_groups: list[str] = field(default_factory=list)
+    feature_exclude_groups: list[str] = field(default_factory=list)
 
     # ── Data ─────────────────────────────────────────────────────────────
     dataset: str = "movielens1m"
@@ -589,6 +646,8 @@ class EDGRecConfig:
             raise ValueError("loader_max_rows must be > 0 when provided")
         if self.progress_bar_loss_cadence < 1:
             raise ValueError("progress_bar_loss_cadence must be >= 1")
+        if self.temporal_history_size < 1:
+            raise ValueError("temporal_history_size must be >= 1")
         if self.batch_size < 1:
             raise ValueError("batch_size must be >= 1")
         if not self.batch_size_candidates:
@@ -608,11 +667,12 @@ class EDGRecConfig:
                 f"embedding_optimizer must be one of {', '.join(EMBEDDING_OPTIMIZER_CHOICES)}",
             )
         if self.embedding_sparse_optimizer:
-            if self.embedding_optimizer != "adamw":
+            if self.embedding_optimizer == "adamw":
+                self.embedding_optimizer = "sparseadam"
+            elif self.embedding_optimizer != "sparseadam":
                 raise ValueError(
                     "Use either embedding_sparse_optimizer=True or embedding_optimizer, not both.",
                 )
-            self.embedding_optimizer = "sparseadam"
         self.embedding_sparse_optimizer = self.embedding_optimizer == "sparseadam"
         if self.embedding_optimizer == "sparseadam" and self.training_graph_mode != "sampled":
             raise ValueError("sparse embedding optimization requires sampled training")
@@ -653,6 +713,14 @@ class EDGRecConfig:
             raise ValueError("negative_sampling_strategy must be either 'standard' or 'dice'")
         if self.loss_normalization not in ("none", "ema_aux"):
             raise ValueError("loss_normalization must be either 'none' or 'ema_aux'")
+        if self.feature_subset_mode not in ("all", "none", "include_groups", "exclude_groups"):
+            raise ValueError(
+                "feature_subset_mode must be one of all, none, include_groups, exclude_groups",
+            )
+        if self.feature_subset_mode == "include_groups" and not self.feature_include_groups:
+            raise ValueError("include_groups feature subset requires feature_include_groups")
+        if self.feature_subset_mode == "exclude_groups" and not self.feature_exclude_groups:
+            raise ValueError("exclude_groups feature subset requires feature_exclude_groups")
         if self.amp_dtype != "bfloat16":
             raise ValueError("amp_dtype is fixed to 'bfloat16'")
         if self.propensity_clip_min <= 0 or self.propensity_clip_min >= 1:
@@ -743,9 +811,17 @@ class EDGRecConfig:
         silently accepting those shared tuning knobs.
         """
         if self.baseline_family == "lightgcn_paper":
-            return self._apply_preset_overrides(_LIGHTGCN_PAPER_LOCKED_OVERRIDES)
+            locked = dict(_LIGHTGCN_PAPER_LOCKED_OVERRIDES)
+            if self.paper_scaled_batch:
+                locked.pop("batch_size", None)
+                locked.pop("auto_batch_size", None)
+            return self._apply_preset_overrides(locked)
         if self.baseline_family == "dice_paper":
-            return self._apply_preset_overrides(_DICE_PAPER_LOCKED_OVERRIDES)
+            locked = dict(_DICE_PAPER_LOCKED_OVERRIDES)
+            if self.paper_scaled_batch:
+                locked.pop("batch_size", None)
+                locked.pop("auto_batch_size", None)
+            return self._apply_preset_overrides(locked)
         self.validate()
         return self
 
@@ -757,6 +833,10 @@ class EDGRecConfig:
         """Paper-faithful LightGCN baseline with full-graph propagation."""
         return self._apply_preset_overrides(_LIGHTGCN_PAPER_PRESET_OVERRIDES)
 
+    def preset_lightgcn_paper_scaled_batch(self) -> EDGRecConfig:
+        """Paper LightGCN architecture with hardware-scaled batch selection."""
+        return self._apply_preset_overrides(_LIGHTGCN_PAPER_SCALED_BATCH_PRESET_OVERRIDES)
+
     def preset_dice_like(self) -> EDGRecConfig:
         """DICE-like baseline with the refined scorer and no thesis extras."""
         return self._apply_preset_overrides(_DICE_LIKE_PRESET_OVERRIDES)
@@ -764,6 +844,10 @@ class EDGRecConfig:
     def preset_dice_paper(self) -> EDGRecConfig:
         """Paper-faithful GCN-DICE baseline using DICE sampling and loss."""
         return self._apply_preset_overrides(_DICE_PAPER_PRESET_OVERRIDES)
+
+    def preset_dice_paper_scaled_batch(self) -> EDGRecConfig:
+        """Paper GCN-DICE architecture with hardware-scaled batch selection."""
+        return self._apply_preset_overrides(_DICE_PAPER_SCALED_BATCH_PRESET_OVERRIDES)
 
     def preset_full(self) -> EDGRecConfig:
         """EDGRec mainline: refined scoring with asymmetric depth."""

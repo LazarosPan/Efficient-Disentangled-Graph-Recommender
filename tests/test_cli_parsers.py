@@ -30,10 +30,11 @@ from src.utils.cli_parsers import (
 
 EXPECTED_ABLATION_VARIANTS = [
     "mainline",
+    "with_features",
     "with_contrastive",
+    "with_ipw",
     "no_popularity_head",
     "no_independence",
-    "no_features",
 ]
 
 
@@ -107,11 +108,18 @@ class AblationConfigTests(unittest.TestCase):
         self.assertEqual(config.contrastive_temperature, 0.2)
         self.assertEqual(config.auxiliary_loss_schedule, "linear_ramp")
 
-    def test_no_features_ablation_disables_side_features(self) -> None:
-        """Feature ablation should switch off item/user side features entirely."""
-        config = make_ablation_config("no_features")
+    def test_with_features_ablation_enables_side_features(self) -> None:
+        """Feature ablation should explicitly opt into item/user side features."""
+        config = make_ablation_config("with_features")
 
-        self.assertFalse(config.use_features)
+        self.assertTrue(config.use_features)
+
+    def test_with_ipw_ablation_enables_calibrated_propensity_path(self) -> None:
+        """IPW ablation should explicitly opt into calibrated propensity weighting."""
+        config = make_ablation_config("with_ipw")
+
+        self.assertTrue(config.use_ipw)
+        self.assertGreater(config.loss_weight_propensity_calibration, 0.0)
 
     def test_ablation_base_kwargs_omit_unset_optional_overrides(self) -> None:
         """Shared ablation kwargs should keep required fields and skip unset optionals."""

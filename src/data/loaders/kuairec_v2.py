@@ -10,9 +10,12 @@ import numpy as np
 import polars as pl
 
 from ...utils.csv_features import (
+    FeatureBlock,
     PolicyCsvFeatureSpec,
-    load_policy_csv_feature_blocks,
-    stack_feature_blocks,
+    build_multi_hot_feature_block,
+    load_policy_csv_feature_metadata_blocks,
+    make_feature_block,
+    stack_feature_metadata_blocks,
 )
 from ...utils.dataset_loader_utils import downcast_numeric_array, downcast_numeric_arrays
 from ...utils.interaction_indexing import (
@@ -100,7 +103,7 @@ def _load_item_categories(
     path: Path,
     id_map: dict[int, int],
     n_items: int,
-) -> np.ndarray | None:
+) -> FeatureBlock | None:
     """Load item_categories.csv -> (n_items, n_categories) multi-hot vector.
 
     Format: video_id, feat (where feat is a list-like string of category IDs).
@@ -130,13 +133,16 @@ def _load_item_categories(
     if not raw_categories or not all_cat_ids:
         return None
 
-    cat_to_idx = {c: i for i, c in enumerate(sorted(all_cat_ids))}
-    n_cats = len(cat_to_idx)
-    features = np.zeros((n_items, n_cats), dtype=np.uint8)
-    for mapped_id, cats in raw_categories.items():
-        for c in cats:
-            features[mapped_id, cat_to_idx[c]] = 1.0
-    return features
+    token_order = tuple(str(value) for value in sorted(all_cat_ids))
+    return build_multi_hot_feature_block(
+        {mapped_id: [str(cat) for cat in cats] for mapped_id, cats in raw_categories.items()},
+        n_items,
+        dataset_name="kuairec_v2",
+        aspect="item_features",
+        relative_path="data/item_categories.csv",
+        field_name="feat",
+        token_order=token_order,
+    )
 
 
 def _encode_caption_category_features(features: np.ndarray) -> np.ndarray:
@@ -168,7 +174,7 @@ def _load_caption_categories(
     id_map: dict[int, int],
     n_items: int,
     include_columns: tuple[str, ...] | None = None,
-) -> np.ndarray | None:
+) -> FeatureBlock | None:
     """Load hierarchical category IDs from kuairec_caption_category.csv.
 
     Uses only first/second/third_level_category_id columns (skips text fields).
@@ -214,9 +220,16 @@ def _load_caption_categories(
                     features[mapped, column_index] = int(float(raw_value))
                 except (TypeError, ValueError):
                     continue
-    return downcast_numeric_array(
+    matrix = downcast_numeric_array(
         _encode_caption_category_features(features),
         allow_float16=True,
+    )
+    return make_feature_block(
+        matrix,
+        dataset_name="kuairec_v2",
+        aspect="item_features",
+        relative_path="data/kuairec_caption_category.csv",
+        raw_columns=tuple(target_cols),
     )
 
 
@@ -369,10 +382,10 @@ def load_kuairec_v2(
     label = (stabilized_watch_ratio >= watch_ratio_threshold).astype(np.float32)
     sign = (np.clip(stabilized_watch_ratio, 0.0, 2.0) - 1.0).astype(np.float32)
 
-    user_features = None
-    item_features = None
+    user_feature_block = None
+    item_feature_block = None
     if include_optional_features:
-        user_features = load_policy_csv_feature_blocks(
+        user_feature_block = load_policy_csv_feature_metadata_blocks(
             feature_policy=feature_policy,
             dataset_name="kuairec_v2",
             aspect="user_features",
@@ -394,7 +407,7 @@ def load_kuairec_v2(
 
         item_caption_cats = None
         item_cat_feats = None
-        item_features_daily = load_policy_csv_feature_blocks(
+        item_features_daily = load_policy_csv_feature_metadata_blocks(
             feature_policy=feature_policy,
             dataset_name="kuairec_v2",
             aspect="item_features",
@@ -433,7 +446,7 @@ def load_kuairec_v2(
                 item_map,
                 n_items,
             )
-        item_features = stack_feature_blocks(
+        item_feature_block = stack_feature_metadata_blocks(
             item_features_daily,
             item_cat_feats,
             item_caption_cats,
@@ -447,8 +460,22 @@ def load_kuairec_v2(
         sign=sign,
         raw_target=stabilized_watch_ratio,
         source_domain=source_domain,
-        user_features=user_features,
-        item_features=item_features,
+        user_features=None if user_feature_block is None else user_feature_block.matrix,
+        item_features=None if item_feature_block is None else item_feature_block.matrix,
+        user_feature_names=None if user_feature_block is None else user_feature_block.names,
+        item_feature_names=None if item_feature_block is None else item_feature_block.names,
+        user_feature_sources=None if user_feature_block is None else user_feature_block.sources,
+        item_feature_sources=None if item_feature_block is None else item_feature_block.sources,
+        user_feature_raw_columns=(
+            None if user_feature_block is None else user_feature_block.raw_features
+        ),
+        item_feature_raw_columns=(
+            None if item_feature_block is None else item_feature_block.raw_features
+        ),
+        user_feature_roles=None if user_feature_block is None else user_feature_block.roles,
+        item_feature_roles=None if item_feature_block is None else item_feature_block.roles,
+        user_feature_groups=None if user_feature_block is None else user_feature_block.groups,
+        item_feature_groups=None if item_feature_block is None else item_feature_block.groups,
         **build_repeat_collapse_canonical_payload(
             repeat_summary,
             applied=effective_preset in _KUIREC_CLIPPED_WATCHRATIO_PRESETS,

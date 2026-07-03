@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import experiments.run_benchmark as formal_main
+import experiments.run_experiment as experiment_main
 import numpy as np
 import torch
 from experiments.cli_parsers import build_benchmark_parser
@@ -20,12 +21,15 @@ from experiments.recipes import (
     formal_profile_names,
     get_formal_profile,
     get_recipe,
+    load_experiment_catalog,
 )
 from experiments.run_benchmark import (
+    _is_optional_batch_size_candidate,
     _resolve_benchmark_num_neighbors_for_preset,
     build_benchmark_plan,
 )
 from experiments.run_experiment import (
+    _CHECKPOINT_FILENAME_BYTE_LIMIT,
     _auto_batch_probe_candidates,
     _auto_batch_probe_interactions,
     _build_training_identity,
@@ -254,6 +258,82 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         canonical = build_canonical_experiment_name(config, "edgrec", None)
 
         self.assertIn("lr-cosine", canonical)
+
+    def test_default_checkpoint_path_preserves_normal_filename(self) -> None:
+        """Short checkpoint names should stay byte-for-byte compatible."""
+        config = build_config(_experiment_args(preset="edgrec"))
+        _, training_hash = _build_training_identity(config, "edgrec", None)
+        canonical = build_canonical_experiment_name(config, "edgrec", None)
+
+        checkpoint_path = _default_checkpoint_path(config, "edgrec", None, training_hash)
+
+        self.assertEqual(checkpoint_path.name, f"{canonical}_train-{training_hash}.pt")
+
+    def test_default_checkpoint_path_bounds_feature_heavy_filename(self) -> None:
+        """Feature-heavy profile names should not exceed filesystem basename limits."""
+        config = EDGRecConfig(
+            dataset="kuairand1k",
+            device="cpu",
+            epochs=300,
+            batch_size=1048576,
+            lr_scheduler="cosine",
+            num_neighbors=[8, 4],
+            preprocessing_preset="kuairand_causal",
+            item_universe_policy="random_exposure_items_only",
+            use_features=True,
+            feature_subset_mode="include_groups",
+            feature_include_groups=[
+                "item_author_music",
+                "item_upload_time",
+                "item_category",
+            ],
+            embedding_optimizer="sparseadam",
+            train_edge_keep_prob=0.6,
+            seed=13,
+        )
+        _, training_hash = _build_training_identity(config, "edgrec", None)
+        canonical = build_canonical_experiment_name(config, "edgrec", None)
+        legacy_name = f"{canonical}_train-{training_hash}.pt"
+
+        checkpoint_path = _default_checkpoint_path(config, "edgrec", None, training_hash)
+
+        self.assertGreater(len(legacy_name.encode("utf-8")), _CHECKPOINT_FILENAME_BYTE_LIMIT)
+        self.assertLessEqual(
+            len(checkpoint_path.name.encode("utf-8")),
+            _CHECKPOINT_FILENAME_BYTE_LIMIT,
+        )
+        self.assertIn(f"_train-{training_hash}.pt", checkpoint_path.name)
+        self.assertNotEqual(checkpoint_path.name, legacy_name)
+
+    def test_recoverable_checkpoint_lookup_handles_feature_heavy_filename(self) -> None:
+        """Empty lookup for an overlong semantic name should return None, not crash."""
+        config = EDGRecConfig(
+            dataset="kuairand1k",
+            device="cpu",
+            epochs=300,
+            batch_size=1048576,
+            lr_scheduler="cosine",
+            num_neighbors=[8, 4],
+            preprocessing_preset="kuairand_causal",
+            item_universe_policy="random_exposure_items_only",
+            use_features=True,
+            feature_subset_mode="include_groups",
+            feature_include_groups=[
+                "item_author_music",
+                "item_upload_time",
+                "item_category",
+            ],
+            embedding_optimizer="sparseadam",
+            train_edge_keep_prob=0.6,
+            seed=13,
+            auto_batch_size=False,
+        )
+
+        with (
+            tempfile.TemporaryDirectory() as tmp_dir,
+            patch("experiments.run_experiment.CHECKPOINT_DIR", Path(tmp_dir)),
+        ):
+            self.assertIsNone(recoverable_checkpoint_for_config(config, preset="edgrec"))
 
     def test_query_results_reuses_runtime_canonical_name_contract(self) -> None:
         """Stored configs should render the same canonical label as live runs."""
@@ -1007,6 +1087,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
     def test_feature_gate_init_controls_initial_side_feature_strength(self) -> None:
         """Feature gates should start from the configured logit value."""
         config = EDGRecConfig(device="cpu", embed_dim=4)
+        config.use_features = True
         config.feature_gate_init = -4.0
         module = EmbeddingModule(
             n_users=2,
@@ -1133,8 +1214,9 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
         self.assertNotEqual(base_hash, changed_hash)
 
-    def test_default_formal_profile_is_core_edgrec_mainline(self) -> None:
-        """The default formal profile should target the thesis mainline."""
+    def test_default_formal_profile_is_compact_search_prior(self) -> None:
+        """The default candidate profile should target the compact search-prior path."""
+        catalog = load_experiment_catalog()
         profile_name = default_formal_profile_name()
         profile = get_formal_profile(profile_name)
         benchmark_args = formal_main._build_new_run_args(
@@ -1142,22 +1224,40 @@ class FormalTrainingPolicyTests(unittest.TestCase):
             profile_name,
         )
 
+        self.assertEqual(catalog["default_candidate_profile"], "edgrec-compact-search-prior")
+        self.assertNotIn("default_formal_profile", catalog)
         self.assertTrue(profile["config_overrides"]["use_early_stopping"])
-        self.assertEqual(profile["config_overrides"]["patience"], 10)
-        self.assertEqual(profile["id"], "core-edgrec-mainline")
+        self.assertEqual(profile["config_overrides"]["patience"], 8)
+        self.assertEqual(profile["id"], "edgrec-compact-search-prior")
         self.assertEqual(
             profile["matrix"]["datasets"],
-            ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+            ["movielens1m", "kuairec_v2", "kuairand1k"],
         )
+        self.assertNotIn("amazonbook", profile["matrix"]["datasets"])
         self.assertNotIn("taobao", profile["matrix"]["datasets"])
         self.assertNotIn("movielens20m", profile["matrix"]["datasets"])
         self.assertEqual(profile["matrix"]["presets"], ["edgrec"])
         self.assertNotIn("scoring_weight_modes", profile["matrix"])
         self.assertNotIn("batch_size", profile["config_overrides"])
-        self.assertNotIn("auto_batch_size", profile["config_overrides"])
+        self.assertTrue(profile["config_overrides"]["auto_batch_size"])
+        self.assertFalse(profile["config_overrides"]["use_features"])
         self.assertEqual(
             profile["config_overrides"]["batch_size_candidates"],
-            [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+            [
+                1048576,
+                524288,
+                262144,
+                131072,
+                65536,
+                32768,
+                16384,
+                8192,
+                4096,
+                2048,
+                1024,
+                512,
+                256,
+            ],
         )
         self.assertEqual(profile["config_overrides"]["single_branch_gnn_layers"], 2)
         self.assertEqual(profile["config_overrides"]["interest_gnn_layers"], 1)
@@ -1166,17 +1266,19 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(
             profile["config_overrides"]["num_neighbors"],
             {
-                "small": [[6, 3], [4, 2]],
-                "medium": [[10, 5], [8, 4], [6, 3], [4, 2]],
+                "small": [[8, 4], [10, 5]],
+                "medium": [[8, 4], [10, 5]],
             },
         )
+        self.assertEqual(profile["config_overrides"]["n_negatives"], 1)
+        self.assertEqual(profile["config_overrides"]["validation_every_n_epochs"], 1)
         self.assertNotIn("hard_negative_ratio", profile["config_overrides"])
         self.assertNotIn("loss_schedule", profile["config_overrides"])
         self.assertTrue(benchmark_args["use_early_stopping"])
-        self.assertEqual(benchmark_args["patience"], 10)
+        self.assertEqual(benchmark_args["patience"], 8)
         self.assertEqual(
             benchmark_args["datasets"],
-            ["amazonbook", "movielens1m", "kuairec_v2", "kuairand1k"],
+            ["movielens1m", "kuairec_v2", "kuairand1k"],
         )
         self.assertEqual(benchmark_args["presets"], ["edgrec"])
         self.assertNotIn("scoring_weight_modes", benchmark_args)
@@ -1184,7 +1286,21 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertTrue(benchmark_args["auto_batch_size"])
         self.assertEqual(
             benchmark_args["batch_size_candidates"],
-            [32768, 16384, 8192, 4096, 2048, 1024, 512, 256],
+            [
+                1048576,
+                524288,
+                262144,
+                131072,
+                65536,
+                32768,
+                16384,
+                8192,
+                4096,
+                2048,
+                1024,
+                512,
+                256,
+            ],
         )
         self.assertEqual(benchmark_args["single_branch_gnn_layers"], 2)
         self.assertEqual(benchmark_args["interest_gnn_layers"], 1)
@@ -1193,16 +1309,45 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(
             benchmark_args["num_neighbors"],
             {
-                "small": [[6, 3], [4, 2]],
-                "medium": [[10, 5], [8, 4], [6, 3], [4, 2]],
+                "small": [[8, 4], [10, 5]],
+                "medium": [[8, 4], [10, 5]],
             },
         )
         self.assertEqual(benchmark_args["graph_policy"], "observed")
+        self.assertFalse(benchmark_args["use_features"])
+        self.assertEqual(benchmark_args["n_negatives"], 1)
+        self.assertEqual(benchmark_args["validation_every_n_epochs"], 1)
         self.assertNotIn("graph_policy_options", benchmark_args)
         self.assertEqual(benchmark_args["hard_negative_ratio"], 0.0)
         self.assertIsNone(benchmark_args["loss_schedule"])
         self.assertEqual(benchmark_args["auxiliary_losses_start_epoch"], 15)
         self.assertEqual(benchmark_args["popularity_supervision_start_epoch"], 30)
+
+    def test_amazonbook_edgrec_candidates_are_dataset_specific(self) -> None:
+        """AmazonBook should keep compact and deep EDGRec candidates outside the default queue."""
+        default_profile = get_formal_profile(default_formal_profile_name())
+        compact = get_formal_profile("amazonbook-edgrec-compact-candidate")
+        deep = get_formal_profile("amazonbook-edgrec-deep-features-candidate")
+
+        self.assertNotIn("amazonbook", default_profile["matrix"]["datasets"])
+        self.assertEqual(compact["matrix"]["datasets"], ["amazonbook"])
+        self.assertEqual(compact["matrix"]["presets"], ["edgrec"])
+        self.assertFalse(compact["config_overrides"]["use_features"])
+        self.assertEqual(compact["config_overrides"]["num_neighbors"], [10, 5])
+        self.assertEqual(compact["config_overrides"]["interest_gnn_layers"], 1)
+        self.assertEqual(compact["config_overrides"]["conformity_gnn_layers"], 2)
+        self.assertEqual(compact["config_overrides"]["loss_weight_independence"], 0.0)
+        self.assertEqual(compact["config_overrides"]["loss_weight_contrastive"], 0.0)
+        self.assertFalse(compact["config_overrides"]["use_ipw"])
+
+        self.assertEqual(deep["matrix"]["datasets"], ["amazonbook"])
+        self.assertEqual(deep["matrix"]["presets"], ["edgrec"])
+        self.assertTrue(deep["config_overrides"]["use_features"])
+        self.assertEqual(deep["config_overrides"]["feature_gate_init"], -4.0)
+        self.assertEqual(deep["config_overrides"]["num_neighbors"], [8, 4, 2])
+        self.assertEqual(deep["config_overrides"]["interest_gnn_layers"], 2)
+        self.assertEqual(deep["config_overrides"]["conformity_gnn_layers"], 3)
+        self.assertEqual(deep["config_overrides"]["loss_weight_contrastive"], 0.025)
 
     def test_deeper_comparison_profile_keeps_original_num_neighbors_sweep(self) -> None:
         """The deeper comparison profile should stay on its original fan-out sweep."""
@@ -1247,7 +1392,7 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(config.lr_scheduler, "plateau")
         self.assertTrue(config.auto_batch_size)
         self.assertTrue(config.use_early_stopping)
-        self.assertEqual(config.patience, 10)
+        self.assertEqual(config.patience, 8)
         self.assertEqual(config.graph_policy, "observed")
         self.assertEqual(config.num_neighbors, [10, 5])
 
@@ -1351,18 +1496,27 @@ class FormalTrainingPolicyTests(unittest.TestCase):
 
     def test_formal_profile_lookup_normalizes_user_facing_labels(self) -> None:
         """Formal profile lookup should normalize user-facing aliases centrally."""
-        default_profile = get_formal_profile("DEFAULT")
+        default_profile = get_formal_profile(default_formal_profile_name())
 
         self.assertEqual(default_profile["id"], default_formal_profile_name())
-        self.assertEqual(default_profile["id"], "core-edgrec-mainline")
+        self.assertEqual(default_profile["id"], "edgrec-compact-search-prior")
         self.assertIn("abauto", default_profile["name"])
-        self.assertEqual(get_formal_profile("latest")["id"], "core-edgrec-mainline")
+        self.assertEqual(get_formal_profile("compact")["id"], "edgrec-compact-search-prior")
+        self.assertEqual(
+            get_formal_profile("edgrec-lite-default")["id"],
+            "edgrec-compact-search-prior",
+        )
         self.assertEqual(get_formal_profile("development")["id"], "dev-edgrec")
         self.assertEqual(get_formal_profile("dev-edgrec")["id"], "dev-edgrec")
 
-    def test_second_formal_profile_is_edgrec_mainline_only(self) -> None:
-        """The main thesis profile should not rerun fixed paper baselines."""
-        profile_name = formal_profile_names()[1]
+    def test_latest_alias_is_not_a_formal_profile_shortcut(self) -> None:
+        """Formal profile aliases should not imply universal newest/best status."""
+        with self.assertRaises(KeyError):
+            get_formal_profile("latest")
+
+    def test_core_formal_profile_is_edgrec_mainline_only(self) -> None:
+        """The core comparison profile should not rerun fixed paper baselines."""
+        profile_name = "core-edgrec-mainline"
         profile = get_formal_profile(profile_name)
         benchmark_args = formal_main._build_new_run_args(
             SimpleNamespace(overwrite_checkpoint=False),
@@ -2585,6 +2739,111 @@ class FormalTrainingPolicyTests(unittest.TestCase):
         self.assertEqual(start_epoch, 2)
         self.assertIs(resumed_history, history)
 
+    def test_auto_batch_fallback_cleans_after_oom_before_next_candidate(self) -> None:
+        """Late OOM fallback should purge CUDA cache after the failed traceback exits."""
+        config = EDGRecConfig(
+            dataset="movielens1m",
+            device="cuda",
+            batch_size=524288,
+            batch_size_candidates=[524288, 262144],
+            auto_batch_size=True,
+            epochs=1,
+        )
+        canonical = SimpleNamespace(item_propensity_targets=None)
+        data = SimpleNamespace(
+            num_nodes=2,
+            edge_index=torch.empty((2, 0), dtype=torch.long),
+            train_mask=np.array([True, False]),
+            val_mask=np.array([False, True]),
+            test_mask=np.array([False, False]),
+        )
+        events: list[str] = []
+
+        def fake_release_cuda_memory() -> None:
+            events.append(f"cleanup:{int(config.batch_size)}")
+
+        def fake_build_runtime_model(active_config, _canonical, _data):
+            events.append(f"build:{int(active_config.batch_size)}")
+            return torch.nn.Linear(1, 1, bias=False)
+
+        class FakeTrainer:
+            def __init__(self, **kwargs):
+                self.batch_size = int(kwargs["config"].batch_size)
+                self.subgraph_sampler = object()
+                self.training_peak_vram_mb = 128.0
+
+            def train(self, **_kwargs):
+                events.append(f"train:{self.batch_size}")
+                if self.batch_size == 524288:
+                    raise torch.OutOfMemoryError("simulated cuda oom")
+                return {"train_loss": [0.1], "val_metrics": []}
+
+        with (
+            patch("torch.cuda.is_available", return_value=True),
+            patch("torch.cuda.empty_cache"),
+            patch("experiments.run_experiment.seed_everything"),
+            patch("experiments.run_experiment.configure_torch_runtime"),
+            patch("experiments.run_experiment.load_runtime_data", return_value=(canonical, data)),
+            patch("experiments.run_experiment._resolve_auto_batch_size"),
+            patch("experiments.run_experiment._verify_selected_auto_batch_size"),
+            patch(
+                "experiments.run_experiment._release_cuda_probe_memory",
+                side_effect=fake_release_cuda_memory,
+            ),
+            patch(
+                "experiments.run_experiment._auto_batch_probe_candidates",
+                return_value=[524288, 262144],
+            ),
+            patch("experiments.run_experiment._reset_cuda_peak_memory_stats"),
+            patch(
+                "experiments.run_experiment._cuda_memory_snapshot", return_value="cuda_memory=fake"
+            ),
+            patch(
+                "experiments.run_experiment._gpu_hardware_metadata", return_value=("Fake GPU", 16.0)
+            ),
+            patch("experiments.run_experiment._build_run_provenance", return_value={}),
+            patch(
+                "experiments.run_experiment._build_training_identity",
+                return_value=({}, "trainhash"),
+            ),
+            patch(
+                "experiments.run_experiment._build_evaluation_identity",
+                return_value=({}, "evalhash"),
+            ),
+            patch(
+                "experiments.run_experiment._default_checkpoint_path",
+                return_value=Path("/tmp/unused.pt"),
+            ),
+            patch(
+                "experiments.run_experiment.build_canonical_experiment_name",
+                return_value="fake-run",
+            ),
+            patch(
+                "experiments.run_experiment.build_runtime_model",
+                side_effect=fake_build_runtime_model,
+            ),
+            patch("experiments.run_experiment.LossSuite", return_value=Mock()),
+            patch(
+                "experiments.run_experiment.MiniBatchTrainer",
+                side_effect=lambda **kwargs: FakeTrainer(**kwargs),
+            ),
+        ):
+            result = experiment_main.run_experiment(
+                config,
+                preset="edgrec",
+                enable_mlflow=False,
+                log_to_sqlite=False,
+                save_checkpoint=False,
+                auto_resume=False,
+                evaluate_test=False,
+            )
+
+        retry_build_index = events.index("build:262144")
+        self.assertEqual(events[retry_build_index - 1], "cleanup:262144")
+        self.assertIn("train:524288", events)
+        self.assertIn("train:262144", events)
+        self.assertEqual(result["batch_size"], 262144)
+
     def test_prepare_batch_falls_back_to_cpu_sampler_after_cuda_oom(self) -> None:
         """Batch preparation should switch back to the CPU sampler after a CUDA OOM."""
         trainer = MiniBatchTrainer.__new__(MiniBatchTrainer)
@@ -2784,7 +3043,9 @@ class BenchmarkPlanTests(unittest.TestCase):
                 "edgrec",
                 "lightgcn",
                 "lightgcn_paper",
+                "lightgcn_paper_scaled_batch",
                 "dice_paper",
+                "dice_paper_scaled_batch",
                 "dice_like",
                 "dice_like_ablation",
             ],
@@ -2804,9 +3065,17 @@ class BenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(
             build_benchmark_plan(args),
             [
-                ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5)),
-                ("movielens1m", "lightgcn_paper", "none", None, "observed", (10, 5)),
-                ("movielens1m", "dice_paper", "none", None, "observed", (10, 5)),
+                ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5), 4096),
+                (
+                    "movielens1m",
+                    "lightgcn_paper",
+                    "none",
+                    None,
+                    "observed",
+                    (10, 5),
+                    4096,
+                ),
+                ("movielens1m", "dice_paper", "none", None, "observed", (10, 5), 4096),
             ],
         )
 
@@ -2822,8 +3091,16 @@ class BenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(
             build_benchmark_plan(args),
             [
-                ("movielens1m", "lightgcn_paper", "none", None, "observed", (10, 5)),
-                ("movielens1m", "dice_paper", "none", None, "observed", (10, 5)),
+                (
+                    "movielens1m",
+                    "lightgcn_paper",
+                    "none",
+                    None,
+                    "observed",
+                    (10, 5),
+                    4096,
+                ),
+                ("movielens1m", "dice_paper", "none", None, "observed", (10, 5), 4096),
             ],
         )
 
@@ -2854,12 +3131,12 @@ class BenchmarkPlanTests(unittest.TestCase):
         plan = build_benchmark_plan(args)
 
         expected_prefix = [
-            ("amazonbook", "edgrec", "plateau", None, "observed", (10, 5)),
-            ("amazonbook", "edgrec", "plateau", None, "observed", (5, 3)),
-            ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5)),
-            ("movielens1m", "edgrec", "plateau", None, "observed", (5, 3)),
-            ("amazonbook", "lightgcn", "plateau", None, "observed", (10, 5)),
-            ("amazonbook", "lightgcn", "plateau", None, "observed", (5, 3)),
+            ("amazonbook", "edgrec", "plateau", None, "observed", (10, 5), 4096),
+            ("amazonbook", "edgrec", "plateau", None, "observed", (5, 3), 4096),
+            ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5), 4096),
+            ("movielens1m", "edgrec", "plateau", None, "observed", (5, 3), 4096),
+            ("amazonbook", "lightgcn", "plateau", None, "observed", (10, 5), 4096),
+            ("amazonbook", "lightgcn", "plateau", None, "observed", (5, 3), 4096),
         ]
 
         self.assertEqual(plan[: len(expected_prefix)], expected_prefix)
@@ -2880,9 +3157,37 @@ class BenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(
             plan,
             [
-                ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5)),
+                ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5), 4096),
             ],
         )
+
+    def test_build_benchmark_plan_sweeps_fixed_batch_sizes(self) -> None:
+        """A formal profile may try the selected batch and its doubled candidate."""
+        args = SimpleNamespace(
+            datasets=["movielens1m"],
+            presets=["edgrec"],
+            graph_policy="observed",
+            num_neighbors=[10, 5],
+            lr_scheduler="plateau",
+            batch_size=[4096, 8192, 4096],
+        )
+
+        plan = build_benchmark_plan(args)
+
+        self.assertEqual(
+            plan,
+            [
+                ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5), 4096),
+                ("movielens1m", "edgrec", "plateau", None, "observed", (10, 5), 8192),
+            ],
+        )
+
+    def test_first_batch_size_candidate_is_not_optional(self) -> None:
+        """Only larger follow-up batch candidates should be skipped on CUDA OOM."""
+        args = {"batch_size": [4096, 8192]}
+
+        self.assertFalse(_is_optional_batch_size_candidate(args, 4096))
+        self.assertTrue(_is_optional_batch_size_candidate(args, 8192))
 
     def test_build_benchmark_plan_sweeps_preprocessing_presets(self) -> None:
         """Benchmark planning should expand preprocessing sweeps into separate runs."""
@@ -2911,6 +3216,7 @@ class BenchmarkPlanTests(unittest.TestCase):
                     "kuairec_small_matrix_full_observation",
                     "observed",
                     (10, 5),
+                    4096,
                 ),
                 (
                     "kuairec_v2",
@@ -2919,6 +3225,7 @@ class BenchmarkPlanTests(unittest.TestCase):
                     "kuairec_big_matrix_watch_ratio_threshold_0_5",
                     "observed",
                     (10, 5),
+                    4096,
                 ),
             ],
         )
@@ -2935,11 +3242,11 @@ class BenchmarkPlanTests(unittest.TestCase):
         plan = build_benchmark_plan(args)
 
         self.assertIn(
-            ("movielens1m", "edgrec", "cosine", None, "observed", (10, 5)),
+            ("movielens1m", "edgrec", "cosine", None, "observed", (10, 5), 4096),
             plan,
         )
         self.assertIn(
-            ("amazonbook", "edgrec", "cosine", None, "observed", (10, 5)),
+            ("amazonbook", "edgrec", "cosine", None, "observed", (10, 5), 4096),
             plan,
         )
 
@@ -2960,18 +3267,18 @@ class BenchmarkPlanTests(unittest.TestCase):
         self.assertEqual(
             plan[:4],
             [
-                ("amazonbook", "edgrec", "plateau", None, "observed", (6, 3)),
-                ("amazonbook", "edgrec", "plateau", None, "observed", (4, 2)),
-                ("movielens1m", "edgrec", "plateau", None, "observed", (6, 3)),
-                ("movielens1m", "edgrec", "plateau", None, "observed", (4, 2)),
+                ("amazonbook", "edgrec", "plateau", None, "observed", (6, 3), 4096),
+                ("amazonbook", "edgrec", "plateau", None, "observed", (4, 2), 4096),
+                ("movielens1m", "edgrec", "plateau", None, "observed", (6, 3), 4096),
+                ("movielens1m", "edgrec", "plateau", None, "observed", (4, 2), 4096),
             ],
         )
         self.assertIn(
-            ("kuairec_v2", "edgrec", "plateau", None, "observed", (10, 5)),
+            ("kuairec_v2", "edgrec", "plateau", None, "observed", (10, 5), 4096),
             plan,
         )
         self.assertIn(
-            ("kuairand1k", "edgrec", "plateau", None, "observed", (10, 5)),
+            ("kuairand1k", "edgrec", "plateau", None, "observed", (10, 5), 4096),
             plan,
         )
         self.assertEqual(len(plan), 12)
@@ -3192,6 +3499,8 @@ class BenchmarkPlanTests(unittest.TestCase):
             {
                 "paper-lightgcn-large-runtime-probes",
                 "paper-dice-all-runtime-probes",
+                "paper-dice-scaled-batch-movielens-probe",
+                "paper-dice-scaled-batch-amazonbook-probe",
             },
         )
         for profile_name in probe_profile_ids:

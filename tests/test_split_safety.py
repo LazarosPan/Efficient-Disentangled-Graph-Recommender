@@ -344,8 +344,16 @@ class SplitSafetyTests(unittest.TestCase):
         EDGRecConfig(device="cpu", propagation_backend="chunked_edge_index_aggregation")
         sparse_alias_config = EDGRecConfig(device="cpu", embedding_sparse_optimizer=True)
         self.assertEqual(sparse_alias_config.embedding_optimizer, "sparseadam")
+        sparse_alias_config.validate()
         sparse_string_config = EDGRecConfig(device="cpu", embedding_optimizer="sparseadam")
         self.assertTrue(sparse_string_config.embedding_sparse_optimizer)
+        sparse_string_config.validate()
+        redundant_sparse_config = EDGRecConfig(
+            device="cpu",
+            embedding_sparse_optimizer=True,
+            embedding_optimizer="sparseadam",
+        )
+        self.assertEqual(redundant_sparse_config.embedding_optimizer, "sparseadam")
         with self.assertRaisesRegex(ValueError, "Use either embedding_sparse_optimizer"):
             EDGRecConfig(
                 device="cpu",
@@ -469,13 +477,18 @@ class SplitSafetyTests(unittest.TestCase):
                 wraps=trainer._release_cuda_sampler_for_eval,
             ) as release_sampler,
         ):
-            history = trainer.train(checkpoint_every=0)
+            callback_epochs: list[int] = []
+            history = trainer.train(
+                checkpoint_every=0,
+                epoch_callback=lambda epoch, metrics, epoch_time_s: callback_epochs.append(epoch),
+            )
 
         self.assertEqual(evaluate_validation.call_count, 1)
         self.assertEqual(update_early_stopping.call_count, 1)
         self.assertEqual(release_sampler.call_count, 0)
         self.assertEqual(len(history["train_loss"]), 2)
         self.assertEqual(len(history["val_metrics"]), 1)
+        self.assertEqual(callback_epochs, [1])
 
     def test_get_splits_keeps_predefined_test_mask_intact(self) -> None:
         """Validation must be carved from train without touching test rows."""
@@ -527,7 +540,7 @@ class SplitSafetyTests(unittest.TestCase):
         data = build_graph(canonical, config)
 
         expected_edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
-        expected_popularity = torch.tensor([1.0, 0.0], dtype=torch.bfloat16)
+        expected_popularity = torch.tensor([1.0, 0.0], dtype=torch.float32)
 
         self.assertTrue(torch.equal(data.edge_index.cpu(), expected_edge_index))
         self.assertTrue(torch.equal(data.popularity.cpu(), expected_popularity))
@@ -615,8 +628,8 @@ class SplitSafetyTests(unittest.TestCase):
 
         data = build_graph(canonical, config)
 
-        expected_popularity = torch.tensor([1.0, 0.5], dtype=torch.bfloat16)
-        self.assertTrue(torch.equal(data.popularity.cpu(), expected_popularity))
+        expected_popularity = torch.tensor([2.0, 1.0], dtype=torch.float32)
+        torch.testing.assert_close(data.popularity.cpu(), expected_popularity)
 
     def test_build_graph_carries_causal_fields(self) -> None:
         """Graph data should retain the extended canonical causal descriptors."""
@@ -885,6 +898,16 @@ class SplitSafetyTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["Personalization@20"], 0.0, places=6)
         self.assertAlmostEqual(metrics["Personalization@40"], 0.0, places=6)
 
+    def test_evaluator_accepts_raw_count_popularity_for_average_popularity_metric(self) -> None:
+        """PyG AveragePopularity must receive finite non-negative raw train counts."""
+        evaluator = Evaluator(EDGRecConfig(device="cpu"))
+
+        metrics = evaluator._build_metrics(torch.tensor([0.0, 2.0], dtype=torch.float32))
+        self.assertIn("AveragePopularity@20", metrics)
+
+        with self.assertRaisesRegex(ValueError, "non-negative raw training"):
+            evaluator._build_metrics(torch.tensor([0.0, -1.0], dtype=torch.float32))
+
     def test_evaluator_uses_only_positive_labels_as_ground_truth(self) -> None:
         """Negative or weak held-out interactions must not count as relevant."""
         evaluator = Evaluator(EDGRecConfig(device="cpu"))
@@ -924,7 +947,7 @@ class SplitSafetyTests(unittest.TestCase):
         data.item_nodes = torch.tensor([1, 50, 3, 2], dtype=torch.long)
         data.n_users = 2
         data.n_items = 50
-        data.popularity = torch.arange(50, dtype=torch.float32)
+        data.popularity = torch.linspace(0.0, 1.0, 50, dtype=torch.float32)
 
         base = torch.arange(50, dtype=torch.float32).unsqueeze(0).expand(2, -1)
         model = _ComponentRankingModel(
@@ -1013,7 +1036,7 @@ class SplitSafetyTests(unittest.TestCase):
         data.item_nodes = torch.tensor([item_id + 2 for item_id in item_ids], dtype=torch.long)
         data.n_users = 2
         data.n_items = 50
-        data.popularity = torch.arange(50, dtype=torch.float32)
+        data.popularity = torch.linspace(0.0, 1.0, 50, dtype=torch.float32)
 
         base = torch.arange(50, dtype=torch.float32).unsqueeze(0).expand(2, -1)
         context = torch.arange(50, dtype=torch.float32).unsqueeze(0)
@@ -1056,7 +1079,7 @@ class SplitSafetyTests(unittest.TestCase):
         data.item_nodes = torch.tensor([1, 26], dtype=torch.long)
         data.n_users = 1
         data.n_items = 50
-        data.popularity = torch.arange(50, dtype=torch.float32)
+        data.popularity = torch.linspace(0.0, 1.0, 50, dtype=torch.float32)
 
         component_scores = torch.arange(50, dtype=torch.float32).unsqueeze(0)
         component_scores[:, 25] = -100.0
@@ -1095,7 +1118,7 @@ class SplitSafetyTests(unittest.TestCase):
         data.item_nodes = torch.tensor([1, 50, 3, 2], dtype=torch.long)
         data.n_users = 2
         data.n_items = 50
-        data.popularity = torch.arange(50, dtype=torch.float32)
+        data.popularity = torch.linspace(0.0, 1.0, 50, dtype=torch.float32)
 
         base = torch.arange(50, dtype=torch.float32).unsqueeze(0).expand(2, -1)
         model = _ComponentRankingModel(
@@ -1165,7 +1188,7 @@ class SplitSafetyTests(unittest.TestCase):
         data.item_nodes = torch.tensor([1, 26], dtype=torch.long)
         data.n_users = 1
         data.n_items = 50
-        data.popularity = torch.arange(50, dtype=torch.float32)
+        data.popularity = torch.linspace(0.0, 1.0, 50, dtype=torch.float32)
 
         scores = torch.arange(50, dtype=torch.float32).unsqueeze(0)
         scores[:, 25] = 100.0
@@ -1287,8 +1310,10 @@ class SplitSafetyTests(unittest.TestCase):
             set(diagnostics),
             {
                 "conformity_contribution@2",
+                "conformity_branch_contribution_ratio@2",
                 "conformity_popularity_spearman@2",
                 "final_popularity_spearman@2",
+                "interest_branch_contribution_ratio@2",
                 "interest_contribution@2",
                 "interest_popularity_spearman@2",
             },
@@ -1738,7 +1763,7 @@ class CausalTrainingContractTests(unittest.TestCase):
         edgrec = EDGRecConfig(device="cuda").preset_dice_like().preset_full()
         baseline = EDGRecConfig(device="cuda").preset_full().preset_dice_like()
 
-        self.assertTrue(edgrec.use_features)
+        self.assertFalse(edgrec.use_features)
         self.assertFalse(hasattr(edgrec, "scoring_weight_mode"))
         self.assertEqual(edgrec.auxiliary_losses_start_epoch, 15)
         self.assertEqual(edgrec.popularity_supervision_start_epoch, 30)
@@ -1958,6 +1983,42 @@ class CausalTrainingContractTests(unittest.TestCase):
             torch.equal(
                 model_a.embedding.recent_train_mask,
                 model_b.embedding.recent_train_mask,
+            ),
+        )
+
+    def test_runtime_model_reuses_train_derived_history_cache(self) -> None:
+        """Auto-batch probe model rebuilds should not recompute train history."""
+        canonical = CanonicalInteractions(
+            user_id=np.array([0, 0, 0, 1], dtype=np.int64),
+            item_id=np.array([0, 1, 2, 3], dtype=np.int64),
+            label=np.ones(4, dtype=np.float32),
+            timestamp=np.array([1, 2, 50, 60], dtype=np.int64),
+            sign=np.ones(4, dtype=np.float32),
+            popularity=np.zeros(4, dtype=np.float32),
+            n_users=2,
+            n_items=4,
+            user_map={0: 0, 1: 1},
+            item_map={0: 0, 1: 1, 2: 2, 3: 3},
+            train_mask=np.array([True, True, False, True]),
+            val_mask=np.array([False, False, True, False]),
+            test_mask=np.array([False, False, False, False]),
+        )
+        config = self._build_dual_branch_config()
+        data = build_graph(canonical, config)
+
+        with patch.object(
+            canonical,
+            "build_recent_train_history",
+            wraps=canonical.build_recent_train_history,
+        ) as build_history:
+            model_a = build_runtime_model(config, canonical, data)
+            model_b = build_runtime_model(config, canonical, data)
+
+        self.assertEqual(build_history.call_count, 1)
+        self.assertTrue(
+            torch.equal(
+                model_a.embedding.recent_train_items,
+                model_b.embedding.recent_train_items,
             ),
         )
 
@@ -2299,6 +2360,7 @@ class CausalTrainingContractTests(unittest.TestCase):
     def test_embedding_feature_projection_accepts_cpu_fallback_inputs(self) -> None:
         """CPU fallback paths should project bf16 feature buffers without dtype errors."""
         config = EDGRecConfig(device="cpu", embed_dim=4).preset_full()
+        config.use_features = True
         model = EDGRec(
             n_users=1,
             n_items=2,
@@ -2477,6 +2539,63 @@ class CausalTrainingContractTests(unittest.TestCase):
         )
 
         self.assertTrue(torch.allclose(actual, expected))
+
+    def test_sparse_adjacency_cache_reuses_coalesced_stable_graph_tensor(self) -> None:
+        """Stable sparse backend inputs should build and reuse one coalesced adjacency."""
+        model = DualBranchGCN(
+            EDGRecConfig(device="cpu", use_dual_branch=False, use_sign_aware=False)
+        )
+        edge_index = torch.tensor(
+            [[0, 0, 1], [1, 1, 0]],
+            dtype=torch.long,
+        )
+        edge_weight = torch.tensor([0.25, 0.25, 1.0], dtype=torch.float32)
+
+        first = model._get_or_build_sparse_adjacency_tensor(
+            edge_index,
+            edge_weight,
+            num_nodes=2,
+            dtype=torch.float32,
+        )
+        second = model._get_or_build_sparse_adjacency_tensor(
+            edge_index,
+            edge_weight,
+            num_nodes=2,
+            dtype=torch.float32,
+        )
+
+        self.assertIs(first, second)
+        self.assertTrue(first.is_coalesced())
+        self.assertEqual(first._nnz(), 2)
+        self.assertTrue(torch.allclose(first.values(), torch.tensor([0.5, 1.0])))
+
+    def test_sparse_adjacency_cache_skips_gradient_edge_weights(self) -> None:
+        """Dynamic sign-aware weights should not be cached across forwards."""
+        model = DualBranchGCN(
+            EDGRecConfig(device="cpu", use_dual_branch=False, use_sign_aware=True)
+        )
+        edge_index = torch.tensor(
+            [[0, 1], [1, 0]],
+            dtype=torch.long,
+        )
+        edge_weight = torch.tensor([0.5, 1.0], dtype=torch.float32, requires_grad=True)
+
+        first = model._get_or_build_sparse_adjacency_tensor(
+            edge_index,
+            edge_weight,
+            num_nodes=2,
+            dtype=torch.float32,
+        )
+        second = model._get_or_build_sparse_adjacency_tensor(
+            edge_index,
+            edge_weight,
+            num_nodes=2,
+            dtype=torch.float32,
+        )
+
+        self.assertIsNot(first, second)
+        self.assertTrue(first.is_coalesced())
+        self.assertTrue(second.is_coalesced())
 
     def test_edge_propagation_backprops_through_sign_weights(self) -> None:
         """Chunked LightGCN propagation should preserve gradients for sign-aware weights."""

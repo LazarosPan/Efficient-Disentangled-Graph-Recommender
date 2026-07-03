@@ -48,8 +48,10 @@ class ExperimentLogger:
     }
     _SUMMARY_VIEW_SENTINEL_COLUMNS: ClassVar[tuple[str, ...]] = (
         RUNTIME_PROBE_METRIC_NAMES[-1],
+        "largest_training_item_interaction_count",
         "test_final_popularity_spearman_40",
         "test_interest_branch_ndcg_20",
+        "test_interest_branch_contribution_ratio_20",
         "max_gpu_utilization_pct",
     )
 
@@ -423,6 +425,11 @@ class ExperimentLogger:
                     THEN m.metric_value
                 END) AS training_time_s,
                 MAX(CASE
+                    WHEN m.metric_name = 'largest_training_item_interaction_count'
+                         AND m.split = 'train'
+                    THEN m.metric_value
+                END) AS largest_training_item_interaction_count,
+                MAX(CASE
                     WHEN m.metric_name = 'runtime_probe_target_epochs'
                          AND m.split = 'approximation'
                     THEN m.metric_value
@@ -608,6 +615,16 @@ class ExperimentLogger:
                     THEN m.metric_value
                 END) AS test_conformity_contribution_40,
                 MAX(CASE
+                    WHEN m.metric_name = 'conformity_branch_contribution_ratio@20'
+                        AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_conformity_branch_contribution_ratio_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'conformity_branch_contribution_ratio@40'
+                        AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_conformity_branch_contribution_ratio_40,
+                MAX(CASE
                     WHEN m.metric_name = 'conformity_popularity_spearman@20' AND m.split = 'test'
                     THEN m.metric_value
                 END) AS test_conformity_popularity_spearman_20,
@@ -655,6 +672,16 @@ class ExperimentLogger:
                     WHEN m.metric_name = 'interest_contribution@40' AND m.split = 'test'
                     THEN m.metric_value
                 END) AS test_interest_contribution_40,
+                MAX(CASE
+                    WHEN m.metric_name = 'interest_branch_contribution_ratio@20'
+                        AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_interest_branch_contribution_ratio_20,
+                MAX(CASE
+                    WHEN m.metric_name = 'interest_branch_contribution_ratio@40'
+                        AND m.split = 'test'
+                    THEN m.metric_value
+                END) AS test_interest_branch_contribution_ratio_40,
                 MAX(CASE
                     WHEN m.metric_name = 'interest_popularity_spearman@20' AND m.split = 'test'
                     THEN m.metric_value

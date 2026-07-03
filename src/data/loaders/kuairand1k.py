@@ -11,7 +11,7 @@ import polars as pl
 from ...utils.config import KUAIRAND_LABEL_MODE_CHOICES
 from ...utils.csv_features import (
     PolicyCsvFeatureSpec,
-    load_policy_csv_feature_blocks,
+    load_policy_csv_feature_metadata_blocks,
 )
 from ...utils.dataset_loader_utils import downcast_numeric_arrays
 from ...utils.interaction_indexing import (
@@ -384,10 +384,10 @@ def load_kuairand1k(
     behavior_type[follows_arr > 0] = "follow"
     behavior_type[likes_arr > 0] = "like"
 
-    user_features = None
-    item_features = None
+    user_feature_block = None
+    item_feature_block = None
     if include_optional_features:
-        user_features = load_policy_csv_feature_blocks(
+        user_feature_block = load_policy_csv_feature_metadata_blocks(
             feature_policy=feature_policy,
             dataset_name="kuairand1k",
             aspect="user_features",
@@ -401,7 +401,7 @@ def load_kuairand1k(
                 ),
             ),
         )
-        item_features = load_policy_csv_feature_blocks(
+        item_feature_block = load_policy_csv_feature_metadata_blocks(
             feature_policy=feature_policy,
             dataset_name="kuairand1k",
             aspect="item_features",
@@ -455,8 +455,22 @@ def load_kuairand1k(
                 "watch_ratio_proxy_threshold": float(watch_ratio_proxy_threshold),
             },
         ),
-        user_features=user_features,
-        item_features=item_features,
+        user_features=None if user_feature_block is None else user_feature_block.matrix,
+        item_features=None if item_feature_block is None else item_feature_block.matrix,
+        user_feature_names=None if user_feature_block is None else user_feature_block.names,
+        item_feature_names=None if item_feature_block is None else item_feature_block.names,
+        user_feature_sources=None if user_feature_block is None else user_feature_block.sources,
+        item_feature_sources=None if item_feature_block is None else item_feature_block.sources,
+        user_feature_raw_columns=(
+            None if user_feature_block is None else user_feature_block.raw_features
+        ),
+        item_feature_raw_columns=(
+            None if item_feature_block is None else item_feature_block.raw_features
+        ),
+        user_feature_roles=None if user_feature_block is None else user_feature_block.roles,
+        item_feature_roles=None if item_feature_block is None else item_feature_block.roles,
+        user_feature_groups=None if user_feature_block is None else user_feature_block.groups,
+        item_feature_groups=None if item_feature_block is None else item_feature_block.groups,
         feedback_type="randomized-exposure",
         preprocessing_preset=effective_preset,
     )

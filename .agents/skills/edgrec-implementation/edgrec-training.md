@@ -94,13 +94,19 @@ Important runtime details:
   `auto_batch_size=True`, the lookup tries the configured candidate batch-size
   identities and binds the saved batch size instead of probing CUDA again,
 - Optuna search can attach a training epoch callback to `MiniBatchTrainer.train()`;
-  the callback reports validation objective values after each epoch and raises
-  `TrialPruned` when the configured Optuna pruner stops an unpromising trial.
-  Normal experiment, formal-run, and baseline paths leave this callback unset,
+  the callback reports validation objective values only on epochs where validation
+  ran and raises `TrialPruned` when the configured Optuna pruner stops an
+  unpromising trial. Normal experiment, formal-run, and baseline paths leave this
+  callback unset,
+- EDGRec train-derived model tensors (`item_recency`, recent-train history, and
+  optional propensity targets) are cached on the runtime graph payload with the
+  configured `temporal_history_size` so
+  auto-batch probe model rebuilds reuse split-safe CPU tensors instead of
+  recomputing per candidate,
 - Optuna objectives are validation-only. `ValidationAccuracy@20_40` is the broad
   discovery objective for the coarse mechanism search; every completed search row
-  should still store `ValidationOnlineCRRU@20_40` diagnostics so reports and figures
-  can compare all source studies through one OnlineCRRU validation objective,
+  should still store `ValidationCRRU@20_40` diagnostics so reports and figures
+  can compare all source studies through one ValidationCRRU validation objective,
 - `search-experiments --trials N` targets N fresh informative finished trials for the
   current `search_space_revision`: fresh `COMPLETE` plus trainer/pruner-generated
   `PRUNED`, excluding `FAIL`, `RUNNING`, historically imported rows, duplicate-skip
@@ -109,8 +115,11 @@ Important runtime details:
 - `search-experiments --space a,b` runs search spaces sequentially with the same
   `--dataset` and `--trials` applied to each space; omit `--study-name` for queues
   so normal per-space/per-dataset study names remain unambiguous,
+- validation-selected `formal-run` EDGRec profiles may pass `batch_size` as `[trial batch,
+  2x trial batch]`; the first value is the required formal candidate, while a
+  CUDA OOM on later batch candidates is skipped and the queue continues,
 - completed Optuna trials store sampled params, runtime attrs, and dataset-scoped effective configs,
-- promotion reports should show effective configs so resolved auto-batch size is visible,
+- test-profile reports should show effective configs so resolved auto-batch size is visible,
 - validation retries once on CUDA after optimizer-state offload, then falls back to CPU if evaluation still OOMs,
 - a late auto-batch training OOM releases the failed trainer and resumes the next smaller candidate from the latest completed-epoch checkpoint when one exists,
 - auto-batch OOM logs include exception summary and PyTorch CUDA allocated/reserved/peak stats,
@@ -125,18 +134,22 @@ Important runtime details:
 - In sampled mode, on CUDA it first tries to stage the full graph into a CUDA-resident `SubgraphSampler`.
 - If sampled graph staging or later batch preparation reports a CUDA OOM, including plain RuntimeError messages from CUDA kernels, it falls back to the CPU sampler path.
 - Sampled BFS memory scales with `frontier_size * num_neighbors[hop]`, not total incident degree.
-- EDGRec sampled propagation uses an uncoalesced CUDA sparse adjacency tensor plus CPU chunked edge-list fallback.
+- EDGRec sampled propagation defaults to chunked edge-list aggregation on CPU/CUDA. The explicit sparse-adjacency backend builds coalesced tensors and reuses one stable runtime cache entry when edge weights do not require gradients.
 - Full-graph mode skips subgraph extraction and propagates the full train graph per optimizer step.
 - Full-graph mode is used by `lightgcn_paper` and `dice_paper`.
 - Full-graph mode stages `edge_index`, `edge_sign`, and `edge_norm` once per trainer/device.
+- Auto-batch probes use the same training mode as the real run: sampled profiles probe sampled subgraph batches; full-graph paper baselines probe full-graph optimizer batches.
+- Formal-run item labels show `bsauto(startN)` while probing is unresolved; completed-checkpoint recovery returns the saved resolved `batch_size` so summaries do not fall back to the planned start batch.
 - Full-graph mode releases CUDA graph cache before validation.
 
-Trainer family map:
+Trainer preset/family map:
 
-| Family | Runtime contract |
+| Preset or family | Runtime contract |
 | --- | --- |
 | `lightgcn_paper` | `PaperLightGCN`; no dropout/features/mixer; observed graph; Adam; ego L2 |
+| `lightgcn_paper_scaled_batch` preset | Resolves to `baseline_family="lightgcn_paper"`; `paper_scaled_batch=True` changes only batch-size selection. |
 | `dice_paper` | `PaperGCNDICE`; separate branches; self-looped DICE LightGCN; dropout; summed final score |
+| `dice_paper_scaled_batch` preset | Resolves to `baseline_family="dice_paper"`; `paper_scaled_batch=True` changes only batch-size selection. |
 | EDGRec DICE negatives | raw train-only counts; `dice_sampler_margin`; `dice_sampler_pool`; `n_negatives=1`; vectorized known-positive filtering |
 | `dice_paper` negatives | external-code `n_negatives=4`; exact per-user pool-count correction |
 - Sampled and full-graph training both pass the current epoch into the negative sampler. The DICE sampler margin decays only when `dice_adaptive_decay=True`.
@@ -152,12 +165,12 @@ Trainer family map:
 
 - `NDCG@20`
 - `Recall@20`
-- `AveragePopularity@20`
+- `AveragePopularity@20` (raw PyG ARP from train item counts)
 - `HitRatio@20`
 - `Personalization@20`
 - `NDCG@40`
 - `Recall@40`
-- `AveragePopularity@40`
+- `AveragePopularity@40` (raw PyG ARP from train item counts)
 - `HitRatio@40`
 - `Personalization@40`
 
@@ -181,13 +194,14 @@ Diagnostic rules:
 | reuse | same propagated state and top-k recommendations as thesis metrics |
 | accumulation | native-dtype top-k slices; float accumulation math |
 | score-mix stats | `score_mix_*` mean/std |
-| contribution stats | weighted branch contributions at `@20/@40` |
+| contribution stats | weighted branch contributions and interest/conformity contribution ratios at `@20/@40` |
 | branch checks | interest-vs-conformity cosine |
 | popularity checks | per-component popularity Spearman |
+| branch-collapse warnings | flag conformity mix above `0.8`, interest mix below `0.1`, or branch cosine magnitude above `0.9` |
 | seen masking | final and standalone branch rankers are masked |
 | context diagnostics | read-only at already-excluded final top-k recommendations |
-| branch rankers | raw interest/conformity PyG `NDCG`, `Recall`, `AveragePopularity` |
-| thesis role | diagnostics only; not primary metrics |
+| branch rankers | raw interest/conformity PyG `NDCG`, `Recall`, raw-count `AveragePopularity` |
+| thesis role | exploratory diagnostics only; not primary metrics and not causal proof |
 
 Quick validation uses larger tiny caps for sparse-positive Taobao and KuaiRand slices so label-aware validation/test splits contain positive targets.
 
@@ -198,78 +212,90 @@ CAGRA evaluation filtering and CAGRA graph augmentation are not part of the acti
 Facts:
 
 - `CRRU@K` = Composite Resource-aware Recommendation Utility at K.
-- Use: thesis-facing ranking utility family for completed formal/ablation rows.
+- Use: deterministic bounded post-hoc utility for completed formal/ablation rows.
 - Not: causal-effect estimator.
-- Not: universal recommender metric.
+- Not: standard recommender metric, fairness metric, debiasing proof, or universal cross-dataset quality score.
 - Direction: higher is better.
 - Parameterization: `CRRU@K(m; theta)`; weights encode task/stakeholder preference.
-- Lower-cost raw quantities are inverted: average popularity, VRAM, seconds/epoch.
+- Lower-cost raw quantities are inverted: CRRU-normalized raw AveragePopularity, peak VRAM, seconds/epoch.
 - VRAM is a capacity/resource cost, not a reward.
 - Larger batches can improve CRRU only if time/epoch gains offset VRAM penalty.
-- Normalization scope: dataset-local report section rows.
-- Lower-cost quantities are inverted after min-max normalization.
-- Interpretation scope: relative within a dataset/report section; adding/removing rows can change values.
-- Inverse AvgPop measures lower popularity concentration, not causal fairness.
+- Scope: absolute per-run utility; adding/removing report rows must not change values.
+- No row-set, report-row, dataset, trial, or completed-experiment min-max normalization is used.
+- Missing, NaN, infinite, or out-of-domain formal CRRU inputs raise errors.
+- `CRRU_EPSILON` only prevents exact-zero collapse under fractional powers.
+- Inverse recommendation popularity measures lower popularity concentration, not causal fairness.
+- `query-results` prints a CRRU denominator audit: stored vs reconstructed vs unavailable vs invalid, skipped-row reasons, and assertions that raw ARP does not exceed the denominator and computed CRRU values stay in `[0,1]`.
 
 $$
-\operatorname{Accuracy}@K =
+\operatorname{RankingAccuracy}@K =
 \operatorname{NDCG}@K^{0.50}
 \operatorname{Recall}@K^{0.35}
-\operatorname{Hit}@K^{0.15}
+\operatorname{HitRatio}@K^{0.15}
 $$
 
 $$
-\operatorname{PopularityDiversity}@K =
-\operatorname{Pers}@K^{0.40}
-\left(1 - \operatorname{AvgPop}@K_n\right)^{0.60}
+\operatorname{PopularityAwarePersonalization}@K =
+\operatorname{Personalization}@K^{0.40}
+\operatorname{InverseRecommendationPopularity}@K^{0.60}
 $$
 
 $$
-\operatorname{Efficiency} =
-\left(1 - \log(1+\operatorname{VRAM})_n\right)^{0.50}
-\left(1 - \log(1+\operatorname{time/epoch})_n\right)^{0.50}
+\operatorname{InverseRecommendationPopularity}@K =
+1-\operatorname{CRRUNormalizedAveragePopularity}@K
+$$
+
+$$
+\operatorname{CRRUNormalizedAveragePopularity}@K =
+\frac{\log(1+\operatorname{AveragePopularity}@K)}
+{\log(1+\operatorname{LargestTrainingItemInteractionCount})}
+$$
+
+$$
+\operatorname{TrainingResourceUtility} =
+\operatorname{PeakGpuMemoryCapacityScore}^{0.50}
+\operatorname{EpochDurationEfficiencyScore}^{0.50}
 $$
 
 $$
 \operatorname{CRRU}@K =
-\operatorname{Accuracy}@K^{0.55}
-\operatorname{PopularityDiversity}@K^{0.30}
-\operatorname{Efficiency}^{0.15}
+\operatorname{RankingAccuracy}@K^{0.55}
+\operatorname{PopularityAwarePersonalization}@K^{0.30}
+\operatorname{TrainingResourceUtility}^{0.15}
 $$
 
 Thesis default `theta`:
 
 | Component | Weight |
 | --- | ---: |
-| Accuracy `NDCG/Recall/Hit` | `0.50 / 0.35 / 0.15` |
-| Popularity-Diversity `Personalization/inverse AvgPop` | `0.40 / 0.60` |
-| Efficiency `inverse log VRAM/inverse log time per epoch` | `0.50 / 0.50` |
-| Final `Accuracy/Popularity-Diversity/Efficiency` | `0.55 / 0.30 / 0.15` |
+| RankingAccuracy `NDCG/Recall/HitRatio` | `0.50 / 0.35 / 0.15` |
+| PopularityAwarePersonalization `Personalization/inverse CRRU-normalized raw ARP` | `0.40 / 0.60` |
+| TrainingResourceUtility `peak GPU memory/epoch duration` | `0.50 / 0.50` |
+| Final `RankingAccuracy/PopularityAwarePersonalization/TrainingResourceUtility` | `0.55 / 0.30 / 0.15` |
 
-Implementation normalization:
+Implementation transforms:
 
-$$
-x_n = \frac{x - \min(x)}{\max(x) - \min(x) + \epsilon}
-$$
-
-- `epsilon=1e-8` prevents divide-by-zero and exact-zero fractional-power terms.
-- Min-max is used because CRRU terms must stay bounded in `[0,1]`.
-- Z-score is avoided: negative/unbounded values break fractional-power products.
+- PyG `LinkPredAveragePopularity` receives raw train-only item interaction counts.
+- `LargestTrainingItemInteractionCount` is the maximum positive-train interaction count over items.
+- Model/loss auxiliary popularity targets may use log-normalized train popularity separately; this does not change the logged PyG ARP metric.
+- `PeakGpuMemoryCapacityScore = 1/(1+log(1+PeakGpuMemoryMegabytes))`.
+- `EpochDurationEfficiencyScore = 1/(1+log(1+EpochDurationSeconds))`.
+- `ValidationCRRU@20And40 = arithmetic_mean(CRRU@20, CRRU@40)`.
 
 Optuna CRRU:
 
 | Item | Contract |
 | --- | --- |
-| Live/default report metric | `ValidationOnlineCRRU@20_40` |
-| Per-K attrs | `ValidationOnlineCRRU@20`, `ValidationOnlineCRRU@40` |
-| Accuracy/popularity-diversity inputs | validation NDCG, Recall, Hit, Personalization |
-| Lower-cost inputs | validation AveragePopularity, peak VRAM, seconds/epoch |
-| Lower-cost transform | deterministic trial-local higher-is-better transform |
-| Report CRRU | recomputed after completed rows exist; not live objective |
-| Search shape | short second-pass screen; Hyperband pruning; no exhaustive grid |
+| Live/default report metric | `ValidationCRRU@20_40` |
+| Per-K attrs | `ValidationCRRU@20`, `ValidationCRRU@40` |
+| Accuracy/popularity inputs | validation NDCG, Recall, Hit, Personalization |
+| Lower-cost inputs | validation raw PyG AveragePopularity, logged or reconstructed largest train item count, peak VRAM, seconds/epoch |
+| Lower-cost transform | log-normalize raw ARP inside CRRU, then invert; inverse-log resources |
+| Report CRRU | same absolute formula as the validation objective, applied to test rows |
+| Search shape | 150-epoch cap guarded by Hyperband pruning and early stopping; no exhaustive grid |
 | Depth guard | four-hop excluded unless separate deep diagnostic justifies cost/risk |
 
-Naming note: `OnlineCRRU` means Optuna-safe single-trial CRRU-style objective on the validation split. It includes validation ranking/popularity metrics, seconds/epoch, and peak VRAM; it is not an online-serving or A/B-test metric.
+Naming note: `ValidationCRRU` means Optuna-safe single-trial CRRU-style objective on the validation split. It includes validation ranking/popularity metrics, seconds/epoch, and peak VRAM; it is not an online-serving or A/B-test metric.
 
 ## Checkpoints and identity
 
@@ -281,6 +307,9 @@ Naming note: `OnlineCRRU` means Optuna-safe single-trial CRRU-style objective on
 Current rules:
 
 - the default checkpoint filename includes `training_hash`,
+- generated checkpoint filenames preserve the full canonical label when it fits;
+  overlong basenames are byte-bounded with a canonical-name digest plus
+  `training_hash`, while full `canonical_name` remains in checkpoint/SQLite metadata,
 - changing a training-defining field requires a new checkpoint,
 - evaluation cutoffs are fixed by `THESIS_EVAL_KS` in `Evaluator`, so checkpoint
   filenames are keyed by training identity rather than report-display options,
@@ -316,5 +345,5 @@ Current rules:
 - Default `query-results` writes Markdown headings and pipe tables.
 - Report sections: final formal thesis profiles, supporting historical/preprocessing rows, runtime-probe notes, public ablations.
 - Runtime probes are visible but excluded from ranked formal tables.
-- Ranked sections split tables into accuracy, popularity-diversity, and composite-resource blocks.
-- `CRRU@20` and `CRRU@40` stay in composite-resource tables and are dataset-local section-row min-max utilities.
+- Ranked sections use one leaderboard with ranking, log-popularity, personalization, and resource columns.
+- `CRRU@20` and `CRRU@40` stay in composite-resource tables as absolute per-run utilities.

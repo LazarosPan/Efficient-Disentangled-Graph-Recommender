@@ -35,6 +35,12 @@ def _format_float_part(value: object) -> str:
     return f"{float(value):g}".replace(".", "p")
 
 
+def _format_signed_float_part(value: object) -> str:
+    """Format a signed float as a compact filesystem-safe name fragment."""
+    formatted = _format_float_part(value)
+    return formatted.replace("-", "n")
+
+
 def _optional_name_part(
     value: object,
     prefix: str,
@@ -144,6 +150,11 @@ def build_canonical_experiment_name(
         _config_value(config, "derived_split_mode", "per_user_temporal"),
     )
     feature_policy = _config_value(config, "feature_policy", "thesis_default")
+    feature_subset_mode = _config_value(config, "feature_subset_mode", "all")
+    feature_include_groups = _config_value(config, "feature_include_groups")
+    feature_exclude_groups = _config_value(config, "feature_exclude_groups")
+    use_features = _config_bool(config, "use_features", False)
+    feature_gate_init = _config_value(config, "feature_gate_init")
     _extend_name_parts(
         parts,
         [
@@ -162,8 +173,20 @@ def build_canonical_experiment_name(
                 "per_user_temporal",
                 "split",
             ),
-            "feat" if _config_bool(config, "use_features", False) else None,
+            "feat" if use_features else None,
             _non_default_name_part(feature_policy, "thesis_default", "fpolicy"),
+            _non_default_name_part(feature_subset_mode, "all", "fsubset"),
+            _optional_name_part(
+                format_num_neighbors_payload(feature_include_groups),
+                "finclude",
+            ),
+            _optional_name_part(
+                format_num_neighbors_payload(feature_exclude_groups),
+                "fexclude",
+            ),
+            _optional_name_part(feature_gate_init, "fgate", _format_signed_float_part)
+            if use_features
+            else None,
             _non_default_name_part(
                 _config_value(config, "embedding_optimizer", "adamw"),
                 "adamw",

@@ -31,8 +31,8 @@ Diagram scope: weighted-sum structure only. Activation depends on preset, config
 | `L_interest_bpr` | Raw `branch_interest_score` when present, otherwise `interest_score`; symmetric branch BPR, or DICE popular-negative masked BPR when `branch_loss_mode="dice"` | `0.02` for EDGRec, `0.1` for GCN-DICE | Dual-branch only |
 | `L_conformity_bpr` | Raw `branch_conformity_score` when present, otherwise `conformity_score`; symmetric branch BPR, or DICE popularity BPR with reversed direction for popular negatives when `branch_loss_mode="dice"` | `0.02` for EDGRec, `0.1` for GCN-DICE | Dual-branch only |
 | `L_independence` | Cosine-squared branch decorrelation, or distance-correlation discrepancy when `branch_loss_mode="dice"` | `0.005` for EDGRec, `0.01` for GCN-DICE | Dual-branch only |
-| `L_contrastive` | Branch-local positive-pair contrastive terms | `0.02` | Dual-branch only and weight > 0; weights are applied outside the log-probability |
-| `L_align` / `L_uniform` | DirectAU-style branch geometry | `0.02` | Dual-branch only and weight > 0 |
+| `L_contrastive` | Branch-local positive-pair contrastive terms | `0.0` by default; explicit ablations/search profiles set nonzero weights | Dual-branch only and weight > 0; weights are applied outside the log-probability |
+| `L_align` / `L_uniform` | DirectAU-style branch geometry | `0.0` by default; explicit ablations/search profiles set nonzero weights | Dual-branch only and weight > 0 |
 | `L_pop` | Raw `raw_context_score(pos)` when present, otherwise `context_score(pos)`, vs train-split item popularity target | `0.02` | Dual branch + context head + weight > 0 |
 | `L_prop_calib` | `propensity_scores(pos)` vs `propensity_targets(pos)` | `0.0` | Weight > 0 and batch propensity targets available |
 | `L_embedding_reg` | LightGCN initial user, positive-item, and negative-item embeddings | `weight_decay=1e-4` for `lightgcn_paper` | `baseline_family="lightgcn_paper"` only |
@@ -75,7 +75,7 @@ When `branch_loss_mode="dice"`, the branch terms follow DICE semantics:
 | sampler mask | `dice_negative_mask` marks popularity-dominated negatives |
 | mask consumer | `LossSuite`; fallback reconstructs from train popularity + `dice_branch_margin` |
 | mask reduction | `dice_mask_reduction="batch_mean"` averages masked loss over the full batch; `active_mean` divides by active mask count |
-| margin owner | `dice_paper` and `edgrec` lock fallback margin to `dice_sampler_margin` |
+| margin owner | sampler masks come from the DICE negative sampler; if absent, `LossSuite` falls back to `dice_branch_margin`. Paper-DICE and EDGRec defaults set sampler and branch margins to `40.0`, but experiment profiles may vary `dice_sampler_margin` independently. |
 | margin decay | only when `dice_adaptive_decay=True` |
 | `L_interest_bpr` | active only on popularity-dominated negatives |
 | `L_conformity_bpr` | popular negative above positive; otherwise positive above negative |

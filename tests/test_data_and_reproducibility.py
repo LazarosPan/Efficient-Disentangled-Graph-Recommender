@@ -74,7 +74,7 @@ class DataContractTests(unittest.TestCase):
         np.testing.assert_array_equal(canonical.item_id, indexed.item_id)
         np.testing.assert_allclose(
             canonical.popularity,
-            np.array([1.0, 0.5], dtype=np.float32),
+            np.array([1.0, np.log1p(1.0) / np.log1p(2.0)], dtype=np.float32),
         )
         self.assertEqual(canonical.n_users, indexed.n_users)
         self.assertEqual(canonical.n_items, indexed.n_items)
@@ -780,6 +780,10 @@ class DataContractTests(unittest.TestCase):
                 "author_id",
                 "music_id",
                 "video_type",
+                "video_duration",
+                "video_width",
+                "video_height",
+                "video_tag_id",
                 "upload_dt",
                 "upload_type",
                 "visible_status",
@@ -797,10 +801,12 @@ class DataContractTests(unittest.TestCase):
                 "upload_dt",
                 "upload_type",
                 "visible_status",
+                "video_duration",
                 "server_width",
                 "server_height",
                 "music_id",
                 "music_type",
+                "tag",
             ),
         )
 

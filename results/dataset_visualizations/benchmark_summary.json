@@ -1,0 +1,287 @@
+{
+  "datasets": [
+    {
+      "name": "amazonbook",
+      "display_name": "Amazon-Book",
+      "n_users": 52643,
+      "n_items": 91599,
+      "n_interactions": 2984108,
+      "density": 0.0006188468344849981,
+      "pos_rate": 1.0,
+      "mean_sign": 0.0,
+      "train_size": 2093875,
+      "val_size": 234212,
+      "test_size": 603378,
+      "split_source": "train/test+derived-val",
+      "split_label": "provided train / test split with validation carved from train",
+      "timestamp_coverage": 0.0,
+      "unique_pair_count": 2984108,
+      "repeated_pair_share": 0.0,
+      "user_feature_dim": 0,
+      "item_feature_dim": 0,
+      "feedback_type": "implicit",
+      "feedback_description": "implicit observed interactions only",
+      "preprocessing_preset": "amazonbook_graph_only",
+      "median_user_activity": 33.0,
+      "median_item_popularity": 19.0,
+      "modalities_label": "implicit interaction graph and split structure",
+      "randomized_exposure_share": null,
+      "split_counts": {
+        "train": 2093875,
+        "val": 234212,
+        "test": 603378
+      },
+      "response_signal": {
+        "name": "label",
+        "summary": {
+          "count": 2984108,
+          "mean": 1.0,
+          "std": 0.0,
+          "min": 1.0,
+          "max": 1.0
+        }
+      }
+    },
+    {
+      "name": "movielens1m",
+      "display_name": "MovieLens 1M",
+      "n_users": 6040,
+      "n_items": 3706,
+      "n_interactions": 1000209,
+      "density": 0.044683625622312845,
+      "pos_rate": 0.575160801410675,
+      "mean_sign": 0.29078221321105957,
+      "train_size": 797758,
+      "val_size": 99692,
+      "test_size": 102759,
+      "split_source": "derived:per_user_temporal",
+      "split_label": "per-user temporal split derived from timestamps",
+      "timestamp_coverage": 1.0,
+      "unique_pair_count": 1000209,
+      "repeated_pair_share": 0.0,
+      "user_feature_dim": 3,
+      "item_feature_dim": 18,
+      "feedback_type": "explicit",
+      "feedback_description": "explicit 1-to-5 star ratings",
+      "preprocessing_preset": "movielens_explicit",
+      "median_user_activity": 96.0,
+      "median_item_popularity": 123.5,
+      "modalities_label": "ratings over time plus user and item metadata",
+      "randomized_exposure_share": null,
+      "split_counts": {
+        "train": 797758,
+        "val": 99692,
+        "test": 102759
+      },
+      "response_signal": {
+        "name": "raw_target",
+        "summary": {
+          "count": 1000209,
+          "mean": 3.581564453029317,
+          "std": 1.1171012869389083,
+          "min": 1.0,
+          "max": 5.0
+        }
+      }
+    },
+    {
+      "name": "movielens20m",
+      "display_name": "MovieLens 20M",
+      "n_users": 138493,
+      "n_items": 26744,
+      "n_interactions": 20000263,
+      "density": 0.0053998478135544505,
+      "pos_rate": 0.49976393580436707,
+      "mean_sign": 0.2627643048763275,
+      "train_size": 15945812,
+      "val_size": 1991736,
+      "test_size": 2062715,
+      "split_source": "derived:per_user_temporal",
+      "split_label": "per-user temporal split derived from timestamps",
+      "timestamp_coverage": 1.0,
+      "unique_pair_count": 20000263,
+      "repeated_pair_share": 0.0,
+      "user_feature_dim": 0,
+      "item_feature_dim": 20,
+      "feedback_type": "explicit",
+      "feedback_description": "explicit 1-to-5 star ratings",
+      "preprocessing_preset": "movielens_explicit",
+      "median_user_activity": 68.0,
+      "median_item_popularity": 18.0,
+      "modalities_label": "ratings over time plus rich item metadata",
+      "randomized_exposure_share": null,
+      "split_counts": {
+        "train": 15945812,
+        "val": 1991736,
+        "test": 2062715
+      },
+      "response_signal": {
+        "name": "raw_target",
+        "summary": {
+          "count": 20000263,
+          "mean": 3.5255285642993797,
+          "std": 1.0519888929948644,
+          "min": 0.5,
+          "max": 5.0
+        }
+      }
+    },
+    {
+      "name": "kuairec_v2",
+      "display_name": "KuaiRec v2",
+      "n_users": 7176,
+      "n_items": 10728,
+      "n_interactions": 10300969,
+      "density": 0.13380639967760627,
+      "pos_rate": 0.6683843731880188,
+      "mean_sign": -0.1481204479932785,
+      "train_size": 8237940,
+      "val_size": 1029713,
+      "test_size": 1033316,
+      "split_source": "derived:per_user_loader_order",
+      "split_label": "per-user loader-order split (no timestamps)",
+      "timestamp_coverage": 0.0,
+      "unique_pair_count": 10300969,
+      "repeated_pair_share": 0.0,
+      "user_feature_dim": 0,
+      "item_feature_dim": 44,
+      "feedback_type": "implicit",
+      "feedback_description": "watch-ratio feedback from short-video viewing",
+      "preprocessing_preset": "kuairec_big_matrix_watch_ratio_threshold_0_5",
+      "median_user_activity": 1571.0,
+      "median_item_popularity": 219.5,
+      "modalities_label": "watch ratio plus item-side content descriptors",
+      "randomized_exposure_share": null,
+      "split_counts": {
+        "train": 8237940,
+        "val": 1029713,
+        "test": 1033316
+      },
+      "response_signal": {
+        "name": "raw_target",
+        "summary": {
+          "count": 10300969,
+          "mean": 0.9363217038951592,
+          "std": 0.8353750064451785,
+          "min": 0.0,
+          "max": 5.0
+        }
+      }
+    },
+    {
+      "name": "taobao",
+      "display_name": "Taobao",
+      "n_users": 987994,
+      "n_items": 4162024,
+      "n_interactions": 75969639,
+      "density": 1.8474860819255625e-05,
+      "pos_rate": 0.12638680636882782,
+      "mean_sign": -0.1512085348367691,
+      "train_size": 60380165,
+      "val_size": 7548302,
+      "test_size": 8041172,
+      "split_source": "derived:per_user_temporal",
+      "split_label": "per-user temporal split derived from timestamps",
+      "timestamp_coverage": 0.9999979070586343,
+      "unique_pair_count": 75969639,
+      "repeated_pair_share": 0.0,
+      "user_feature_dim": 0,
+      "item_feature_dim": 1,
+      "feedback_type": "multi-behavior",
+      "feedback_description": "multi-behavior shopping interactions",
+      "preprocessing_preset": "taobao_multibehavior",
+      "median_user_activity": 58.0,
+      "median_item_popularity": 3.0,
+      "modalities_label": "interaction types from page view to purchase",
+      "randomized_exposure_share": null,
+      "split_counts": {
+        "train": 60380165,
+        "val": 7548302,
+        "test": 8041172
+      },
+      "response_signal": {
+        "name": "raw_target",
+        "summary": {
+          "count": 75969639,
+          "mean": 0.2434264430294318,
+          "std": 0.6848024983273264,
+          "min": 0.0,
+          "max": 3.0
+        }
+      },
+      "behavior_mix_top": {
+        "pv": 66368079,
+        "cart": 5039405,
+        "fav": 2636128,
+        "buy": 1926027
+      }
+    },
+    {
+      "name": "kuairand1k",
+      "display_name": "KuaiRand-1K",
+      "n_users": 1000,
+      "n_items": 4371868,
+      "n_interactions": 11421447,
+      "density": 0.0026124866990494683,
+      "pos_rate": 0.38993754982948303,
+      "mean_sign": 0.09302711486816406,
+      "train_size": 9136755,
+      "val_size": 1142098,
+      "test_size": 1142594,
+      "split_source": "derived:per_user_temporal",
+      "split_label": "per-user temporal split derived from timestamps",
+      "timestamp_coverage": 1.0,
+      "unique_pair_count": 11421447,
+      "repeated_pair_share": 0.0,
+      "user_feature_dim": 0,
+      "item_feature_dim": 68,
+      "feedback_type": "randomized-exposure",
+      "feedback_description": "short-video engagement logs with randomized exposure",
+      "preprocessing_preset": "kuairand_causal",
+      "median_user_activity": 8162.5,
+      "median_item_popularity": 1.0,
+      "modalities_label": "watch time, engagement labels, and exposure policy",
+      "randomized_exposure_share": 0.003767123377624569,
+      "split_counts": {
+        "train": 9136755,
+        "val": 1142098,
+        "test": 1142594
+      },
+      "response_signal": {
+        "name": "raw_target",
+        "summary": {
+          "count": 11421447,
+          "mean": 0.38437147433120766,
+          "std": 0.6392086534695334,
+          "min": 0.0,
+          "max": 5.0
+        }
+      },
+      "exposure_policy": {
+        "randomized_count": 43026,
+        "standard_count": 11378421,
+        "randomized_share": 0.003767123377624569,
+        "randomized_positive_rate": 0.1771254539489746,
+        "standard_positive_rate": 0.3907422721385956
+      },
+      "behavior_mix_top": {
+        "neutral": 6958852,
+        "long_view": 2935267,
+        "click": 1308484,
+        "like": 181371,
+        "comment": 23009,
+        "other": 14464
+      },
+      "source_domain_positive_rate": {
+        "random": {
+          "count": 43026,
+          "positive_rate": 0.1771254539489746
+        },
+        "standard": {
+          "count": 11378421,
+          "positive_rate": 0.3907422721385956
+        }
+      }
+    }
+  ]
+}

@@ -832,7 +832,7 @@ class MiniBatchTrainer(TrainerRuntime):
             )
             self.completed_epoch = epoch
             self.resume_history = history
-            if epoch_callback is not None:
+            if epoch_callback is not None and should_validate:
                 epoch_callback(epoch, val_metrics, epoch_time_s)
             if should_validate and self._update_early_stopping(
                 current_ndcg,

@@ -104,14 +104,16 @@ def remap_interaction_ids(
 
 
 def compute_normalized_popularity(item_id: np.ndarray, n_items: int) -> np.ndarray:
-    """Compute max-normalized item popularity from reindexed item IDs.
+    """Compute log-normalized training popularity from reindexed item IDs.
 
     Args:
         item_id: Contiguous item IDs aligned to interactions.
         n_items: Number of unique items represented in item_id.
 
     Returns:
-        np.ndarray: Float32 popularity counts normalized to [0, 1] by max count.
+        np.ndarray: Float32 popularity scores in ``[0, 1]`` where each item score is
+        ``log(1 + item_interaction_count) / log(1 + largest_item_interaction_count)``.
+        If no item has a positive count, every score is zero.
 
     """
     pop_counts = np.bincount(item_id, minlength=n_items).astype(np.float32)
@@ -121,7 +123,21 @@ def compute_normalized_popularity(item_id: np.ndarray, n_items: int) -> np.ndarr
     max_count = float(pop_counts.max())
     if max_count <= 0.0:
         return pop_counts
-    return pop_counts / max_count
+    return np.log1p(pop_counts) / np.log1p(max_count)
+
+
+def compute_popularity_counts(item_id: np.ndarray, n_items: int) -> np.ndarray:
+    """Compute raw item interaction counts from reindexed item IDs.
+
+    Args:
+        item_id: Contiguous item IDs aligned to interactions.
+        n_items: Number of unique items represented in item_id.
+
+    Returns:
+        np.ndarray: Float32 count vector of shape ``(n_items,)``.
+
+    """
+    return np.bincount(item_id, minlength=n_items).astype(np.float32)
 
 
 def compute_explicit_rating_signals(

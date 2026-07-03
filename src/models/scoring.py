@@ -43,10 +43,14 @@ class ScoringModule(nn.Module):
             learned_prior_weights.log(),
             persistent=False,
         )
-        self.interest_gate_mlp = nn.Sequential(
-            nn.Linear(2 * config.embed_dim, config.embed_dim),
-            nn.SiLU(),
-            nn.Linear(config.embed_dim, 1),
+        self.interest_gate_mlp = (
+            nn.Sequential(
+                nn.Linear(3 * config.embed_dim, config.embed_dim),
+                nn.SiLU(),
+                nn.Linear(config.embed_dim, 1),
+            )
+            if config.use_temporal_interest
+            else None
         )
         self.alpha_mlp = nn.Sequential(
             nn.Linear(2 * config.embed_dim, config.embed_dim),
@@ -241,12 +245,22 @@ class ScoringModule(nn.Module):
             Refined user interest embeddings.
         """
         long_term_interest = self._get_user_interest(propagated)[user_ids]
+        if not self.config.use_temporal_interest or self.interest_gate_mlp is None:
+            return long_term_interest
         short_term_interest = self._build_short_term_interest(
             propagated,
             user_ids,
             long_term_interest,
         )
-        gate_inputs = torch.cat([long_term_interest, short_term_interest], dim=-1)
+        base_user_interest = propagated.get("base_user_interest")
+        if base_user_interest is None:
+            base_user_interest = long_term_interest
+        else:
+            base_user_interest = base_user_interest[user_ids]
+        gate_inputs = torch.cat(
+            [long_term_interest, short_term_interest, base_user_interest],
+            dim=-1,
+        )
         gate_inputs = gate_inputs.to(dtype=module_parameter_dtype(self.interest_gate_mlp))
         interest_gate = torch.sigmoid(self.interest_gate_mlp(gate_inputs)).to(
             dtype=long_term_interest.dtype,
