@@ -26,6 +26,7 @@ Architecture is exported as previewable Markdown Mermaid; empirical charts are e
 | `architecture_pipeline.md` | Markdown Mermaid source | What is built? | Use as a previewable Mermaid architecture source or reconstruct it with TikZ. |
 | `candidate_taxonomy.png` | method taxonomy | What do the labels mean? | Use as a review or slide legend when readers need paper-baseline vs sampled-ablation semantics; in the thesis body, prefer the same content as a LaTeX table if the PNG feels text-heavy. |
 | `paper_dataset_regime_map.png` | log-scale regime map | Why these datasets? | Use as the paper-quality setup figure; existing dataset-profile figures remain backup detail. |
+| `results/graph_embedding_figures/core_gcn_topology_networkx_spring.png` | fixed-budget GCN topology sample | What graph does EDGRec propagate over? | Optional methods/setup figure. It shows 1,200 displayed train rows per dataset and separates `label > 0` propagation rows from `sign = 0`/`sign < 0` feedback rows. |
 | `paper_claim_matrix.png` | annotated claim matrix | What can be claimed? | Use as the main full-data LightGCN comparison; it shows direction, magnitude, and raw values in one panel. |
 | `paper_accuracy_efficiency_frontier.png` | Pareto-frontier scatter | Is EDGRec on a useful frontier? | Use as the full-range trade-off view, including outlier context. |
 | `paper_accuracy_efficiency_frontier_zoomed.png` | zoomed Pareto-frontier scatter | What happens near the visible cluster? | Use as the readable companion after the full-range frontier; axes use local data ranges and right-tail outliers are intentionally trimmed per panel. |
@@ -41,6 +42,7 @@ Architecture is exported as previewable Markdown Mermaid; empirical charts are e
 | Stage | Artifact | Why this order |
 | --- | --- | --- |
 | Dataset setup | `paper_dataset_regime_map.png` | Establish the tested regimes without repeating every descriptive dataset bar chart. |
+| GCN setup | `results/graph_embedding_figures/core_gcn_topology_networkx_spring.png` if needed | Explain train-only graph construction and label/sign separation before architecture details. |
 | Architecture | `architecture_pipeline.md` | Preview the Mermaid source directly or rebuild it as deck-native TikZ. |
 | Candidate semantics | `candidate_taxonomy.png` | Make clear that EDGRec candidates are not split by report provenance, and that sampled LightGCN/DICE-style rows are not paper-faithful baselines. |
 | Search selection | `results/optuna_figures/optuna_crru_selection_frontier_by_dataset.png` plus one Optuna diagnostic if needed | Show validation-time candidate selection without duplicating test-set claims. |
@@ -55,10 +57,12 @@ Architecture is exported as previewable Markdown Mermaid; empirical charts are e
 - Branch-rank, score-mix, Spearman, and cosine plots are diagnostics only.
 - Runtime-probe rows support feasibility and resource claims, not final accuracy claims.
 - KuaiRand compact randomized-exposure rows need separate wording from full standard-view runs.
+- Graph/embedding visualizations are qualitative setup and diagnostics; use result tables for ranking claims.
 - `figure_review.md` contains the per-image audit, recommended main flow, backup-figure decisions, and caveats for defense use.
 
 ## Existing Companion Figures
 
 - `results/dataset_visualizations/` owns dataset scale, density, split, feedback, and feature-availability context. Use them for backup detail; the regime map is the compact main-flow version.
+- `results/graph_embedding_figures/` owns fixed-budget GCN topology, full train-degree distributions, learned embedding UMAP, and item-feature UMAP diagnostics. Use `README.md` there for exact interpretation and counts.
 - `results/optuna_figures/` owns validation-search behavior, hyperparameter response, and selected-trial diagnostics. Use defense figures for full-data test evidence and claim boundaries.
 - `accuracy_popularity_tradeoff.png`, `accuracy_popularity_tradeoff_zoomed.png`, and `crru_component_decomposition.png` are backup figures after the paper-grade core set above.
