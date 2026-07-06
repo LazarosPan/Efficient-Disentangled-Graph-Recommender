@@ -26,29 +26,28 @@ Architecture is exported as previewable Markdown Mermaid; empirical charts are e
 | `architecture_pipeline.md` | Markdown Mermaid source | What is built? | Use as a previewable Mermaid architecture source or reconstruct it with TikZ. |
 | `candidate_taxonomy.png` | method taxonomy | What do the labels mean? | Use as a review or slide legend when readers need paper-baseline vs sampled-ablation semantics; in the thesis body, prefer the same content as a LaTeX table if the PNG feels text-heavy. |
 | `paper_dataset_regime_map.png` | log-scale regime map | Why these datasets? | Use as the paper-quality setup figure; existing dataset-profile figures remain backup detail. |
-| `results/graph_embedding_figures/core_gcn_topology_networkx_spring.png` | fixed-budget GCN topology sample | What graph does EDGRec propagate over? | Optional methods/setup figure. It shows 1,200 displayed train rows per dataset and separates `label > 0` propagation rows from `sign = 0`/`sign < 0` feedback rows. |
 | `paper_claim_matrix.png` | annotated claim matrix | What can be claimed? | Use as the main full-data LightGCN comparison; it shows direction, magnitude, and raw values in one panel. |
 | `paper_accuracy_efficiency_frontier.png` | Pareto-frontier scatter | Is EDGRec on a useful frontier? | Use as the full-range trade-off view, including outlier context. |
 | `paper_accuracy_efficiency_frontier_zoomed.png` | zoomed Pareto-frontier scatter | What happens near the visible cluster? | Use as the readable companion after the full-range frontier; axes use local data ranges and right-tail outliers are intentionally trimmed per panel. |
 | `paper_mechanism_diagnostics.png` | consolidated diagnostic panels | Does the mechanism behave plausibly? | Use as the main mechanism figure; score-mix and branch-rank diagnostics are merged here. |
+| `kuairec_ablation_deltas.png` | matched ablation delta panels | Which component choices are currently supported? | Use as the compact RQ4 figure for the current public KuaiRec matched ablations; keep the wording protocol-local and do not generalize across datasets. |
 | `accuracy_popularity_tradeoff.png` | trade-off scatter | Does lower popularity concentration cost accuracy? | Use as the full-range popularity-concentration view, including outlier context. |
 | `accuracy_popularity_tradeoff_zoomed.png` | zoomed trade-off scatter | Does the local popularity trade-off remain visible? | Use as the readable companion after the full-range popularity plot; axes use local data ranges and right-tail outliers are intentionally trimmed per panel. |
 | `crru_component_decomposition.png` | grouped component bars | What does CRRU reward? | Use to defend the composite utility without implying a trend between independent terms. |
-| `paper_baseline_feasibility.png` | paired log-time bars plus slowdown | Why are some baselines probes? | Use to defend DICE/large full-graph feasibility limits and evidence roles. |
-| `kuairec_matrix_regime_sensitivity.png` | protocol-sensitivity bars | Why is the near-ceiling KuaiRec row excluded? | Use only as a sensitivity companion showing that small-matrix/full-observation rows are a different protocol from the sparse KuaiRec comparison. |
+| `paper_baseline_feasibility.png` | paired log-time points plus slowdown | Why are some baselines probes? | Use to defend DICE/large full-graph feasibility limits and evidence roles. |
 
 ## Recommended Slide Flow
 
 | Stage | Artifact | Why this order |
 | --- | --- | --- |
 | Dataset setup | `paper_dataset_regime_map.png` | Establish the tested regimes without repeating every descriptive dataset bar chart. |
-| GCN setup | `results/graph_embedding_figures/core_gcn_topology_networkx_spring.png` if needed | Explain train-only graph construction and label/sign separation before architecture details. |
 | Architecture | `architecture_pipeline.md` | Preview the Mermaid source directly or rebuild it as deck-native TikZ. |
 | Candidate semantics | `candidate_taxonomy.png` | Make clear that EDGRec candidates are not split by report provenance, and that sampled LightGCN/DICE-style rows are not paper-faithful baselines. |
 | Search selection | `results/optuna_figures/optuna_crru_selection_frontier_by_dataset.png` plus one Optuna diagnostic if needed | Show validation-time candidate selection without duplicating test-set claims. |
 | Test evidence | `paper_claim_matrix.png` | State the full-data LightGCN paper-faithful comparison with direction, magnitude, raw values, and missing-baseline status. |
 | Trade-offs | `paper_accuracy_efficiency_frontier.png` plus `paper_accuracy_efficiency_frontier_zoomed.png` | Defend the thesis as a Pareto/trade-off result, then use the zoomed companion for readable clusters. |
 | Mechanism diagnostics | `paper_mechanism_diagnostics.png` | Explain branch usage while stating that these are diagnostics, not causal identification. |
+| Ablation evidence | `kuairec_ablation_deltas.png` | Defend the currently available component-removal evidence as KuaiRec protocol-local, not as a dataset-general component theorem. |
 | Feasibility limits | `paper_baseline_feasibility.png` | Justify why DICE-paper and large full-graph baselines are sometimes resource probes, with seconds/epoch and slowdown shown together. |
 
 ## Claim Boundaries
@@ -56,13 +55,12 @@ Architecture is exported as previewable Markdown Mermaid; empirical charts are e
 - Ranking metrics and CRRU are thesis utility evidence, not causal-effect estimates.
 - Branch-rank, score-mix, Spearman, and cosine plots are diagnostics only.
 - Runtime-probe rows support feasibility and resource claims, not final accuracy claims.
+- The public ablation plot uses matched KuaiRec rows only; it supports design choices under that protocol and identifies missing ablations for future work.
 - KuaiRand compact randomized-exposure rows need separate wording from full standard-view runs.
-- Graph/embedding visualizations are qualitative setup and diagnostics; use result tables for ranking claims.
 - `figure_review.md` contains the per-image audit, recommended main flow, backup-figure decisions, and caveats for defense use.
 
 ## Existing Companion Figures
 
 - `results/dataset_visualizations/` owns dataset scale, density, split, feedback, and feature-availability context. Use them for backup detail; the regime map is the compact main-flow version.
-- `results/graph_embedding_figures/` owns fixed-budget GCN topology, full train-degree distributions, learned embedding UMAP, and item-feature UMAP diagnostics. Use `README.md` there for exact interpretation and counts.
 - `results/optuna_figures/` owns validation-search behavior, hyperparameter response, and selected-trial diagnostics. Use defense figures for full-data test evidence and claim boundaries.
-- `accuracy_popularity_tradeoff.png`, `accuracy_popularity_tradeoff_zoomed.png`, and `crru_component_decomposition.png` are backup figures after the paper-grade core set above.
+- `accuracy_popularity_tradeoff.png`, `accuracy_popularity_tradeoff_zoomed.png`, and `crru_component_decomposition.png` are backup figures after the paper-grade core set above. The duplicate NDCG-time scatter, evidence map, paired-dot raw comparison, standalone score-mix figure, standalone branch figure, raw `.mmd` source, and architecture PNG are intentionally not exported.
