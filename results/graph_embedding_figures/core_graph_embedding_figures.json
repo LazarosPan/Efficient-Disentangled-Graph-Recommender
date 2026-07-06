@@ -1,0 +1,508 @@
+{
+  "artifacts": {
+    "degree": "results/graph_embedding_figures/core_train_degree_distributions.png",
+    "feature_umap": "results/graph_embedding_figures/core_item_feature_umap.png",
+    "learned_umap": "results/graph_embedding_figures/core_learned_interest_umap.png",
+    "metadata": "results/graph_embedding_figures/core_graph_embedding_figures.json",
+    "topology": "results/graph_embedding_figures/core_gcn_topology_networkx_spring.png"
+  },
+  "datasets": [
+    {
+      "config": {
+        "baseline_family": "edgrec",
+        "conformity_gnn_layers": 2,
+        "dataset": "amazonbook",
+        "feature_policy": "thesis_default",
+        "interest_gnn_layers": 1,
+        "item_universe_policy": "observed_interaction_items",
+        "num_neighbors": [
+          8,
+          4
+        ],
+        "preprocessing_preset": null,
+        "preset": null,
+        "single_branch_gnn_layers": 2
+      },
+      "dataset": "amazonbook",
+      "feature_note": "No side-feature panel: AmazonBook is graph-only under the thesis feature policy.",
+      "feature_umap": {
+        "available": false,
+        "reason": "No item_features tensor is available. Use --use-features for raw feature projections, or pass --checkpoint for learned embeddings."
+      },
+      "graph": {
+        "n_train_items_total": 90781,
+        "n_train_positive_edges_total": 2093875,
+        "n_train_users_total": 52643
+      },
+      "label": "AmazonBook",
+      "learned_umap": {
+        "available": true,
+        "graph": {
+          "n_train_items_total": 90781,
+          "n_train_positive_edges_total": 2093875,
+          "n_train_users_total": 52643
+        },
+        "metadata": {
+          "embedding_keys": "user_interest/item_interest",
+          "method": "umap",
+          "metric": "cosine",
+          "min_dist": 0.12,
+          "n_neighbors": 20,
+          "trustworthiness": 0.9333969040247678,
+          "trustworthiness_neighbors": 10
+        },
+        "n_features": 64,
+        "n_points": 500,
+        "n_sampled_negative_sign_points": 0,
+        "n_sampled_zero_sign_points": 0,
+        "source": "propagated learned interest embeddings"
+      },
+      "negative_train_feedback": {
+        "n_train_interactions_total": 0,
+        "n_train_items_total": 0,
+        "n_train_users_total": 0
+      },
+      "reference_checkpoint": "results/checkpoints/amazonbook_edgrec_ep200_bs16384_dim64_layers2_branchL1-2_nbr8-4_feat_scoremixlearned_lr-plateau_seed13_train-23a6ee0e50a803d1.pt",
+      "reference_note": "Graph-only reference EDGRec checkpoint.",
+      "topology_sample": {
+        "n_items": 174,
+        "n_negative_edges": 0,
+        "n_neutral_edges": 0,
+        "n_positive_edges": 1200,
+        "n_users": 560,
+        "summary": {
+          "core_item_limit": 180,
+          "diagnostic_row_fraction": 0.0,
+          "full_class_counts": {
+            "label>0": 2093875
+          },
+          "has_graded_sign": false,
+          "n_label_positive_rows": 1200,
+          "n_negative_overlay_rows": 0,
+          "n_positive_core_edges": 1200,
+          "n_sampled_items": 174,
+          "n_sampled_rows": 1200,
+          "n_sampled_users": 560,
+          "n_sign_negative_rows": 0,
+          "n_sign_positive_rows": 0,
+          "n_sign_zero_rows": 0,
+          "n_zero_overlay_rows": 0,
+          "sample_class_counts": {
+            "label>0": 1200
+          },
+          "strategy": "fixed_display_row_budget_degree_aware_positive_core_with_sign_diagnostics",
+          "target_display_rows": 1200,
+          "target_positive_core_edges": 1200
+        }
+      },
+      "train_label_summary": {
+        "label_nonpositive": 0,
+        "label_positive": 2093875,
+        "n_train_rows_total": 2093875
+      },
+      "train_sign_summary": {
+        "label_positive_sign_negative_overlap": 0,
+        "label_positive_sign_zero_overlap": 2093875,
+        "n_train_rows_total": 2093875,
+        "sign_negative": 0,
+        "sign_positive": 0,
+        "sign_zero": 2093875
+      },
+      "zero_sign_train_feedback": {
+        "n_train_interactions_total": 0,
+        "n_train_items_total": 0,
+        "n_train_users_total": 0
+      }
+    },
+    {
+      "config": {
+        "baseline_family": "edgrec",
+        "conformity_gnn_layers": 2,
+        "dataset": "movielens1m",
+        "feature_policy": "thesis_default",
+        "interest_gnn_layers": 1,
+        "item_universe_policy": "observed_interaction_items",
+        "num_neighbors": [
+          8,
+          4
+        ],
+        "preprocessing_preset": "movielens_explicit",
+        "preset": null,
+        "single_branch_gnn_layers": 2
+      },
+      "dataset": "movielens1m",
+      "feature_note": "Feature panel uses encoded genre descriptors from the thesis feature policy.",
+      "feature_umap": {
+        "available": true,
+        "graph": {
+          "n_train_items_total": 3465,
+          "n_train_positive_edges_total": 469232,
+          "n_train_users_total": 6038
+        },
+        "metadata": {
+          "method": "umap",
+          "metric": "cosine",
+          "min_dist": 0.12,
+          "n_neighbors": 20,
+          "trustworthiness": 0.9557185501066098,
+          "trustworthiness_neighbors": 10
+        },
+        "n_features": 18,
+        "n_points": 250,
+        "n_sampled_negative_sign_points": 247,
+        "n_sampled_zero_sign_points": 244,
+        "source": "encoded item features"
+      },
+      "graph": {
+        "n_train_items_total": 3465,
+        "n_train_positive_edges_total": 469232,
+        "n_train_users_total": 6038
+      },
+      "label": "MovieLens 1M",
+      "learned_umap": {
+        "available": true,
+        "graph": {
+          "n_train_items_total": 3465,
+          "n_train_positive_edges_total": 469232,
+          "n_train_users_total": 6038
+        },
+        "metadata": {
+          "embedding_keys": "user_interest/item_interest",
+          "method": "umap",
+          "metric": "cosine",
+          "min_dist": 0.12,
+          "n_neighbors": 20,
+          "trustworthiness": 0.8206802889576883,
+          "trustworthiness_neighbors": 10
+        },
+        "n_features": 64,
+        "n_points": 500,
+        "n_sampled_negative_sign_points": 492,
+        "n_sampled_zero_sign_points": 494,
+        "source": "propagated learned interest embeddings"
+      },
+      "negative_train_feedback": {
+        "n_train_interactions_total": 123948,
+        "n_train_items_total": 3467,
+        "n_train_users_total": 5692
+      },
+      "reference_checkpoint": "results/checkpoints/movielens1m_edgrec_ep200_bs32768_dim64_layers2_branchL1-2_nbr8-4_ppresetmovielens_explicit_feat_lr-cosine_seed13_train-1684e72894a70dff.pt",
+      "reference_note": "Reference EDGRec checkpoint for the explicit-rating protocol.",
+      "topology_sample": {
+        "n_items": 168,
+        "n_negative_edges": 136,
+        "n_neutral_edges": 224,
+        "n_positive_edges": 840,
+        "n_users": 389,
+        "summary": {
+          "core_item_limit": 180,
+          "diagnostic_row_fraction": 0.3,
+          "full_class_counts": {
+            "label<=0|sign<0": 123948,
+            "label<=0|sign=0": 204578,
+            "label>0|sign>0": 469232
+          },
+          "has_graded_sign": true,
+          "n_label_positive_rows": 840,
+          "n_negative_overlay_rows": 136,
+          "n_positive_core_edges": 840,
+          "n_sampled_items": 168,
+          "n_sampled_rows": 1200,
+          "n_sampled_users": 389,
+          "n_sign_negative_rows": 136,
+          "n_sign_positive_rows": 840,
+          "n_sign_zero_rows": 224,
+          "n_zero_overlay_rows": 224,
+          "sample_class_counts": {
+            "label<=0|sign<0": 136,
+            "label<=0|sign=0": 224,
+            "label>0|sign>0": 840
+          },
+          "strategy": "fixed_display_row_budget_degree_aware_positive_core_with_sign_diagnostics",
+          "target_display_rows": 1200,
+          "target_positive_core_edges": 840
+        }
+      },
+      "train_label_summary": {
+        "label_nonpositive": 328526,
+        "label_positive": 469232,
+        "n_train_rows_total": 797758
+      },
+      "train_sign_summary": {
+        "label_positive_sign_negative_overlap": 0,
+        "label_positive_sign_zero_overlap": 0,
+        "n_train_rows_total": 797758,
+        "sign_negative": 123948,
+        "sign_positive": 469232,
+        "sign_zero": 204578
+      },
+      "zero_sign_train_feedback": {
+        "n_train_interactions_total": 204578,
+        "n_train_items_total": 3442,
+        "n_train_users_total": 5999
+      }
+    },
+    {
+      "config": {
+        "baseline_family": "edgrec",
+        "conformity_gnn_layers": 1,
+        "dataset": "kuairec_v2",
+        "feature_policy": "thesis_default",
+        "interest_gnn_layers": 1,
+        "item_universe_policy": "observed_interaction_items",
+        "num_neighbors": [
+          8
+        ],
+        "preprocessing_preset": "kuairec_watchratio",
+        "preset": null,
+        "single_branch_gnn_layers": 2
+      },
+      "dataset": "kuairec_v2",
+      "feature_note": "Feature panel uses safe video metadata descriptors.",
+      "feature_umap": {
+        "available": true,
+        "graph": {
+          "n_train_items_total": 9669,
+          "n_train_positive_edges_total": 5538839,
+          "n_train_users_total": 7176
+        },
+        "metadata": {
+          "method": "umap",
+          "metric": "cosine",
+          "min_dist": 0.12,
+          "n_neighbors": 20,
+          "trustworthiness": 0.9427769722814499,
+          "trustworthiness_neighbors": 10
+        },
+        "n_features": 44,
+        "n_points": 250,
+        "n_sampled_negative_sign_points": 243,
+        "n_sampled_zero_sign_points": 39,
+        "source": "encoded item features"
+      },
+      "graph": {
+        "n_train_items_total": 9669,
+        "n_train_positive_edges_total": 5538839,
+        "n_train_users_total": 7176
+      },
+      "label": "KuaiRec v2",
+      "learned_umap": {
+        "available": true,
+        "graph": {
+          "n_train_items_total": 9669,
+          "n_train_positive_edges_total": 5538839,
+          "n_train_users_total": 7176
+        },
+        "metadata": {
+          "embedding_keys": "user_interest/item_interest",
+          "method": "umap",
+          "metric": "cosine",
+          "min_dist": 0.12,
+          "n_neighbors": 20,
+          "trustworthiness": 0.7585531475748194,
+          "trustworthiness_neighbors": 10
+        },
+        "n_features": 64,
+        "n_points": 500,
+        "n_sampled_negative_sign_points": 493,
+        "n_sampled_zero_sign_points": 80,
+        "source": "propagated learned interest embeddings"
+      },
+      "negative_train_feedback": {
+        "n_train_interactions_total": 5228971,
+        "n_train_items_total": 9287,
+        "n_train_users_total": 7176
+      },
+      "reference_checkpoint": "results/checkpoints/kuairec_v2_edgrec_ep300_bs32768_dim64_layers1_nbr8_ppresetkuairec_watchratio_lr-cosine_seed13_train-f06a6e85c3713807.pt",
+      "reference_note": "Sparse big-matrix watch-ratio reference checkpoint.",
+      "topology_sample": {
+        "n_items": 168,
+        "n_negative_edges": 711,
+        "n_neutral_edges": 1,
+        "n_positive_edges": 1163,
+        "n_users": 424,
+        "summary": {
+          "core_item_limit": 180,
+          "diagnostic_row_fraction": 0.3,
+          "full_class_counts": {
+            "label<=0|sign<0": 2699101,
+            "label>0|sign<0": 2529870,
+            "label>0|sign=0": 563,
+            "label>0|sign>0": 3008406
+          },
+          "has_graded_sign": true,
+          "n_label_positive_rows": 1163,
+          "n_negative_overlay_rows": 711,
+          "n_positive_core_edges": 1163,
+          "n_sampled_items": 168,
+          "n_sampled_rows": 1200,
+          "n_sampled_users": 424,
+          "n_sign_negative_rows": 711,
+          "n_sign_positive_rows": 488,
+          "n_sign_zero_rows": 1,
+          "n_zero_overlay_rows": 1,
+          "sample_class_counts": {
+            "label<=0|sign<0": 37,
+            "label>0|sign<0": 674,
+            "label>0|sign=0": 1,
+            "label>0|sign>0": 488
+          },
+          "strategy": "fixed_display_row_budget_degree_aware_positive_core_with_sign_diagnostics",
+          "target_display_rows": 1200,
+          "target_positive_core_edges": 840
+        }
+      },
+      "train_label_summary": {
+        "label_nonpositive": 2699101,
+        "label_positive": 5538839,
+        "n_train_rows_total": 8237940
+      },
+      "train_sign_summary": {
+        "label_positive_sign_negative_overlap": 2529870,
+        "label_positive_sign_zero_overlap": 563,
+        "n_train_rows_total": 8237940,
+        "sign_negative": 5228971,
+        "sign_positive": 3008406,
+        "sign_zero": 563
+      },
+      "zero_sign_train_feedback": {
+        "n_train_interactions_total": 563,
+        "n_train_items_total": 502,
+        "n_train_users_total": 526
+      }
+    },
+    {
+      "config": {
+        "baseline_family": "edgrec",
+        "conformity_gnn_layers": 2,
+        "dataset": "kuairand1k",
+        "feature_policy": "thesis_default",
+        "interest_gnn_layers": 1,
+        "item_universe_policy": "random_exposure_items_only",
+        "num_neighbors": [
+          8,
+          4
+        ],
+        "preprocessing_preset": "kuairand_causal",
+        "preset": null,
+        "single_branch_gnn_layers": 2
+      },
+      "dataset": "kuairand1k",
+      "feature_note": "Feature panel uses the same compact randomized-exposure item universe.",
+      "feature_umap": {
+        "available": true,
+        "graph": {
+          "n_train_items_total": 3963,
+          "n_train_positive_edges_total": 5986,
+          "n_train_users_total": 812
+        },
+        "metadata": {
+          "method": "umap",
+          "metric": "cosine",
+          "min_dist": 0.12,
+          "n_neighbors": 20,
+          "trustworthiness": 0.9407965884861407,
+          "trustworthiness_neighbors": 10
+        },
+        "n_features": 68,
+        "n_points": 250,
+        "n_sampled_negative_sign_points": 2,
+        "n_sampled_zero_sign_points": 244,
+        "source": "encoded item features"
+      },
+      "graph": {
+        "n_train_items_total": 3963,
+        "n_train_positive_edges_total": 5986,
+        "n_train_users_total": 812
+      },
+      "label": "KuaiRand 1K",
+      "learned_umap": {
+        "available": true,
+        "graph": {
+          "n_train_items_total": 3963,
+          "n_train_positive_edges_total": 5986,
+          "n_train_users_total": 812
+        },
+        "metadata": {
+          "embedding_keys": "user_interest/item_interest",
+          "method": "umap",
+          "metric": "cosine",
+          "min_dist": 0.12,
+          "n_neighbors": 20,
+          "trustworthiness": 0.82088173374613,
+          "trustworthiness_neighbors": 10
+        },
+        "n_features": 64,
+        "n_points": 500,
+        "n_sampled_negative_sign_points": 9,
+        "n_sampled_zero_sign_points": 494,
+        "source": "propagated learned interest embeddings"
+      },
+      "negative_train_feedback": {
+        "n_train_interactions_total": 25,
+        "n_train_items_total": 25,
+        "n_train_users_total": 10
+      },
+      "reference_checkpoint": "results/checkpoints/kuairand1k_edgrec_ep300_bs1048576_dim64_layers2_branchL1-2_nbr8-4_ppresetkuairand_causal_iunivrandom_exposure_items_only_lr-cosine_seed13_train-69f13b80ca3363de.pt",
+      "reference_note": "Compact randomized-exposure reference checkpoint.",
+      "topology_sample": {
+        "n_items": 294,
+        "n_negative_edges": 2,
+        "n_neutral_edges": 811,
+        "n_positive_edges": 763,
+        "n_users": 345,
+        "summary": {
+          "core_item_limit": 180,
+          "diagnostic_row_fraction": 0.3,
+          "full_class_counts": {
+            "label<=0|sign<0": 20,
+            "label<=0|sign=0": 28019,
+            "label>0|sign<0": 5,
+            "label>0|sign=0": 2995,
+            "label>0|sign>0": 2986
+          },
+          "has_graded_sign": true,
+          "n_label_positive_rows": 763,
+          "n_negative_overlay_rows": 2,
+          "n_positive_core_edges": 763,
+          "n_sampled_items": 294,
+          "n_sampled_rows": 1200,
+          "n_sampled_users": 345,
+          "n_sign_negative_rows": 2,
+          "n_sign_positive_rows": 387,
+          "n_sign_zero_rows": 811,
+          "n_zero_overlay_rows": 811,
+          "sample_class_counts": {
+            "label<=0|sign<0": 1,
+            "label<=0|sign=0": 436,
+            "label>0|sign<0": 1,
+            "label>0|sign=0": 375,
+            "label>0|sign>0": 387
+          },
+          "strategy": "fixed_display_row_budget_degree_aware_positive_core_with_sign_diagnostics",
+          "target_display_rows": 1200,
+          "target_positive_core_edges": 840
+        }
+      },
+      "train_label_summary": {
+        "label_nonpositive": 28039,
+        "label_positive": 5986,
+        "n_train_rows_total": 34025
+      },
+      "train_sign_summary": {
+        "label_positive_sign_negative_overlap": 5,
+        "label_positive_sign_zero_overlap": 2995,
+        "n_train_rows_total": 34025,
+        "sign_negative": 25,
+        "sign_positive": 2986,
+        "sign_zero": 31014
+      },
+      "zero_sign_train_feedback": {
+        "n_train_interactions_total": 31014,
+        "n_train_items_total": 7284,
+        "n_train_users_total": 1000
+      }
+    }
+  ],
+  "figure_scope": "Qualitative thesis figures. Positive-label training rows define the EDGRec/LightGCN propagation graph. The NetworkX topology uses the same displayed train-row budget per dataset, prioritizes a degree-aware label-positive propagation core, and uses the remaining rows for non-positive sign diagnostics when available. Positive-sign rows are counted in the metadata but are not drawn as a separate overlay because that would usually duplicate the label-positive propagation rows. UMAP panels are sampled projections and must not be used as ranking-performance evidence."
+}
