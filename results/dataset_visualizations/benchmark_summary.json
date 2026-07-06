@@ -9,6 +9,11 @@
       "density": 0.0006188468344849981,
       "pos_rate": 1.0,
       "mean_sign": 0.0,
+      "positive_label_rate": 1.0,
+      "nonpositive_label_rate": 0.0,
+      "positive_sign_rate": 0.0,
+      "zero_sign_rate": 1.0,
+      "negative_sign_rate": 0.0,
       "train_size": 2093875,
       "val_size": 234212,
       "test_size": 603378,
@@ -40,6 +45,36 @@
           "min": 1.0,
           "max": 1.0
         }
+      },
+      "label_distribution": {
+        "counts": {
+          "positive_label": 2984108,
+          "nonpositive_label": 0
+        },
+        "shares": {
+          "positive_label": 1.0,
+          "nonpositive_label": 0.0
+        },
+        "note": "Binary label defines recommendation relevance and positive graph edges."
+      },
+      "sign_distribution": {
+        "counts": {
+          "positive_sign": 0,
+          "zero_sign": 2984108,
+          "negative_sign": 0
+        },
+        "shares": {
+          "positive_sign": 0.0,
+          "zero_sign": 1.0,
+          "negative_sign": 0.0
+        },
+        "note": "Sign is a graded feedback score stored separately from the binary label."
+      },
+      "label_sign_overlap": {
+        "positive_label_positive_sign": 0,
+        "positive_label_zero_sign": 2984108,
+        "positive_label_negative_sign": 0,
+        "nonpositive_label_negative_sign": 0
       }
     },
     {
@@ -51,6 +86,11 @@
       "density": 0.044683625622312845,
       "pos_rate": 0.575160801410675,
       "mean_sign": 0.29078221321105957,
+      "positive_label_rate": 0.5751607913945985,
+      "nonpositive_label_rate": 0.4248392086054015,
+      "positive_sign_rate": 0.5751607913945985,
+      "zero_sign_rate": 0.2611424212339621,
+      "negative_sign_rate": 0.16369678737143936,
       "train_size": 797758,
       "val_size": 99692,
       "test_size": 102759,
@@ -82,6 +122,36 @@
           "min": 1.0,
           "max": 5.0
         }
+      },
+      "label_distribution": {
+        "counts": {
+          "positive_label": 575281,
+          "nonpositive_label": 424928
+        },
+        "shares": {
+          "positive_label": 0.5751607913945985,
+          "nonpositive_label": 0.4248392086054015
+        },
+        "note": "Binary label defines recommendation relevance and positive graph edges."
+      },
+      "sign_distribution": {
+        "counts": {
+          "positive_sign": 575281,
+          "zero_sign": 261197,
+          "negative_sign": 163731
+        },
+        "shares": {
+          "positive_sign": 0.5751607913945985,
+          "zero_sign": 0.2611424212339621,
+          "negative_sign": 0.16369678737143936
+        },
+        "note": "Sign is a graded feedback score stored separately from the binary label."
+      },
+      "label_sign_overlap": {
+        "positive_label_positive_sign": 575281,
+        "positive_label_zero_sign": 0,
+        "positive_label_negative_sign": 0,
+        "nonpositive_label_negative_sign": 163731
       }
     },
     {
@@ -93,6 +163,11 @@
       "density": 0.0053998478135544505,
       "pos_rate": 0.49976393580436707,
       "mean_sign": 0.2627643048763275,
+      "positive_label_rate": 0.49976392810434545,
+      "nonpositive_label_rate": 0.5002360718956546,
+      "positive_sign_rate": 0.609770281520798,
+      "zero_sign_rate": 0.2145568285777042,
+      "negative_sign_rate": 0.1756728899014978,
       "train_size": 15945812,
       "val_size": 1991736,
       "test_size": 2062715,
@@ -124,6 +199,36 @@
           "min": 0.5,
           "max": 5.0
         }
+      },
+      "label_distribution": {
+        "counts": {
+          "positive_label": 9995410,
+          "nonpositive_label": 10004853
+        },
+        "shares": {
+          "positive_label": 0.49976392810434545,
+          "nonpositive_label": 0.5002360718956546
+        },
+        "note": "Binary label defines recommendation relevance and positive graph edges."
+      },
+      "sign_distribution": {
+        "counts": {
+          "positive_sign": 12195566,
+          "zero_sign": 4291193,
+          "negative_sign": 3513504
+        },
+        "shares": {
+          "positive_sign": 0.609770281520798,
+          "zero_sign": 0.2145568285777042,
+          "negative_sign": 0.1756728899014978
+        },
+        "note": "Sign is a graded feedback score stored separately from the binary label."
+      },
+      "label_sign_overlap": {
+        "positive_label_positive_sign": 9995410,
+        "positive_label_zero_sign": 0,
+        "positive_label_negative_sign": 0,
+        "nonpositive_label_negative_sign": 3513504
       }
     },
     {
@@ -135,6 +240,11 @@
       "density": 0.13380639967760627,
       "pos_rate": 0.6683843731880188,
       "mean_sign": -0.1481204479932785,
+      "positive_label_rate": 0.6683844015063048,
+      "nonpositive_label_rate": 0.3316155984936951,
+      "positive_sign_rate": 0.3622133995355194,
+      "zero_sign_rate": 6.572197236978386e-05,
+      "negative_sign_rate": 0.6377208784921108,
       "train_size": 8237940,
       "val_size": 1029713,
       "test_size": 1033316,
@@ -166,6 +276,36 @@
           "min": 0.0,
           "max": 5.0
         }
+      },
+      "label_distribution": {
+        "counts": {
+          "positive_label": 6885007,
+          "nonpositive_label": 3415962
+        },
+        "shares": {
+          "positive_label": 0.6683844015063048,
+          "nonpositive_label": 0.3316155984936951
+        },
+        "note": "Binary label defines recommendation relevance and positive graph edges."
+      },
+      "sign_distribution": {
+        "counts": {
+          "positive_sign": 3731149,
+          "zero_sign": 677,
+          "negative_sign": 6569143
+        },
+        "shares": {
+          "positive_sign": 0.3622133995355194,
+          "zero_sign": 6.572197236978386e-05,
+          "negative_sign": 0.6377208784921108
+        },
+        "note": "Sign is a graded feedback score stored separately from the binary label."
+      },
+      "label_sign_overlap": {
+        "positive_label_positive_sign": 3731149,
+        "positive_label_zero_sign": 677,
+        "positive_label_negative_sign": 3153181,
+        "nonpositive_label_negative_sign": 3415962
       }
     },
     {
@@ -177,6 +317,11 @@
       "density": 1.8474860819255625e-05,
       "pos_rate": 0.12638680636882782,
       "mean_sign": -0.1512085348367691,
+      "positive_label_rate": 0.1263868056553487,
+      "nonpositive_label_rate": 0.8736131943446512,
+      "positive_sign_rate": 0.1263868056553487,
+      "zero_sign_rate": 0.0,
+      "negative_sign_rate": 0.8736131943446512,
       "train_size": 60380165,
       "val_size": 7548302,
       "test_size": 8041172,
@@ -209,6 +354,36 @@
           "max": 3.0
         }
       },
+      "label_distribution": {
+        "counts": {
+          "positive_label": 9601560,
+          "nonpositive_label": 66368079
+        },
+        "shares": {
+          "positive_label": 0.1263868056553487,
+          "nonpositive_label": 0.8736131943446512
+        },
+        "note": "Binary label defines recommendation relevance and positive graph edges."
+      },
+      "sign_distribution": {
+        "counts": {
+          "positive_sign": 9601560,
+          "zero_sign": 0,
+          "negative_sign": 66368079
+        },
+        "shares": {
+          "positive_sign": 0.1263868056553487,
+          "zero_sign": 0.0,
+          "negative_sign": 0.8736131943446512
+        },
+        "note": "Sign is a graded feedback score stored separately from the binary label."
+      },
+      "label_sign_overlap": {
+        "positive_label_positive_sign": 9601560,
+        "positive_label_zero_sign": 0,
+        "positive_label_negative_sign": 0,
+        "nonpositive_label_negative_sign": 66368079
+      },
       "behavior_mix_top": {
         "pv": 66368079,
         "cart": 5039405,
@@ -225,6 +400,11 @@
       "density": 0.0026124866990494683,
       "pos_rate": 0.38993754982948303,
       "mean_sign": 0.09302711486816406,
+      "positive_label_rate": 0.38993754469114117,
+      "nonpositive_label_rate": 0.6100624553088588,
+      "positive_sign_rate": 0.2751492871262284,
+      "zero_sign_rate": 0.7239949544046389,
+      "negative_sign_rate": 0.0008557584691326765,
       "train_size": 9136755,
       "val_size": 1142098,
       "test_size": 1142594,
@@ -256,6 +436,36 @@
           "min": 0.0,
           "max": 5.0
         }
+      },
+      "label_distribution": {
+        "counts": {
+          "positive_label": 4453651,
+          "nonpositive_label": 6967796
+        },
+        "shares": {
+          "positive_label": 0.38993754469114117,
+          "nonpositive_label": 0.6100624553088588
+        },
+        "note": "Binary label defines recommendation relevance and positive graph edges."
+      },
+      "sign_distribution": {
+        "counts": {
+          "positive_sign": 3142603,
+          "zero_sign": 8269070,
+          "negative_sign": 9774
+        },
+        "shares": {
+          "positive_sign": 0.2751492871262284,
+          "zero_sign": 0.7239949544046389,
+          "negative_sign": 0.0008557584691326765
+        },
+        "note": "Sign is a graded feedback score stored separately from the binary label."
+      },
+      "label_sign_overlap": {
+        "positive_label_positive_sign": 3142603,
+        "positive_label_zero_sign": 1309397,
+        "positive_label_negative_sign": 1651,
+        "nonpositive_label_negative_sign": 8123
       },
       "exposure_policy": {
         "randomized_count": 43026,
