@@ -2,7 +2,7 @@
 
 Purpose: explain which dataset features are used for EDGRec training, which are left outside the thesis-default path, and what evidence still needs a full-data test rerun before becoming a thesis claim.
 
-Primary tables/reports: `dataset_feature_decision_map.md`, `feature_subset_evidence_matrix.md`, `feature_subset_best_by_dataset.md`, and `feature_subset_results.csv`.
+Primary figure/tables/reports: `feature_subset_delta_dotplot.png`, `dataset_feature_decision_map.md`, `feature_subset_evidence_matrix.md`, `feature_subset_best_by_dataset.md`, and `feature_subset_results.csv`.
 
 ## Dataset Decisions
 
