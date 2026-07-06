@@ -1136,7 +1136,56 @@ def _format_dataset_context(payload: Mapping[str, object] | None, dataset: str) 
     feedback = str(payload.get("feedback_description") or "")
     interactions_text = f"{interactions / 1_000_000:.1f}M interactions" if interactions else ""
     density_text = f"{density * 100:.3g}% density" if density is not None else ""
-    return "\n".join(part for part in (label, interactions_text, density_text, feedback) if part)
+    signed_feedback_text = _format_signed_feedback_context(payload)
+    return "\n".join(
+        part
+        for part in (label, interactions_text, density_text, feedback, signed_feedback_text)
+        if part
+    )
+
+
+def _format_signed_feedback_context(payload: Mapping[str, object]) -> str:
+    """Format binary-label and graded-sign context from dataset profiles."""
+    label_distribution = payload.get("label_distribution")
+    sign_distribution = payload.get("sign_distribution")
+    if isinstance(label_distribution, Mapping) and isinstance(sign_distribution, Mapping):
+        label_shares = label_distribution.get("shares")
+        sign_shares = sign_distribution.get("shares")
+        if not isinstance(label_shares, Mapping) or not isinstance(sign_shares, Mapping):
+            return ""
+        positive_label = _finite_float(label_shares.get("positive_label"))
+        positive_sign = _finite_float(sign_shares.get("positive_sign"))
+        zero_sign = _finite_float(sign_shares.get("zero_sign"))
+        negative_sign = _finite_float(sign_shares.get("negative_sign"))
+        if None in (positive_label, positive_sign, zero_sign, negative_sign):
+            return ""
+        text = (
+            f"label/sign: label>0 {positive_label:.1%}; "
+            f"sign>0 {positive_sign:.1%}, sign=0 {zero_sign:.1%}, "
+            f"sign<0 {negative_sign:.1%}"
+        )
+        overlap = payload.get("label_sign_overlap")
+        if isinstance(overlap, Mapping):
+            positive_negative = _finite_float(overlap.get("positive_label_negative_sign"))
+            if positive_negative:
+                text += f"; label>0 & sign<0 {int(positive_negative):,}"
+        return text
+
+    masks = payload.get("canonical_feedback_masks")
+    if not isinstance(masks, Mapping):
+        return ""
+    shares = masks.get("shares")
+    if not isinstance(shares, Mapping):
+        return ""
+    positive = _finite_float(shares.get("positive_label"))
+    neutral = _finite_float(shares.get("neutral_nonpositive"))
+    negative = _finite_float(shares.get("negative_sign"))
+    if positive is None or neutral is None or negative is None:
+        return ""
+    return (
+        f"label/sign: label>0 {positive:.1%}; legacy label=0/sign=0 {neutral:.1%}, "
+        f"sign<0 {negative:.1%}"
+    )
 
 
 def _best_completed_row_by_dataset(
@@ -1384,17 +1433,19 @@ def _write_feature_engineering_review_markdown(
         "",
         "## Dataset Decisions",
         "",
-        "| Dataset | Feature input | Left outside training | Evidence | Decision |",
+        (
+            "| Dataset / feedback context | Feature input | Left outside training | "
+            "Evidence | Decision |"
+        ),
         "|---|---|---|---|---|",
     ]
     for row in review_rows:
-        dataset = str(row["dataset_context"]).splitlines()[0]
         lines.append(
             "| "
             + " | ".join(
                 _format_markdown_value(value).replace("\n", "<br/>")
                 for value in (
-                    dataset,
+                    row["dataset_context"],
                     row["feature_inputs"],
                     row["left_out"],
                     row["validation_result"],
