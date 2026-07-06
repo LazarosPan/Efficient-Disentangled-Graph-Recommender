@@ -1,5 +1,7 @@
 # Efficient Disentangled Graph Recommender
 
+Repository: https://github.com/LazarosPan/Efficient-Disentangled-Graph-Recommender
+
 ## Abstract
 
 This repository hosts a thesis-oriented implementation of EDGRec for bias-aware recommendation.  
@@ -22,6 +24,7 @@ The EDGRec path includes:
 - Context branch that injects item-level signals such as popularity and optional calibrated propensity factors.
 - Learned score mixing that combines branch outputs and context adjustment.
 - Sampled mini-batch training in the mainline EDGRec path, with full-graph contracts preserved for paper baselines.
+- Design choices are audited through validation-search diagnostics, feature-subset evidence, branch/score-mix diagnostics, and matched ablations; these are mechanism evidence, not causal proof.
 
 See [edgrec-architecture](.agents/skills/edgrec-implementation/edgrec-architecture.md) for a detailed architecture map.
 
@@ -57,6 +60,8 @@ Primary profiles documented in the implementation notes are:
 - `dice_like`: DICE-like ablation.
 - `lightgcn_paper`: paper-faithful LightGCN baseline contract.
 - `dice_paper`: paper-faithful DICE baseline contract.
+
+Evidence roles are part of the experiment contract: validation candidates, promoted full-data test rows, runtime probes, public ablations, and diagnostic rows are not interchangeable.
 
 See [edgrec-config](.agents/skills/edgrec-implementation/edgrec-config.md).
 
@@ -153,6 +158,9 @@ Primary thesis evidence artifacts:
 - `results/query_results.md` (generated report-style tables)
 - `results/optuna_optimization.md` (search summaries)
 - `results/optuna_figures/` (supporting plots)
+- `results/dataset_visualizations/`, `results/feature_analysis/`, `results/graph_embedding_figures/`, and `results/defense_figures/` (dataset, feature, diagnostic, and thesis-defense figures)
+
+Use `results/query_results.md` for completed full-data test rows, public ablations, runtime probes, and evidence-role labels. Use `results/optuna_optimization.md` for validation/search candidates, feature-subset evidence, trial accounting, and Optuna diagnostics. Figures summarize those records; they do not replace the metric tables.
 
 Evidence note: current Optuna evidence supports compact EDGRec candidates for KuaiRec_v2, a near-parity/speed candidate for MovieLens1M, and KuaiRand1K as a stress-test diagnostic. AmazonBook is not part of the shared compact default queue, but it is still part of EDGRec optimization: compare the AmazonBook compact and deep/features candidates against the LightGCN-paper accuracy baseline before any thesis-profile promotion.
 
@@ -161,6 +169,7 @@ Evidence note: current Optuna evidence supports compact EDGRec candidates for Ku
 - Causal wording is intentionally constrained to modeling assumptions and structural claims.
 - Ranking gains are presented as empirical results, not causal effects.
 - Paper-faithful baselines are evaluated under separate contracts to avoid conflating scalable approximations with faithful reproduction.
+- Ablation, feature, branch, and score-mix diagnostics support bounded design interpretation only; they do not prove causal disentanglement or dataset-general component necessity.
 
 ## Literature and implementation map
 
