@@ -43,6 +43,8 @@ from scripts.query_results import (
 DEFENSE_FIGURES_DIR = RESULTS_DIR / "defense_figures"
 DATASET_SUMMARY_PATH = RESULTS_DIR / "dataset_visualizations" / "benchmark_summary.json"
 DATASET_ORDER = ("amazonbook", "kuairec_v2", "movielens1m", "kuairand1k")
+A4_TEXT_WIDTH_IN = 160.0 / 25.4
+THESIS_FIGURE_DPI = 300
 RETIRED_DEFENSE_ARTIFACTS = (
     "architecture_pipeline.mmd",
     "accuracy_efficiency_pareto.png",
@@ -91,6 +93,7 @@ PAPER_RED = "#b2182b"
 PAPER_GRAY = "#6b7280"
 CLAIM_MATRIX_LOG2_CLIP = 4.0
 PAPER_LIGHT_GRAY = "#d1d5db"
+KUAIREC_ABLATION_PROFILES = ("mainline", "no_popularity_head", "no_independence")
 ARCHITECTURE_MERMAID = """
 %% EDGRec thesis-defense architecture. Vertical layout for papers and slides.
 flowchart TB
@@ -644,9 +647,9 @@ def _save_figure(
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / filename
     if tight:
-        fig.savefig(path, dpi=230, bbox_inches="tight", pad_inches=0.20)
+        fig.savefig(path, dpi=THESIS_FIGURE_DPI, bbox_inches="tight", pad_inches=0.08)
     else:
-        fig.savefig(path, dpi=230)
+        fig.savefig(path, dpi=THESIS_FIGURE_DPI)
     plt.close(fig)
     return path
 
@@ -781,8 +784,8 @@ def plot_candidate_taxonomy(output_dir: Path) -> Path:
     fig.suptitle("Candidate taxonomy for thesis-defense figures", y=0.955)
 
     headers = ("Figure label", "What it means", "How to use it")
-    x_positions = (0.055, 0.315, 0.655)
-    widths = (0.215, 0.285, 0.285)
+    x_positions = (0.045, 0.335, 0.665)
+    widths = (0.255, 0.285, 0.285)
     for header, x_left, width in zip(headers, x_positions, widths, strict=True):
         _add_diagram_box(
             ax,
@@ -811,6 +814,7 @@ def plot_candidate_taxonomy(output_dir: Path) -> Path:
             )
             ax.add_patch(box)
         label_text = {
+            "LightGCN paper-faithful": "LightGCN\npaper-faithful",
             "LightGCN sampled ablation": "LightGCN sampled\n(non-paper)",
             "DICE-style sampled ablation": "DICE-style sampled\n(non-paper)",
             "DICE paper-faithful probe": "DICE paper-faithful\nruntime probe",
@@ -831,7 +835,7 @@ def plot_candidate_taxonomy(output_dir: Path) -> Path:
             label_text,
             ha="left",
             va="center",
-            fontsize=9,
+            fontsize=8.35,
             color="#111827",
             weight="bold",
         )
@@ -890,7 +894,7 @@ def plot_dataset_regime_map(output_dir: Path) -> Path:
         "movielens1m": "#f28e2b",
         "kuairand1k": "#8f63b8",
     }
-    fig, ax = plt.subplots(figsize=(9.2, 6.4))
+    fig, ax = plt.subplots(figsize=(A4_TEXT_WIDTH_IN, 4.15))
     for profile in profiles:
         active = profile.name in active_names
         color = color_map.get(profile.name, PAPER_LIGHT_GRAY)
@@ -921,9 +925,20 @@ def plot_dataset_regime_map(output_dir: Path) -> Path:
     ax.set_yscale("log")
     ax.set_xlabel("Observed density (%)")
     ax.set_ylabel("Observed interactions")
-    ax.set_title("Dataset regimes used to test EDGRec", loc="center")
+    ax.set_title("Dataset regimes used to test EDGRec", loc="center", fontsize=10)
     ax.grid(True, which="major", linewidth=0.8, alpha=0.45)
     ax.grid(True, which="minor", linewidth=0.35, alpha=0.18)
+    ax.text(
+        0.98,
+        0.04,
+        "Marker area encodes item catalog; gray points are context datasets.",
+        transform=ax.transAxes,
+        ha="right",
+        va="bottom",
+        fontsize=7.0,
+        color=PAPER_GRAY,
+        bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.74, "pad": 2.0},
+    )
     _strip_axes(ax)
 
     legend_handles = [
@@ -953,14 +968,7 @@ def plot_dataset_regime_map(output_dir: Path) -> Path:
         ),
     )
     ax.legend(handles=legend_handles, loc="lower left", frameon=True, framealpha=0.95)
-    _centered_figure_note(
-        fig,
-        "Marker area encodes item-catalog size. The four colored datasets are the current "
-        "EDGRec result datasets; gray points are scale/context datasets from the existing "
-        "dataset-visualization folder.",
-        y=0.02,
-    )
-    fig.tight_layout(rect=(0, 0.08, 1, 0.98))
+    fig.tight_layout(pad=0.4)
     return _save_figure(fig, output_dir, "paper_dataset_regime_map.png")
 
 
@@ -1095,7 +1103,7 @@ def plot_paper_claim_matrix(
         ["#c44e52", "#f8fafc", "#3c8d4c"],
     )
     cmap.set_bad("#eef1f4")
-    fig, ax = plt.subplots(figsize=(11.8, 6.4))
+    fig, ax = plt.subplots(figsize=(A4_TEXT_WIDTH_IN, 3.85))
     image = ax.imshow(
         np.ma.masked_invalid(matrix),
         cmap=cmap,
@@ -1122,7 +1130,7 @@ def plot_paper_claim_matrix(
                 labels[row_index][col_index],
                 ha="center",
                 va="center",
-                fontsize=8.2,
+                fontsize=6.4,
                 color="white"
                 if math.isfinite(color_value) and abs(color_value) > 0.65
                 else "#111827",
@@ -1138,21 +1146,9 @@ def plot_paper_claim_matrix(
             "EDGRec\n>=16x",
         ],
     )
-    colorbar.set_label("Relative fold-change under metric direction (log scale)")
-    note = (
-        "Each EDGRec cell uses the highest-CRRU completed EDGRec-family row from the "
-        "reported test leaderboard, compared with the best full-data LightGCN paper-faithful row "
-        "on the same dataset. Runtime probes are shown only in the feasibility figure."
-    )
-    if reference_mode == "kuairec_big_matrix":
-        note = (
-            "KuaiRec uses explicit big-matrix watch-ratio EDGRec rows; small-matrix and "
-            "full-observation sensitivity rows are excluded. Color saturation is signed log2 "
-            "fold-change vs LightGCN under each metric direction, clipped at 16x; cell text "
-            "gives the exact comparison."
-        )
-    _centered_figure_note(fig, note, y=0.02)
-    fig.subplots_adjust(left=0.15, right=0.88, bottom=0.18, top=0.88)
+    colorbar.set_label("Signed log fold-change", fontsize=7)
+    colorbar.ax.tick_params(labelsize=6.4)
+    fig.subplots_adjust(left=0.15, right=0.87, bottom=0.14, top=0.88)
     return _save_figure(fig, output_dir, filename, tight=False)
 
 
@@ -1713,6 +1709,160 @@ def plot_paper_mechanism_diagnostics(data: DefenseData, output_dir: Path) -> Pat
     return _save_figure(fig, output_dir, "paper_mechanism_diagnostics.png")
 
 
+def _kuairec_public_ablation_records(data: DefenseData) -> dict[str, DefenseRecord]:
+    """Return current public KuaiRec ablation records keyed by variant."""
+    records: dict[str, DefenseRecord] = {}
+    for record in data.records:
+        if record.dataset != "kuairec_v2" or record.evidence != "ablation":
+            continue
+        raw_keys = {
+            str(record.profile or ""),
+            _record_string(record, "profile_name"),
+            _record_string(record, "intervention"),
+        }
+        for key in KUAIREC_ABLATION_PROFILES:
+            if key in raw_keys:
+                records[key] = record
+    return records
+
+
+def _plot_delta_label(ax: plt.Axes, value: float, *, y: float, formatter: str) -> None:
+    """Place one delta label just outside the bar end."""
+    x_min, x_max = ax.get_xlim()
+    offset = (x_max - x_min) * 0.025
+    if value >= 0:
+        x = value + offset
+        ha = "left"
+    else:
+        x = value - offset
+        ha = "right"
+    ax.text(
+        x,
+        y,
+        formatter.format(value),
+        ha=ha,
+        va="center",
+        fontsize=8,
+        color="#111827",
+    )
+
+
+def plot_kuairec_ablation_deltas(data: DefenseData, output_dir: Path) -> Path:
+    """Plot protocol-local KuaiRec public ablation deltas relative to mainline."""
+    records = _kuairec_public_ablation_records(data)
+    mainline = records.get("mainline")
+    variants = [
+        ("no_popularity_head", "No popularity\nhead"),
+        ("no_independence", "No independence\nregularizer"),
+    ]
+    selected = [(key, label, records.get(key)) for key, label in variants if records.get(key)]
+    if mainline is None or not selected:
+        raise RuntimeError("KuaiRec public ablation rows are incomplete.")
+
+    metric_specs: tuple[
+        tuple[str, str, Callable[[DefenseRecord], float | None], bool, str],
+        ...,
+    ] = (
+        ("NDCG@20", r"$\Delta$ NDCG@20", lambda record: record.ndcg20, True, "{:+.4f}"),
+        (
+            "AvgPop@20",
+            r"$\Delta$ AvgPop@20",
+            lambda record: record.avgpop20,
+            False,
+            "{:+.4f}",
+        ),
+        (
+            "Pers.@20",
+            r"$\Delta$ Personalization@20",
+            lambda record: record.personalization20,
+            True,
+            "{:+.4f}",
+        ),
+        ("CRRU@20", r"$\Delta$ CRRU@20", lambda record: record.crru20, True, "{:+.4f}"),
+        (
+            "Time/epoch",
+            r"$\Delta$ seconds/epoch",
+            lambda record: record.time_per_epoch_s,
+            False,
+            "{:+.1f}",
+        ),
+        (
+            "Peak VRAM",
+            r"$\Delta$ peak VRAM (MB)",
+            lambda record: record.peak_vram_mb,
+            False,
+            "{:+.0f}",
+        ),
+    )
+
+    fig, axes = plt.subplots(
+        2,
+        3,
+        figsize=(A4_TEXT_WIDTH_IN * 1.95, A4_TEXT_WIDTH_IN * 1.17),
+        sharey=False,
+    )
+    y = np.arange(len(selected))
+    y_labels = [label for _key, label, _record in selected]
+    metric_axes = zip(axes.ravel(), metric_specs, strict=True)
+    for panel_index, (
+        ax,
+        (_short_title, title, getter, higher_is_better, formatter),
+    ) in enumerate(metric_axes):
+        base_value = getter(mainline)
+        deltas: list[float] = []
+        for _key, _label, record in selected:
+            value = getter(record) if record is not None else None
+            if value is None or base_value is None:
+                deltas.append(0.0)
+            else:
+                deltas.append(value - base_value)
+        max_abs = max([abs(delta) for delta in deltas] + [1e-6])
+        ax.set_xlim(-max_abs * 1.58, max_abs * 1.58)
+        colors = [
+            PAPER_GREEN if (delta >= 0) == higher_is_better or abs(delta) < 1e-12 else PAPER_RED
+            for delta in deltas
+        ]
+        bars = ax.barh(
+            y,
+            deltas,
+            height=0.52,
+            color=colors,
+            edgecolor="#111827",
+            linewidth=0.55,
+        )
+        ax.axvline(0.0, color=PAPER_GRAY, linewidth=1.0)
+        ax.set_title(title, loc="center")
+        ax.set_yticks(y, y_labels if panel_index % 3 == 0 else [])
+        ax.tick_params(axis="y", length=0)
+        ax.invert_yaxis()
+        ax.grid(axis="x", alpha=0.55)
+        ax.grid(axis="y", visible=False)
+        _strip_axes(ax, keep_left=False)
+        for index, bar in enumerate(bars):
+            _plot_delta_label(
+                ax,
+                deltas[index],
+                y=bar.get_y() + bar.get_height() / 2.0,
+                formatter=formatter,
+            )
+    axes[0, 0].set_ylabel("Component removal")
+    fig.suptitle(
+        "KuaiRec v2 matched public ablations relative to EDGRec mainline",
+        y=0.982,
+        ha="center",
+    )
+    _centered_figure_note(
+        fig,
+        "Deltas use only the current public matched full-data ablation rows visible in "
+        "query-results. Green indicates movement in the preferred direction for that metric; "
+        "for AveragePopularity, time, and VRAM, lower is preferred. These rows support "
+        "protocol-local design interpretation only.",
+        y=0.02,
+    )
+    fig.tight_layout(rect=(0, 0.10, 1, 0.94))
+    return _save_figure(fig, output_dir, "kuairec_ablation_deltas.png")
+
+
 def plot_accuracy_popularity_tradeoff(
     data: DefenseData,
     output_dir: Path,
@@ -2034,7 +2184,10 @@ def _probe_label(preset: str) -> str:
 
 def plot_paper_baseline_feasibility(data: DefenseData, output_dir: Path) -> Path:
     """Plot runtime-probe seconds and slowdown against EDGRec reference rows."""
-    edgrec_reference = _selected_edgrec_reference_rows(data.records)
+    edgrec_reference = _selected_reference_rows(
+        data.records,
+        reference_mode="kuairec_big_matrix",
+    )
     pairs: list[tuple[str, float, float, float]] = []
     for row in data.probe_rows:
         dataset = str(row["dataset"] or "-")
@@ -2143,9 +2296,9 @@ def plot_paper_baseline_feasibility(data: DefenseData, output_dir: Path) -> Path
     )
     _centered_figure_note(
         fig,
-        "EDGRec reference rows are highest-CRRU completed EDGRec-family leaderboard rows. "
-        "These probe rows justify feasibility limits; they are not used as final test-accuracy "
-        "comparisons in the claim matrix.",
+        "EDGRec reference rows use the same KuaiRec big-matrix policy as the claim matrix. "
+        "These probe rows justify feasibility limits; they are not final test-accuracy "
+        "comparisons.",
         y=0.018,
     )
     fig.subplots_adjust(left=0.17, right=0.97, bottom=0.18, top=0.88, wspace=0.10)
@@ -2204,6 +2357,14 @@ def _figure_metadata() -> tuple[tuple[str, str, str, str], ...]:
             "merged here.",
         ),
         (
+            "kuairec_ablation_deltas.png",
+            "matched ablation delta panels",
+            "Which component choices are currently supported?",
+            "Use as the compact RQ4 figure for the current public KuaiRec matched "
+            "ablations; keep the wording protocol-local and do not generalize across "
+            "datasets.",
+        ),
+        (
             "accuracy_popularity_tradeoff.png",
             "trade-off scatter",
             "Does lower popularity concentration cost accuracy?",
@@ -2225,7 +2386,7 @@ def _figure_metadata() -> tuple[tuple[str, str, str, str], ...]:
         ),
         (
             "paper_baseline_feasibility.png",
-            "paired log-time bars plus slowdown",
+            "paired log-time points plus slowdown",
             "Why are some baselines probes?",
             "Use to defend DICE/large full-graph feasibility limits and evidence roles.",
         ),
@@ -2311,6 +2472,9 @@ def _write_figure_index(
             "Pareto/trade-off result, then use the zoomed companion for readable clusters. |",
             "| Mechanism diagnostics | `paper_mechanism_diagnostics.png` | Explain branch usage "
             "while stating that these are diagnostics, not causal identification. |",
+            "| Ablation evidence | `kuairec_ablation_deltas.png` | Defend the currently "
+            "available component-removal evidence as KuaiRec protocol-local, not as a "
+            "dataset-general component theorem. |",
             "| Feasibility limits | `paper_baseline_feasibility.png` | Justify why DICE-paper and "
             "large full-graph baselines are sometimes resource probes, with seconds/epoch "
             "and slowdown shown together. |",
@@ -2321,6 +2485,8 @@ def _write_figure_index(
             "- Branch-rank, score-mix, Spearman, and cosine plots are diagnostics only.",
             "- Runtime-probe rows support feasibility and resource claims, "
             "not final accuracy claims.",
+            "- The public ablation plot uses matched KuaiRec rows only; it supports design "
+            "choices under that protocol and identifies missing ablations for future work.",
             "- KuaiRand compact randomized-exposure rows need separate wording from full "
             "standard-view runs.",
             "- `figure_review.md` contains the per-image audit, recommended main flow, "
@@ -2455,6 +2621,7 @@ def export_defense_figures(output_dir: Path, *, top_n: int) -> list[Path]:
             reference_mode="kuairec_big_matrix",
         ),
         plot_paper_mechanism_diagnostics(data, output_dir),
+        plot_kuairec_ablation_deltas(data, output_dir),
         plot_accuracy_popularity_tradeoff(data, output_dir),
         plot_accuracy_popularity_tradeoff(data, output_dir, focused=True),
         plot_crru_decomposition(data, output_dir),
