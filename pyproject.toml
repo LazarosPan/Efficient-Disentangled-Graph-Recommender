@@ -16,7 +16,7 @@ dependencies = [
     "numpy>=2.4.0",
     "scipy>=1.17.0",
     "scikit-learn>=1.3.0",
-    "networkx>=3.1",
+    "networkx[default]>=3.1",
     "requests>=2.32.0",
     "aiohttp>=3.13.0",
     "jinja2>=3.1.6",
@@ -44,6 +44,7 @@ dependencies = [
     "exa-py>=2.13.2",
     "cuvs-cu13>=26.2.0",
     "plotly>=6.8.0",
+    "umap-learn>=0.5.12",
 ]
 
 [[tool.uv.index]]
