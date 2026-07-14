@@ -63,11 +63,38 @@ DISPLAY_NAMES = {
     "kuairand1k": "KuaiRand-1K",
 }
 
-DATASET_COLORS = {
-    name: color
-    for name, color in zip(BENCHMARK_DATASETS, plt.get_cmap("tab10").colors, strict=False)
-}
-FEATURE_COLORS = ("#4C72B0", "#55A868")
+# Dataset identity colors are intentionally kept away from the interaction-sign
+# palette: no green for positive, red for negative, slate gray for neutral, or
+# blue/yellow used by user/item topology figures.
+DATASET_COLORS = dict(
+    zip(
+        BENCHMARK_DATASETS,
+        (
+            "#6a3d9a",  # AmazonBook: deep purple
+            "#9c179e",  # MovieLens 1M: magenta-purple
+            "#b07aa1",  # MovieLens 20M: muted mauve
+            "#8c6d31",  # KuaiRec v2: umber
+            "#a66f2e",  # Taobao: copper-brown
+            "#7f4f24",  # KuaiRand 1K: dark bronze
+        ),
+        strict=False,
+    ),
+)
+USER_COLOR = "#1f77b4"
+ITEM_COLOR = "#f2c230"
+ROW_COLOR = "#64748b"
+STRUCTURE_COLOR = ROW_COLOR
+RAW_RESPONSE_COLOR = ROW_COLOR
+USER_FEATURE_COLOR = USER_COLOR
+ITEM_FEATURE_COLOR = ITEM_COLOR
+LABEL_POSITIVE_COLOR = "#2ca25f"
+LABEL_NONPOSITIVE_COLOR = "#cbd5e1"
+SIGN_POSITIVE_COLOR = "#00897b"
+SIGN_ZERO_COLOR = "#6b7280"
+SIGN_NEGATIVE_COLOR = "#de2d26"
+EXPOSURE_RANDOM_COLOR = "#7c3aed"
+EXPOSURE_STANDARD_COLOR = "#475569"
+FEATURE_COLORS = (USER_FEATURE_COLOR, ITEM_FEATURE_COLOR)
 
 
 @dataclass(frozen=True)
@@ -82,6 +109,11 @@ class DatasetSummary:
     density: float
     pos_rate: float
     mean_sign: float
+    positive_label_rate: float
+    nonpositive_label_rate: float
+    positive_sign_rate: float
+    zero_sign_rate: float
+    negative_sign_rate: float
     train_size: int
     val_size: int
     test_size: int
@@ -229,6 +261,30 @@ def describe_plotted_context(name: str) -> str:
     return descriptions.get(name, "interaction structure and auxiliary context")
 
 
+def compact_feedback_label(name: str) -> str:
+    """Return a short profile-card label for dataset feedback semantics."""
+    labels = {
+        "amazonbook": "implicit graph",
+        "movielens1m": "explicit ratings",
+        "movielens20m": "explicit ratings",
+        "kuairec_v2": "watch ratio",
+        "taobao": "shopping behavior",
+        "kuairand1k": "video engagement + exposure",
+    }
+    return labels.get(name, "observed interactions")
+
+
+def compact_split_label(split_source_value: str) -> str:
+    """Return a short profile-card split label."""
+    labels = {
+        "predefined": "provided train/val/test",
+        "train/test+derived-val": "train/test + derived val",
+        "derived:per_user_temporal": "per-user temporal",
+        "derived:per_user_loader_order": "per-user loader order",
+    }
+    return labels.get(split_source_value, split_source_value.replace("_", " "))
+
+
 def split_source(canonical: CanonicalInteractions) -> str:
     """Describe where the train/val/test split came from.
 
@@ -362,6 +418,11 @@ def summarize_dataset(name: str, canonical: CanonicalInteractions) -> DatasetSum
         ),
         pos_rate=float(np.mean(canonical.label)),
         mean_sign=float(np.mean(canonical.sign)),
+        positive_label_rate=float(np.mean(canonical.label > 0)),
+        nonpositive_label_rate=float(np.mean(canonical.label <= 0)),
+        positive_sign_rate=float(np.mean(canonical.sign > 0)),
+        zero_sign_rate=float(np.mean(canonical.sign == 0)),
+        negative_sign_rate=float(np.mean(canonical.sign < 0)),
         train_size=int(train_mask.sum()),
         val_size=int(val_mask.sum()),
         test_size=int(test_mask.sum()),
@@ -455,6 +516,40 @@ def build_dataset_summary_payload(
             "summary": summarize_numeric_signal(np.asarray(canonical.label)),
         }
 
+    denominator = float(len(canonical)) if len(canonical) else 1.0
+    positive_label_mask = canonical.label > 0
+    nonpositive_label_mask = canonical.label <= 0
+    positive_sign_mask = canonical.sign > 0
+    zero_sign_mask = canonical.sign == 0
+    negative_sign_mask = canonical.sign < 0
+    label_counts = {
+        "positive_label": int(positive_label_mask.sum()),
+        "nonpositive_label": int(nonpositive_label_mask.sum()),
+    }
+    sign_counts = {
+        "positive_sign": int(positive_sign_mask.sum()),
+        "zero_sign": int(zero_sign_mask.sum()),
+        "negative_sign": int(negative_sign_mask.sum()),
+    }
+    payload["label_distribution"] = {
+        "counts": label_counts,
+        "shares": {key: count / denominator for key, count in label_counts.items()},
+        "note": "Binary label defines recommendation relevance and positive graph edges.",
+    }
+    payload["sign_distribution"] = {
+        "counts": sign_counts,
+        "shares": {key: count / denominator for key, count in sign_counts.items()},
+        "note": "Sign is a graded feedback score stored separately from the binary label.",
+    }
+    payload["label_sign_overlap"] = {
+        "positive_label_positive_sign": int((positive_label_mask & positive_sign_mask).sum()),
+        "positive_label_zero_sign": int((positive_label_mask & zero_sign_mask).sum()),
+        "positive_label_negative_sign": int((positive_label_mask & negative_sign_mask).sum()),
+        "nonpositive_label_negative_sign": int(
+            (nonpositive_label_mask & negative_sign_mask).sum(),
+        ),
+    }
+
     if canonical.exposure_flag is not None and canonical.exposure_flag.size > 0:
         randomized_mask = np.asarray(canonical.exposure_flag, dtype=bool)
         standard_mask = ~randomized_mask
@@ -507,6 +602,66 @@ def render_summary_markdown(dataset_payloads: list[dict[str, Any]]) -> str:
         "Generated from `src/data_exploration/explore_all_datasets.py` using the same",
         "canonical statistics that power the benchmark figures.",
         "",
+        "## How to Read the Figures",
+        "",
+        (
+            "- `benchmark_overview.png` is the cross-dataset scale and feedback-semantics "
+            "figure. Dataset colors identify datasets only. Green is reserved for "
+            "`label > 0` graph/relevance rows; teal/red/slate-gray show `sign > 0`, "
+            "`sign < 0`, and `sign = 0` feedback rows."
+        ),
+        (
+            "- Each `*_profile.png` uses the same evidence order: entity/row scale, user "
+            "long tail, item long tail, binary label versus graded sign, response signal "
+            "or split, and the most relevant dataset-specific context."
+        ),
+        (
+            "- `label > 0` is the binary relevance signal used for positive graph edges and "
+            "top-K relevance. `sign` is a separate graded feedback descriptor, drawn in "
+            "a different color family. They often overlap, but KuaiRec and KuaiRand show "
+            "why they should not be treated as identical."
+        ),
+        (
+            "- Constant or unavailable signals are not forced into one-bar charts. Exact "
+            "counts and omitted-signal explanations are kept here and in "
+            "`benchmark_summary.json`."
+        ),
+        "",
+        "## Committee Questions Covered",
+        "",
+        "| Likely question | Evidence to cite |",
+        "| --- | --- |",
+        (
+            "| How large and sparse is each dataset? | Overview scale/density panels plus the "
+            "profile scale panel. |"
+        ),
+        (
+            "| Are the datasets long-tailed? | User-activity and item-popularity CCDF panels "
+            "in each profile. |"
+        ),
+        (
+            "| What is a positive edge for the GCN? | Binary label row in each profile and the "
+            "Chapter 3 graph-construction description. |"
+        ),
+        (
+            "| Are negative and neutral feedback available? | Sign row in each profile and the "
+            "sign panel in the overview. |"
+        ),
+        (
+            "| Are label and sign the same thing? | Label/sign stacked bars and the overlap "
+            "counts below; mismatches are explicitly reported as `label > 0 AND sign < 0`. |"
+        ),
+        (
+            "| Why are side features used only for some datasets? | Feature availability/context "
+            "panels and the safe-feature policy in Chapter 3. |"
+        ),
+        (
+            "| Which plots are descriptive rather than performance evidence? | All figures in "
+            "this directory are setup evidence; ranking claims require the results tables. |"
+        ),
+        "",
+        "## Dataset Table",
+        "",
         (
             "| Dataset | Interactions | Pair reuse | Positive share | Timestamp coverage | "
             "Randomized share | User feat | Item feat | Split |"
@@ -546,11 +701,35 @@ def render_summary_markdown(dataset_payloads: list[dict[str, Any]]) -> str:
         if response_summary is not None:
             lines.append(
                 (
-                    f"- Response summary ({response_signal['name']}): mean="
-                    f"{response_summary['mean']:.4f}, std={response_summary['std']:.4f}, "
-                    f"min={response_summary['min']:.4f}, max={response_summary['max']:.4f}"
+                f"- Response summary ({response_signal['name']}): mean="
+                f"{response_summary['mean']:.4f}, std={response_summary['std']:.4f}, "
+                f"min={response_summary['min']:.4f}, max={response_summary['max']:.4f}"
                 ),
             )
+        label_distribution = payload.get("label_distribution", {})
+        label_counts = label_distribution.get("counts", {})
+        if isinstance(label_counts, dict) and label_counts:
+            lines.append(
+                "- Label distribution: "
+                f"label > 0={label_counts.get('positive_label', 0):,}, "
+                f"label <= 0={label_counts.get('nonpositive_label', 0):,}.",
+            )
+        sign_distribution = payload.get("sign_distribution", {})
+        sign_counts = sign_distribution.get("counts", {})
+        if isinstance(sign_counts, dict) and sign_counts:
+            lines.append(
+                "- Sign distribution: "
+                f"sign > 0={sign_counts.get('positive_sign', 0):,}, "
+                f"sign = 0={sign_counts.get('zero_sign', 0):,}, "
+                f"sign < 0={sign_counts.get('negative_sign', 0):,}.",
+            )
+            overlap = payload.get("label_sign_overlap", {}).get(
+                "positive_label_negative_sign",
+            )
+            if overlap:
+                lines.append(
+                    f"- Overlap rows (`label > 0` and `sign < 0`): {int(overlap):,}.",
+                )
         exposure_policy = payload.get("exposure_policy")
         if exposure_policy is not None:
             randomized_positive_rate = exposure_policy["randomized_positive_rate"]
@@ -666,6 +845,62 @@ def plot_tail_ccdf(
     ax.grid(True, which="both", alpha=0.25)
 
 
+def plot_text_summary_panel(
+    ax: Axes,
+    title: str,
+    lines: list[str],
+    color: str,
+) -> None:
+    """Render an explanatory panel when a chart would be visually meaningless."""
+    ax.axis("off")
+    ax.set_title(title)
+    ax.text(
+        0.05,
+        0.72,
+        "\n".join(lines),
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=9.6,
+        color="#111827",
+        linespacing=1.35,
+    )
+
+
+def plot_scale_summary_panel(ax: Axes, summary: DatasetSummary) -> None:
+    """Plot core entity and row scale for one dataset profile."""
+    labels = ["users", "items", "rows"]
+    values = [summary.n_users, summary.n_items, summary.n_interactions]
+    colors = [USER_COLOR, ITEM_COLOR, ROW_COLOR]
+
+    bars = ax.bar(labels, values, color=colors, edgecolor="white", linewidth=0.6)
+    ax.set_yscale("log")
+    ax.set_title("Entity and row scale")
+    ax.set_ylabel("count (log scale)")
+    ax.grid(True, axis="y", alpha=0.22)
+    ax.margins(y=0.18)
+    ax.text(
+        0.02,
+        0.96,
+        f"density {summary.density * 100:.5f}%\n{compact_split_label(summary.split_source)}",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=8.5,
+        bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.78, "pad": 2.5},
+    )
+    for bar, value in zip(bars, values, strict=True):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            bar.get_height(),
+            f"{value:,}",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            rotation=0,
+        )
+
+
 def plot_relative_time_histogram(ax: Axes, timestamps: np.ndarray, color: str) -> None:
     """Plot interaction density over relative dataset time.
 
@@ -700,9 +935,34 @@ def plot_relative_time_histogram(ax: Axes, timestamps: np.ndarray, color: str) -
         return
 
     relative_time = (valid_timestamps - start_timestamp) / (end_timestamp - start_timestamp)
+    bin_edges = np.linspace(0.0, 1.0, 25)
+    bin_counts, _ = np.histogram(relative_time, bins=bin_edges)
+    occupied_bins = np.flatnonzero(bin_counts > 0)
+    dominant_bin_share = float(bin_counts.max() / max(1, bin_counts.sum()))
+    if occupied_bins.size <= 3 or dominant_bin_share >= 0.90:
+        if dominant_bin_share >= 0.999:
+            concentration_line = ">99.9% of rows fall in one time bin"
+        elif dominant_bin_share >= 0.90:
+            concentration_line = f"{dominant_bin_share:.1%} of rows fall in one time bin"
+        else:
+            concentration_line = (
+                f"only {occupied_bins.size}/{bin_counts.size} relative-time bins are populated"
+            )
+        plot_text_summary_panel(
+            ax,
+            "Interaction time coverage",
+            [
+                f"{valid_timestamps.size:,} timestamped rows",
+                concentration_line,
+                "histogram omitted: temporal signal is concentrated",
+            ],
+            color,
+        )
+        return
+
     ax.hist(
         relative_time,
-        bins=np.linspace(0.0, 1.0, 25),
+        bins=bin_edges,
         color=color,
         edgecolor="white",
     )
@@ -737,6 +997,133 @@ def response_signal_for_plot(
         return np.asarray(canonical.sign), SIGNED_RESPONSE_SPEC
 
     return np.asarray(canonical.label), LABEL_RESPONSE_SPEC
+
+
+def _annotate_stacked_bar_segments(
+    ax: Axes,
+    left_edges: np.ndarray,
+    widths: np.ndarray,
+    y_position: float,
+) -> None:
+    """Annotate readable stacked-bar segments with their row share."""
+    for left, width in zip(left_edges, widths, strict=True):
+        if width < 0.075:
+            continue
+        ax.text(
+            left + width / 2.0,
+            y_position,
+            f"{width:.0%}",
+            ha="center",
+            va="center",
+            fontsize=8.5,
+            color="white" if width > 0.30 else "black",
+        )
+
+
+def plot_label_sign_summary(ax: Axes, canonical: CanonicalInteractions) -> None:
+    """Plot binary label and graded sign distributions as separate row summaries."""
+    denominator = max(1, len(canonical))
+    positive_label_mask = canonical.label > 0
+    nonpositive_label_mask = canonical.label <= 0
+    positive_sign_mask = canonical.sign > 0
+    zero_sign_mask = canonical.sign == 0
+    negative_sign_mask = canonical.sign < 0
+    label_shares = np.asarray(
+        [
+            positive_label_mask.sum() / denominator,
+            nonpositive_label_mask.sum() / denominator,
+        ],
+        dtype=np.float64,
+    )
+    sign_shares = np.asarray(
+        [
+            positive_sign_mask.sum() / denominator,
+            zero_sign_mask.sum() / denominator,
+            negative_sign_mask.sum() / denominator,
+        ],
+        dtype=np.float64,
+    )
+
+    label_left = np.concatenate(([0.0], np.cumsum(label_shares[:-1])))
+    sign_left = np.concatenate(([0.0], np.cumsum(sign_shares[:-1])))
+    ax.barh(
+        [1.0] * 2,
+        label_shares,
+        left=label_left,
+        height=0.32,
+        color=[LABEL_POSITIVE_COLOR, LABEL_NONPOSITIVE_COLOR],
+        edgecolor="white",
+        linewidth=0.6,
+    )
+    ax.barh(
+        [0.0] * 3,
+        sign_shares,
+        left=sign_left,
+        height=0.32,
+        color=[SIGN_POSITIVE_COLOR, SIGN_ZERO_COLOR, SIGN_NEGATIVE_COLOR],
+        edgecolor="white",
+        linewidth=0.6,
+    )
+    _annotate_stacked_bar_segments(ax, label_left, label_shares, 1.0)
+    _annotate_stacked_bar_segments(ax, sign_left, sign_shares, 0.0)
+
+    overlap = int((positive_label_mask & negative_sign_mask).sum())
+    if overlap:
+        ax.text(
+            0.01,
+            0.05,
+            f"overlap: label > 0 and sign < 0 = {overlap:,}",
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=8.5,
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.76, "pad": 2.5},
+        )
+    elif int(positive_sign_mask.sum() + negative_sign_mask.sum()) == 0:
+        ax.text(
+            0.01,
+            0.05,
+            "no graded sign; sign stored as 0",
+            transform=ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=8.5,
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.76, "pad": 2.5},
+        )
+
+    handles = [
+        plt.Rectangle(
+            (0, 0),
+            1,
+            1,
+            color=LABEL_POSITIVE_COLOR,
+            label="label > 0 (GCN edge)",
+        ),
+        plt.Rectangle(
+            (0, 0),
+            1,
+            1,
+            color=LABEL_NONPOSITIVE_COLOR,
+            label="label <= 0",
+        ),
+        plt.Rectangle(
+            (0, 0),
+            1,
+            1,
+            color=SIGN_POSITIVE_COLOR,
+            label="sign > 0",
+        ),
+        plt.Rectangle((0, 0), 1, 1, color=SIGN_ZERO_COLOR, label="sign = 0"),
+        plt.Rectangle((0, 0), 1, 1, color=SIGN_NEGATIVE_COLOR, label="sign < 0"),
+    ]
+    ax.set_title("Binary label vs feedback sign")
+    ax.set_xlim(0.0, 1.0)
+    ax.set_yticks([1.0, 0.0])
+    ax.set_yticklabels(["label", "sign"])
+    ax.xaxis.set_major_formatter(PercentFormatter(1.0))
+    ax.set_xlabel("share of canonical rows")
+    ax.grid(True, axis="x", alpha=0.2)
+    ax.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, -0.24), ncol=3, fontsize=8)
 
 
 def plot_response_distribution(
@@ -779,11 +1166,24 @@ def plot_response_distribution(
             else format_scalar(value)
             for value in unique_values
         ]
+        if unique_values.size == 1:
+            plot_text_summary_panel(
+                ax,
+                response_spec.label,
+                [
+                    f"{finite_values.size:,} rows share one response value",
+                    f"value: {tick_labels[0]}",
+                    "bar chart omitted because there is no distribution",
+                ],
+                color,
+            )
+            return
+
         ax.bar(
             tick_labels,
             counts,
             color=color,
-            edgecolor="black",
+            edgecolor=STRUCTURE_COLOR,
             linewidth=0.4,
         )
         ax.set_xlabel(response_spec.axis_label)
@@ -795,10 +1195,25 @@ def plot_response_distribution(
     ax.grid(True, axis="y", alpha=0.2)
 
 
+def response_signal_has_variation(
+    canonical: CanonicalInteractions,
+    summary: DatasetSummary,
+) -> bool:
+    """Return whether the selected response signal is worth plotting as a distribution."""
+    response_values, _response_spec = response_signal_for_plot(canonical, summary)
+    finite_values = response_values[np.isfinite(response_values)]
+    if finite_values.size == 0:
+        return False
+    sample_size = min(finite_values.size, 50_000)
+    sample_indices = np.linspace(0, finite_values.size - 1, sample_size, dtype=np.int64)
+    return bool(np.unique(finite_values[sample_indices]).size > 1)
+
+
 def plot_context_panel(
     ax: Axes,
     canonical: CanonicalInteractions,
     summary: DatasetSummary,
+    accent_color: str,
 ) -> None:
     """Plot dataset-specific context or side-feature availability.
 
@@ -806,6 +1221,7 @@ def plot_context_panel(
         ax: Matplotlib axes that receive the plot.
         canonical: Loaded canonical dataset.
         summary: Scalar summary for the same dataset.
+        accent_color: Dataset identity color for non-semantic descriptive bars.
 
     Returns:
         None. The axes are modified in place.
@@ -825,6 +1241,20 @@ def plot_context_panel(
         return
 
     if summary.name == "taobao" and (summary.user_feature_dim > 0 or summary.item_feature_dim > 0):
+        if np.count_nonzero([summary.user_feature_dim, summary.item_feature_dim]) == 1:
+            plot_text_summary_panel(
+                ax,
+                "Available side-feature dimensions",
+                [
+                    f"user feature columns: {summary.user_feature_dim}",
+                    f"item feature columns: {summary.item_feature_dim}",
+                    "bar chart omitted",
+                    "only item-side feature columns exist",
+                ],
+                RAW_RESPONSE_COLOR,
+            )
+            return
+
         ax.bar(
             ["user features", "item features"],
             [summary.user_feature_dim, summary.item_feature_dim],
@@ -836,7 +1266,7 @@ def plot_context_panel(
         return
 
     if canonical.behavior_type is not None and np.unique(canonical.behavior_type).size > 1:
-        labels, counts = top_category_counts(canonical.behavior_type)
+        labels, _counts = top_category_counts(canonical.behavior_type)
         title = "Interaction-type mix"
     elif canonical.source_domain is not None and np.unique(canonical.source_domain).size > 1:
         source_labels = np.unique(
@@ -861,14 +1291,28 @@ def plot_context_panel(
             ax=ax,
             raw_target=canonical.raw_target,
             timestamps=canonical.timestamp,
-            color=DATASET_COLORS[summary.name],
+            color=accent_color,
         )
         return
     else:
         labels, counts, title = [], np.array([], dtype=np.int64), ""
 
     if counts.size > 0:
-        ax.bar(labels, counts, color=DATASET_COLORS[summary.name], edgecolor="white")
+        if np.count_nonzero(counts) == 1:
+            nonzero_index = int(np.flatnonzero(counts > 0)[0])
+            plot_text_summary_panel(
+                ax,
+                title,
+                [
+                    f"{counts[nonzero_index]:,} rows in one category",
+                    f"category: {labels[nonzero_index]}",
+                    "bar chart omitted because there is no category mix",
+                ],
+                accent_color,
+            )
+            return
+
+        ax.bar(labels, counts, color=accent_color, edgecolor="white")
         ax.set_title(title)
         ax.set_xlabel("interaction type")
         ax.set_ylabel("number of interactions")
@@ -877,6 +1321,20 @@ def plot_context_panel(
         return
 
     if summary.user_feature_dim > 0 or summary.item_feature_dim > 0:
+        if np.count_nonzero([summary.user_feature_dim, summary.item_feature_dim]) == 1:
+            plot_text_summary_panel(
+                ax,
+                "Available side-feature dimensions",
+                [
+                    f"user feature columns: {summary.user_feature_dim}",
+                    f"item feature columns: {summary.item_feature_dim}",
+                    "bar chart omitted",
+                    "only one side has feature columns",
+                ],
+                accent_color,
+            )
+            return
+
         ax.bar(
             ["user features", "item features"],
             [summary.user_feature_dim, summary.item_feature_dim],
@@ -890,12 +1348,126 @@ def plot_context_panel(
     plot_split_composition(ax, summary)
 
 
+def plot_feature_availability_panel(ax: Axes, summary: DatasetSummary) -> None:
+    """Plot split-safe feature-column availability without a misleading one-bar chart."""
+    labels = ["user features", "item features"]
+    values = [summary.user_feature_dim, summary.item_feature_dim]
+    bars = ax.barh(labels, values, color=FEATURE_COLORS, edgecolor="white")
+    ax.set_title("Available side-feature dimensions")
+    ax.set_xlabel("columns")
+    ax.set_xlim(0.0, max(1.0, max(values) * 1.15))
+    ax.grid(True, axis="x", alpha=0.2)
+    for bar, value in zip(bars, values, strict=True):
+        ax.text(
+            value + max(1.0, max(values) * 0.03),
+            bar.get_y() + bar.get_height() / 2.0,
+            f"{value}",
+            ha="left",
+            va="center",
+            fontsize=8.5,
+        )
+
+
+def plot_protocol_availability_panel(ax: Axes, summary: DatasetSummary) -> None:
+    """Plot which auxiliary evidence sources exist for a dataset."""
+    labels = ["timestamps", "user features", "item features", "random exposure"]
+    values = np.asarray(
+        [
+            summary.timestamp_coverage,
+            float(summary.user_feature_dim > 0),
+            float(summary.item_feature_dim > 0),
+            summary.randomized_exposure_share or 0.0,
+        ],
+        dtype=np.float64,
+    )
+    colors = [STRUCTURE_COLOR, USER_FEATURE_COLOR, ITEM_FEATURE_COLOR, EXPOSURE_RANDOM_COLOR]
+    if not bool(values.any()):
+        ax.axis("off")
+        ax.set_title("Auxiliary evidence availability")
+        ax.text(
+            0.5,
+            0.52,
+            "No timestamp, side-feature,\nor randomized-exposure fields\nin this canonical view.",
+            ha="center",
+            va="center",
+            fontsize=10,
+            color="#111827",
+        )
+        return
+
+    ax.barh(labels, values, color=colors, edgecolor="white")
+    ax.set_title("Auxiliary evidence availability")
+    ax.set_xlabel("share of rows or binary availability")
+    ax.set_xlim(0.0, 1.0)
+    ax.xaxis.set_major_formatter(PercentFormatter(1.0))
+    ax.grid(True, axis="x", alpha=0.2)
+
+
+def plot_profile_context_panel(
+    ax: Axes,
+    canonical: CanonicalInteractions,
+    summary: DatasetSummary,
+    color: str,
+) -> None:
+    """Choose the most informative sixth profile panel for the dataset."""
+    if canonical.exposure_flag is not None:
+        plot_group_positive_rate(
+            ax=ax,
+            group_labels=["randomized", "standard"],
+            group_masks=[
+                np.asarray(canonical.exposure_flag, dtype=bool),
+                ~np.asarray(canonical.exposure_flag, dtype=bool),
+            ],
+            labels=canonical.label,
+            title="Share labeled positive by exposure policy",
+        )
+        return
+
+    if canonical.behavior_type is not None and np.unique(canonical.behavior_type).size > 1:
+        labels, _counts = top_category_counts(canonical.behavior_type)
+        behavior_values = canonical.behavior_type.astype(str, copy=False)
+        plot_group_positive_rate(
+            ax=ax,
+            group_labels=labels,
+            group_masks=[behavior_values == label for label in labels],
+            labels=canonical.label,
+            title="Share labeled positive by interaction type",
+            annotate_counts=False,
+        )
+        ax.set_ylim(0.0, 1.05)
+        return
+
+    if (
+        canonical.raw_target is not None
+        and summary.feedback_type == "explicit"
+        and summary.timestamp_coverage > 0.0
+    ):
+        plot_mean_raw_target_over_time(
+            ax=ax,
+            raw_target=canonical.raw_target,
+            timestamps=canonical.timestamp,
+            color=color,
+        )
+        return
+
+    if summary.timestamp_coverage > 0.0:
+        plot_relative_time_histogram(ax, canonical.timestamp, color)
+        return
+
+    if summary.user_feature_dim > 0 or summary.item_feature_dim > 0:
+        plot_feature_availability_panel(ax, summary)
+        return
+
+    plot_protocol_availability_panel(ax, summary)
+
+
 def plot_group_positive_rate(
     ax: Axes,
     group_labels: list[str],
     group_masks: list[np.ndarray],
     labels: np.ndarray,
     title: str,
+    annotate_counts: bool = True,
 ) -> None:
     """Plot positive rate for a small set of dataset-specific groups.
 
@@ -915,9 +1487,12 @@ def plot_group_positive_rate(
         [float(np.mean(labels[mask])) if np.any(mask) else 0.0 for mask in group_masks],
         dtype=np.float64,
     )
-    colors = plt.get_cmap("Set2")(np.linspace(0.15, 0.75, len(group_labels)))
+    if group_labels == ["randomized", "standard"]:
+        colors = [EXPOSURE_RANDOM_COLOR, EXPOSURE_STANDARD_COLOR]
+    else:
+        colors = [RAW_RESPONSE_COLOR] * len(group_labels)
 
-    bars = ax.bar(group_labels, rates, color=colors, edgecolor="black", linewidth=0.4)
+    bars = ax.bar(group_labels, rates, color=colors, edgecolor=STRUCTURE_COLOR, linewidth=0.4)
     ax.set_title(title)
     ax.set_ylabel("share labeled positive")
     ax.yaxis.set_major_formatter(PercentFormatter(1.0))
@@ -925,15 +1500,16 @@ def plot_group_positive_rate(
     ax.tick_params(axis="x", rotation=20)
     ax.grid(True, axis="y", alpha=0.2)
 
-    for bar, count in zip(bars, counts, strict=True):
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + 0.02,
-            f"n={count:,}",
-            ha="center",
-            va="bottom",
-            fontsize=9,
-        )
+    if annotate_counts:
+        for bar, count in zip(bars, counts, strict=True):
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.02,
+                f"n={count:,}",
+                ha="center",
+                va="bottom",
+                fontsize=9,
+            )
 
 
 def plot_mean_raw_target_over_time(
@@ -1067,72 +1643,35 @@ def save_dataset_profile(
         Output path of the saved profile figure.
 
     """
-    fig, axes = plt.subplots(2, 3, figsize=(16, 9), constrained_layout=True)
-    flat_axes = axes.ravel()
-    color = DATASET_COLORS[summary.name]
-
-    flat_axes[0].axis("off")
-    flat_axes[0].set_title("Dataset card")
-    flat_axes[0].text(
-        0.02,
-        0.98,
-        "\n".join(
-            [
-                f"dataset: {summary.display_name}",
-                f"interaction semantics: {summary.feedback_description}",
-                f"plotted context: {summary.modalities_label}",
-                (
-                    "users/items/interactions: "
-                    f"{summary.n_users:,} / {summary.n_items:,} / {summary.n_interactions:,}"
-                ),
-                f"density: {summary.density * 100:.5f}%",
-                f"split strategy: {summary.split_label}",
-                f"share labeled positive: {summary.pos_rate:.2%}",
-                f"average signed-feedback score: {summary.mean_sign:.3f}",
-                f"distinct user-item pairs: {summary.unique_pair_count:,}",
-                f"share repeated user-item pairs: {summary.repeated_pair_share:.2%}",
-                f"median interactions per user: {summary.median_user_activity:.1f}",
-                f"median interactions per item: {summary.median_item_popularity:.1f}",
-                (
-                    "user/item side-feature columns: "
-                    f"{summary.user_feature_dim} / {summary.item_feature_dim}"
-                ),
-                f"rows with usable timestamps: {summary.timestamp_coverage:.1%}",
-                (
-                    f"share randomized-exposure rows: {summary.randomized_exposure_share:.1%}"
-                    if summary.randomized_exposure_share is not None
-                    else "share randomized-exposure rows: n/a"
-                ),
-            ],
-        ),
-        va="top",
-        ha="left",
-        family="monospace",
-    )
-
+    fig, axes = plt.subplots(2, 3, figsize=(12.8, 7.8), constrained_layout=True)
+    scale_ax, user_tail_ax, item_tail_ax, label_sign_ax, response_ax, context_ax = axes.ravel()
+    plot_scale_summary_panel(scale_ax, summary)
     user_counts = compute_entity_counts(canonical.user_id, canonical.n_users)
     item_counts = compute_entity_counts(canonical.item_id, canonical.n_items)
     plot_tail_ccdf(
-        flat_axes[1],
+        user_tail_ax,
         user_counts,
         "User activity long tail",
         "interactions per user",
         "users",
-        color,
+        USER_COLOR,
     )
     plot_tail_ccdf(
-        flat_axes[2],
+        item_tail_ax,
         item_counts,
         "Item popularity long tail",
         "interactions per item",
         "items",
-        color,
+        ITEM_COLOR,
     )
-    plot_relative_time_histogram(flat_axes[3], canonical.timestamp, color)
-    plot_response_distribution(flat_axes[4], canonical, summary, color)
-    plot_context_panel(flat_axes[5], canonical, summary)
+    plot_label_sign_summary(label_sign_ax, canonical)
+    if response_signal_has_variation(canonical, summary):
+        plot_response_distribution(response_ax, canonical, summary, RAW_RESPONSE_COLOR)
+    else:
+        plot_split_composition(response_ax, summary)
+    plot_profile_context_panel(context_ax, canonical, summary, RAW_RESPONSE_COLOR)
 
-    fig.suptitle(f"{summary.display_name} dataset profile", fontsize=16)
+    fig.suptitle(f"{summary.display_name} dataset profile", fontsize=16, color="#111827")
 
     output_path = output_dir / f"{summary.name}_profile.png"
     save_figure(fig, output_path, dpi=dpi)
@@ -1155,12 +1694,11 @@ def save_benchmark_overview(
         Output path of the saved overview figure.
 
     """
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10), constrained_layout=True)
+    fig, axes = plt.subplots(2, 3, figsize=(14.2, 8.6), constrained_layout=True)
     flat_axes = axes.ravel()
     x_positions = np.arange(len(summaries))
     names = [summary.display_name for summary in summaries]
-    colors = [DATASET_COLORS[summary.name] for summary in summaries]
-
+    dataset_colors = [DATASET_COLORS[summary.name] for summary in summaries]
     metric_specs = [
         (
             "Users",
@@ -1186,20 +1724,14 @@ def save_benchmark_overview(
             "density (%)",
             True,
         ),
-        (
-            "Share labeled positive",
-            [summary.pos_rate for summary in summaries],
-            "share labeled positive",
-            False,
-        ),
     ]
 
     for ax, (title, values, ylabel, log_scale) in zip(
-        flat_axes[:5],
+        flat_axes[:4],
         metric_specs,
         strict=True,
     ):
-        ax.bar(x_positions, values, color=colors)
+        ax.bar(x_positions, values, color=dataset_colors, edgecolor="white", linewidth=0.6)
         ax.set_title(title)
         ax.set_ylabel(ylabel)
         ax.set_xticks(x_positions)
@@ -1210,6 +1742,67 @@ def save_benchmark_overview(
             ax.yaxis.set_major_formatter(PercentFormatter(1.0))
             ax.set_ylim(0.0, 1.0)
         ax.grid(True, axis="y", alpha=0.25)
+
+    y_positions = np.arange(len(summaries))
+    sign_negative = np.asarray([summary.negative_sign_rate for summary in summaries])
+    sign_zero = np.asarray([summary.zero_sign_rate for summary in summaries])
+    sign_positive = np.asarray([summary.positive_sign_rate for summary in summaries])
+    flat_axes[4].barh(
+        y_positions,
+        sign_negative,
+        color=SIGN_NEGATIVE_COLOR,
+        label="sign < 0",
+    )
+    flat_axes[4].barh(
+        y_positions,
+        sign_zero,
+        left=sign_negative,
+        color=SIGN_ZERO_COLOR,
+        label="sign = 0",
+    )
+    flat_axes[4].barh(
+        y_positions,
+        sign_positive,
+        left=sign_negative + sign_zero,
+        color=SIGN_POSITIVE_COLOR,
+        label="sign > 0",
+    )
+    for y_position, summary in zip(y_positions, summaries, strict=True):
+        flat_axes[4].plot(
+            summary.positive_label_rate,
+            y_position,
+            marker="|",
+            color=LABEL_NONPOSITIVE_COLOR,
+            markersize=22,
+            markeredgewidth=5.0,
+        )
+        flat_axes[4].plot(
+            summary.positive_label_rate,
+            y_position,
+            marker="|",
+            color=LABEL_POSITIVE_COLOR,
+            markersize=18,
+            markeredgewidth=2.4,
+        )
+    flat_axes[4].set_title("Feedback sign distribution")
+    flat_axes[4].set_xlabel("share of rows; green marker = label > 0 rate")
+    flat_axes[4].set_yticks(y_positions)
+    flat_axes[4].set_yticklabels(names)
+    flat_axes[4].xaxis.set_major_formatter(PercentFormatter(1.0))
+    flat_axes[4].set_xlim(0.0, 1.0)
+    flat_axes[4].grid(True, axis="x", alpha=0.25)
+    flat_axes[4].legend(
+        handles=[
+            plt.Rectangle((0, 0), 1, 1, color=SIGN_NEGATIVE_COLOR, label="sign < 0"),
+            plt.Rectangle((0, 0), 1, 1, color=SIGN_ZERO_COLOR, label="sign = 0"),
+            plt.Rectangle((0, 0), 1, 1, color=SIGN_POSITIVE_COLOR, label="sign > 0"),
+        ],
+        loc="lower center",
+        bbox_to_anchor=(0.5, -0.32),
+        ncol=3,
+        fontsize=8,
+        frameon=False,
+    )
 
     width = 0.38
     flat_axes[5].bar(

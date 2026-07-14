@@ -30,11 +30,11 @@ Architecture is exported as previewable Markdown Mermaid; empirical charts are e
 | `paper_accuracy_efficiency_frontier.png` | Pareto-frontier scatter | Is EDGRec on a useful frontier? | Use as the full-range trade-off view, including outlier context. |
 | `paper_accuracy_efficiency_frontier_zoomed.png` | zoomed Pareto-frontier scatter | What happens near the visible cluster? | Use as the readable companion after the full-range frontier; axes use local data ranges and right-tail outliers are intentionally trimmed per panel. |
 | `paper_mechanism_diagnostics.png` | consolidated diagnostic panels | Does the mechanism behave plausibly? | Use as the main mechanism figure; score-mix and branch-rank diagnostics are merged here. |
+| `kuairec_ablation_deltas.png` | matched ablation delta panels | Which component choices are currently supported? | Use as the compact RQ4 figure for the current public KuaiRec matched ablations; keep the wording protocol-local and do not generalize across datasets. |
 | `accuracy_popularity_tradeoff.png` | trade-off scatter | Does lower popularity concentration cost accuracy? | Use as the full-range popularity-concentration view, including outlier context. |
 | `accuracy_popularity_tradeoff_zoomed.png` | zoomed trade-off scatter | Does the local popularity trade-off remain visible? | Use as the readable companion after the full-range popularity plot; axes use local data ranges and right-tail outliers are intentionally trimmed per panel. |
 | `crru_component_decomposition.png` | grouped component bars | What does CRRU reward? | Use to defend the composite utility without implying a trend between independent terms. |
-| `paper_baseline_feasibility.png` | paired log-time bars plus slowdown | Why are some baselines probes? | Use to defend DICE/large full-graph feasibility limits and evidence roles. |
-| `kuairec_matrix_regime_sensitivity.png` | protocol-sensitivity bars | Why is the near-ceiling KuaiRec row excluded? | Use only as a sensitivity companion showing that small-matrix/full-observation rows are a different protocol from the sparse KuaiRec comparison. |
+| `paper_baseline_feasibility.png` | paired log-time points plus slowdown | Why are some baselines probes? | Use to defend DICE/large full-graph feasibility limits and evidence roles. |
 
 ## Recommended Slide Flow
 
@@ -47,6 +47,7 @@ Architecture is exported as previewable Markdown Mermaid; empirical charts are e
 | Test evidence | `paper_claim_matrix.png` | State the full-data LightGCN paper-faithful comparison with direction, magnitude, raw values, and missing-baseline status. |
 | Trade-offs | `paper_accuracy_efficiency_frontier.png` plus `paper_accuracy_efficiency_frontier_zoomed.png` | Defend the thesis as a Pareto/trade-off result, then use the zoomed companion for readable clusters. |
 | Mechanism diagnostics | `paper_mechanism_diagnostics.png` | Explain branch usage while stating that these are diagnostics, not causal identification. |
+| Ablation evidence | `kuairec_ablation_deltas.png` | Defend the currently available component-removal evidence as KuaiRec protocol-local, not as a dataset-general component theorem. |
 | Feasibility limits | `paper_baseline_feasibility.png` | Justify why DICE-paper and large full-graph baselines are sometimes resource probes, with seconds/epoch and slowdown shown together. |
 
 ## Claim Boundaries
@@ -54,6 +55,7 @@ Architecture is exported as previewable Markdown Mermaid; empirical charts are e
 - Ranking metrics and CRRU are thesis utility evidence, not causal-effect estimates.
 - Branch-rank, score-mix, Spearman, and cosine plots are diagnostics only.
 - Runtime-probe rows support feasibility and resource claims, not final accuracy claims.
+- The public ablation plot uses matched KuaiRec rows only; it supports design choices under that protocol and identifies missing ablations for future work.
 - KuaiRand compact randomized-exposure rows need separate wording from full standard-view runs.
 - `figure_review.md` contains the per-image audit, recommended main flow, backup-figure decisions, and caveats for defense use.
 
@@ -61,4 +63,4 @@ Architecture is exported as previewable Markdown Mermaid; empirical charts are e
 
 - `results/dataset_visualizations/` owns dataset scale, density, split, feedback, and feature-availability context. Use them for backup detail; the regime map is the compact main-flow version.
 - `results/optuna_figures/` owns validation-search behavior, hyperparameter response, and selected-trial diagnostics. Use defense figures for full-data test evidence and claim boundaries.
-- `accuracy_popularity_tradeoff.png`, `accuracy_popularity_tradeoff_zoomed.png`, and `crru_component_decomposition.png` are backup figures after the paper-grade core set above.
+- `accuracy_popularity_tradeoff.png`, `accuracy_popularity_tradeoff_zoomed.png`, and `crru_component_decomposition.png` are backup figures after the paper-grade core set above. The duplicate NDCG-time scatter, evidence map, paired-dot raw comparison, standalone score-mix figure, standalone branch figure, raw `.mmd` source, and architecture PNG are intentionally not exported.

@@ -40,6 +40,9 @@ DATASET_SUMMARY_PATH = RESULTS_DIR / "dataset_visualizations" / "benchmark_summa
 FEATURE_SUBSET_SEARCH_SPACE = "edgrec-feature-subset-search"
 FEATURE_SUBSET_DATASETS = ("amazonbook", "movielens1m", "kuairec_v2", "kuairand1k")
 FEATURE_SAFE_ROLE = "safe_pre_treatment"
+A4_TEXT_WIDTH_IN = 160.0 / 25.4
+HORIZONTAL_FIGURE_HEIGHT_IN = A4_TEXT_WIDTH_IN * 2.0 / 3.0
+THESIS_FIGURE_DPI = 360
 DATASET_DISPLAY_NAMES = {
     "amazonbook": "Amazon Book",
     "movielens1m": "MovieLens-1M",
@@ -871,6 +874,7 @@ def _remove_feature_subset_legacy_figures() -> None:
     _remove_file(_feature_subset_evidence_matrix_path())
     _remove_file(FEATURE_ANALYSIS_DIR / "feature_subset_delta_heatmap.png")
     _remove_file(FEATURE_ANALYSIS_DIR / "feature_subset_evidence_matrix.png")
+    _remove_file(FEATURE_ANALYSIS_DIR / "feature_subset_delta_dotplot.png")
     for path in FEATURE_ANALYSIS_DIR.glob("feature_subset_deltas_*.png"):
         _remove_file(path)
 
@@ -999,10 +1003,208 @@ def _write_feature_subset_evidence_matrix(
     )
 
 
+def _feature_subset_summary_effect_rows(
+    rows: Sequence[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """Return compact feature-effect rows for the thesis-facing dot plot."""
+    deltas = _feature_delta_lookup(rows)
+    best_rows = _best_completed_row_by_dataset(rows)
+    output: list[dict[str, object]] = []
+    effect_specs = (
+        ("All side vs none", ("side_feature_gain",)),
+        ("Best single group", ("single_group_gain:",)),
+        ("Best pair/triple", ("pair_gain:", "triple_gain:")),
+        ("Best drop importance", ("drop_group_effect:",)),
+    )
+    for dataset in FEATURE_SUBSET_DATASETS:
+        if dataset not in best_rows and not any(
+            candidate_dataset == dataset for candidate_dataset, _effect in deltas
+        ):
+            continue
+        for label, prefixes in effect_specs:
+            if prefixes == ("side_feature_gain",):
+                value = deltas.get((dataset, "side_feature_gain"))
+                effect = "side_feature_gain"
+            else:
+                best = _best_effect_by_prefix(deltas, dataset, prefixes)
+                if best is None:
+                    continue
+                effect, value = best
+            if value is None:
+                continue
+            output.append(
+                {
+                    "dataset": dataset,
+                    "effect_label": label,
+                    "effect": effect,
+                    "delta": value,
+                },
+            )
+    return output
+
+
+def _write_feature_subset_delta_dotplot(rows: Sequence[Mapping[str, object]]) -> None:
+    """Write a compact feature-subset delta lollipop plot."""
+    effect_rows = _feature_subset_summary_effect_rows(rows)
+    best_rows = _best_completed_row_by_dataset(rows)
+    if not effect_rows and not best_rows:
+        return
+
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+    import matplotlib.pyplot as plt
+
+    effect_order = (
+        "All side vs none",
+        "Best single group",
+        "Best pair/triple",
+        "Best drop importance",
+    )
+    effect_styles = {
+        "All side vs none": ("#1f77b4", "o"),
+        "Best single group": ("#2f8f46", "s"),
+        "Best pair/triple": ("#7b5aa6", "^"),
+        "Best drop importance": ("#d17a22", "D"),
+    }
+    effect_labels = {
+        "All side vs none": "All side",
+        "Best single group": "Single group",
+        "Best pair/triple": "Pair/triple",
+        "Best drop importance": "Drop effect",
+        "Graph only": "Graph-only",
+    }
+    plot_rows: list[dict[str, object]] = []
+    group_spans: list[tuple[str, float, float]] = []
+    y = 0.0
+    for dataset in FEATURE_SUBSET_DATASETS:
+        dataset_rows = [row for row in effect_rows if row["dataset"] == dataset]
+        dataset_rows.sort(key=lambda row: effect_order.index(str(row["effect_label"])))
+        if not dataset_rows and dataset in best_rows:
+            dataset_rows = [
+                {
+                    "dataset": dataset,
+                    "effect_label": "Graph only",
+                    "effect": "",
+                    "delta": None,
+                },
+            ]
+        if not dataset_rows:
+            continue
+        start = y
+        for row in dataset_rows:
+            row = dict(row)
+            row["y"] = y
+            plot_rows.append(row)
+            y += 1.0
+        group_spans.append((dataset, start, y - 1.0))
+        y += 0.45
+
+    if not plot_rows:
+        return
+
+    fig, ax = plt.subplots(figsize=(A4_TEXT_WIDTH_IN, HORIZONTAL_FIGURE_HEIGHT_IN))
+    ax.axvline(0.0, color="#374151", linewidth=1.0, alpha=0.85)
+    all_values = [float(row["delta"]) for row in plot_rows if row["delta"] is not None]
+    min_value = min(all_values, default=0.0)
+    max_value = max(all_values, default=0.0)
+    span = max(0.02, max_value - min_value)
+    left_limit = min(-0.07, min_value - 0.30 * span)
+    right_limit = max(0.06, max_value + 0.34 * span)
+    ax.set_xlim(left_limit, right_limit)
+
+    for row in plot_rows:
+        label = str(row["effect_label"])
+        value = row["delta"]
+        row_y = float(row["y"])
+        if value is None:
+            ax.text(
+                0.0,
+                row_y,
+                "n/a",
+                va="center",
+                ha="center",
+                fontsize=8,
+                color="#6b7280",
+                bbox={
+                    "boxstyle": "round,pad=0.18",
+                    "facecolor": "#f3f4f6",
+                    "edgecolor": "#d1d5db",
+                },
+            )
+            continue
+        color, marker = effect_styles[label]
+        numeric_value = float(value)
+        ax.hlines(
+            row_y,
+            min(0.0, numeric_value),
+            max(0.0, numeric_value),
+            color=color,
+            linewidth=1.8,
+            alpha=0.58,
+        )
+        ax.scatter(
+            numeric_value,
+            row_y,
+            s=55,
+            color=color,
+            marker=marker,
+            edgecolor="#111827",
+            linewidth=0.45,
+            zorder=3,
+        )
+        ax.text(
+            numeric_value + (0.002 if numeric_value >= 0 else -0.002),
+            row_y,
+            f"{numeric_value:+.3f}",
+            va="center",
+            ha="left" if numeric_value >= 0 else "right",
+            fontsize=7.5,
+            color="#111827",
+        )
+
+    dataset_label_x = left_limit + 0.012 * (right_limit - left_limit)
+    for dataset, start, end in group_spans:
+        midpoint = (start + end) / 2.0
+        if start > 0:
+            ax.axhline(start - 0.5, color="#d1d5db", linewidth=0.7, alpha=0.85)
+        ax.text(
+            dataset_label_x,
+            midpoint,
+            DATASET_DISPLAY_NAMES.get(dataset, dataset),
+            va="center",
+            ha="left",
+            fontsize=8.5,
+            fontweight="bold",
+            color="#111827",
+        )
+    ax.set_yticks(
+        [float(row["y"]) for row in plot_rows],
+        [
+            effect_labels.get(str(row["effect_label"]), str(row["effect_label"]))
+            for row in plot_rows
+        ],
+    )
+    ax.invert_yaxis()
+    ax.set_ylim(float(plot_rows[-1]["y"]) + 0.55, -0.55)
+    ax.set_xlabel("Delta validation CRRU@20/40", labelpad=3, fontsize=9)
+    ax.set_title("Feature-subset validation deltas by dataset", fontsize=11, pad=6)
+    ax.grid(axis="x", alpha=0.22)
+    ax.grid(axis="y", visible=False)
+    ax.tick_params(axis="x", labelsize=8)
+    ax.tick_params(axis="y", labelsize=7.5)
+    fig.tight_layout(pad=0.35)
+    output_path = FEATURE_ANALYSIS_DIR / "feature_subset_delta_dotplot.png"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=THESIS_FIGURE_DPI)
+    plt.close(fig)
+
+
 def _write_feature_subset_delta_tables(rows: Sequence[Mapping[str, object]]) -> None:
     """Write combined feature-subset delta tables."""
     _remove_feature_subset_legacy_figures()
     _write_feature_subset_evidence_matrix(rows)
+    _write_feature_subset_delta_dotplot(rows)
 
 
 def _read_dataset_summary_payloads() -> dict[str, Mapping[str, object]]:
@@ -1136,7 +1338,56 @@ def _format_dataset_context(payload: Mapping[str, object] | None, dataset: str) 
     feedback = str(payload.get("feedback_description") or "")
     interactions_text = f"{interactions / 1_000_000:.1f}M interactions" if interactions else ""
     density_text = f"{density * 100:.3g}% density" if density is not None else ""
-    return "\n".join(part for part in (label, interactions_text, density_text, feedback) if part)
+    signed_feedback_text = _format_signed_feedback_context(payload)
+    return "\n".join(
+        part
+        for part in (label, interactions_text, density_text, feedback, signed_feedback_text)
+        if part
+    )
+
+
+def _format_signed_feedback_context(payload: Mapping[str, object]) -> str:
+    """Format binary-label and graded-sign context from dataset profiles."""
+    label_distribution = payload.get("label_distribution")
+    sign_distribution = payload.get("sign_distribution")
+    if isinstance(label_distribution, Mapping) and isinstance(sign_distribution, Mapping):
+        label_shares = label_distribution.get("shares")
+        sign_shares = sign_distribution.get("shares")
+        if not isinstance(label_shares, Mapping) or not isinstance(sign_shares, Mapping):
+            return ""
+        positive_label = _finite_float(label_shares.get("positive_label"))
+        positive_sign = _finite_float(sign_shares.get("positive_sign"))
+        zero_sign = _finite_float(sign_shares.get("zero_sign"))
+        negative_sign = _finite_float(sign_shares.get("negative_sign"))
+        if None in (positive_label, positive_sign, zero_sign, negative_sign):
+            return ""
+        text = (
+            f"label/sign: label>0 {positive_label:.1%}; "
+            f"sign>0 {positive_sign:.1%}, sign=0 {zero_sign:.1%}, "
+            f"sign<0 {negative_sign:.1%}"
+        )
+        overlap = payload.get("label_sign_overlap")
+        if isinstance(overlap, Mapping):
+            positive_negative = _finite_float(overlap.get("positive_label_negative_sign"))
+            if positive_negative:
+                text += f"; label>0 & sign<0 {int(positive_negative):,}"
+        return text
+
+    masks = payload.get("canonical_feedback_masks")
+    if not isinstance(masks, Mapping):
+        return ""
+    shares = masks.get("shares")
+    if not isinstance(shares, Mapping):
+        return ""
+    positive = _finite_float(shares.get("positive_label"))
+    neutral = _finite_float(shares.get("neutral_nonpositive"))
+    negative = _finite_float(shares.get("negative_sign"))
+    if positive is None or neutral is None or negative is None:
+        return ""
+    return (
+        f"label/sign: label>0 {positive:.1%}; legacy label=0/sign=0 {neutral:.1%}, "
+        f"sign<0 {negative:.1%}"
+    )
 
 
 def _best_completed_row_by_dataset(
@@ -1378,23 +1629,26 @@ def _write_feature_engineering_review_markdown(
         "left outside the thesis-default path, and what evidence still needs a full-data "
         "test rerun before becoming a thesis claim.",
         "",
-        "Primary tables/reports: `dataset_feature_decision_map.md`, "
+        "Primary figure/tables/reports: `feature_subset_delta_dotplot.png`, "
+        "`dataset_feature_decision_map.md`, "
         "`feature_subset_evidence_matrix.md`, `feature_subset_best_by_dataset.md`, and "
         "`feature_subset_results.csv`.",
         "",
         "## Dataset Decisions",
         "",
-        "| Dataset | Feature input | Left outside training | Evidence | Decision |",
+        (
+            "| Dataset / feedback context | Feature input | Left outside training | "
+            "Evidence | Decision |"
+        ),
         "|---|---|---|---|---|",
     ]
     for row in review_rows:
-        dataset = str(row["dataset_context"]).splitlines()[0]
         lines.append(
             "| "
             + " | ".join(
                 _format_markdown_value(value).replace("\n", "<br/>")
                 for value in (
-                    dataset,
+                    row["dataset_context"],
                     row["feature_inputs"],
                     row["left_out"],
                     row["validation_result"],
